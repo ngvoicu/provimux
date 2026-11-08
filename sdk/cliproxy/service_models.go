@@ -889,7 +889,10 @@ func buildOpenAICompatibilityConfigModels(compat *config.OpenAICompatibility) []
 		if openRouter && !model.Image {
 			// OpenRouter publishes each model's limits and accepted reasoning efforts; configured values
 			// (max-context-length, thinking) still win.
-			if published, ok := registry.LookupOpenRouterModel(providerKey, strings.TrimSpace(model.Name)); ok {
+			// OpenRouter's catalog is keyed by the plain model ID; a thinking suffix
+			// (anthropic/claude-opus-5.5(max)) is stripped at request time too.
+			upstream := strings.TrimSpace(thinking.ParseSuffix(strings.TrimSpace(model.Name)).ModelName)
+			if published, ok := registry.LookupOpenRouterModel(providerKey, upstream); ok {
 				if info.ContextLength <= 0 && published.ContextLength > 0 {
 					info.ContextLength = published.ContextLength
 				}
