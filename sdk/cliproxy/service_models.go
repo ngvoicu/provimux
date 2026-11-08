@@ -989,11 +989,14 @@ func buildConfigModels[T modelEntry](models []T, ownedBy, modelType, metadataCha
 		if resolved := modelconfig.ResolveModelInfo(name, modelType, model.GetThinking()); resolved.Thinking != nil {
 			info.Thinking = resolved.Thinking
 		}
-		if staticInfo := registry.LookupStaticModelInfoByChannel(name, metadataChannel); staticInfo != nil {
+		// Look up limits by the upstream name without a thinking suffix, as
+		// ResolveModelInfo does: claude-opus-5-5[1m](high) is claude-opus-5-5[1m].
+		baseName := strings.TrimSpace(thinking.ParseSuffix(name).ModelName)
+		if staticInfo := registry.LookupStaticModelInfoByChannel(baseName, metadataChannel); staticInfo != nil {
 			if staticInfo.NativeCapabilities != nil {
 				info.NativeCapabilities = cloneModelInfoForCatalogRoute(staticInfo).NativeCapabilities
 			}
-			inheritStaticModelLimits(info, staticInfo, name)
+			inheritStaticModelLimits(info, staticInfo, baseName)
 		}
 		out = append(out, info)
 	}
