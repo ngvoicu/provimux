@@ -152,6 +152,7 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 				excluded = entry.ExcludedModels
 			}
 		}
+		models = applyLiveModelList(cfg, a, models)
 	case "codex":
 		if authKind == "apikey" {
 			if entry := resolveConfigCodexKeyForConfig(cfg, a); entry != nil {
@@ -177,6 +178,7 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 		default:
 			models = registry.GetCodexProModels()
 		}
+		models = applyLiveModelList(cfg, a, models)
 	case "kimi", "kimi-ai", "kimi.ai", "kimi.com":
 		models = registry.GetKimiModels()
 	case "xai":
@@ -213,6 +215,7 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 				excluded = entry.ExcludedModels
 			}
 		}
+		models = applyLiveModelList(cfg, a, models)
 	default:
 		// Handle OpenAI-compatibility providers by name using config
 		if cfg != nil {
