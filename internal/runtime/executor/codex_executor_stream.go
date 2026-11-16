@@ -70,11 +70,13 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		return nil, err
 	}
 	originalTranslated = helps.SetStringIfDifferent(originalTranslated, "model", baseModel)
+	originalTranslated = syncCodexAPIKeyPromptCacheTTL(originalTranslated, auth, from, originalPayload)
 	doc := ojson.NewDoc(body)
 	if shouldPreserveFullCodexOpenAIInclude(ctx, auth, baseURL, opts.Headers) {
 		originalTranslated = helps.PreserveCodexOpenAIResponsesInclude(originalTranslated, originalPayload, from)
 		helps.PreserveCodexOpenAIResponsesIncludeDoc(doc, req.Payload, from)
 	}
+	syncCodexAPIKeyPromptCacheTTLDoc(doc, auth, from, req.Payload)
 	normalizeCodexOutputBudgetDoc(doc)
 	helps.SetStringIfDifferentDoc(doc, "model", baseModel)
 
