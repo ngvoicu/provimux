@@ -112,9 +112,8 @@ gpt-6.1-terra
 anthropic/claude-opus-5.5
   <span class="hl">{<span class="k">"provider"</span>:<span class="s">"openai-compatible-openrouter"</span>,<span class="k">"kind"</span>:<span class="s">"apikey"</span>,<span class="k">"priority"</span>:<span class="n">0</span>,<span class="k">"host"</span>:<span class="s">"openrouter.ai"</span>}</span></pre>
 <p class="sect">Which kind of account answered this request</p>
-<pre><span class="p">$</span> curl -si http://127.0.0.1:8317/v1/chat/completions -H "Authorization: Bearer $KEY" -d @request.json | grep -i '^x-cpa'
-<span class="hl"><span class="k">X-Cpa-Auth-Kind:</span> oauth</span>
-<span class="k">X-Cpa-Trace-Id:</span> <span class="dim">20261118231958-b1fbc5f0…</span></pre>
+<pre><span class="p">$</span> curl -si http://127.0.0.1:8317/v1/chat/completions -H "Authorization: Bearer $KEY" -d @request.json | grep -i auth-kind
+<span class="hl"><span class="k">X-Cpa-Auth-Kind:</span> oauth</span></pre>
 </div>
 </figure>
 
@@ -153,7 +152,8 @@ anthropic/claude-opus-5.5
    "content": "Now add a test"}]}</pre></div>
   <div class="arrow" style="width:22px">→</div>
   <div class="col" style="width:470px"><h4>OpenRouter receives</h4>
-<pre class="code"><span class="add">X-Session-Id: 9c3e5a…</span>  <span class="c">same for the whole conversation</span>
+<pre class="code"><span class="add">X-Session-Id: 00000000-0000-4000-8000-000000000001</span>
+<span class="c">(the same for the whole conversation)</span>
 
 {"model": "anthropic/claude-opus-5.5",
  "messages": [
