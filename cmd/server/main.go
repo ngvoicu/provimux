@@ -97,7 +97,7 @@ func run() (exitStatus int) {
 		discoverFlags.Func("exclude", "Comma-separated interface names to skip", appendCSV(&exclude))
 		_ = discoverFlags.Parse(os.Args[2:])
 		if !*jsonOut {
-			fmt.Fprintf(os.Stderr, "CLIProxyAPI Version: %s, Commit: %s, BuiltAt: %s\n", buildinfo.Version, buildinfo.Commit, buildinfo.BuildDate)
+			fmt.Fprintf(os.Stderr, "Provimux Version: %s (based on CLIProxyAPI %s), Commit: %s, BuiltAt: %s\n", buildinfo.ProvimuxVersion, buildinfo.Version, buildinfo.Commit, buildinfo.BuildDate)
 		}
 		cfgInclude, cfgExclude := cmd.LoadDiscoveryScanFilters(*configPathFlag)
 		include, exclude = cmd.ResolveDiscoveryInterfaceFilters(include, exclude, cfgInclude, cfgExclude)
@@ -115,7 +115,7 @@ func run() (exitStatus int) {
 	isJSONDiscover := argvEnablesBoolFlag(os.Args[1:], "discover-json")
 	isDiscoverMode := isJSONDiscover || argvEnablesBoolFlag(os.Args[1:], "discover")
 	if !isJSONDiscover {
-		fmt.Printf("CLIProxyAPI Version: %s, Commit: %s, BuiltAt: %s\n", buildinfo.Version, buildinfo.Commit, buildinfo.BuildDate)
+		fmt.Printf("Provimux Version: %s (based on CLIProxyAPI %s), Commit: %s, BuiltAt: %s\n", buildinfo.ProvimuxVersion, buildinfo.Version, buildinfo.Commit, buildinfo.BuildDate)
 	}
 
 	// Command-line flags to control the application's behavior.
@@ -654,7 +654,7 @@ func run() (exitStatus int) {
 		return 1
 	}
 
-	log.Infof("CLIProxyAPI Version: %s, Commit: %s, BuiltAt: %s", buildinfo.Version, buildinfo.Commit, buildinfo.BuildDate)
+	log.Infof("Provimux Version: %s (based on CLIProxyAPI %s), Commit: %s, BuiltAt: %s", buildinfo.ProvimuxVersion, buildinfo.Version, buildinfo.Commit, buildinfo.BuildDate)
 
 	// Set the log level based on the configuration.
 	util.SetLogLevel(cfg)
