@@ -228,12 +228,12 @@ Provimux works with any client CLIProxyAPI works with. For [pi](https://pi.dev),
 
 - [pi-cliproxyapi-provider](https://github.com/ngvoicu/pi-cliproxyapi-provider) adds Provimux (or CLIProxyAPI) as a
   pi provider. Each model's name ends with where it comes from: `sub` for a subscription login, `api` for an API key,
-  then what it falls back to.
+  then what it falls back to. pi 1.5.2 or newer shows the name on every line of `/model`, after the id.
 - [pi-cache-keeper](https://github.com/ngvoicu/pi-cache-keeper) keeps the prompt cache warm and compacts from it. Its
   footer shows `sub` or `api` for the account that answered last, and warns when an API key answered for a model you
   reach through a subscription.
 
-![A terminal titled "pi · /model, with pi-cliproxyapi-provider". pi's model list shows claude-opus-5-5 (selected and current), claude-sonnet-5-5, gpt-6.1-terra and anthropic/claude-opus-5.5, each tagged [cliproxyapi]. Below it: "Model Name: Claude Opus 5.5 · Anthropic sub, fallback api". Other names in the same list: "GPT 6.1 Terra · OpenAI sub" and "anthropic/claude-opus-5.5 · OpenRouter api". Then the last line of pi's footer with pi-cache-keeper, in two states: "cache warm · 59m left · sub · window ✓ · cache short ✓ · long ✓ (in use) · price ✗", and "cache warm · 4m left · api · window ✓ · cache short ✓ (in use) · long ✓ · price ✗ · ⚠ answered by an API key".](provimux/media/pi.png)
+![A terminal titled "pi 1.5.2 · /model, with pi-cliproxyapi-provider". Each line of pi's model list shows the model id, its name with where it comes from in parentheses, and [cliproxyapi]: "claude-opus-5-5 (Claude Opus 5.5 · Anthropic sub, fallback api)", selected and current; "claude-sonnet-5-5 (Claude Sonnet 5.5 · Anthropic sub, fallback api)"; "gpt-6.1-terra (GPT 6.1 Terra · OpenAI sub)"; "anthropic/claude-opus-5.5 (anthropic/claude-opus-5.5 · OpenRouter api)". Below the list, for the selected model: "Model Name: Claude Opus 5.5 · Anthropic sub, fallback api". Then the last line of pi's footer with pi-cache-keeper, in two states: "cache warm · 59m left · sub · window ✓ · cache short ✓ · long ✓ (in use) · price ✗", and "cache warm · 4m left · api · window ✓ · cache short ✓ (in use) · long ✓ · price ✗ · ⚠ answered by an API key".](provimux/media/pi.png)
 
 ```bash
 pi install git:github.com/ngvoicu/pi-cliproxyapi-provider
