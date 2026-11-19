@@ -8,7 +8,7 @@ For the worker who builds PUI-14. The contract is `openapi.yaml`; the field sour
 - A layer commit must not change anything under `internal/runtime/executor/`, `internal/auth/`, `internal/misc/`, `internal/translator/`, `sdk/cliproxy/session/` (`guard.sh:28`, checked per commit at `:116-122`).
 - The layer stays small: new files, and single lines in upstream files.
 
-Reading or importing a guarded package is not a change to it. The new files import `internal/registry`, `internal/thinking`, `sdk/cliproxy/auth`, `sdk/cliproxy/usage` and `internal/api/handlers/management`; none is guarded.
+Reading or importing a guarded package is not a change to it. The new files import `internal/registry`, `sdk/cliproxy/auth` and `internal/api/handlers/management`; none is guarded.
 
 ## 2. Files
 
@@ -16,7 +16,6 @@ Reading or importing a guarded package is not a change to it. The new files impo
 |---|---|---|---|
 | `internal/api/server_provimux.go` | yes | `api` | `registerProvimuxRoutes`: every Provimux management route |
 | `internal/api/handlers/management/provimux_model_routes.go` | yes | `management` | response types, `ProvimuxModelRoutes`, the host rule copied from `openai_models_accounts.go:27-37` |
-| `internal/api/handlers/management/provimux_last_served.go` | yes | `management` | the recorder and its `init()` registration (`03-last-served.md`) |
 | `sdk/cliproxy/auth/provimux_route_cooldowns.go` | yes | `auth` | `(*Manager).ProvimuxRouteCooldowns` (`01-model-routes.md` section 4) |
 | `internal/api/handlers/management/provimux_live_lists.go` | yes | `management` | the source interface and its holder, response types, `ProvimuxLiveLists` |
 | `sdk/cliproxy/provimux_live_list_status.go` | yes | `cliproxy` | the source over the fetcher's store, its `init()` registration, the failure note |
@@ -74,7 +73,7 @@ Three layer commits, in this order, each with the trailer `Provimux-Layer: brand
 
 | # | Subject | Adds | Edits |
 |---|---|---|---|
-| 1 | `feat(provimux): model routes for the console` | `server_provimux.go` (with the model-routes line), `provimux_model_routes.go`, `provimux_last_served.go`, `provimux_route_cooldowns.go`, their tests | `server_management_v8.go` +1 |
+| 1 | `feat(provimux): model routes for the console` | `server_provimux.go` (with the model-routes line), `provimux_model_routes.go`, `provimux_route_cooldowns.go`, their tests | `server_management_v8.go` +1 |
 | 2 | `feat(provimux): live-list status for the console` | `provimux_live_lists.go`, `provimux_live_list_status.go`, their tests | `server_provimux.go` +1 (the layer's own file); `live_model_lists.go` +1 if the owner takes option B |
 | 3 | `docs(provimux): management endpoints for the console` | nothing | `.github/README.md`: a short section naming both endpoints and linking `openapi.yaml` of this folder, next to "Which account serves each model" (`:29-60`) and "Live model lists for each login" (`:67-86`); this folder's files where the build made the design wrong |
 
@@ -96,23 +95,12 @@ All in new `provimux_*_test.go` files, so no upstream test file changes. Fixture
 | limits per route and for the model | two routes with windows 1,000,000 and 200,000: each route shows its own, the model shows 200,000; a third route declaring no window makes the model's `context` null and that route's `context` null |
 | limits read every field a provider uses | a Gemini-style route (`InputTokenLimit`, `OutputTokenLimit`) and a configured override (`MaxContextLength`) reduce as `model_registry_limits.go:86-87` |
 | reasoning | levels and budget from `Thinking`; `null` without it; `budget` null when all four are zero |
-| cooldown of one model | a model-scope quota cooldown shows on that model's route only, with `reason: "quota"`, `retry_at`, `remaining_seconds`; the other models of the credential show `null` |
-| cooldown of the credential | a `credential_quota` cooldown shows on every route of the credential |
-| available without a timer | a route the registry holds suspended with no deadline: `available: false`, `cooldown: null` |
-| last served | after `HandleUsage` with a success for alias `m(high)`: the route of `m` has the fake clock's time, another credential's route of `m` has `null`; a failure record and a record with `Generate=false` change nothing; `recording_since` is the recorder's start |
+| recorded cooldown of one model | a model-scope quota cooldown shows on that model's route only, with `scope: "model"`, `model`, `reason: "quota"`, `until`; the other models of the credential show `null` |
+| recorded cooldown of the credential | a `credential_quota` cooldown shows on every route of the credential, with `model: null` |
+| names only listed credentials | a runtime credential (AI Studio channel ID as ID, label, email) and a login the credentials list hides: `name`, `email`, `label` null, `auth_index` set, the ID and the email nowhere in the body |
 | `?model=` | one value returns that model only; two values both; an empty value returns `[]`; unknown returns `[]` |
 | empty | no credentials: `"models": []`, not `null` |
 | needs the management key | through `h.Middleware()` as `provimux_version_test.go:24-43` does: 401 without a key, 200 with it |
-
-### `internal/api/handlers/management/provimux_last_served_test.go`
-
-| Test | Asserts |
-|---|---|
-| key | `Model(HIGH)`, ` model `, `MODEL` all map to `model`; an empty alias falls back to `Model` |
-| records with statistics off | `redisqueue.SetUsageStatisticsEnabled(false)`, then `coreusage.PublishRecord`: the recorder has the entry. Waits on a channel from a second plugin registered after it, not on a sleep |
-| prune | a credential not in `keep` is gone, the others stay |
-| cap | key 4,097 of one credential is not added; existing keys still update |
-| concurrent | `HandleUsage` and `servedAt` from several goroutines under `-race` |
 
 ### `sdk/cliproxy/auth/provimux_route_cooldowns_test.go`
 
@@ -125,7 +113,7 @@ All in new `provimux_*_test.go` files, so no upstream test file changes. Fixture
 | expired | a state whose retry time is past: nothing returned |
 | agrees with the scheduler | for the fixtures above (credential enabled and authorized), a cooldown is returned exactly when `clientModelProjectionForAuth(...).Suspended` is true with a deadline. A disabled or unauthorized credential is left out of this comparison: its projection is open-ended while a timer can still exist (`cooldown_view.go:21-24`) |
 | pooled alias | an OpenAI-compatible alias with two upstream models, one cooling: nothing returned for the alias (pins the behaviour described in `01`, section 4) |
-| **changes nothing** | with that pooled alias: the sequence of `ResolveExecutionModel` results after 100 calls of `ProvimuxRouteCooldowns` is the sequence without them; the credential's `ModelStates` are deep-equal before and after |
+| **changes nothing** | with that pooled alias: after one `ProvimuxRouteCooldowns` call the manager's pool offsets are equal and the next `ResolveExecutionModel` result is the one without the call (one read is enough to move a rotating pool); the credential's `ModelStates` are deep-equal before and after |
 
 ### `internal/api/handlers/management/provimux_live_lists_test.go`
 
@@ -133,10 +121,10 @@ A fake `ProvimuxLiveListSource`, so the handler is tested without `sdk/cliproxy`
 
 | Test | Asserts |
 |---|---|
-| live | `HasList`: `source: "live"`, `reason: null`, `fetched_at`, `listed_models`, `refresh_due_at = fetched_at + refresh` |
-| catalog reasons | `option_off` when the config has the option off (whatever the source says); `login_disabled`; `failed`; `pending`; precedence in that order |
-| stale | a list plus a failure: `source: "live"` with `last_failure` and `next_retry_at` |
-| failure without a message | `Failure{At}` only: `http_status` and `message` are null (option A's shape) |
+| live | `HasList`: `source: "live"`, `fetched_at`, `listed_models` |
+| catalog | a disabled login, a failed one and one still fetching: `source: "catalog"` without `fetched_at`; `last_failure`, `disabled`, `fetching` carried; the option off gives `catalog` even with a held list |
+| stale | a list plus a failure: `source: "live"` with `last_failure` |
+| failure without a status | a `network` failure: `"category": "network", "http_status": null` |
 | rows | only credentials the source reports `Covered`; an API key of Claude is absent; a disabled login is present |
 | registered count | equals the registry's count for the credential |
 | no source | 503, not 404 |
@@ -149,14 +137,14 @@ Uses the patch's `resetLiveModelLists` helper (`live_model_lists_test.go:18-30`)
 | Test | Asserts |
 |---|---|
 | covered | Claude, Codex and Meta logins are; an API key and a Gemini login are not |
-| after `put` | `HasList`, `FetchedAt`, `ListedModels`; `NextRetryAt` zero |
+| after `put` | `HasList`, `FetchedAt`, `ListedModels`; no failure |
 | another account | a list stored under the same auth ID with another identity: `HasList` false |
-| after `fail` | `NextRetryAt = now + retry`; `Failure.At = now`; with option B the message and `HTTPStatus` 401 for `HTTP 401 from /v1/models`, 0 for `claude model list: invalid JSON` |
+| after `fail` | `Failure.At = now`; category and status for each error format, including a wrapped Meta key-exchange error (`credentials`, no status) and a `*url.Error` (`network`) |
 | success clears | `fail`, then `put`: `Failure` nil, and the layer's note for that ID is gone |
 | in flight | between `start` and `finish`: `Fetching` |
-| message bound | a 1,000-character, two-line error is stored as one line of at most 200 characters |
-| registered at init | `management`'s holder is non-nil in this test binary |
-| timing | `Timing()` returns `registry.ModelsRefreshInterval`, `liveModelListRetry`, `liveModelListScanInterval` |
+| replaced account, removed logins, newer failure | another account in the file does not see the failure; 1,000 removed logins leave no notes after one read; a note stops counting when a newer failure replaces its retry |
+| pruner without polling | 1,000 removed logins' notes are gone after one tick of the pruner, with no read and no new failure |
+| registered at init | the handler answers 200 in this test binary (503 without a source) |
 
 ### `internal/api/server_provimux_test.go`
 
@@ -177,5 +165,5 @@ One set of credentials and models; `GET /v1/models?include=accounts` and `GET /v
 1. Both paths answer as `openapi.yaml` says; `examples/*.json` are possible outputs.
 2. `git diff <base of the layer commits>..HEAD --stat` shows only new files, plus one added line in `server_management_v8.go` (and one in `live_model_lists.go` under option B).
 3. The guard passes; `go test ./...` has no new failure; `go build ./cmd/server` passes.
-4. On a running Provimux with usage statistics off: after one chat request, the route that answered has `last_served_at`; `POST /v8/management/models/refresh` followed by live-lists shows `fetching` and then a new `fetched_at`.
+4. On a running Provimux: `POST /v8/management/models/refresh` followed by live-lists shows `fetching` and then a new `fetched_at` or `last_failure.at`.
 5. A stock `cliproxyapi` still answers 404 on both paths.
