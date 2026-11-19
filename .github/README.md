@@ -268,20 +268,34 @@ brew services start provimux
 
 | System | Archive | Binary |
 |---|---|---|
-| Windows | `provimux_<version>_windows_<arch>.zip` | `provimux.exe` |
-| macOS | `provimux_<version>_darwin_<arch>.tar.gz` | `provimux` |
-| Linux | `provimux_<version>_linux_<arch>.tar.gz` | `provimux` |
-| Linux, portable | `provimux_<version>_linux_<arch>_no-plugin.tar.gz` | `provimux` |
+| macOS, Apple silicon | `provimux_<version>_darwin_aarch64.tar.gz` | `provimux` |
+| macOS, Intel | `provimux_<version>_darwin_amd64.tar.gz` | `provimux` |
+| Windows, x64 | `provimux_<version>_windows_amd64.zip` | `provimux.exe` |
+| Windows, Arm | `provimux_<version>_windows_aarch64.zip` | `provimux.exe` |
+| Linux, x64 | `provimux_<version>_linux_amd64.tar.gz` | `provimux` |
+| Linux, Arm | `provimux_<version>_linux_aarch64.tar.gz` | `provimux` |
+| Linux, x64, portable | `provimux_<version>_linux_amd64_no-plugin.tar.gz` | `provimux` |
+| Linux, Arm, portable | `provimux_<version>_linux_aarch64_no-plugin.tar.gz` | `provimux` |
+| FreeBSD, x64 | `provimux_<version>_freebsd_amd64.tar.gz` | `provimux` |
+| FreeBSD, Arm, no plugins | `provimux_<version>_freebsd_aarch64_no-plugin.tar.gz` | `provimux` |
 
-The `_no-plugin` Linux build runs on musl-based or older systems but does not support plugins.
+`<version>` is the Provimux version, for example `8.0.77-pmx.1`; `checksums.txt` in each release lists the SHA-256 of
+every archive. The default Linux builds need glibc 2.17 or newer; the Linux `_no-plugin` builds also run on musl-based
+or older systems such as OpenWrt. `_no-plugin` builds do not support plugins.
 
-**Docker:**
+**Docker** (linux/amd64 and linux/arm64):
 
 ```bash
-docker pull ghcr.io/ngvoicu/provimux
+docker run -d --name provimux -p 8317:8317 \
+  -v "$PWD/config.yaml:/CLIProxyAPI/config.yaml" \
+  -v "$PWD/auths:/root/.cli-proxy-api" \
+  ghcr.io/ngvoicu/provimux:latest
 ```
 
-The image is used like CLIProxyAPI's: mount your `config.yaml` and auth folder.
+The image uses CLIProxyAPI's paths: the config at `/CLIProxyAPI/config.yaml`, the auth folder at
+`/root/.cli-proxy-api`, logs in `/CLIProxyAPI/logs` and plugins in `/CLIProxyAPI/plugins`, so a CLIProxyAPI
+`docker-compose.yml` works with only the image name changed. Each release is also tagged with its version
+(`ghcr.io/ngvoicu/provimux:8.0.77-pmx.1`).
 
 **From source** (Go):
 
