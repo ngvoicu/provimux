@@ -33,7 +33,7 @@ It runs every 3 hours and can be started by hand (Actions → provimux-check →
 
 **Job `verdict`** (`check.sh verdict`) reads that output as data (`testevents.jq`, `testsum.jq`, `testcmp.jq`):
 
-- `go build ./...` must succeed on the candidate, and every package must build.
+- `go build ./...` must succeed on the candidate, and every package must build, on the first run and on the package rerun. A rerun build failure always fails the check, whatever failed upstream.
 - The exit status of each `go test` must match its results. Both trees must have a terminal result (pass, fail or skip) for every package that `go list ./...` lists.
 - The candidate's failures are those of the first run **and of the rerun**: a test the first run never reached (an earlier test stopped the package) that fails on the rerun is a failure. Every failure (a test, or a package that failed without a failing test) fails the check, unless one of two waivers holds, and nothing else waives it:
   - **baseline:** the *same named* test (package and test name) failed on the pristine tag. An unrelated failure upstream waives nothing, and a **package-level** failure (build, setup, `TestMain`, a panic outside a test) is never waived by the tag, even if the tag's package failed too;
