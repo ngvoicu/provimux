@@ -741,7 +741,7 @@ tap_release() { # [JQ]: the release JSON of v$TV (JQ edits it)
   { for f in $(expected_assets "$TV"); do
       if [[ "$f" == checksums.txt ]]; then jq -n --arg d "sha256:$(sha256_of "$tapd/checksums.txt")" '{id: 900001, name: "checksums.txt", state: "uploaded", digest: $d}'
       else jq -n --arg n "$f" --arg d "sha256:$(sha256_of "$tapd/assets/$f")" '{id: 900002, name: $n, state: "uploaded", digest: $d}'; fi
-    done; } | jq -s '{id: 77001, tag_name: "v'"$TV"'", draft: false, prerelease: false, immutable: true, assets: .}' | jq "${1:-.}" \
+    done; } | jq -s '{id: 77001, tag_name: "v'"$TV"'", draft: false, prerelease: false, immutable: true, published_at: "2026-11-19T00:00:00Z", assets: .}' | jq "${1:-.}" \
     >"$stub/api/repos_test_provimux_releases_tags_v$TV.json"
 }
 # The tap: a formula at 1.2.0-pmx.1 with two archive URLs.
@@ -817,6 +817,62 @@ echo '{"id": 55, "status": "completed", "conclusion": "failure", "run_attempt": 
 expect "artifact: the release run did not succeed: refused" refused "$(tapsh bash "$here/tap.sh" artifact "v$TV" "$pmx_sha" "$tmp/ta")"
 echo '{"id": 55, "status": "completed", "conclusion": "success", "run_attempt": 2}' >"$stub/api/repos_test_provimux_actions_runs_55.json"
 expect "artifact: a run for another commit: refused" refused "$(tapsh bash "$here/tap.sh" artifact "v$TV" "$other_sha" "$tmp/ta")"
+
+echo "# tap.sh: the same version with other bytes is repaired, never \"none\"; tap.sh check"
+# settap VERSION [SHA0]: the tap's formula at VERSION; the first sha256 SHA0 (default: the release's).
+settap() {
+  cp "$tmp/tapw/Formula/provimux.rb" "$tmp/tapw/Formula/old.rb" 2>/dev/null || true
+  sed -E "s/(provimux_|v)1\.[0-9]+\.0-pmx\.1/\11.2.0-pmx.1/g; s/version \"[^\"]*\"/version \"1.2.0-pmx.1\"/" "$tmp/tapw/Formula/old.rb" >"$tmp/tapw/Formula/provimux.rb"
+  rm -f "$tmp/tapw/Formula/old.rb"
+  if [[ "$1" != 1.2.0-pmx.1 ]]; then
+    bash "$here/update-formula.sh" "$1" "$tapd/checksums.txt" "$tmp/tapw/Formula/provimux.rb" >/dev/null 2>&1 || {
+      sed -i.bak "s/version \"1.2.0-pmx.1\"/version \"$1\"/" "$tmp/tapw/Formula/provimux.rb"; rm -f "$tmp/tapw/Formula/provimux.rb.bak"; }
+  fi
+  if [[ -n "${2:-}" ]]; then
+    awk -v z="$2" '/sha256/ && !d {sub(/"[0-9a-f]*"/, "\"" z "\""); d = 1} {print}' "$tmp/tapw/Formula/provimux.rb" >"$tmp/x.rb" && mv "$tmp/x.rb" "$tmp/tapw/Formula/provimux.rb"
+  fi
+  (cd "$tmp/tapw" && git add -A && git commit -q -m "tap $1" --allow-empty && git push -q -f "$tapr" HEAD:main)
+}
+wrong="$(printf '%064d' 5)"
+settap "$TV" "$wrong"
+rm -rf "$tmp/tp2"
+expect "tap at $TV with a wrong sha256, formula from the release (owner's path): ok" ok "$(tapsh bash "$here/tap.sh" prepare "v$TV" "$tmp/tp2")"
+contains "  ... action push (repair), not none" "$tmp/tap.out" "action=push"
+contains "  ... says it repairs" "$tmp/tap.err" "repairing it"
+if git --git-dir="$tmp/tp2/tap/.git" show HEAD:Formula/provimux.rb | grep -qF "$wrong"; then bad "  ... the commit has the release's sha256"; else ok "  ... the commit has the release's sha256"; fi
+git --git-dir="$tmp/tp2/tap/.git" show HEAD:Formula/provimux.rb >"$tmp/verified.rb"
+expect "the same with the verified formula given (the publish job's path): ok" ok "$(tapsh bash "$here/tap.sh" prepare "v$TV" "$tmp/tp2" "$tmp/verified.rb")"
+contains "  ... action push (repair), not none" "$tmp/tap.out" "action=push"
+expect "tap.sh check: the tap at $TV with a wrong sha256: wrong" refused "$(tapsh bash "$here/tap.sh" check "v$TV" "$tmp/tc")"
+contains "  ... says so" "$tmp/tap.out" "wrong: the tap is at $TV but its urls or sha256 are not the release's"
+settap "$TV"
+expect "tap at $TV with the release's formula: prepare does nothing" ok "$(tapsh bash "$here/tap.sh" prepare "v$TV" "$tmp/tp2")"
+contains "  ... action none" "$tmp/tap.out" "action=none"
+expect "tap.sh check: the tap serves $TV: ok" ok "$(tapsh bash "$here/tap.sh" check "v$TV" "$tmp/tc")"
+settap 1.2.0-pmx.1
+expect "tap.sh check: the tap at an older version: wrong" refused "$(tapsh bash "$here/tap.sh" check "v$TV" "$tmp/tc")"
+
+echo "# report.sh: an issue that says the tap was not updated stays open until the tap serves the release"
+git -C "$pmx" tag v1.3.0-pmx.1 "$pmx_sha" && git -C "$pmx" push -q "$remote" refs/tags/v1.3.0-pmx.1
+export PMX_TAP_URL="$tapr"
+echo '{"status": "published", "upstream": {"tag": "v1.3.0"}, "reasons": []}' >"$tmp/r13.json"
+echo '[{"number": 21, "title": "sync: v1.3.0 — released, Homebrew tap not updated, owner needed"}]' >"$stub/api/repos_test_provimux_issues_state_open_per_page_100.json"
+settap "$TV" "$wrong"
+expect "this base published, its tap wrong: reported published" published "$(report "$tmp/r13.json" success)"
+contains "  ... the tap issue is kept open" "$tmp/report.out" "keep #21 (v1.3.0): wrong: the tap is at $TV"
+lacks "  ... and not closed" "$tmp/report.out" "close #21"
+settap "$TV"
+report "$tmp/r13.json" success >/dev/null
+contains "this base published, its tap now right: closed" "$tmp/report.out" "close #21 (v1.3.0)"
+# The same issue seen by the sweep from a newer base.
+jq -n '{status: "fail", step: "rebase", upstream: {tag: "v1.4.0"}, reasons: ["x"]}' >"$tmp/r14.json"
+settap "$TV" "$wrong"
+report "$tmp/r14.json" success >/dev/null
+contains "older base published, its tap wrong: the sweep keeps the issue open" "$tmp/report.out" "sweep: keep #21 (v1.3.0)"
+settap "$TV"
+report "$tmp/r14.json" success >/dev/null
+contains "older base published, its tap now right: the sweep closes it" "$tmp/report.out" "sweep: close #21 (v1.3.0)"
+unset PMX_TAP_URL
 
 # --- provimux-release.yml: provenance (the owner's commit status) and release-latest ----------------
 rwf="$here/../workflows/provimux-release.yml"
