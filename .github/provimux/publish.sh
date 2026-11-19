@@ -29,7 +29,9 @@
 #    --accept-* flags (commits: the old main's commit, 7 or more hex digits). A release
 #    that adds or renames workflow files is refused: SYNC.md, "New upstream workflow files".
 # 4. Prints what it will push and asks (--yes skips the question), rechecks step 2
-#    immediately before pushing, then makes one atomic push: main with
+#    immediately before pushing, records "<v<base>-pmx.1> <candidate>" in the repository
+#    variable PMX_HAND_RELEASES (the release workflow releases only a tag that
+#    provimux-publish or the owner recorded), then makes one atomic push: main with
 #    --force-with-lease=refs/heads/main:<recorded old main> (a literal SHA), tag v<base> at
 #    upstream's commit, tag v<base>-pmx.1 at the candidate.
 # 5. Waits until the provimux-release run for v<base>-pmx.1 at the candidate has finished
@@ -59,7 +61,7 @@ here="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=common.sh
 . "$here/common.sh"
 
-usage() { sed -n '2,57p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,58p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 die() { echo "publish: $*" >&2; exit 1; }
 log() { echo "==> $*" >&2; }
 
@@ -453,6 +455,17 @@ fi
 log "rechecking upstream's $tag and the remote before pushing"
 recheck
 push_refs
+# provimux-release.yml releases a tag only when provimux-publish recorded pushing it, or
+# when the owner recorded it here (SYNC.md, "Release provenance"): one "<tag> <commit>"
+# line in the repository variable PMX_HAND_RELEASES, set with the owner's gh.
+record_hand_release() {
+  local cur
+  cur="$(gh variable get PMX_HAND_RELEASES -R "$PMX_REPO" 2>/dev/null || true)"
+  printf '%s\n%s %s\n' "$cur" "$pmx_tag" "$candidate" | sed '/^$/d' | sort -u | gh variable set PMX_HAND_RELEASES -R "$PMX_REPO" ||
+    die "cannot record $pmx_tag in the repository variable PMX_HAND_RELEASES; nothing pushed"
+  log "recorded $pmx_tag $candidate in PMX_HAND_RELEASES"
+}
+record_hand_release
 g push "${pushargs[@]}" "$push_url" "${refs[@]}" || die "the push failed; nothing was changed on $remote (atomic)"
 echo "Pushed."
 

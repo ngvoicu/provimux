@@ -239,38 +239,72 @@ sync_issues() {
     sort -n
 }
 
-# releases_status BASE JSON REASONS: whether every v<BASE>-pmx.* tag of PMX_REPO is
-# released. Prints none | published | in-progress | incomplete | error; writes the
-# per-tag states to the file JSON ([{tag, sha, release, run}]) and appends reasons to
-# the file REASONS. Published = for every such tag, the GitHub release is complete
-# (release_state) and the newest provimux-release run for the tag AT THE TAG'S COMMIT
-# succeeded.
+# releases_status BASE JSON REASONS: whether v<BASE> is released. Prints none | published
+# | in-progress | incomplete | error; writes the per-tag states to the file JSON ([{tag,
+# sha, release, run, newest}]) and appends reasons to the file REASONS. The NEWEST
+# v<BASE>-pmx.<n> tag decides, because a later -pmx.<n> replaces an earlier one (the tap,
+# the image and the "latest" release follow the newest): published = its GitHub release is
+# complete (release_state) and the newest provimux-release run for that tag AT THE TAG'S
+# COMMIT succeeded; in-progress while that run runs; incomplete otherwise. An earlier tag
+# that failed (a failed -pmx.1 replaced by a good -pmx.2) is listed and named in REASONS
+# as replaced, and does not block.
 releases_status() {
-  local base=$1 json=$2 rfile=$3 refs tags t sha s run st=published
+  local base=$1 json=$2 rfile=$3 refs tags t sha s run newest st
   if ! refs="$(git ls-remote --tags "$PMX_REPO_URL" "refs/tags/v$base-pmx.*")"; then
     echo '[]' >"$json"; echo "cannot list the tags of $PMX_REPO_URL" >>"$rfile"; echo error; return 0
   fi
-  tags="$(awk '{print $2}' <<<"$refs" | sed 's|^refs/tags/||; s/\^{}$//' | sort -u -V)"
+  tags="$(awk '{print $2}' <<<"$refs" | sed 's|^refs/tags/||; s/\^{}$//' | grep -E "^v$base-pmx\.[0-9]+$" | sort -u -V || true)"
   if [[ -z "$tags" ]]; then echo '[]' >"$json"; echo none; return 0; fi
+  newest="$(tail -n 1 <<<"$tags")"
   : >"$json.tmp"
   for t in $tags; do
     sha="$(ls_remote_tag "$refs" "$t")"
     s="$(release_state "$t")"
     run="$(release_run_state "$t" "$sha")"
-    jq -nc --arg tag "$t" --arg sha "$sha" --arg release "$s" --arg run "$run" \
-      '{tag: $tag, sha: $sha, release: $release, run: $run}' >>"$json.tmp"
-    if [[ "$s" != complete || "$run" != success ]]; then
-      if [[ "$run" == running ]]; then
-        [[ "$st" == incomplete ]] || st=in-progress
+    jq -nc --arg tag "$t" --arg sha "$sha" --arg release "$s" --arg run "$run" --argjson newest "$([[ "$t" == "$newest" ]] && echo true || echo false)" \
+      '{tag: $tag, sha: $sha, release: $release, run: $run, newest: $newest}' >>"$json.tmp"
+    if [[ "$t" == "$newest" ]]; then
+      if [[ "$s" == complete && "$run" == success ]]; then st=published
+      elif [[ "$run" == running ]]; then st=in-progress
       else
         st=incomplete
         echo "tag $t (${sha:0:12}) exists but its release is $s and its release run for that commit is $run" >>"$rfile"
       fi
+    elif [[ "$s" != complete || "$run" != success ]]; then
+      echo "tag $t (${sha:0:12}) did not complete (release $s, release run $run); $newest replaces it" >>"$rfile"
     fi
   done
   jq -s '.' "$json.tmp" >"$json"
   rm -f "$json.tmp"
   echo "$st"
+}
+
+# sha256_of FILE: the file's SHA-256 (hex).
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi
+}
+
+# run_artifact RUN ID NAME DIGEST DIR: downloads artifact ID and unpacks it into DIR, only
+# when it is an unexpired artifact of RUN named NAME whose digest is DIGEST (hex, as
+# upload-artifact's output artifact-digest gives it) and the zip downloaded has exactly
+# that digest. The id and digest come from the producing job's own upload step (a job
+# output), never from a lookup by name: an artifact of the same name that another job of
+# the run uploads (or replaces, which gives a new id) is never read. Fails (status 1, the
+# reason on stderr) otherwise. Needs gh with actions: read, and unzip.
+run_artifact() {
+  local run=$1 id=$2 name=$3 digest=$4 dir=$5 meta
+  [[ "$run" =~ ^[0-9]+$ && "$id" =~ ^[0-9]+$ && "$digest" =~ ^[0-9a-f]{64}$ ]] ||
+    { echo "no artifact id and digest for $name (id '$id', digest '$digest')" >&2; return 1; }
+  meta="$(gh api "repos/$PMX_REPO/actions/artifacts/$id")" || { echo "cannot read artifact $id ($name)" >&2; return 1; }
+  jq -e --arg run "$run" --arg name "$name" --arg d "sha256:$digest" \
+    '(.workflow_run.id | tostring) == $run and .name == $name and (.expired | not) and .digest == $d' <<<"$meta" >/dev/null ||
+    { echo "artifact $id is not $name of run $run with digest $digest (or it expired)" >&2; return 1; }
+  mkdir -p "$dir"
+  gh api "repos/$PMX_REPO/actions/artifacts/$id/zip" >"$dir/.artifact.zip" || { echo "cannot download artifact $id ($name)" >&2; return 1; }
+  [[ "$(sha256_of "$dir/.artifact.zip")" == "$digest" ]] ||
+    { echo "artifact $id ($name) downloaded is not digest $digest" >&2; rm -f "$dir/.artifact.zip"; return 1; }
+  unzip -q -o "$dir/.artifact.zip" -d "$dir" || { echo "artifact $id ($name) is not a zip" >&2; return 1; }
+  rm -f "$dir/.artifact.zip"
 }
 
 # ver_ge A B: version A >= version B (vX.Y.Z).

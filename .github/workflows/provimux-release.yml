@@ -859,12 +859,72 @@ jobs:
           path: image-index/
           if-no-files-found: error
 
+  # Release provenance (SYNC.md, "Release provenance"). Only an admin can create, move or
+  # delete a v* tag (tag ruleset), and nothing is released for a tag unless it is exactly
+  # what a provimux-publish run pushed (its record pmx-pushed, written after its push
+  # step succeeded) or what the owner recorded in the repository variable
+  # PMX_HAND_RELEASES ("<tag> <commit>" lines; only the owner can set it). Every job that
+  # publishes (publish-release and all after it, tap-publish) needs this one.
+  provenance:
+    needs: meta
+    if: ${{ needs.meta.outputs.publish == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
+      SHA: ${{ github.sha }}
+      HAND: ${{ vars.PMX_HAND_RELEASES }}
+    steps:
+      - name: The tag is what provimux-publish pushed, or what the owner recorded
+        run: |
+          set -euo pipefail
+          fail() { echo "::error title=provimux-release refused::$*"; exit 1; }
+          [[ "$GITHUB_REF" == "refs/tags/$TAG" && "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-pmx\.[0-9]+$ && "$SHA" =~ ^[0-9a-f]{40}$ ]] ||
+            fail "$GITHUB_REF at $SHA is not a v<base>-pmx.<n> tag push"
+          # The tag on the remote is still this commit.
+          now="$(git ls-remote "https://github.com/$GH_REPO.git" "refs/tags/$TAG" "refs/tags/$TAG^{}" |
+            awk -v t="refs/tags/$TAG" '$2 == t "^{}" {p = $1} $2 == t {l = $1} END {print (p != "" ? p : l)}')" || now=''
+          [[ "$now" == "$SHA" ]] || fail "refs/tags/$TAG is now '$now', not this run's $SHA"
+          # 1. The owner's record.
+          while read -r t c _; do
+            if [[ "$t" == "$TAG" && "$c" == "$SHA" ]]; then echo "The owner recorded $TAG at $SHA (PMX_HAND_RELEASES)."; exit 0; fi
+          done <<<"${HAND:-}"
+          # 2. A provimux-publish run of main that pushed exactly this tag and commit. Its
+          #    record is uploaded right after its push, so wait up to 10 minutes for it.
+          tmp="$(mktemp -d)"
+          for _ in $(seq 1 20); do
+            runs="$(gh api "repos/$GH_REPO/actions/workflows/provimux-publish.yml/runs?event=workflow_run&per_page=20" \
+              --jq '.workflow_runs[] | select(.head_branch == "main" and .path == ".github/workflows/provimux-publish.yml" and .repository.full_name == env.GH_REPO) | .id')" ||
+              fail "cannot list the provimux-publish runs"
+            for run in $runs; do
+              arts="$(gh api "repos/$GH_REPO/actions/runs/$run/artifacts?name=pmx-pushed" \
+                --jq ".artifacts[] | select((.expired | not) and .workflow_run.id == $run) | .id")" || continue
+              for a in $arts; do
+                rm -rf "$tmp/a" && mkdir -p "$tmp/a"
+                if ! gh api "repos/$GH_REPO/actions/artifacts/$a/zip" >"$tmp/a/z.zip" || ! unzip -q -o "$tmp/a/z.zip" -d "$tmp/a"; then continue; fi
+                [[ "$(cat "$tmp/a/pushed.txt" 2>/dev/null)" == "$TAG $SHA" ]] || continue
+                pushed="$(gh api "repos/$GH_REPO/actions/runs/$run/jobs?filter=all&per_page=100" \
+                  --jq '[.jobs[] | select(.name == "publish") | .steps[] | select(.name == "Push (the only step with the token)" and .conclusion == "success")] | length')" || continue
+                [[ "$pushed" -ge 1 ]] || continue
+                echo "provimux-publish run $run pushed $TAG at $SHA (record: artifact $a)." | tee -a "$GITHUB_STEP_SUMMARY"
+                exit 0
+              done
+            done
+            sleep 30
+          done
+          fail "No provimux-publish run recorded pushing $TAG at $SHA, and PMX_HAND_RELEASES does not name it: nothing is released. A tag pushed by hand is released only after the owner records it (SYNC.md, \"Release provenance\"); then rerun this run."
+
   # Publish the GitHub release. Assets of a published release are never replaced: a
   # rerun checks that they match this run's files and stops otherwise. A draft left
   # by a failed run is resumed by uploading only the missing assets; every asset's
   # digest is checked before the release is published.
   publish-release:
-    needs: [meta, prepare]
+    needs: [meta, prepare, provenance]
     if: ${{ needs.meta.outputs.publish == 'true' }}
     runs-on: ubuntu-latest
     permissions:
@@ -917,7 +977,7 @@ jobs:
           r="$(release)"
           case "$(jq length <<<"$r")" in
             0)
-              gh release create "$TAG" --draft --prerelease=false --verify-tag --title "$TAG" --notes-file release-notes.md "${!want[@]}"
+              gh release create "$TAG" --draft --prerelease=false --latest=false --verify-tag --title "$TAG" --notes-file release-notes.md "${!want[@]}"
               r="$(release)"
               ;;
             1) ;;
@@ -939,7 +999,8 @@ jobs:
               missing="$(check "$r")" || fail "Draft $TAG has assets that are not this run's."
               [[ -z "$missing" ]] || fail "Draft $TAG still lacks: $missing"
             fi
-            gh release edit "$TAG" --draft=false
+            # Not "latest" here: the job release-latest moves it, serialized, only forward.
+            gh release edit "$TAG" --draft=false --latest=false
           fi
           # The public release, as anyone sees it.
           pub="$(gh api "repos/$GH_REPO/releases/tags/$TAG" --jq '{id, draft, prerelease, assets: [.assets[] | {id, name, state, digest}]}' | jq -s .)"
@@ -947,7 +1008,11 @@ jobs:
           [[ "$(jq '.[0].prerelease' <<<"$pub")" == false ]] || fail "Release $TAG is a prerelease."
           missing="$(check "$pub")" || fail "Published release $TAG does not match this run."
           [[ -z "$missing" ]] || fail "Published release $TAG lacks: $missing"
-          echo "Release $TAG is public with ${#want[@]} assets, all matching." | tee -a "$GITHUB_STEP_SUMMARY"
+          # Immutable releases are on for the repository: a published release's assets and
+          # tag can no longer change. Nothing is promoted from a release that is not.
+          [[ "$(gh api "repos/$GH_REPO/releases/tags/$TAG" --jq '.immutable')" == true ]] ||
+            fail "Release $TAG is published but not immutable (Settings → General → Releases → immutable releases); nothing is promoted."
+          echo "Release $TAG is public and immutable with ${#want[@]} assets, all matching." | tee -a "$GITHUB_STEP_SUMMARY"
 
   # Formula/provimux.rb for ngvoicu/homebrew-tap, written without write access from
   # the assets the formula installs, downloaded from the public release (on a dry
@@ -1031,8 +1096,8 @@ jobs:
   # ngvoicu/homebrew-tap) fails the job, and so does a different formula for the same
   # version. A dry run makes every check against the tap and commits nothing.
   tap-publish:
-    needs: [meta, formula]
-    if: ${{ !cancelled() && needs.formula.result == 'success' }}
+    needs: [meta, formula, provenance]
+    if: ${{ !cancelled() && needs.formula.result == 'success' && (needs.meta.outputs.publish != 'true' || needs.provenance.result == 'success') }}
     runs-on: ubuntu-latest
     # PROVIMUX_TOKEN is a secret of the environment provimux-token (branch main, tags
     # v*-pmx.*), requested only for a real tag push; a branch dry run (workflow_dispatch)
@@ -1051,10 +1116,10 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          state="$(gh api "repos/$GH_REPO/releases/tags/$TAG" --jq '"draft=\(.draft) prerelease=\(.prerelease)"')" ||
+          state="$(gh api "repos/$GH_REPO/releases/tags/$TAG" --jq '"draft=\(.draft) prerelease=\(.prerelease) immutable=\(.immutable)"')" ||
             { echo "::error::$TAG is not a published release."; exit 1; }
-          [[ "$state" == "draft=false prerelease=false" ]] ||
-            { echo "::error::Release $TAG is $state; nothing is promoted from a draft or a prerelease."; exit 1; }
+          [[ "$state" == "draft=false prerelease=false immutable=true" ]] ||
+            { echo "::error::Release $TAG is $state; nothing is promoted from a draft, a prerelease or a release that is not immutable."; exit 1; }
           echo "Release $TAG: $state"
       - uses: actions/download-artifact@v4
         with:
@@ -1158,6 +1223,60 @@ jobs:
           auth="$(printf 'x-access-token:%s' "$TAP_TOKEN" | base64 -w0)"
           git -C tap -c http.extraheader="AUTHORIZATION: basic $auth" push https://github.com/ngvoicu/homebrew-tap.git HEAD:main
           echo "ngvoicu/homebrew-tap: provimux $current -> $PROVIMUX_VERSION" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  # Mark the newest Provimux release "latest" on GitHub. publish-release never does (it
+  # publishes with --latest=false; GitHub would otherwise make each newly published
+  # release latest, so an older base's -pmx.<n> published later would move it back).
+  # One job at a time across all runs (queue: max keeps every pending one, as for
+  # image-latest); it stops when the current latest cannot be read, never moves latest
+  # to an older version, and reads it back after the change.
+  release-latest:
+    needs: [meta, publish-release]
+    if: ${{ needs.meta.outputs.publish == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: provimux-release-latest
+      cancel-in-progress: false
+      queue: max
+    env:
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - *release-public
+      - name: Mark the newest release latest (only forward)
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$*"; exit 1; }
+          re='^v[0-9]+\.[0-9]+\.[0-9]+-pmx\.[0-9]+$'
+          rels="$(gh api --paginate "repos/$GH_REPO/releases?per_page=100" \
+            --jq '.[] | select((.draft | not) and (.prerelease | not)) | "\(.tag_name) \(.id) \(.immutable)"')" ||
+            fail "Cannot list the releases; latest left as it is."
+          newest="$(awk '{print $1}' <<<"$rels" | grep -E "$re" | sort -V | tail -n 1 || true)"
+          [[ -n "$newest" ]] || fail "No published Provimux release; latest left as it is."
+          read -r _ id imm <<<"$(awk -v t="$newest" '$1 == t' <<<"$rels")"
+          [[ "$imm" == true ]] || fail "The newest release $newest is not immutable; latest left as it is."
+          err="$(mktemp)"
+          if cur="$(gh api "repos/$GH_REPO/releases/latest" --jq .tag_name 2>"$err")"; then
+            :
+          elif grep -q 'HTTP 404' "$err"; then
+            cur=''
+          else
+            fail "Cannot read the current latest release ($(head -n 1 "$err")); latest left as it is."
+          fi
+          if [[ "$cur" == "$newest" ]]; then
+            echo "Latest is already $newest."
+            exit 0
+          fi
+          if [[ "$cur" =~ $re && "$(printf '%s\n%s\n' "$cur" "$newest" | sort -V | tail -n 1)" == "$cur" ]]; then
+            echo "::notice::Latest is $cur, not older than $newest; left as it is."
+            exit 0
+          fi
+          gh api -X PATCH "repos/$GH_REPO/releases/$id" -f make_latest=true >/dev/null
+          after="$(gh api "repos/$GH_REPO/releases/latest" --jq .tag_name)" || fail "Marked $newest latest, but cannot read latest back."
+          [[ "$after" == "$newest" ]] || fail "Marked $newest latest, but latest reads back as $after."
+          echo "Latest: ${cur:-none} -> $newest" | tee -a "$GITHUB_STEP_SUMMARY"
 
   # Push the images checked by the image job, byte for byte, by digest; then the
   # multi-arch index prepared by the prepare job; then the version tag (never moved
