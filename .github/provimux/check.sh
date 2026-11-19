@@ -3,35 +3,49 @@
 # It publishes nothing and needs no token beyond read access: the owner publishes with
 # publish.sh after reading the result.
 #
-#   check.sh select   which upstream release, and whether there is anything to do
-#                     (calls the GitHub API with gh, read-only; runs no repository code)
-#   check.sh run      rebase, range-diff, workflow paths, guard, build, go test on both
-#                     trees (runs upstream's and the candidate's code; needs no token)
-#   check.sh          both
+#   check.sh select        which upstream release, and whether there is anything to do
+#                          (calls the GitHub API with gh, read-only; runs no repository code)
+#   check.sh prepare       rebase, bundle, range-diff, workflow paths, guard (git only; runs
+#                          no repository code)
+#   check.sh tree T        T = candidate | tag: export that tree (git only), to $PMX_TREES/T
+#   check.sh test T        go build (candidate), go list and go test -json ./... on tree T,
+#                          then the packages with a failing test again, whole. RUNS THE
+#                          TREE'S CODE. Writes only raw output to $PMX_TEST_OUT/T and
+#                          decides nothing.
+#   check.sh verdict       reads the raw output of both trees as data (testsum.jq,
+#                          testcmp.jq) and writes the status. Runs no repository code.
+#   check.sh               all of them, in order, in one process (local use only: the
+#                          workflow runs each tree's tests in its own job and the verdict
+#                          in another, so the tests cannot write the verdict).
 #
 # select: the tag is $PMX_TAG, or upstream's newest stable release (published, not a
 # draft, not a prerelease); an explicit tag must be one too. The base of main is the
-# newest vX.Y.Z tag reachable from main, which must be upstream's tag at the same commit
-# (no fallback to an older one). Then:
-#   - v<base>-pmx.* exists here: "published" when every such release is complete and
-#     its provimux-release run succeeded,
-#     "in-progress" while its release run runs, "incomplete" otherwise;
+# newest vX.Y.Z tag of upstream (its refs, not local tags) whose commit is an ancestor
+# of main; a newer reachable tag that upstream withdrew or moved is an error (no
+# fallback; upstream_base in common.sh). Then:
+#   - v<base>-pmx.* exists here: "published" when every such release is complete and the
+#     provimux-release run for its tag at the tag's commit succeeded, "in-progress" while
+#     such a run runs, "incomplete" otherwise (releases_status in common.sh);
 #   - main is already on the tag (and no -pmx tag): "unreleased";
 #   - the tag does not descend from main's base: "fail";
-#   - otherwise: "check", and run goes on.
-# run: rebase main onto the tag's commit (committer date = author date, so the same
+#   - otherwise: "check", and prepare goes on.
+# prepare: rebase main onto the tag's commit (committer date = author date, so the same
 # inputs give the same candidate), bundle <tag commit>..candidate, git range-diff of
 # <old base>..<old main> against <tag>..<candidate> (dropped and changed patches need the
 # owner's explicit consent in publish.sh), the paths under .github/workflows/ new in
-# the tag (same), guard.sh with the expected base, go build ./..., and go test ./... on
-# the candidate and on the pristine tag (testsum.jq, testcmp.jq).
+# the tag (publish.sh refuses them), guard.sh with the expected base. Status "test".
+# verdict: go build ./... must pass on the candidate; go test ./... is compared with the
+# pristine tag by testcmp.jq (a failure counts unless the same test failed on the tag
+# or the package rerun has an explicit pass for it).
 #
 # The status ends in $PMX_CHECK_OUT/result.json with candidate.bundle and logs/:
 #   pass | fail | error | published | in-progress | incomplete | unreleased
 # Exit status: 0 unless the script itself breaks (the status is the result).
 #
 # Env: PMX_TAG (optional), PMX_MAIN_REF (default HEAD: the main to rebase),
-# PMX_CHECK_OUT (default: a new temp dir), PMX_RUN_URL (recorded in result.json),
+# PMX_CHECK_OUT (default: a new temp dir), PMX_TEST_OUT (default $PMX_CHECK_OUT/test),
+# PMX_TREES (default $PMX_CHECK_OUT/trees), PMX_RUN_URL (recorded in result.json),
+# PMX_TEST_JOB (the test jobs' result, for the verdict's messages),
 # PMX_UPSTREAM_REPO / PMX_UPSTREAM_URL / PMX_REPO / PMX_REPO_URL (common.sh).
 # Runs with bash 3.2 (macOS); needs git, go, jq, gh. Run from the repository; the
 # rebase happens in a temporary worktree, so the checkout and its branch do not move.
@@ -45,6 +59,8 @@ here="$(cd "$(dirname "$0")" && pwd)"
 mode="${1:-all}"
 out="${PMX_CHECK_OUT:-$(mktemp -d "${TMPDIR:-/tmp}/provimux-check.XXXXXX")}"
 mkdir -p "$out/logs"
+test_out="${PMX_TEST_OUT:-$out/test}"
+trees="${PMX_TREES:-$out/trees}"
 state="$out/state.env"
 log() { echo "==> $*" >&2; }
 
@@ -54,7 +70,7 @@ candidate='' commits='' build_ok='' guard_ok='' tests_ok=''
 reasons="$out/reasons.txt"
 save_state() {
   {
-    for v in status step tag base upstream_commit old_main old_base_tag old_base_commit; do
+    for v in status step tag base upstream_commit old_main old_base_tag old_base_commit candidate commits guard_ok; do
       printf '%s=%q\n' "$v" "${!v}"
     done
   } >"$state"
@@ -68,7 +84,7 @@ write_result() {
   if [[ $# -eq 2 ]]; then
     s=$1 rfile="$out/reasons.provisional.txt"
     printf '%s\n' "$2" >"$rfile"
-  elif [[ -z "$s" || "$s" == "running" || "$s" == "check" ]]; then
+  elif [[ -z "$s" || "$s" == "running" || "$s" == "check" || "$s" == "test" ]]; then
     s=error
     reason "check.sh stopped unexpectedly during step '$step'"
   fi
@@ -125,31 +141,24 @@ cleanup() {
     git worktree remove --force "$p" >/dev/null 2>&1 || true
     rm -rf "${p:?}"
   done
-  git for-each-ref --format='%(refname)' refs/pmx-check/ | while read -r r; do git update-ref -d "$r"; done
+  git for-each-ref --format='%(refname)' refs/pmx-check/ 2>/dev/null | while read -r r; do git update-ref -d "$r"; done
   git worktree prune >/dev/null 2>&1 || true
 }
 
 # --- select ---------------------------------------------------------------------------
 do_select() {
-  local up_tags t c existing states s run_state
+  local up_tags c s
   : >"$reasons"
   status=running
   step=select
   old_main="$(git rev-parse "${PMX_MAIN_REF:-HEAD}^{commit}")"
   up_tags="$(git ls-remote --tags "$PMX_UPSTREAM_URL")" || { status=error; reason "cannot list the tags of $PMX_UPSTREAM_URL"; return; }
 
-  # The base of main: the newest vX.Y.Z reachable from it, which must be upstream's tag.
-  old_base_tag="$(git tag --merged "$old_main" --list 'v*' | grep -E "$PMX_STABLE_RE" | sort -V | tail -n 1 || true)"
-  if [[ -z "$old_base_tag" ]]; then
-    status=error; reason "no vX.Y.Z tag is reachable from main ${old_main:0:8}; fetch the tags"; return
+  # The base of main: upstream's newest vX.Y.Z whose commit is an ancestor of main.
+  if ! c="$(upstream_base "$old_main" "$up_tags" 2>"$out/base.err")"; then
+    status=error; reason "main's base: $(cat "$out/base.err")"; return
   fi
-  old_base_commit="$(git rev-parse "$old_base_tag^{commit}")"
-  c="$(ls_remote_tag "$up_tags" "$old_base_tag")"
-  if [[ "$c" != "$old_base_commit" ]]; then
-    status=error
-    reason "main's base $old_base_tag is ${old_base_commit:0:8} here but ${c:-absent} in $PMX_UPSTREAM_REPO"
-    return
-  fi
+  old_base_tag="${c%% *}" old_base_commit="${c#* }"
 
   # The release.
   tag="${PMX_TAG:-}"
@@ -176,29 +185,12 @@ do_select() {
   log "upstream $tag = ${upstream_commit:0:8}; main ${old_main:0:8} on $old_base_tag"
 
   # Already released here?
-  existing="$(git ls-remote --tags "$PMX_REPO_URL" "refs/tags/v$base-pmx.*" | awk '{print $2}' |
-    sed 's|^refs/tags/||; s/\^{}$//' | sort -u -V)"
-  if [[ -n "$existing" ]]; then
-    states=''
-    status=published
-    for t in $existing; do
-      s="$(release_state "$t")"
-      run_state="$(release_run_state "$t")"
-      states="$states{\"tag\":\"$t\",\"release\":\"$s\",\"run\":\"$run_state\"}"
-      # Published = the release has every asset and its whole release run succeeded.
-      if [[ "$s" != complete || "$run_state" != success ]]; then
-        if [[ "$run_state" == running ]]; then
-          [[ "$status" == incomplete ]] || status=in-progress
-        else
-          status=incomplete
-          reason "tag $t exists but its release is $s and its release run is $run_state"
-        fi
-      fi
-    done
-    echo "$states" | jq -s '.' >"$out/release.json"
-    log "v$base already has Provimux tags ($(echo $existing)): $status"
-    return
-  fi
+  s="$(releases_status "$base" "$out/release.json" "$reasons")"
+  case "$s" in
+    none) ;;
+    error) status=error; return ;;
+    *) status=$s; log "v$base already has Provimux tags: $status"; return ;;
+  esac
   if [[ "$upstream_commit" == "$old_base_commit" ]]; then
     status=unreleased
     reason "main ${old_main:0:8} is already on $tag but no v$base-pmx.* tag exists"
@@ -214,59 +206,12 @@ do_select() {
   status=check
 }
 
-# --- run ------------------------------------------------------------------------------
-# gotest DIR OUTPREFIX ARGS...: go test -json, keeping the exit status in OUTPREFIX.exit.
-# go test runs in its own process group under a wall-clock limit ($PMX_TEST_LIMIT seconds,
-# default 2400): a hang (a stopped or starved test binary is not caught by -timeout) kills
-# the group, the exit status is then 124 and the packages without a result fail the check.
-# $PMX_TEST_P sets -p (default: go's own, the number of CPUs).
-gotest() {
-  local dir=$1 prefix=$2 e pid waited=0 limit="${PMX_TEST_LIMIT:-2400}"
-  shift 2
-  set +e
-  set -m
-  (cd "$dir" && exec go test -json -count=1 ${PMX_TEST_P:+-p "$PMX_TEST_P"} -timeout 15m "$@" >"$prefix.json" 2>"$prefix.stderr") &
-  pid=$!
-  set +m
-  while kill -0 "$pid" 2>/dev/null; do
-    if [[ $waited -ge $limit ]]; then
-      reason "go test ($(basename "$prefix")) ran longer than ${limit}s and was killed"
-      kill -TERM -- "-$pid" 2>/dev/null
-      sleep 10
-      kill -KILL -- "-$pid" 2>/dev/null
-      break
-    fi
-    sleep 5
-    waited=$((waited + 5))
-  done
-  wait "$pid"
-  e=$?
-  [[ $waited -ge $limit ]] && e=124
-  set -e
-  echo "$e" >"$prefix.exit"
-  jq -R -c -f "$here/testevents.jq" "$prefix.json" | jq -s -f "$here/testsum.jq" >"$prefix.sum.json"
-}
-
-# sample_resources FILE: memory, load and the largest processes every 60s (Linux), until killed.
-sample_resources() {
-  command -v free >/dev/null 2>&1 || return 0
-  while :; do
-    { date -u +%FT%TZ; uptime; free -m; ps -eo pid,etime,stat,rss,args --sort=-rss | head -n 12 | cut -c1-200; echo; } >>"$1" 2>&1
-    sleep 60
-  done
-}
-
-# export_tree COMMIT DIR: the commit's files without .git (tests cannot reach the repository).
-export_tree() {
-  mkdir -p "$2"
-  git archive --format=tar "$1" | tar -x -C "$2"
-}
-
-do_run() {
-  local wt stopped p e op a b subj line tc tt sampler
+# --- prepare (git only) ------------------------------------------------------------------
+do_prepare() {
+  local wt stopped p op a b subj line
   # shellcheck disable=SC1090
   . "$state"
-  [[ "$status" == check ]] || { log "nothing to run (status $status)"; return; }
+  [[ "$status" == check ]] || { log "nothing to prepare (status $status)"; return; }
   status=running
 
   # The tag's commit, verified again.
@@ -283,7 +228,7 @@ do_run() {
   git worktree add -q --detach "$wt" "$old_main"
   log "git rebase $tag"
   if ! (cd "$wt" && git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
-    -c rebase.autoStash=false -c rebase.updateRefs=false \
+    -c rebase.autoStash=false -c rebase.updateRefs=false -c core.hooksPath=/dev/null \
     rebase --committer-date-is-author-date "$upstream_commit") >"$out/logs/rebase.log" 2>&1; then
     stopped="$(cd "$wt" && git rev-parse -q --verify REBASE_HEAD || true)"
     (
@@ -326,14 +271,14 @@ do_run() {
   [[ -s "$out/added.tsv" ]] && reason "the candidate has commits that are not in the old main (range-diff '>')"
   [[ -z "$(git rev-list --merges "$upstream_commit..$candidate")" ]] || reason "the candidate has merge commits above $tag"
 
-  # 3. Workflow files: every path new in the tag stops publication until the owner decides.
+  # 3. Workflow files: every path new in the tag stops publish.sh (manual procedure, SYNC.md).
   step=workflows
   git ls-tree -r --name-only "$old_base_commit" -- .github/workflows/ | sort >"$out/wf-old.txt"
   git ls-tree -r --name-only "$upstream_commit" -- .github/workflows/ | sort >"$out/wf-tag.txt"
   comm -13 "$out/wf-old.txt" "$out/wf-tag.txt" >"$out/wf-new.txt"
   comm -23 "$out/wf-old.txt" "$out/wf-tag.txt" >"$out/wf-removed.txt"
 
-  # 4. Guard: the base it reports must be exactly the tag's commit.
+  # 4. Guard (main's copy, git only): the base it reports must be exactly the tag's commit.
   step=guard
   if (cd "$wt" && PMX_UPSTREAM="$PMX_UPSTREAM_URL" PMX_EXPECT_BASE="$tag" PMX_EXPECT_BASE_COMMIT="$upstream_commit" \
     bash "$here/guard.sh") >"$out/logs/guard.log" 2>&1; then
@@ -341,49 +286,166 @@ do_run() {
   else
     guard_ok=false; reason "the guard rejects the candidate"
   fi
+  step="test"
+  status="test"
+}
 
-  # 5. Build (in a copy without .git, like the tests).
-  step=build
-  tc="$(mktemp -d "${TMPDIR:-/tmp}/provimux-check-candidate.XXXXXX")"
-  cleanup_paths+=("$tc")
-  export_tree "$candidate" "$tc"
-  log "go build ./..."
-  if (cd "$tc" && go build ./...) >"$out/logs/build.log" 2>&1; then
+# --- tree (git only) -------------------------------------------------------------------------
+# do_tree candidate|tag: the tree's files without .git (tests cannot reach the repository),
+# from the upstream tag (and the bundle), to $trees/<T>. Works in its own bare repository,
+# so it needs only the prepare step's out dir.
+do_tree() {
+  local which=$1 repo
+  # shellcheck disable=SC1090
+  . "$state"
+  [[ "$status" == test ]] || { echo "check.sh tree: nothing to test (status $status)" >&2; exit 1; }
+  repo="$(mktemp -d "${TMPDIR:-/tmp}/provimux-check-tree.XXXXXX")"
+  cleanup_paths+=("$repo")
+  tg() { git --git-dir="$repo" "$@"; }
+  tg init -q --bare
+  tg fetch -q --no-tags "$PMX_UPSTREAM_URL" "+refs/tags/$tag:refs/pmx/upstream"
+  [[ "$(tg rev-parse "refs/pmx/upstream^{commit}")" == "$upstream_commit" ]] ||
+    { echo "check.sh tree: $tag is no longer $upstream_commit" >&2; exit 1; }
+  rm -rf "${trees:?}/$which"
+  mkdir -p "$trees/$which"
+  case "$which" in
+    tag) tg archive --format=tar "$upstream_commit" | tar -x -C "$trees/tag" ;;
+    candidate)
+      tg fetch -q "$out/candidate.bundle" "+refs/pmx-check/candidate:refs/pmx/candidate"
+      [[ "$(tg rev-parse refs/pmx/candidate)" == "$candidate" ]] ||
+        { echo "check.sh tree: the bundle is not the candidate $candidate" >&2; exit 1; }
+      tg archive --format=tar "$candidate" | tar -x -C "$trees/candidate"
+      ;;
+    *) echo "usage: $0 tree candidate|tag" >&2; exit 2 ;;
+  esac
+  log "tree $which in $trees/$which"
+}
+
+# --- test (runs the tree's code; raw output only) ----------------------------------------------
+# gotest DIR OUTPREFIX ARGS...: go test -json, keeping the exit status in OUTPREFIX.exit.
+# go test runs in its own process group under a wall-clock limit ($PMX_TEST_LIMIT seconds,
+# default 2400): a hang (a stopped or starved test binary is not caught by -timeout) kills
+# the group, the exit status is then 124 and the packages without a result fail the check.
+# $PMX_TEST_P sets -p (default: go's own, the number of CPUs).
+gotest() {
+  local dir=$1 prefix=$2 e pid waited=0 limit="${PMX_TEST_LIMIT:-2400}"
+  shift 2
+  set +e
+  set -m
+  (cd "$dir" && exec go test -json -count=1 ${PMX_TEST_P:+-p "$PMX_TEST_P"} -timeout 15m "$@" >"$prefix.json" 2>"$prefix.stderr") &
+  pid=$!
+  set +m
+  while kill -0 "$pid" 2>/dev/null; do
+    if [[ $waited -ge $limit ]]; then
+      echo "go test ($(basename "$prefix")) ran longer than ${limit}s and was killed" >>"$prefix.stderr"
+      kill -TERM -- "-$pid" 2>/dev/null
+      sleep 10
+      kill -KILL -- "-$pid" 2>/dev/null
+      break
+    fi
+    sleep 5
+    waited=$((waited + 5))
+  done
+  wait "$pid"
+  e=$?
+  [[ $waited -ge $limit ]] && e=124
+  set -e
+  echo "$e" >"$prefix.exit"
+}
+
+# sample_resources FILE: memory, load and the largest processes every 60s (Linux), until killed.
+sample_resources() {
+  command -v free >/dev/null 2>&1 || return 0
+  while :; do
+    { date -u +%FT%TZ; uptime; free -m; ps -eo pid,etime,stat,rss,args --sort=-rss | head -n 12 | cut -c1-200; echo; } >>"$1" 2>&1
+    sleep 60
+  done
+}
+
+# do_test candidate|tag: in $test_out/<T>: build.log/build.exit (candidate), pkgs.txt,
+# test.json/test.exit/test.stderr, rerun-pkgs.txt and rerun.json/rerun.exit (when a
+# package had a failing test). Nothing here is trusted by the verdict beyond being data.
+do_test() {
+  local which=$1 dir d sampler e
+  dir="$trees/$which" d="$test_out/$which"
+  [[ -d "$dir" ]] || { echo "check.sh test: no tree $dir (run check.sh tree $which)" >&2; exit 1; }
+  rm -rf "${d:?}"; mkdir -p "$d"
+  if [[ "$which" == candidate ]]; then
+    log "go build ./... ($which)"
+    set +e; (cd "$dir" && go build ./...) >"$d/build.log" 2>&1; e=$?; set -e
+    echo "$e" >"$d/build.exit"
+  fi
+  (cd "$dir" && go list -e -f '{{.ImportPath}}' ./...) >"$d/pkgs.txt" 2>"$d/list.stderr" || true
+  sample_resources "$d/resources.log" &
+  sampler=$!
+  log "go test ./... ($which)"
+  gotest "$dir" "$d/test" ./...
+  if [[ "$which" == candidate ]]; then
+    # Rerun every package with a failing test (not those that do not build), whole.
+    jq -R -c -f "$here/testevents.jq" "$d/test.json" | jq -s -f "$here/testsum.jq" |
+      jq -r '. as $s | [.failed[] | split(" ")[0]] | unique[] | select(. as $p | ($s.build_failed | index($p)) == null)' >"$d/rerun-pkgs.txt"
+    if [[ -s "$d/rerun-pkgs.txt" ]]; then
+      log "rerun: $(paste -sd ' ' "$d/rerun-pkgs.txt")"
+      # shellcheck disable=SC2046
+      gotest "$dir" "$d/rerun" $(cat "$d/rerun-pkgs.txt")
+    fi
+  fi
+  kill "$sampler" 2>/dev/null || true
+  log "raw output in $d"
+}
+
+# --- verdict (no repository code: the raw output is data) --------------------------------------
+# exitval FILE: the integer in FILE, or -1 when there is none.
+exitval() {
+  local v=''
+  [[ -f "$1" ]] && v="$(head -c 16 "$1" | tr -d ' \n\r')"
+  [[ "$v" =~ ^[0-9]{1,3}$ ]] && echo "$v" || echo -1
+}
+# summary PREFIX: testsum.jq summary of PREFIX.json, or one with no package.
+summary() {
+  if [[ -f "$1.json" ]]; then
+    jq -R -c -f "$here/testevents.jq" "$1.json" | jq -s -f "$here/testsum.jq"
+  else
+    echo '{"term":{},"build_failed":[],"failed":[],"passed":[]}'
+  fi
+}
+
+do_verdict() {
+  local c="$test_out/candidate" t="$test_out/tag" rexit=null w
+  [[ -f "$state" ]] || { status=error step=verdict; reason "no result from the prepare job (job: ${PMX_PREP_JOB:-unknown})"; return; }
+  # shellcheck disable=SC1090
+  . "$state"
+  [[ "$status" == test ]] || { log "nothing to decide (status $status): result.json stays"; verdict_skip=1; return; }
+  status=running
+  step=verdict
+  for w in candidate tag; do
+    if [[ ! -f "$test_out/$w/test.exit" ]]; then
+      status=error
+      reason "the test job for the $w left no result (test jobs: ${PMX_TEST_JOB:-unknown})"
+    fi
+  done
+  [[ "$status" == running ]] || return
+
+  # Build.
+  cp "$c/build.log" "$out/logs/build.log" 2>/dev/null || : >"$out/logs/build.log"
+  if [[ "$(exitval "$c/build.exit")" == 0 ]]; then
     build_ok=true
   else
     build_ok=false; reason "go build ./... fails on the candidate"
   fi
 
-  # 6. Tests: go test ./... on both trees, the candidate's failing packages rerun whole.
-  step="test"
-  tt="$(mktemp -d "${TMPDIR:-/tmp}/provimux-check-tag.XXXXXX")"
-  cleanup_paths+=("$tt")
-  export_tree "$upstream_commit" "$tt"
-  (cd "$tc" && go list -e -f '{{.ImportPath}}' ./...) 2>"$out/logs/list-candidate.stderr" | jq -R -s 'split("\n") | map(select(length > 0))' >"$out/pkgs-candidate.json"
-  (cd "$tt" && go list -e -f '{{.ImportPath}}' ./...) 2>"$out/logs/list-tag.stderr" | jq -R -s 'split("\n") | map(select(length > 0))' >"$out/pkgs-tag.json"
-  [[ "$(jq length "$out/pkgs-candidate.json")" -gt 0 ]] || reason "go list ./... finds no package on the candidate"
-  [[ "$(jq length "$out/pkgs-tag.json")" -gt 0 ]] || reason "go list ./... finds no package on $tag"
-  sample_resources "$out/logs/resources.log" &
-  sampler=$!
-  log "go test ./... (candidate)"
-  gotest "$tc" "$out/logs/test-candidate" ./...
-  log "go test ./... ($tag)"
-  gotest "$tt" "$out/logs/test-tag" ./...
-  # Rerun every package with a failing test (not those that do not build), whole.
-  echo '{"term":{},"build_failed":[],"failed":[],"passed":[]}' >"$out/logs/rerun.sum.json"
-  jq -r '. as $s | [.failed[] | split(" ")[0]] | unique[] | select(. as $p | ($s.build_failed | index($p)) == null)' \
-    "$out/logs/test-candidate.sum.json" >"$out/rerun-pkgs.txt"
-  if [[ -s "$out/rerun-pkgs.txt" ]]; then
-    log "rerun: $(paste -sd ' ' "$out/rerun-pkgs.txt")"
-    # shellcheck disable=SC2046
-    gotest "$tc" "$out/logs/test-rerun" $(cat "$out/rerun-pkgs.txt")
-    cp "$out/logs/test-rerun.sum.json" "$out/logs/rerun.sum.json"
-  fi
-  kill "$sampler" 2>/dev/null || true
+  # Tests.
+  for w in candidate tag; do
+    sed '/^$/d' "$test_out/$w/pkgs.txt" 2>/dev/null | jq -R -s 'split("\n") | map(select(length > 0))' >"$out/logs/pkgs-$w.json"
+    [[ "$(jq length "$out/logs/pkgs-$w.json")" -gt 0 ]] || reason "go list ./... finds no package on the $w"
+    summary "$test_out/$w/test" >"$out/logs/test-$w.sum.json"
+  done
+  summary "$c/rerun" >"$out/logs/test-rerun.sum.json"
+  [[ -f "$c/rerun.exit" ]] && rexit="$(exitval "$c/rerun.exit")"
   jq -n --slurpfile cand "$out/logs/test-candidate.sum.json" --slurpfile pris "$out/logs/test-tag.sum.json" \
-    --slurpfile rerun "$out/logs/rerun.sum.json" \
-    --slurpfile cpkgs "$out/pkgs-candidate.json" --slurpfile ppkgs "$out/pkgs-tag.json" \
-    --argjson cexit "$(cat "$out/logs/test-candidate.exit")" --argjson pexit "$(cat "$out/logs/test-tag.exit")" \
+    --slurpfile rerun "$out/logs/test-rerun.sum.json" \
+    --slurpfile cpkgs "$out/logs/pkgs-candidate.json" --slurpfile ppkgs "$out/logs/pkgs-tag.json" \
+    --argjson cexit "$(exitval "$c/test.exit")" --argjson pexit "$(exitval "$t/test.exit")" --argjson rexit "$rexit" \
     -f "$here/testcmp.jq" >"$out/tests.json"
   if [[ "$(jq -r .ok "$out/tests.json")" == true ]]; then
     tests_ok=true
@@ -396,23 +458,43 @@ do_run() {
   if [[ -s "$reasons" ]]; then status=fail; else status=pass; fi
 }
 
+verdict_skip=0
 case "$mode" in
   select)
-    # When there is something to check, result.json says so until run replaces it.
-    trap 'save_state; if [[ "$status" == check ]]; then step=run; write_result error "the run step did not finish (see the job log)"; else write_result; fi' EXIT
+    # When there is something to check, result.json says so until the verdict replaces it.
+    trap 'save_state; if [[ "$status" == check ]]; then step=prepare; write_result error "the prepare step did not finish (see the job log)"; else write_result; fi' EXIT
     do_select
     ;;
-  run)
-    trap 'cleanup; write_result' EXIT
-    do_run
+  prepare)
+    trap 'cleanup; save_state; if [[ "$status" == test ]]; then write_result error "the tests or the verdict did not finish (see the run)"; else write_result; fi' EXIT
+    do_prepare
+    ;;
+  tree)
+    trap 'cleanup' EXIT
+    do_tree "${2:-}"
+    ;;
+  test)
+    do_test "${2:-}"
+    ;;
+  verdict)
+    trap 'if [[ $verdict_skip -eq 0 ]]; then write_result; fi' EXIT
+    do_verdict
     ;;
   all)
-    trap 'cleanup; write_result' EXIT
+    trap 'cleanup; if [[ $verdict_skip -eq 0 ]]; then write_result; fi' EXIT
     do_select
     save_state
-    [[ "$status" == check ]] && do_run
+    if [[ "$status" == check ]]; then
+      do_prepare
+      save_state
+      if [[ "$status" == test ]]; then
+        do_tree candidate; do_tree tag
+        do_test candidate; do_test tag
+        do_verdict
+      fi
+    fi
     ;;
-  *) echo "usage: $0 [select|run]" >&2; exit 2 ;;
+  *) echo "usage: $0 [select|prepare|tree T|test T|verdict]" >&2; exit 2 ;;
 esac
 echo "status=$status" >>"${GITHUB_OUTPUT:-/dev/null}"
 echo "tag=$tag" >>"${GITHUB_OUTPUT:-/dev/null}"
