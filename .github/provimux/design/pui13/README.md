@@ -10,8 +10,8 @@ Tags: **[read]** in code, **[ran]** executed, **[infer]** reasoned and not verif
 
 | Endpoint | Answers | Document |
 |---|---|---|
-| `GET /v8/management/provimux/model-routes` | per model, every login or key that can serve it: provider, kind, priority, host, login label, limits, reasoning, availability, cooldown, last served | `01-model-routes.md` |
-| `GET /v8/management/provimux/live-lists` | per Claude, Codex and Meta login: live list or catalog, fetched at, model counts, last failure, next retry | `02-live-lists.md` |
+| `GET /v8/management/provimux/model-routes` | per model, every login or key that registered it: provider, kind, priority, host, login, limits, reasoning, recorded cooldown | `01-model-routes.md` |
+| `GET /v8/management/provimux/live-lists` | per Claude, Codex and Meta login: live list or catalog, fetched at, model counts, last failure | `02-live-lists.md` |
 
 Both sit behind the same management key middleware as every other `/v8/management` route, are read-only, and are absent (404) on stock CLIProxyAPI.
 
@@ -21,7 +21,6 @@ Both sit behind the same management key middleware as every other `/v8/managemen
 |---|---|
 | `01-model-routes.md` | where each field of model-routes comes from, what is missing, the JSON shape |
 | `02-live-lists.md` | the same for live-lists, and the one hook the failure reason needs |
-| `03-last-served.md` | how "last served" is recorded with usage statistics off, and what it costs |
 | `04-layer-commits-tests.md` | how both fit the layer (new files, one seam line), the frame of the code, the commits, the Go tests |
 | `05-console-contract.md` | auth, absence detection (404), polling, compatibility rule, TypeScript types for PUI-16 |
 | `openapi.yaml` | the contract a build is checked against (OpenAPI 3.1) |
@@ -37,7 +36,7 @@ Both sit behind the same management key middleware as every other `/v8/managemen
 | D4 | A login is named by `name`, `email` and `label`, exactly as `GET /v8/management/credentials` names it; a configured API key only by `label` and `host` | The credentials list already returns the email (`auth_files.go:719-721`) and the console shows it (`provimux-ui src/types/authFile.ts:50-55`). `Auth.AccountInfo()` is never used: for an API key it returns the key (`types.go:953-957`) |
 | D5 | Cooldowns reuse `coreauth.CooldownSnapshotForAuth`, the projection the credentials list already shows | It gives reason codes only, never a provider's error text (`cooldown_view.go:9-19`, `:165-184`). The registry's own suspend reason can be raw text (`conductor_cooldown.go:1473-1489`) and is not used |
 | D6 | The model a cooldown belongs to is resolved inside `sdk/cliproxy/auth` by a new read-only method, not by `Manager.ResolveExecutionModel` | `ResolveExecutionModel` advances the round-robin offset of an OpenAI-compatible alias pool (`conductor_models.go:174-178`, `:94-116`); a status page must not change which upstream model the next request gets |
-| D7 | "Last served" comes from a new in-process usage plugin holding one timestamp per login and model, in memory | Usage records reach plugins whatever `usage-statistics-enabled` says [ran]; cost 84 ns per upstream attempt, off the request path [ran]. See `03-last-served.md` |
+| D7 | ~~"Last served" from an in-process usage plugin~~ **Removed in PUI-14** | Two reviews found it wrong in ordinary cases (Codex workspaces sharing an email, a late success of the old account, `auto` to an alias); see "Built in PUI-14" |
 | D8 | Live-list state is read by a new file inside package `cliproxy` and handed to the handler through a source registered at `init()` | The store is unexported (`live_model_lists.go:54-69`) and the management package cannot import `sdk/cliproxy` (`sdk/cliproxy/service.go:12` imports `internal/api`); the other direction is free [ran: `go list -deps`] |
 | D9 | Responses only grow: fields are added, never removed or redefined; a change of meaning gets a new path | Console and server release independently and the console replaces itself within 3 hours (decided for provimux-ui: independent release trains), so any console must work with any server |
 | D10 | Home mode is not handled | With `home.enabled` every management route answers 404 before a handler runs (`server_management.go:213-228`) |
@@ -62,3 +61,29 @@ Both sit behind the same management key middleware as every other `/v8/managemen
 | `openapi.yaml` through `openapi-spec-validator`; both example files and the two inline examples against its schemas, with unknown properties forbidden | valid OpenAPI 3.1.0; 0 errors; a copy with four planted faults (a missing key, a wrong type, a bad time, an extra key) gave four errors |
 
 The probe test and the benchmark were scratch files and are in no commit.
+
+## Built in PUI-14
+
+The owner's answers to the five questions (2026-11-19): 1 option B, the one added line in `sdk/cliproxy/live_model_lists.go`; 2 the new file in `sdk/cliproxy/auth/`; 3 the trailer stays `Provimux-Layer: branding`; 4 (last served in memory) moot, the field was removed; 5 logins keep `name`, `email` and `label`, under the rule below.
+
+**What was removed, and why.** After two critical reviews (T-63, T-67) found blockers in exactly the fields that imitated the router, the chief dropped them (2026-11-19). The endpoints now report only state the router or the fetcher records, without re-deriving their decisions:
+
+| Removed | Why it could not be made right simply |
+|---|---|
+| `available` (model-routes) | the registry projection misses an expired token; the selector's check gives a false negative for native Codex with an expired nested SIWC token and a valid outer token. Selectability depends on the request |
+| `last_served_at`, `last_served.recording_since` and the usage-plugin recorder | usage records carry no account identity the endpoint can match exactly (Codex workspaces sharing an email inherit each other's times; a late success of the old account erases the new one's), and `auto` to an OAuth alias or a prefixed model is recorded under a name no route has |
+| `next_retry_at`, `refresh_due_at`, `timing` (live-lists) | predictions of the fetcher: a replaced login advertised a 600 s wait while the fetcher would retry at once, and a forced refresh fetches at any time |
+| `reason` (live-lists) | a summary of the fetcher's choice; `enabled`, `disabled`, `fetching` and `last_failure` carry the recorded facts |
+| `cooldown.retry_at`, `cooldown.remaining_seconds` | renamed: the object is now `recorded_cooldown` with `until` and the recorded `model`; the remaining time is `until` minus `observed_at` |
+
+What stays, and how it was made safe:
+
+| Point | What the code does |
+|---|---|
+| Live-list failure | `last_failure` is `{at, category, http_status}`: codes only, never error text, which can carry a provider's response body (a Meta key exchange, `internal/auth/meta/meta.go:472`) or a private gateway path. `02-live-lists.md` section 4 |
+| Failure of another account | a failure and a held list count only for the account identity they were made for. The note and the store's retry are read under both locks, so a read cannot lose a failure recorded meanwhile |
+| Failure-note retention | stale notes are dropped on every read, every new failure and on a ticker every 10 minutes, independently of polling |
+| Login names | `name`, `email` and `label` of a login only where `GET /credentials` lists it under a file; runtime credentials (AI Studio's channel ID is its ID, label and email) and hidden logins have none, `auth_index` identifies them. D4 is narrowed accordingly |
+| Recorded cooldown | the auth manager's own unexpired record (`CooldownSnapshotForAuth`), placed on the route whose selection key it is stored under, by a read-only method; a test checks one read leaves the pool offsets equal |
+| Configured keys of one provider | they share their label (`claude-apikey`, `<provider>-apikey`); only OpenAI-compatible entries carry their entry name. Two Claude keys are told apart by `host` and `auth_index` |
+| Registered at init | the live-list source is tested by calling the handler in the `sdk/cliproxy` test binary (200 there, 503 without a source) |
