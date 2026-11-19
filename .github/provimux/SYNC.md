@@ -19,7 +19,7 @@ It runs every 3 hours and can be started by hand (Actions → provimux-check →
 1. **Release.** It takes the newest *stable* release of `router-for-me/CLIProxyAPI`: published, neither a draft nor a prerelease, with a `vX.Y.Z` tag. An explicit `tag` must be a stable release too. It records the commit the tag points to.
 2. **Old base.** The base of `main` is the newest `vX.Y.Z` tag reachable from it. It must be upstream's tag at the same commit; the check never falls back to an older tag.
 3. **Already done?**
-   - If `v<base>-pmx.*` exists, the status is `published` when every such release is complete, `in-progress` while a release run runs, and `incomplete` otherwise (that case is reported).
+   - If `v<base>-pmx.*` exists, the status is `published` when every such release is complete and its whole `provimux-release` run succeeded, `in-progress` while a release run runs, and `incomplete` otherwise (that case is reported).
    - If `main` is already on the tag but no `-pmx` tag exists, the status is `unreleased` (reported).
    - If the tag does not descend from the old base, the check fails.
 4. **Rebase.** It runs `git rebase --committer-date-is-author-date <tag commit>` in a temporary worktree, never `--onto`, so the same inputs give the same candidate commit.
@@ -48,10 +48,10 @@ The job uploads one artifact, `provimux-check-<tag>`:
 |---|---|
 | ready to publish | The check passed. The issue gives the summary, the decisions needed and the publish command. |
 | failed | The issue gives the step and the details: the commit where the rebase stopped and the conflicting files, the failing tests, the build output, the guard output, or a check job that ended without a result. |
-| release incomplete | A `-pmx` tag exists but its release is incomplete and no release run is still running. |
+| release incomplete | A `-pmx` tag exists, no release run is still running, and the release is incomplete or its `provimux-release` run did not succeed. |
 | main on base, not released | The state after `publish.sh --main-only`. |
 
-An open issue is updated in place. It gets a comment when its state or candidate changes. It is closed only when a check finds every `v<base>-pmx.*` release complete, or when `publish.sh` has verified the release.
+An open issue is updated in place. It gets a comment when its state or candidate changes. It is closed only when a check finds every `v<base>-pmx.*` release complete with a successful release run, or when `publish.sh` has verified both.
 
 ## Publishing: `publish.sh`
 
@@ -89,7 +89,7 @@ cd - && git worktree remove ../pmx-publish
    - the tag `v<base>-pmx.1`, at the candidate.
 
    The `-pmx` tag starts `provimux-release.yml` (archives, image, GitHub release, Homebrew tap).
-6. **Wait and close.** It polls until the GitHub release `v<base>-pmx.1` is published with all 11 assets (10 archives and `checksums.txt`), then closes the issue. If the release run fails or `--timeout` (120 minutes by default) runs out, it stops and the issue stays open.
+6. **Wait and close.** It polls until the whole `provimux-release` run for `v<base>-pmx.1` has finished, including the image push and `tap-publish`, then prints the run's conclusion and each job's result. It closes the issue only when that run succeeded and the GitHub release is published with all 11 assets (10 archives and `checksums.txt`). If the run fails or `--timeout` (120 minutes by default) runs out, it stops and the issue stays open.
 
 The owner's credentials do what no workflow token could: they bypass ruleset 27584853 (required check `provimux-guard`, admins only), they may push commits that change `.github/workflows/*` (gh's `workflow` scope), and their tag push starts the release workflows.
 
@@ -200,7 +200,7 @@ The tag starts `provimux-release.yml`. The Homebrew tap moves only forward, so `
 
 ### Check a release
 
-A release is complete when it is published (not a draft, not a prerelease) with all 11 assets:
+A release is complete when it is published (not a draft, not a prerelease) with all 11 assets and its `provimux-release` run (image push and tap included) succeeded:
 
 ```sh
 gh release view v<base>-pmx.<n> -R ngvoicu/provimux --json isDraft,isPrerelease,assets --jq '{isDraft, isPrerelease, assets: [.assets[].name]}'
