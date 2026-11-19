@@ -158,7 +158,8 @@ gh api -X DELETE repos/ngvoicu/provimux/environments/provimux-token/deployment-b
 
 - `tap.sh release <tag> <dir>`: the release is published, not a prerelease, immutable, with every expected asset uploaded and a digest; `checksums.txt`'s digest is its bytes; every archive's digest is `checksums.txt`'s;
 - `tap.sh artifact <tag> <commit> <dir>`: the newest `provimux-release` run for that tag push at that commit, `completed`/`success` (its attempt from the same read), its job `tap-check` of that attempt, exactly one binding annotation; the artifact must be that id, of that run, named `formula`, unexpired, with that digest, and the zip downloaded has it;
-- `tap.sh prepare <tag> <dir> [<formula>]`: `release`, a clone of the tap, the formula given (or the tap's own updated by `update-formula.sh` from the release's `checksums.txt`), only forward (a tap at this version with this formula, or newer, is left as it is), `verify`, one local commit; it prints the repository, the lease on the tap's `main` as read, and the ref to push;
+- `tap.sh prepare <tag> <dir> [<formula>]`: `release`, a clone of the tap, the formula given (or the tap's own updated by `update-formula.sh` from the release's `checksums.txt`), only forward: a tap at this version with exactly this formula, or at a newer version, is left as it is. A tap at an older version, **or at this version with any other bytes** (a wrong sha256 or url), gets `verify` and one local commit with the verified formula. At the same version it is a repair, never "nothing to do": the formula comes from the published, immutable release, so it is the correct content, and the tap is only installable once it matches. It prints the repository, the lease on the tap's `main` as read, and the ref to push;
+- `tap.sh check <tag> <dir>` (read-only): `release`, then whether the tap serves it: `ok` (the tap's formula is byte for byte its own formula updated from the release's `checksums.txt`), `newer` (the tap is at a newer version), or `wrong: <why>`;
 - `tap.sh verify <version> <checksums> <tap formula> <new formula>`: only the version, url and sha256 lines differ, the URLs are that version's archives, each sha256 is `checksums.txt`'s.
 
 **By hand** (a hand `-pmx.<n>`, or when the publish job's tap steps failed; the owner's own git credentials; only forward, so running it again is safe):
@@ -167,11 +168,13 @@ gh api -X DELETE repos/ngvoicu/provimux/environments/provimux-token/deployment-b
 bash .github/provimux/publish.sh --tap v<base>-pmx.<n>
 ```
 
+An issue titled `… Homebrew tap not updated, owner needed` is not closed on the release alone. `report.sh` (the current base, and the sweep of older bases) runs `tap.sh check` for the base's newest release before closing it, and keeps it open (with one comment per state) until the tap serves that release or a newer version, or until the owner closes it.
+
 ### Accepted risks
 
 The owner accepted these on 2026-11-19 (review T-77); they are not fixed:
 
-- **A mistaken `v*` tag** pushed by someone with write access. Only the owner has write access, and the tag ruleset 27670572 lets only admins create, move or delete `v*` tags. Such a tag's release run still publishes nothing without the owner's authorization (`provenance`) and never gets the token.
+- **A mistaken `v*` tag** pushed by someone with write access. Only the owner has write access, and the tag ruleset 27670572 lets only admins create, move or delete `v*` tags. A tag runs the release workflow of **its own commit**. On a commit with the current workflow (from `2bdb6173` on), its release run publishes nothing without the owner's authorization (`provenance`). On a commit from before the provenance gate (for example `8b943f74`), that older release workflow can publish a GitHub release and images with that run's `GITHUB_TOKEN`. In both cases it never gets the owner's token: the environment `provimux-token` admits only the branch `main`, so the Homebrew tap and `main` are out of its reach.
 - **Test outcomes the code under test could fake.** The test jobs run the candidate's and upstream's code; that code could write a passing `go test` output, exit status and step outcome for itself. The check is a regression gate, not a sandbox against the code it tests: that same code ships to users in the release anyway, so faking its own tests gains nothing it could not do directly.
 - **The existing release `v8.0.78-pmx.1` is mutable** (published before immutable releases were turned on; GitHub does not make existing releases immutable). Every later release is immutable, and `release-latest` no longer looks at other releases, so it does not block later releases.
 
