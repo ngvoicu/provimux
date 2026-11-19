@@ -2,7 +2,8 @@
 # Provimux sync report (.github/provimux/SYNC.md), the "report" job of provimux-check.yml:
 # turns the check's result.json (or its absence) into the one issue "sync: v<base>".
 #
-#   pass                     "sync: v<base> — ready to publish", with the publish command
+#   pass                     "sync: v<base> — ready to publish" (provimux-publish.yml then
+#                            publishes it, or retitles the issue and says why it cannot)
 #   fail, error, no result   "sync: v<base> — failed", with the step and the details
 #   incomplete               "sync: v<base> — release incomplete" (a v<base>-pmx.* tag
 #                            whose release is not complete and whose release run ended)
@@ -118,7 +119,7 @@ esac
   echo "$marker"
   case "$status" in
     pass)
-      echo "**Ready to publish:** Provimux \`main\` rebased onto CLIProxyAPI [\`$tag\`](https://github.com/$PMX_UPSTREAM_REPO/releases/tag/$tag) (\`${upstream_commit:0:12}\`). Nothing is published until the owner runs \`publish.sh\`."
+      echo "**Ready to publish:** Provimux \`main\` rebased onto CLIProxyAPI [\`$tag\`](https://github.com/$PMX_UPSTREAM_REPO/releases/tag/$tag) (\`${upstream_commit:0:12}\`). \`provimux-publish\` publishes it automatically once this check run has finished (SYNC.md, \"Publishing automatically\"); if it cannot, it says why here and the owner publishes by hand."
       echo
       echo "| | |"
       echo "|---|---|"
@@ -132,14 +133,14 @@ esac
       if [[ "$nd$nc$nw" == "000" ]]; then
         echo "**Decisions needed:** none (no owner patch dropped or changed, no new workflow file)."
       else
-        echo "**Decisions needed** before publishing: \`publish.sh\` refuses until each is accepted by name (SYNC.md)."
+        echo "**Decisions needed** before publishing: \`publish.sh\` refuses until each is accepted by name (SYNC.md), so the automatic publish refuses and the owner publishes by hand."
         echo
         if [[ "$nd" != 0 ]]; then echo "Patches the rebase **dropped** (accept with \`--accept-dropped <sha,...>\`):"; list '.decisions.dropped[] | "\(.commit[0:12]) \(.subject)"'; fi
         if [[ "$nc" != 0 ]]; then echo "Patches the rebase **changed** (accept with \`--accept-changed <sha,...>\`):"; list '.decisions.changed[] | "\(.commit[0:12]) \(.subject)"'; fi
         if [[ "$nw" != 0 ]]; then echo "**New workflow files** in \`$tag\`: \`publish.sh\` refuses this release; follow \"New upstream workflow files\" in SYNC.md:"; list '.decisions.new_workflows[]'; fi
       fi
       echo
-      echo "**Publish** (on the owner's Mac, in a worktree of \`provimux/main\`; see \`.github/provimux/SYNC.md\`):"
+      echo "**Publish by hand** (only if the automatic publish refused or waits for its token; on the owner's Mac, in a worktree of \`provimux/main\`; see \`.github/provimux/SYNC.md\`):"
       echo
       echo '```sh'
       echo "bash .github/provimux/publish.sh $tag --dry-run"
