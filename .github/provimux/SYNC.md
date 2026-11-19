@@ -2,7 +2,7 @@
 
 `main` is a CLIProxyAPI release tag, then the owner's patch commits, then the Provimux layer (commits with the trailer `Provimux-Layer: branding`). When CLIProxyAPI publishes a release, Provimux moves that whole stack onto it.
 
-**Check automatically, publish on the owner's command.** A workflow checks each new release and reports in an issue. Only the owner publishes, from their own Mac with their own credentials. No token of the owner is stored in GitHub.
+**Check and publish automatically; the owner only for what needs a decision.** A workflow checks each new release and reports in an issue. When the check passes, a second workflow publishes the release with the owner's token `PUBLISH_TOKEN`, which only that workflow's one step running `publish.sh` can see. When it refuses or fails, it pushes nothing, says why in the issue, and the owner publishes by hand from their own Mac with their own credentials, as before.
 
 | Piece | Where it runs | What it may do |
 |---|---|---|
@@ -10,7 +10,9 @@
 | `provimux-check.yml`, jobs `test (candidate)` and `test (tag)` (`check.sh tree`, `check.sh test`) | GitHub Actions | `contents: read`. The only jobs that run upstream's and the candidate's code (build, tests), one tree per job. They write only raw `go` output and decide nothing. |
 | `provimux-check.yml`, job `verdict` (`check.sh verdict`) | GitHub Actions | `contents: read`. Reads the raw output as data and writes `result.json`. Runs no repository code. |
 | `provimux-check.yml`, job `report` (`report.sh`) | GitHub Actions | `issues: write`. Runs only the run's own scripts, never candidate code or `go`. |
-| `.github/provimux/publish.sh` | the owner's Mac | Pushes `main` and the tags with the owner's `git` and `gh` credentials. |
+| `provimux-publish.yml`, steps `Decide` and `Tell the sync issue` (`autopublish.sh`) | GitHub Actions | `actions: read`, `issues: write` (the run's `GITHUB_TOKEN`). Read the check run and its artifact as data; retitle and comment on the issue. git, gh and jq only. |
+| `provimux-publish.yml`, step `Publish` (`publish.sh --ci`) | GitHub Actions | The only step that sees `PUBLISH_TOKEN`, and only `git push` uses it. Runs `publish.sh` of `main`'s own commit: git, gh, jq and the guard of the current `main`; never candidate or upstream code, `go` or `make`. |
+| `.github/provimux/publish.sh` by hand | the owner's Mac | Pushes `main` and the tags with the owner's `git` and `gh` credentials, when the automatic publish refused. |
 
 ## The check
 
@@ -59,7 +61,41 @@ The verdict job uploads the artifact `provimux-check-<tag>`. An artifact name is
 
 An open issue is updated in place. It gets a comment when its state or candidate changes. It is closed only when a check finds every `v<base>-pmx.*` release complete with a successful release run for the tag's commit, or when `publish.sh` has verified both.
 
-## Publishing: `publish.sh`
+## Publishing automatically: `provimux-publish.yml`
+
+`provimux-publish.yml` runs when a `provimux-check` run completes (`workflow_run`). Its job runs only for a check run of this repository on `main`, started by `schedule` or `workflow_dispatch`, that concluded `success`, which is what `publish.sh` accepts. A check run is green for every status, so the job then decides from the artifact. Its permissions are `contents: read`, `actions: read` and `issues: write`, and the workflow has `concurrency: provimux-publish` with no cancelling, so one publish runs at a time.
+
+1. **Checkout** of the check run's `head_sha`: the `main` that was checked, already on `main`. `persist-credentials: false`.
+2. **Decide** (`autopublish.sh decide`, with `GITHUB_TOKEN`). It reads the check run again and its artifacts. The tag comes from the artifact's name `provimux-check-<vX.Y.Z>` and must match `result.json`'s tag; it never comes from free text. It skips the run (green, nothing done) when the check selected no release, when the status is not `pass` (`fail`, `published`, `in-progress`, ...: the report job already handled those), or when `v<base>-pmx.*` already exists (a second passing run, or a re-run). A malformed run or artifact fails the run.
+3. **`PUBLISH_TOKEN` is set**: if the secret is missing the run fails here, red, with that message. Nothing is pushed.
+4. **Publish**: `publish.sh <tag> --ci --yes --run <check run id>`, everything in "Publishing by hand" below except the question. `--ci` makes git authenticate to github.com with `PMX_PUSH_TOKEN` (the secret) through a credential helper given in the environment (`GIT_CONFIG_*`), so the token is never written to disk, into a remote URL or to the log, and the script removes it from its environment right after the push. gh uses the run's `GITHUB_TOKEN`: reading the check run and its artifact, upstream's releases, the release run, closing the issue. On success it waits for the whole `provimux-release` run and the complete release, then closes the issue with the link to the release, exactly as by hand.
+5. **Tell the sync issue** (`autopublish.sh notify`, `GITHUB_TOKEN`, only after a refusal or failure). It retitles `sync: v<base>` and comments with the `publish:` lines of the log:
+   - `ready, publishing waits for PUBLISH_TOKEN`: the secret is missing;
+   - `publish refused, owner needed`: nothing was pushed (dropped or changed patches, new workflow files, remote `main` moved, upstream release withdrawn or moved, a verification mismatch, any failure before the push);
+   - `pushed, release not complete`: the push happened but the release run failed or the wait timed out (see "Check a release").
+
+   The run stays red. Each distinct reason is commented once, so the check that passes again every 3 hours and meets the same refusal changes only the title back. The next check rewrites the title to "ready to publish"; the next publish run sets it again.
+
+A started `workflow_dispatch` (Actions → provimux-publish → Run workflow, on `main`) publishes one tag: input `tag`, optional `run` (else `publish.sh` takes the newest qualifying check run on the current `main`), and `dry_run` (default on: everything except the push, including `git push --dry-run` with the token; it does not wait and does not touch the issue). A dispatched run that is not a dry run tells the issue like an automatic one.
+
+Why a token of the owner and not `GITHUB_TOKEN`: events caused by `GITHUB_TOKEN` start no workflow runs (except `workflow_dispatch` and `repository_dispatch`), so its tag push would start no `provimux-release` run; and `GITHUB_TOKEN` has no `workflows` permission, which pushing commits that change `.github/workflows/` needs (a rebase onto a new upstream release usually does). The owner's token also bypasses ruleset 27584853 as the owner's own pushes do (bypass: repository admins).
+
+### The token
+
+The owner creates it once and stores it as the repository secret `PUBLISH_TOKEN` (Settings → Secrets and variables → Actions, or `gh secret set PUBLISH_TOKEN -R ngvoicu/provimux`):
+
+- **Fine-grained personal access token** (Settings → Developer settings → Fine-grained tokens), resource owner **ngvoicu**;
+- **Repository access:** only `ngvoicu/provimux`;
+- **Repository permissions:** **Contents: Read and write** (push `main` and the tags), **Workflows: Read and write** (the pushed commits change `.github/workflows/` files), **Metadata: Read** (required, added automatically). Nothing else: gh in the workflow uses `GITHUB_TOKEN`;
+- **Expiration:** *No expiration* (GitHub allows it for a token of a personal account; an organization's policy could block it). With a date, set a reminder: when it expires, publishing fails at the push and the issue says so.
+
+Without the secret, everything still works as before: each passing check opens "ready to publish" and the publish run retitles it "publishing waits for PUBLISH_TOKEN"; the owner publishes by hand.
+
+### What still needs the owner
+
+The automatic publish only ever does what `publish.sh` would do unasked. These still need the owner, who then publishes by hand (next section) or follows the named procedure: a dropped or changed patch (`--accept-dropped`/`--accept-changed`); a release with new workflow files ("New upstream workflow files"); a failed check, a rebase conflict, failing tests ("Manual cases"); a release that did not complete ("Check a release"); a `-pmx.2` on the same base; the token, once (or when it expires).
+
+## Publishing by hand: `publish.sh`
 
 Run it on the owner's Mac from a clone of `ngvoicu/provimux`, such as a scratch worktree of `provimux/main`. It changes nothing in the clone: it works in a temporary repository that borrows the clone's objects. It runs no code of the candidate or of upstream: only `git`, `gh`, `jq` and the guard of the owner's current `main`.
 
@@ -93,7 +129,7 @@ cd - && git worktree remove ../pmx-publish
    The `-pmx` tag starts `provimux-release.yml` (archives, image, GitHub release, Homebrew tap).
 6. **Wait and close.** It polls until the whole `provimux-release` run for `v<base>-pmx.1` at the candidate commit has finished, including the image push and `tap-publish`, then prints the run's conclusion and each job's result. It closes the issue only when that run succeeded and the GitHub release is published with all 11 assets (10 archives and `checksums.txt`). If the run fails or `--timeout` (120 minutes by default) runs out, it stops and the issue stays open.
 
-The owner's credentials do what no workflow token could: they bypass ruleset 27584853 (required check `provimux-guard`, admins only), they may push commits that change `.github/workflows/*` (gh's `workflow` scope), and their tag push starts the release workflows.
+The owner's credentials (or `PUBLISH_TOKEN`, above) do what `GITHUB_TOKEN` could not: they bypass ruleset 27584853 (required check `provimux-guard`, admins only), they may push commits that change `.github/workflows/*` (gh's `workflow` scope), and their tag push starts the release workflows.
 
 ## Manual cases
 
@@ -248,8 +284,9 @@ If the release run failed, rerun its failed jobs (`gh run rerun <id> --failed -R
 
 ## Testing the scripts
 
-- `bash .github/provimux/selftest.sh` runs the fixture tests offline (local repositories, a stub `gh`): the test gate's waivers, the guard and `release-meta.sh` with a base only upstream or withdrawn or moved, and `report.sh` with a release run for the wrong commit and with a failure. Run it after changing any of these scripts.
-- `check.sh`, `report.sh`, `publish.sh` and `selftest.sh` run with macOS bash 3.2.
+- `bash .github/provimux/selftest.sh` runs the fixture tests offline (local repositories, a stub `gh`): the test gate's waivers, the guard and `release-meta.sh` with a base only upstream or withdrawn or moved, `report.sh` with a release run for the wrong commit and with a failure, `autopublish.sh` (which check runs publish, the issue text after a refusal) and `publish.sh --ci` without its token. Run it after changing any of these scripts.
+- `check.sh`, `report.sh`, `publish.sh`, `autopublish.sh` and `selftest.sh` run with macOS bash 3.2.
+- `PMX_NOTIFY_DRY_RUN=1 TAG=v8.0.78 OUTCOME=failed LOG=<publish log> bash .github/provimux/autopublish.sh notify` prints what a refusal would write in the issue.
 - `PMX_REPORT_DRY_RUN=1 RESULT=<result.json> CHECK_JOB=success bash .github/provimux/report.sh` prints the issue that a result would produce (it still reads the release state from GitHub).
 - `check.sh select` and `check.sh prepare` run no repository code.
 - `check.sh test` and `check.sh` (all steps) run `go test ./...`: only in a throwaway environment without credentials (above). Some tests use the proxy's default port 8317, so don't run it on a machine where the proxy is serving.

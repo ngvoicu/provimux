@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Provimux sync check (.github/provimux/SYNC.md), run by .github/workflows/provimux-check.yml.
-# It publishes nothing and needs no token beyond read access: the owner publishes with
-# publish.sh after reading the result.
+# It publishes nothing and needs no token beyond read access: provimux-publish.yml (or the
+# owner, by hand) publishes a pass with publish.sh.
 #
 #   check.sh select        which upstream release, and whether there is anything to do
 #                          (calls the GitHub API with gh, read-only; runs no repository code)
