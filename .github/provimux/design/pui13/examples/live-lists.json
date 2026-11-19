@@ -1,0 +1,83 @@
+{
+  "observed_at": "2026-11-19T18:04:11Z",
+  "enabled": true,
+  "providers": ["claude", "codex", "meta"],
+  "timing": { "refresh_seconds": 10800, "retry_seconds": 600, "scan_seconds": 600 },
+  "logins": [
+    {
+      "auth_index": "a8d167b7d82c8c15",
+      "provider": "claude",
+      "login": { "name": "claude-ada@example.com.json", "email": "ada@example.com", "label": "ada@example.com" },
+      "disabled": false,
+      "source": "live",
+      "reason": null,
+      "fetching": false,
+      "fetched_at": "2026-11-19T16:10:44Z",
+      "listed_models": 11,
+      "registered_models": 9,
+      "last_failure": null,
+      "next_retry_at": null,
+      "refresh_due_at": "2026-11-19T19:10:44Z"
+    },
+    {
+      "auth_index": "c41f0d7e9b2a6835",
+      "provider": "claude",
+      "login": { "name": "claude-grace@example.com.json", "email": "grace@example.com", "label": "grace@example.com" },
+      "disabled": false,
+      "source": "live",
+      "reason": null,
+      "fetching": false,
+      "fetched_at": "2026-11-19T13:02:19Z",
+      "listed_models": 11,
+      "registered_models": 9,
+      "last_failure": { "at": "2026-11-19T18:02:20Z", "http_status": 529, "message": "HTTP 529 from /v1/models" },
+      "next_retry_at": "2026-11-19T18:12:20Z",
+      "refresh_due_at": "2026-11-19T16:02:19Z"
+    },
+    {
+      "auth_index": "0b7e2a91c4d3f6e8",
+      "provider": "codex",
+      "login": { "name": "codex-ada@example.com-plus.json", "email": "ada@example.com", "label": "ada@example.com" },
+      "disabled": false,
+      "source": "catalog",
+      "reason": "failed",
+      "fetching": false,
+      "fetched_at": null,
+      "listed_models": null,
+      "registered_models": 14,
+      "last_failure": { "at": "2026-11-19T17:58:02Z", "http_status": 401, "message": "HTTP 401 from /backend-api/codex/models" },
+      "next_retry_at": "2026-11-19T18:08:02Z",
+      "refresh_due_at": null
+    },
+    {
+      "auth_index": "e2d5a8b1c7f09346",
+      "provider": "codex",
+      "login": { "name": "codex-old@example.com-team.json", "email": "old@example.com", "label": "old@example.com" },
+      "disabled": true,
+      "source": "catalog",
+      "reason": "login_disabled",
+      "fetching": false,
+      "fetched_at": null,
+      "listed_models": null,
+      "registered_models": 0,
+      "last_failure": null,
+      "next_retry_at": null,
+      "refresh_due_at": null
+    },
+    {
+      "auth_index": "6f3b0c9d8e7a1254",
+      "provider": "meta",
+      "login": { "name": "meta-ada.json", "email": null, "label": "meta" },
+      "disabled": false,
+      "source": "catalog",
+      "reason": "pending",
+      "fetching": true,
+      "fetched_at": null,
+      "listed_models": null,
+      "registered_models": 6,
+      "last_failure": null,
+      "next_retry_at": null,
+      "refresh_due_at": null
+    }
+  ]
+}
