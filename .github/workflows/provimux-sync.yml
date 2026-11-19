@@ -1,0 +1,114 @@
+# Provimux sync (PMX-14, PMX-15): rebuild Provimux on each new CLIProxyAPI release.
+# Every 3 hours: take router-for-me/CLIProxyAPI's latest release; when Provimux has no
+# v<base>-pmx.* for it yet, rebase main onto it, build, compare the tests with the
+# pristine release, run the guard (.github/provimux/sync.sh). Pass: push main and the
+# tags v<base> and v<base>-pmx.1 with SYNC_TOKEN (the tag starts provimux-release and
+# provimux-docker) and close the "sync: v<base>" issue. Fail: open or update that
+# issue; publish nothing.
+#
+# A manual run is a dry run unless dry_run is unticked: everything up to the push,
+# and the job summary says what would be pushed. A failing dry run opens the issue too.
+# Setup and manual procedures: .github/provimux/SYNC.md.
+name: provimux-sync
+
+on:
+  schedule:
+    - cron: '23 */3 * * *'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Upstream tag to sync to (vX.Y.Z); empty = the latest CLIProxyAPI release'
+        required: false
+        default: ''
+      dry_run:
+        description: 'Dry run: push nothing'
+        type: boolean
+        required: false
+        default: true
+
+concurrency:
+  group: provimux-sync
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && 'true' || 'false' }}
+      GH_TOKEN: ${{ github.token }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+          fetch-tags: true
+          # The push uses SYNC_TOKEN; a stored GITHUB_TOKEN header would override it.
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Rebase, build, test, guard
+        id: sync
+        env:
+          PMX_SYNC_TAG: ${{ inputs.tag }}
+          PMX_DRY_RUN: ${{ env.DRY_RUN }}
+          PMX_SYNC_OUT: ${{ runner.temp }}/sync
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          # The new release may need a newer Go than main's go.mod.
+          GOTOOLCHAIN: auto
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          set +e
+          bash .github/provimux/sync.sh
+          status=$?
+          set -e
+          cat "$PMX_SYNC_OUT/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() && steps.sync.outputs.status != 'skip' && steps.sync.outputs.out != '' }}
+        with:
+          name: sync-${{ steps.sync.outputs.tag }}
+          path: ${{ steps.sync.outputs.out }}
+          if-no-files-found: ignore
+      - name: Push main and the tags
+        if: ${{ steps.sync.outputs.status == 'pass' && env.DRY_RUN != 'true' }}
+        env:
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          OLD: ${{ steps.sync.outputs.old }}
+          NEW: ${{ steps.sync.outputs.new }}
+          TAG: ${{ steps.sync.outputs.tag }}
+          BASE: ${{ steps.sync.outputs.base }}
+        run: |
+          set -euo pipefail
+          # One atomic push: main only if it is still OLD, the base tag before the
+          # release tag needs it (release-meta.sh checks v<base> exists).
+          git push --atomic --force-with-lease="refs/heads/main:$OLD" \
+            "https://x-access-token:${SYNC_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            "$NEW:refs/heads/main" \
+            "refs/tags/$TAG:refs/tags/$TAG" \
+            "$NEW:refs/tags/v$BASE-pmx.1"
+          echo "Pushed main ${OLD:0:8} -> ${NEW:0:8}, $TAG, v$BASE-pmx.1" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Close the sync issue
+        if: ${{ steps.sync.outputs.status == 'pass' && env.DRY_RUN != 'true' }}
+        env:
+          BASE: ${{ steps.sync.outputs.base }}
+        run: bash .github/provimux/sync-issue.sh close "v$BASE" "Published \`v$BASE-pmx.1\` in $RUN_URL."
+      - name: Open or update the sync issue
+        if: ${{ always() && steps.sync.outputs.status == 'fail' }}
+        env:
+          BASE: ${{ steps.sync.outputs.base }}
+          BODY: ${{ steps.sync.outputs.out }}/issue.md
+        run: |
+          set -euo pipefail
+          note=''
+          [[ "$DRY_RUN" == "true" ]] && note=" (dry run)"
+          printf '\n\nRun%s: %s\n' "$note" "$RUN_URL" >> "$BODY"
+          bash .github/provimux/sync-issue.sh open "v$BASE" "$BODY"
