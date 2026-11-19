@@ -1301,9 +1301,9 @@ jobs:
           fi
 
   # Move :latest to this version, only forward. One job at a time across runs, so an
-  # older run cannot move :latest back. GitHub keeps one pending job per group: when
-  # three releases overlap, the middle one's job is cancelled (its run then shows
-  # cancelled) and the newest one moves :latest; its version tag is pushed anyway.
+  # older run cannot move :latest back. queue: max keeps every pending job of the group
+  # (up to 100) instead of one, so overlapping releases each run in turn and none is
+  # cancelled; the only-forward rule leaves :latest on the newest.
   image-latest:
     needs: [meta, image-push]
     if: ${{ needs.meta.outputs.publish == 'true' }}
@@ -1314,6 +1314,7 @@ jobs:
     concurrency:
       group: provimux-image-latest
       cancel-in-progress: false
+      queue: max
     env:
       PROVIMUX_VERSION: ${{ needs.meta.outputs.provimux_version }}
       REGISTRY: ghcr.io
