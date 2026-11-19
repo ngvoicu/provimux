@@ -11,8 +11,9 @@
 #   2. base..HEAD has at least one layer commit, and once one appears every later
 #      commit carries the trailer too;
 #   3. no layer commit changes a protected path, against any of its parents;
-#   4. for a pull request (PMX_TARGET = the target branch's commit): what the PR
-#      introduces touches no protected path. Patch changes reach main only as a
+#   4. for a pull request (PMX_TARGET = the target branch's commit): the PR's own
+#      commits since the merge base touch no protected path, it merges cleanly, and
+#      the merged tree differs from the target in no protected path. Patch changes reach main only as a
 #      rebased stack pushed by the owner or the sync, never through a PR.
 #
 # Env: PMX_TARGET (optional, pull requests), PMX_UPSTREAM (default: upstream CPA).
@@ -89,11 +90,27 @@ fi
 if [ -n "${PMX_TARGET:-}" ]; then
   target=$(git rev-parse "$PMX_TARGET^{commit}")
   echo "Pull request target: $(short "$target")"
+  # What the PR's own commits change since the merge base.
   hits=$(git diff --name-only -z "$target...$head" -- "${pathspec[@]}" | names)
-  if [ -n "$(git rev-list --merges "$target..$head")" ]; then
-    # A merge (of main, say) moves the merge base past changes the PR still brings.
-    hits=$(printf '%s\n%s\n' "$hits" "$(git diff --name-only -z "$target" "$head" -- "${pathspec[@]}" | names)")
+  # What merging it would change on the target: the merged tree against the target.
+  # Not the branch tips: a PR that merged main earlier still has the old blob of a
+  # protected file the target changed since, and a clean merge keeps the target's.
+  # -z output: the merged tree's id, then (on a conflict) each conflicted file name.
+  merge_out=$(mktemp)
+  set +e
+  git merge-tree --write-tree --no-messages --name-only -z "$target" "$head" >"$merge_out"
+  merge_status=$?
+  set -e
+  if [ "$merge_status" -eq 1 ]; then
+    conflicts=$({ IFS= read -r -d '' _ || true; names; } <"$merge_out" | sort -u | paste -sd ',' - | sed 's/,/, /g')
+    err "This pull request does not merge cleanly into main ($(short "$target")); conflicts in: $conflicts. The guard checks what the merge would change, so a conflicting PR cannot pass: merge main into the branch (or rebase onto it), resolve the conflicts, and push again."
+  elif [ "$merge_status" -ne 0 ]; then
+    err "git merge-tree failed (exit $merge_status) merging $(short "$head") into $(short "$target"); cannot check what this pull request would change."
+  else
+    IFS= read -r -d '' tree <"$merge_out"
+    hits=$(printf '%s\n%s\n' "$hits" "$(git diff --name-only -z "$target" "$tree" -- "${pathspec[@]}" | names)")
   fi
+  rm -f "$merge_out"
   hits=$(sed '/^$/d' <<<"$hits" | sort -u)
   while IFS= read -r f; do
     [ -n "$f" ] && err "This pull request changes protected path $f relative to main ($(short "$target")). Changes under $protected_list reach main only as a rebased patch stack pushed by the owner or the sync, never through a pull request."
