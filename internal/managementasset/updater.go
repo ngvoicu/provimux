@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -32,16 +33,23 @@ const (
 	// the GitHub API. It is used only for the default repository when the API lookup fails
 	// and no console file exists yet; management.html must match checksums.txt.
 	defaultManagementFallbackBaseURL = "https://github.com/ngvoicu/provimux-ui/releases/latest/download/"
-	// originalManagementReleaseURL is the upstream Management Center. Configs copied from
-	// CLIProxyAPI's config.example.yaml name it; Provimux treats it as the default.
-	originalManagementRepository = "api.github.com/repos/router-for-me/Cli-Proxy-API-Management-Center"
-	managementAssetName          = "management.html"
-	managementChecksumsName      = "checksums.txt"
-	httpUserAgent                = "CLIProxyAPI-management-updater"
-	managementSyncMinInterval    = 30 * time.Second
-	updateCheckInterval          = 3 * time.Hour
-	maxAssetDownloadSize         = 50 << 20 // 10 MB safety limit for management asset downloads
+	managementAssetName              = "management.html"
+	managementChecksumsName          = "checksums.txt"
+	httpUserAgent                    = "CLIProxyAPI-management-updater"
+	managementSyncMinInterval        = 30 * time.Second
+	updateCheckInterval              = 3 * time.Hour
+	maxAssetDownloadSize             = 50 << 20 // 10 MB safety limit for management asset downloads
 )
+
+// Repository identities (see panelRepositoryIdentity) that select the default console.
+// The original Management Center is named in configs copied from CLIProxyAPI's
+// config.example.yaml; Provimux serves provimux-ui in its place.
+var defaultPanelRepositoryIdentities = map[string]bool{
+	"ngvoicu/provimux-ui": true,
+	"#1463889407":         true, // ngvoicu/provimux-ui
+	"router-for-me/cli-proxy-api-management-center": true,
+	"#1051566067": true, // router-for-me/Cli-Proxy-API-Management-Center
+}
 
 // ManagementFileName exposes the control panel asset filename.
 const ManagementFileName = managementAssetName
@@ -141,6 +149,7 @@ type releaseAsset struct {
 	Name               string `json:"name"`
 	BrowserDownloadURL string `json:"browser_download_url"`
 	Digest             string `json:"digest"`
+	Size               int64  `json:"size"`
 }
 
 type releaseResponse struct {
@@ -238,7 +247,7 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 			return nil, nil
 		}
 
-		releaseURL := resolveReleaseURL(panelRepository)
+		releaseURL, isDefaultRepository := resolvePanelRelease(panelRepository)
 		client := newHTTPClient(proxyURL)
 
 		localHash, err := fileSHA256(localPath)
@@ -249,18 +258,25 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 			localHash = ""
 		}
 
-		asset, remoteHash, err := fetchLatestAsset(ctx, client, releaseURL)
+		release, err := fetchLatestRelease(ctx, client, releaseURL)
 		if err != nil {
 			if localFileMissing {
 				log.WithError(err).Warn("failed to fetch latest management release information, trying verified fallback")
-				ensureFallbackManagementHTML(ctx, client, localPath, releaseURL)
+				ensureFallbackManagementHTML(ctx, client, localPath, isDefaultRepository)
 				return nil, nil
 			}
 			log.WithError(err).Warn("failed to fetch latest management release information")
 			return nil, nil
 		}
 
-		if remoteHash != "" && localHash != "" && strings.EqualFold(remoteHash, localHash) {
+		// Every install or replacement needs a sha256 from this release.
+		asset, remoteHash, err := verifiedReleaseAsset(ctx, client, release)
+		if err != nil {
+			log.WithError(err).Error("management asset not verifiable — not installing it")
+			return nil, nil
+		}
+
+		if localHash != "" && strings.EqualFold(remoteHash, localHash) {
 			log.Debug("management asset is already up to date")
 			return nil, nil
 		}
@@ -269,14 +285,18 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 		if err != nil {
 			if localFileMissing {
 				log.WithError(err).Warn("failed to download management asset, trying verified fallback")
-				ensureFallbackManagementHTML(ctx, client, localPath, releaseURL)
+				ensureFallbackManagementHTML(ctx, client, localPath, isDefaultRepository)
 				return nil, nil
 			}
 			log.WithError(err).Warn("failed to download management asset")
 			return nil, nil
 		}
 
-		if remoteHash != "" && !strings.EqualFold(remoteHash, downloadedHash) {
+		if asset.Size > 0 && int64(len(data)) != asset.Size {
+			log.Errorf("management asset size mismatch: expected %d got %d — aborting update for safety", asset.Size, len(data))
+			return nil, nil
+		}
+		if !strings.EqualFold(remoteHash, downloadedHash) {
 			log.Errorf("management asset digest mismatch: expected %s got %s — aborting update for safety", remoteHash, downloadedHash)
 			return nil, nil
 		}
@@ -294,8 +314,8 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 	return err == nil
 }
 
-func ensureFallbackManagementHTML(ctx context.Context, client *http.Client, localPath string, releaseURL string) bool {
-	if releaseURL != defaultManagementReleaseURL {
+func ensureFallbackManagementHTML(ctx context.Context, client *http.Client, localPath string, isDefaultRepository bool) bool {
+	if !isDefaultRepository {
 		log.Warn("no fallback for a custom panel-github-repository; management control panel page not installed")
 		return false
 	}
@@ -334,71 +354,104 @@ func ensureFallbackManagementHTML(ctx context.Context, client *http.Client, loca
 func checksumFor(sums []byte, name string) string {
 	for _, line := range strings.Split(string(sums), "\n") {
 		fields := strings.Fields(line)
-		if len(fields) != 2 || strings.TrimPrefix(fields[1], "*") != name {
-			continue
+		if len(fields) == 2 && strings.TrimPrefix(fields[1], "*") == name {
+			return validSHA256(fields[0])
 		}
-		sum := strings.ToLower(fields[0])
-		if _, err := hex.DecodeString(sum); err != nil || len(sum) != sha256.Size*2 {
-			return ""
-		}
-		return sum
 	}
 	return ""
 }
 
-// resolveReleaseURL maps panel-github-repository to a releases API URL. The original
-// Management Center (any spelling) maps to the default, provimux-ui.
+// resolveReleaseURL maps panel-github-repository to a releases API URL.
 func resolveReleaseURL(repo string) string {
-	releaseURL := resolveRepositoryReleaseURL(repo)
-	if isOriginalManagementReleaseURL(releaseURL) {
-		return defaultManagementReleaseURL
-	}
+	releaseURL, _ := resolvePanelRelease(repo)
 	return releaseURL
 }
 
-func isOriginalManagementReleaseURL(releaseURL string) bool {
-	parsed, err := url.Parse(releaseURL)
-	if err != nil {
-		return false
+// resolvePanelRelease returns the releases API URL for panel-github-repository and
+// whether it is the default console. Empty or unrecognised values, provimux-ui and the
+// original Management Center (in any spelling, by name or numeric id) select the
+// default, provimux-ui; any other GitHub repository is kept.
+func resolvePanelRelease(repo string) (string, bool) {
+	identity, releaseURL, ok := panelRepositoryIdentity(repo)
+	if !ok || defaultPanelRepositoryIdentities[identity] {
+		return defaultManagementReleaseURL, true
 	}
-	path := strings.TrimSuffix(strings.TrimSuffix(parsed.Path, "/releases/latest"), "/")
-	path = strings.TrimSuffix(path, ".git")
-	return strings.EqualFold(parsed.Hostname()+path, originalManagementRepository)
+	return releaseURL, false
 }
 
-func resolveRepositoryReleaseURL(repo string) string {
-	repo = strings.TrimSpace(repo)
-	if repo == "" {
-		return defaultManagementReleaseURL
+// panelRepositoryIdentity normalises a GitHub repository URL or releases API URL to one
+// identity ("owner/repo" lowercased, or "#<numeric id>") and its HTTPS releases/latest
+// API URL. Scheme, host case, the default port, ".git" (any case), extra slashes and
+// trailing path parts do not change the identity.
+func panelRepositoryIdentity(repo string) (identity string, releaseURL string, ok bool) {
+	parsed, err := url.Parse(strings.TrimSpace(repo))
+	if err != nil {
+		return "", "", false
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme != "https" && scheme != "http" {
+		return "", "", false
+	}
+	if port := parsed.Port(); port != "" && !(scheme == "https" && port == "443") && !(scheme == "http" && port == "80") {
+		return "", "", false
 	}
 
-	parsed, err := url.Parse(repo)
-	if err != nil || parsed.Host == "" {
-		return defaultManagementReleaseURL
-	}
-
-	host := strings.ToLower(parsed.Host)
-	parsed.Path = strings.TrimSuffix(parsed.Path, "/")
-
-	if host == "api.github.com" {
-		if !strings.HasSuffix(strings.ToLower(parsed.Path), "/releases/latest") {
-			parsed.Path = parsed.Path + "/releases/latest"
-		}
-		return parsed.String()
-	}
-
-	if host == "github.com" {
-		parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
-		if len(parts) >= 2 && parts[0] != "" && parts[1] != "" {
-			repoName := strings.TrimSuffix(parts[1], ".git")
-			return fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/latest", parts[0], repoName)
+	var segments []string
+	for _, segment := range strings.Split(parsed.Path, "/") {
+		if segment != "" {
+			segments = append(segments, segment)
 		}
 	}
 
-	return defaultManagementReleaseURL
+	var owner, name string
+	switch strings.ToLower(parsed.Hostname()) {
+	case "github.com", "www.github.com":
+		if len(segments) < 2 {
+			return "", "", false
+		}
+		owner, name = segments[0], segments[1]
+	case "api.github.com":
+		switch {
+		case len(segments) >= 3 && strings.EqualFold(segments[0], "repos"):
+			owner, name = segments[1], segments[2]
+		case len(segments) >= 2 && strings.EqualFold(segments[0], "repositories"):
+			id, errID := strconv.ParseUint(segments[1], 10, 64)
+			if errID != nil || id == 0 {
+				return "", "", false
+			}
+			idText := strconv.FormatUint(id, 10)
+			return "#" + idText, "https://api.github.com/repositories/" + idText + "/releases/latest", true
+		default:
+			return "", "", false
+		}
+	default:
+		return "", "", false
+	}
+
+	if len(name) > len(".git") && strings.EqualFold(name[len(name)-len(".git"):], ".git") {
+		name = name[:len(name)-len(".git")]
+	}
+	if owner == "" || name == "" {
+		return "", "", false
+	}
+	identity = strings.ToLower(owner) + "/" + strings.ToLower(name)
+	releaseURL = fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/latest", url.PathEscape(owner), url.PathEscape(name))
+	return identity, releaseURL, true
 }
 
 func fetchLatestAsset(ctx context.Context, client *http.Client, releaseURL string) (*releaseAsset, string, error) {
+	release, err := fetchLatestRelease(ctx, client, releaseURL)
+	if err != nil {
+		return nil, "", err
+	}
+	asset := findReleaseAsset(release, managementAssetName)
+	if asset == nil {
+		return nil, "", fmt.Errorf("management asset %s not found in latest release", managementAssetName)
+	}
+	return asset, parseDigest(asset.Digest), nil
+}
+
+func fetchLatestRelease(ctx context.Context, client *http.Client, releaseURL string) (*releaseResponse, error) {
 	if strings.TrimSpace(releaseURL) == "" {
 		releaseURL = defaultManagementReleaseURL
 	}
@@ -413,33 +466,101 @@ func fetchLatestAsset(ctx context.Context, client *http.Client, releaseURL strin
 
 	data, err := httpfetch.GetBytes(ctx, client, releaseURL, headers, 0)
 	if err != nil {
-		return nil, "", fmt.Errorf("fetch release: %w", err)
+		return nil, fmt.Errorf("fetch release: %w", err)
 	}
 
 	var release releaseResponse
 	if err = json.Unmarshal(data, &release); err != nil {
-		return nil, "", fmt.Errorf("decode release response: %w", err)
+		return nil, fmt.Errorf("decode release response: %w", err)
 	}
-
-	for i := range release.Assets {
-		asset := &release.Assets[i]
-		if strings.EqualFold(asset.Name, managementAssetName) {
-			remoteHash := parseDigest(asset.Digest)
-			return asset, remoteHash, nil
-		}
-	}
-
-	return nil, "", fmt.Errorf("management asset %s not found in latest release", managementAssetName)
+	return &release, nil
 }
 
+func findReleaseAsset(release *releaseResponse, name string) *releaseAsset {
+	for i := range release.Assets {
+		if strings.EqualFold(release.Assets[i].Name, name) {
+			return &release.Assets[i]
+		}
+	}
+	return nil
+}
+
+// verifiedReleaseAsset returns the release's management.html and its sha256: the asset's
+// API digest when it is a valid sha256, otherwise the line in the same release's
+// checksums.txt. A release that offers neither is refused.
+func verifiedReleaseAsset(ctx context.Context, client *http.Client, release *releaseResponse) (*releaseAsset, string, error) {
+	asset := findReleaseAsset(release, managementAssetName)
+	if asset == nil {
+		return nil, "", fmt.Errorf("management asset %s not found in latest release", managementAssetName)
+	}
+	if hash := sha256FromDigest(asset.Digest); hash != "" {
+		return asset, hash, nil
+	}
+	sumsAsset := findReleaseAsset(release, managementChecksumsName)
+	if sumsAsset == nil {
+		return nil, "", fmt.Errorf("release has no sha256 digest and no %s for %s", managementChecksumsName, managementAssetName)
+	}
+	sums, _, err := downloadAsset(ctx, client, sumsAsset.BrowserDownloadURL)
+	if err != nil {
+		return nil, "", fmt.Errorf("download %s: %w", managementChecksumsName, err)
+	}
+	hash := checksumFor(sums, managementAssetName)
+	if hash == "" {
+		return nil, "", fmt.Errorf("release %s has no sha256 for %s", managementChecksumsName, managementAssetName)
+	}
+	return asset, hash, nil
+}
+
+// sha256FromDigest returns the hex sha256 of a GitHub asset digest ("sha256:<hex>"), or "".
+func sha256FromDigest(digest string) string {
+	digest = strings.TrimSpace(digest)
+	if idx := strings.Index(digest, ":"); idx >= 0 && !strings.EqualFold(digest[:idx], "sha256") {
+		return ""
+	}
+	return validSHA256(parseDigest(digest))
+}
+
+// validSHA256 returns the lowercase hex sum when it is a well-formed sha256, otherwise "".
+func validSHA256(sum string) string {
+	sum = strings.ToLower(strings.TrimSpace(sum))
+	if len(sum) != sha256.Size*2 {
+		return ""
+	}
+	if _, err := hex.DecodeString(sum); err != nil {
+		return ""
+	}
+	return sum
+}
+
+// downloadAsset fetches an asset; only HTTP 200 with a body within the size limit is accepted.
 func downloadAsset(ctx context.Context, client *http.Client, downloadURL string) ([]byte, string, error) {
 	if strings.TrimSpace(downloadURL) == "" {
 		return nil, "", fmt.Errorf("empty download url")
 	}
 
-	data, err := httpfetch.GetBytes(ctx, client, downloadURL, map[string]string{"User-Agent": httpUserAgent}, maxAssetDownloadSize)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
+	if err != nil {
+		return nil, "", fmt.Errorf("download asset: create request: %w", err)
+	}
+	req.Header.Set("User-Agent", httpUserAgent)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, "", fmt.Errorf("download asset: %w", err)
+	}
+	defer func() {
+		if errClose := resp.Body.Close(); errClose != nil {
+			log.WithError(errClose).Debug("failed to close management asset response body")
+		}
+	}()
+	if resp.StatusCode != http.StatusOK {
+		return nil, "", fmt.Errorf("download asset: unexpected status %d", resp.StatusCode)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxAssetDownloadSize+1))
+	if err != nil {
+		return nil, "", fmt.Errorf("download asset: read response: %w", err)
+	}
+	if int64(len(data)) > maxAssetDownloadSize {
+		return nil, "", fmt.Errorf("download asset: response exceeds maximum allowed size of %d bytes", maxAssetDownloadSize)
 	}
 
 	sum := sha256.Sum256(data)
