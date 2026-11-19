@@ -20,7 +20,8 @@
 #               has a terminal result and built, and the test passed and did not fail
 #               (for "[package]": the package passed). A test that failed on the rerun
 #               never has one.
-# A package that does not build on the candidate fails the check, and so does a package
+# A package that does not build on the candidate, or on the rerun, fails the check (an
+# upstream failure never waives that), and so does a package
 # without a terminal result on either tree or an exit status that does not match.
 $cand[0] as $c | $pris[0] as $p | $rerun[0] as $r | $cpkgs[0] as $cp | $ppkgs[0] as $pp
 | def pkg: split(" ")[0];
@@ -53,6 +54,7 @@ $cand[0] as $c | $pris[0] as $p | $rerun[0] as $r | $cpkgs[0] as $cp | $ppkgs[0]
    + (if $rexit != null and ($rerun_valid | not) then ["the package rerun has no valid exit status (\($rexit)); no failure counts as flaky"] else [] end)
    + (if ($new | length) > 0 then ["\($new | length) test(s) fail on the candidate, not on the tag (or fail at package level), and have no explicit pass on the package rerun"] else [] end)
    + (if ($c.build_failed | length) > 0 then ["\($c.build_failed | length) package(s) do not build on the candidate"] else [] end)
+   + (if $rexit != null and ($r.build_failed | length) > 0 then ["\($r.build_failed | length) package(s) do not build on the package rerun"] else [] end)
    + (if ($mc | length) > 0 then ["\($mc | length) package(s) without a result on the candidate"] else [] end)
    + (if ($mp | length) > 0 then ["\($mp | length) package(s) without a result on the tag"] else [] end)) as $reasons
 | {
