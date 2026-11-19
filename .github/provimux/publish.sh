@@ -95,9 +95,10 @@ gh run download "$run_id" -R "$PMX_REPO" -n "provimux-check-$tag" -D "$work/arti
   die "cannot download the artifact provimux-check-$tag of run $run_id"
 res="$work/artifact/result.json"
 bundle="$work/artifact/candidate.bundle"
-[[ -s "$res" && -s "$bundle" ]] || die "the artifact has no result.json or candidate.bundle"
+[[ -s "$res" ]] || die "the artifact has no result.json"
 r() { jq -r "$1 // empty" "$res"; }
 [[ "$(r .status)" == pass ]] || die "the check's result is '$(r .status)', not pass: $(jq -r '.reasons | join("; ")' "$res")"
+[[ -s "$bundle" ]] || die "the artifact has no candidate.bundle"
 [[ "$(r .upstream.tag)" == "$tag" ]] || die "the artifact is for '$(r .upstream.tag)', not $tag"
 [[ "$(r .tests.ok)" == true && "$(r .build.ok)" == true && "$(r .guard.ok)" == true ]] ||
   die "result.json says pass but tests/build/guard are not all ok"
