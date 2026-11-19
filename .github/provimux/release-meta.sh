@@ -1,38 +1,71 @@
 #!/usr/bin/env bash
-# Provimux release metadata, shared by provimux-release.yml and provimux-docker.yml.
+# Provimux release metadata for provimux-release.yml.
 # Tag push: GITHUB_REF_NAME = v<base>-pmx.<n>. Manual run (dry run): INPUT_VERSION =
-# <base>-pmx.<anything>, or empty for <newest base tag>-pmx.0-dryrun.
+# <base>-pmx.<anything>, or empty for <base>-pmx.0-dryrun.
 # Writes to $GITHUB_OUTPUT: base, provimux_version, go_version, commit, build_date,
 # ldflags (the archives' ldflags; main.Version = base without "v", as upstream's
-# release.yaml sets it).
+# release.yaml sets it), publish (true only for a tag push).
+#
+# <base> must be exactly the base of the tagged commit, found by the same rule as
+# guard.sh: the newest vX.Y.Z tag reachable from HEAD that is a tag of upstream
+# CLIProxyAPI (one at another commit than upstream's is an error, not skipped).
+# A tag naming any other release (an older one that is merely an ancestor, or
+# one that is not reachable) is refused, so no artifact can claim a base it is
+# not built on.
+# Env: PMX_UPSTREAM (default: upstream CPA), as for guard.sh.
 set -euo pipefail
 fail() { echo "::error::$*"; exit 1; }
 
+upstream=${PMX_UPSTREAM:-https://github.com/router-for-me/CLIProxyAPI}
+
+# --- The base of HEAD (same rule as guard.sh) ------------------------------------
+upstream_tags=$(git ls-remote --tags "$upstream" 'refs/tags/v*') ||
+  fail "Cannot list the tags of $upstream."
+upstream_commit() { # commit an upstream tag points to (peeled when annotated)
+  local t=$1 peeled plain
+  peeled=$(awk -v r="refs/tags/$t^{}" '$2==r {print $1}' <<<"$upstream_tags")
+  plain=$(awk -v r="refs/tags/$t" '$2==r {print $1}' <<<"$upstream_tags")
+  echo "${peeled:-$plain}"
+}
+base_tag=''
+for t in $(git tag --merged HEAD --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -rV); do
+  up="$(upstream_commit "$t")"
+  if [[ -z "$up" ]]; then
+    echo "Skipping tag $t: not a tag in $upstream." >&2
+  elif [[ "$up" != "$(git rev-parse "$t^{commit}")" ]]; then
+    fail "Tag $t is $(git rev-parse --short "$t^{commit}") here but ${up:0:8} in $upstream; refusing to fall back to an older base."
+  else
+    base_tag=$t
+    break
+  fi
+done
+[[ -n "$base_tag" ]] || fail "No vX.Y.Z tag reachable from HEAD matches a release tag of $upstream."
+[[ "$(git rev-parse "$base_tag^{commit}")" != "$(git rev-parse HEAD)" ]] ||
+  fail "HEAD is the upstream release $base_tag itself, not a Provimux commit."
+
+# --- The version asked for -----------------------------------------------------------
 if [[ "${GITHUB_EVENT_NAME:-}" == "push" ]]; then
+  [[ "${GITHUB_REF:-refs/tags/$GITHUB_REF_NAME}" == "refs/tags/$GITHUB_REF_NAME" ]] ||
+    fail "$GITHUB_REF is not a tag."
   [[ "$GITHUB_REF_NAME" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)-pmx\.([0-9]+)$ ]] ||
     fail "Tag $GITHUB_REF_NAME is not v<major>.<minor>.<patch>-pmx.<n>."
   base="${BASH_REMATCH[1]}"
   provimux_version="${GITHUB_REF_NAME#v}"
-  dry_run=no
+  [[ "$(git rev-parse "refs/tags/$GITHUB_REF_NAME^{commit}")" == "$(git rev-parse HEAD)" ]] ||
+    fail "Tag $GITHUB_REF_NAME is not HEAD ($(git rev-parse --short HEAD))."
+  publish=true
 else
   provimux_version="${INPUT_VERSION:-}"
   provimux_version="${provimux_version#v}"
-  if [[ -z "$provimux_version" ]]; then
-    base_tag="$(git tag --merged HEAD --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)"
-    [[ -n "$base_tag" ]] || fail "No vX.Y.Z tag reachable from HEAD."
-    provimux_version="${base_tag#v}-pmx.0-dryrun"
-  fi
+  [[ -n "$provimux_version" ]] || provimux_version="${base_tag#v}-pmx.0-dryrun"
   [[ "$provimux_version" =~ ^([0-9]+\.[0-9]+\.[0-9]+)-pmx\.[0-9A-Za-z.-]+$ ]] ||
     fail "Provimux version $provimux_version is not <base>-pmx.<n>[...]."
   base="${BASH_REMATCH[1]}"
-  dry_run=yes
+  publish=false
 fi
 
-# The base must be the CLIProxyAPI release this commit is built on.
-git rev-parse -q --verify "refs/tags/v${base}^{commit}" >/dev/null ||
-  fail "Base tag v${base} does not exist in this repository."
-git merge-base --is-ancestor "v${base}" HEAD ||
-  fail "Base tag v${base} is not an ancestor of $(git rev-parse --short HEAD)."
+[[ "v$base" == "$base_tag" ]] ||
+  fail "Version $provimux_version names base v$base, but $(git rev-parse --short HEAD) is built on $base_tag (the newest upstream release tag reachable from it). Tag it ${base_tag}-pmx.<n>."
 
 # Follow upstream's Go version: read it from the tree's own release.yaml.
 go_version="$(sed -nE "s/^[[:space:]]*GO_VERSION:[[:space:]]*['\"]?([0-9][0-9.]*)['\"]?.*$/\1/p" .github/workflows/release.yaml | head -n 1)"
@@ -53,12 +86,13 @@ out="${GITHUB_OUTPUT:-/dev/stdout}"
   echo "commit=$commit"
   echo "build_date=$build_date"
   echo "ldflags=$ldflags"
+  echo "publish=$publish"
 } >> "$out"
 {
   echo "### Provimux ${provimux_version}"
   echo
-  echo "- CLIProxyAPI base: \`${base}\`"
+  echo "- CLIProxyAPI base: \`${base}\` (newest upstream release tag reachable from the commit)"
   echo "- Go (archives, from release.yaml): \`${go_version}\`"
   echo "- Commit: \`${commit}\`, built at \`${build_date}\`"
-  echo "- Dry run: ${dry_run}"
+  echo "- Publish: ${publish}"
 } >> "${GITHUB_STEP_SUMMARY:-/dev/stderr}"
