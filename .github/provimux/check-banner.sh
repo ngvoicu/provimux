@@ -7,7 +7,7 @@
 set -euo pipefail
 binary=$1 provimux_version=$2 base_version=$3
 case "$binary" in /*|[A-Za-z]:*) ;; *) binary="$PWD/$binary" ;; esac
-expected="Provimux Version: ${provimux_version} (based on CLIProxyAPI ${base_version})"
+expected="Provimux Version: ${provimux_version} (based on CLIProxyAPI ${base_version}) by providers.dev"
 dir="$(mktemp -d)"
 out="$(cd "$dir" && "$binary" --help 2>&1 || true)"
 rm -rf "${dir:?}"
