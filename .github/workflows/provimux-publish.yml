@@ -71,6 +71,7 @@ jobs:
       action: ${{ steps.decide.outputs.action }}
       tag: ${{ steps.decide.outputs.tag }}
       artifact: ${{ steps.decide.outputs.artifact }}
+      why: ${{ steps.verify.outputs.why || steps.decide.outputs.why }}
     steps:
       # Inline, before any checkout: runs no repository code.
       - name: Verify the workflow, the check run and the current main
@@ -84,7 +85,7 @@ jobs:
           RUN_INPUT: ${{ inputs.run }}
         run: |
           set -euo pipefail
-          fail() { echo "::error title=provimux-publish refused::$*"; exit 1; }
+          fail() { echo "why=$*" >>"$GITHUB_OUTPUT"; echo "::error title=provimux-publish refused::$*"; exit 1; }
           [[ "$WORKFLOW_REF" == "$PMX_REPO/.github/workflows/provimux-publish.yml@refs/heads/main" ]] ||
             fail "this is $WORKFLOW_REF, not provimux-publish.yml on refs/heads/main"
           main="$(git ls-remote "https://github.com/$PMX_REPO.git" refs/heads/main | awk '{print $1}')"
@@ -144,7 +145,10 @@ jobs:
       contents: read
       actions: read
       checks: read
+      # publish.sh --wait closes the sync issue after a complete release.
       issues: write
+    outputs:
+      no_token: ${{ steps.token.outcome == 'failure' }}
     env:
       SHA: ${{ needs.select.outputs.sha }}
       TAG: ${{ needs.select.outputs.tag }}
@@ -153,7 +157,7 @@ jobs:
       - name: Paths
         shell: bash
         run: |
-          { echo "PLAN_DIR=$RUNNER_TEMP/pmx-plan"; echo "LOG=$RUNNER_TEMP/publish.log"; echo "STATE=$RUNNER_TEMP/publish.state"; } >>"$GITHUB_ENV"
+          { echo "PLAN_DIR=$RUNNER_TEMP/pmx-plan"; echo "LOG=$RUNNER_TEMP/publish.log"; } >>"$GITHUB_ENV"
 
       # Again, inline: main may have moved while the select job ran.
       - name: main is still the checked commit
@@ -230,9 +234,11 @@ jobs:
             -c core.hooksPath=/dev/null -c credential.helper= \
             -c 'credential.https://github.com.helper=!f() { test "$1" = get || exit 0; echo username=x-access-token; echo "password=$PMX_PUSH_TOKEN"; }; f' \
             push "${args[@]}" "https://github.com/$PMX_REPO.git" "${refs[@]}"; then
-            if [[ -z "$DRY_RUN" ]]; then echo pushed >"$STATE"; echo "Pushed."; else echo "Dry run: nothing was pushed."; fi
+            if [[ -z "$DRY_RUN" ]]; then echo "Pushed."; else echo "Dry run: nothing was pushed."; fi
           else
-            echo "publish: the push of $TAG failed; nothing was changed (atomic push)" >>"$LOG"
+            # git says the push failed; whether the remote changed (a lost acknowledgement)
+            # is read from the remote by the notify job, not assumed here.
+            echo "publish: git push of $TAG reported a failure" >>"$LOG"
             exit 1
           fi
 
@@ -243,13 +249,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: bash .github/provimux/publish.sh "$TAG" --ci --wait "$PLAN_DIR" 2>&1 | tee -a "$LOG"
 
-      - name: Tell the sync issue (refused or failed)
-        if: ${{ failure() && env.DRY_RUN == '' }}
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          OUTCOME: ${{ steps.token.outcome == 'failure' && 'no-token' || 'failed' }}
-        run: bash .github/provimux/autopublish.sh notify
+      # For the notify job: this job's log and plan (written only by main's own scripts).
+      - name: Keep the log and the plan
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: pmx-publish-log
+          path: |
+            ${{ runner.temp }}/publish.log
+            ${{ runner.temp }}/pmx-plan/plan.env
+          if-no-files-found: ignore
+          retention-days: 30
 
       - name: Summary
         if: ${{ always() }}
@@ -259,3 +269,60 @@ jobs:
             echo "### provimux-publish: $TAG from check run $CHECK_RUN on $SHA${DRY_RUN:+ (dry run)}"
             if [ -s "$LOG" ]; then grep -E '^(publish: |Published|Plan written|Closed)' "$LOG" | tr -d '`' | sed 's/^/- /' || true; fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # Every failure of select or publish (not a dry run) is told in the sync issue, by the
+  # current main's autopublish.sh notify, which reads the remote's refs and releases before
+  # it writes any instruction.
+  notify:
+    needs: [select, publish]
+    if: >-
+      ${{ always() && !(github.event_name == 'workflow_dispatch' && inputs.dry_run) &&
+      (needs.select.result == 'failure' || needs.select.result == 'cancelled' ||
+       needs.publish.result == 'failure' || needs.publish.result == 'cancelled') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+      # Inline: the current main, whose scripts tell the issue (no other code runs here).
+      - name: The current main
+        id: main
+        shell: bash
+        run: |
+          main="$(git ls-remote "https://github.com/$PMX_REPO.git" refs/heads/main | awk '{print $1}')"
+          [[ "$main" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::cannot read refs/heads/main"; exit 1; }
+          echo "sha=$main" >>"$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ steps.main.outputs.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: The checkout is that commit
+        shell: bash
+        env:
+          SHA: ${{ steps.main.outputs.sha }}
+        run: test "$(git rev-parse HEAD)" = "$SHA" || { echo "::error::checked out $(git rev-parse HEAD), not $SHA"; exit 1; }
+
+      - name: The publish job's log and plan
+        if: ${{ needs.publish.result != 'skipped' }}
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: pmx-publish-log
+          path: ${{ runner.temp }}/publish
+
+      - name: Tell the sync issue
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.select.outputs.tag || inputs.tag }}
+          OUTCOME: ${{ needs.publish.outputs.no_token == 'true' && 'no-token' || 'failed' }}
+          WHY: ${{ needs.select.outputs.why }}
+          EXPECT_MAIN: ${{ needs.select.outputs.sha }}
+          LOG: ${{ runner.temp }}/publish/publish.log
+          PLAN: ${{ runner.temp }}/publish/pmx-plan/plan.env
+        run: bash .github/provimux/autopublish.sh notify
