@@ -7,8 +7,13 @@
 #   incomplete               "sync: v<base> — release incomplete" (a v<base>-pmx.* tag
 #                            whose release is not complete and whose release run ended)
 #   unreleased               "sync: v<base> — main on base, not released"
-#   published                closes the open issue: the release is verified complete
-#   in-progress              nothing (the release run is still running)
+#   published                closes the open issue, only after this script verified it
+#                            itself: for every v<base>-pmx.* tag, the GitHub release is
+#                            public (not a draft, not a prerelease) with all its assets
+#                            and the newest provimux-release run for the tag AT THE TAG'S
+#                            COMMIT succeeded (releases_status in common.sh), and every
+#                            job of the check succeeded. Otherwise it reports what it found.
+#   in-progress              nothing (a release run for the tag's commit is still running)
 #
 # One open issue per base: an open one is edited (title and body); a comment is added
 # when the status or the candidate changed. result.json comes from a job that ran
@@ -17,7 +22,8 @@
 #
 # Env: RESULT (path to result.json; may not exist), CHECK_JOB (the check job's result:
 # success, failure, cancelled, ...), TAG_HINT (the tag the check selected, if any),
-# RUN_URL, GH_TOKEN with issues: write on PMX_REPO, PMX_REPORT_DRY_RUN=1 to print only.
+# RUN_URL, GH_TOKEN with issues: write on PMX_REPO, PMX_REPORT_DRY_RUN=1 to print only
+# (the release state is still read from GitHub).
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=common.sh
@@ -39,6 +45,8 @@ else
       reasons: ["the check job ended \"\($job)\" without a result.json (see the run log)"]}' >"$r"
 fi
 j() { jq -r "$1 // empty" "$r"; }
+# isfalse PATH: the field is the boolean false (not "missing": `false // empty` is empty).
+isfalse() { [[ "$(jq -r "$1 | tostring" "$r")" == false ]]; }
 
 status="$(j .status)"
 case "$status" in
@@ -62,6 +70,31 @@ else
   label="v${label#v}"
 fi
 base="${label#v}"
+
+# published / in-progress / incomplete: verified here, never taken from result.json.
+if [[ "$status" == published || "$status" == in-progress || "$status" == incomplete ]]; then
+  : >"$tmp/rel-reasons.txt"
+  if [[ "$label" =~ $PMX_STABLE_RE ]]; then
+    rs="$(releases_status "$base" "$tmp/releases.json" "$tmp/rel-reasons.txt")"
+  else
+    rs=error; echo '[]' >"$tmp/releases.json"; echo "'$label' is not a release tag" >"$tmp/rel-reasons.txt"
+  fi
+  case "$rs" in
+    published)
+      if [[ "$check_job" != success ]]; then
+        status=error
+        echo "the releases look complete, but the check ended \"$check_job\"; not closing" >>"$tmp/rel-reasons.txt"
+      else
+        status=published
+      fi
+      ;;
+    in-progress | incomplete) status=$rs ;;
+    none) echo "result.json says $status, but no v$base-pmx.* tag exists" >>"$tmp/rel-reasons.txt"; status=error ;;
+    *) status=error ;;
+  esac
+  jq --slurpfile rel "$tmp/releases.json" --rawfile why "$tmp/rel-reasons.txt" \
+    '.release = $rel[0] | .reasons = ($why | split("\n") | map(select(length > 0)))' "$r" >"$tmp/r3" && r="$tmp/r3"
+fi
 sha() { local v; v="$(j "$1")"; [[ "$v" =~ $PMX_SHA_RE ]] && echo "$v" || echo ""; }
 upstream_commit="$(sha .upstream.commit)"
 old_main="$(sha .old.main)"
@@ -103,7 +136,7 @@ esac
         echo
         if [[ "$nd" != 0 ]]; then echo "Patches the rebase **dropped** (accept with \`--accept-dropped <sha,...>\`):"; list '.decisions.dropped[] | "\(.commit[0:12]) \(.subject)"'; fi
         if [[ "$nc" != 0 ]]; then echo "Patches the rebase **changed** (accept with \`--accept-changed <sha,...>\`):"; list '.decisions.changed[] | "\(.commit[0:12]) \(.subject)"'; fi
-        if [[ "$nw" != 0 ]]; then echo "**New workflow files** in \`$tag\` (accept with \`--accept-workflows <path,...>\`; read \"New upstream workflow files\" in SYNC.md first):"; list '.decisions.new_workflows[]'; fi
+        if [[ "$nw" != 0 ]]; then echo "**New workflow files** in \`$tag\`: \`publish.sh\` refuses this release; follow \"New upstream workflow files\" in SYNC.md:"; list '.decisions.new_workflows[]'; fi
       fi
       echo
       echo "**Publish** (on the owner's Mac, in a worktree of \`provimux/main\`; see \`.github/provimux/SYNC.md\`):"
@@ -121,20 +154,20 @@ esac
       echo
       echo "Why:"
       list '.reasons[]?'
-      if [[ "$(jq -r '.rebase.ok // empty' "$r")" == false ]]; then
+      if isfalse .rebase.ok; then
         echo "The rebase stopped at:"
         list '.rebase | "\(.stopped_at[0:12]) \(.subject)\nconflicting files:\n" + (.conflicts | map("  " + .) | join("\n"))'
         echo "If upstream took this patch in another form, see \"Upstream took a patch in another form\" in SYNC.md."
       fi
-      if [[ "$(jq -r '.tests.ok // empty' "$r")" == false ]]; then
+      if isfalse .tests.ok; then
         echo "Tests:"
         list '.tests | (["new failures (fail on the candidate, also on the package rerun, not on the tag):"] + (.new_failures | map("  " + .))
                         + ["packages that do not build on the candidate:"] + (.candidate_build_failures | map("  " + .))
                         + ["packages without a result: candidate \(.missing_results.candidate), tag \(.missing_results.tag)"]
-                        + ["exit status: candidate \(.candidate.exit), tag \(.tag.exit)"]) | join("\n")'
+                        + ["exit status: candidate \(.candidate.exit), tag \(.tag.exit), package rerun \(.rerun.exit // "none")"]) | join("\n")'
       fi
-      if [[ "$(jq -r '.build.ok // empty' "$r")" == false ]]; then echo "Build (last lines):"; list '.build.tail'; fi
-      if [[ "$(jq -r '.guard.ok // empty' "$r")" == false ]]; then echo "Guard:"; list '.guard.output'; fi
+      if isfalse .build.ok; then echo "Build (last lines):"; list '.build.tail'; fi
+      if isfalse .guard.ok; then echo "Guard:"; list '.guard.output'; fi
       echo "Fix it by hand following \`.github/provimux/SYNC.md\`. The next check (every 3 hours, or Actions → provimux-check → Run workflow) updates this issue."
       ;;
     incomplete)
@@ -142,14 +175,14 @@ esac
       echo
       list '.reasons[]?'
       echo "Releases:"
-      list '.release[]? | "\(.tag): release \(.release), run \(.run)"'
+      list '.release[]? | "\(.tag) (\(.sha[0:12] // "?")): release \(.release), release run for that commit \(.run)"'
       echo "Rerun the failed provimux-release run (\`gh run rerun <id> --failed -R $PMX_REPO\`), then check the release (\"Check a release\" in SYNC.md). The next check closes this issue once every release is complete."
       ;;
     unreleased)
-      echo "**\`main\` is already on \`$label\` but no \`v$base-pmx.*\` tag exists.** This is the state after \`publish.sh --main-only\`."
+      echo "**\`main\` is already on \`$label\` but no \`v$base-pmx.*\` tag exists.** This is the state between the two pushes of \"New upstream workflow files\" in SYNC.md."
       echo
       list '.reasons[]?'
-      echo "Finish with \`bash .github/provimux/publish.sh $label --tags-only\` (SYNC.md)."
+      echo "Finish that procedure (push the two tags, SYNC.md)."
       ;;
   esac
   echo
@@ -176,7 +209,7 @@ number="$(head -n 1 <<<"$numbers")"
 case "$status" in
   published)
     for n in $numbers; do
-      gh issue close "$n" -R "$PMX_REPO" --comment "Verified: every \`v$base-pmx.*\` release is published with all its assets. $run_url" >/dev/null
+      gh issue close "$n" -R "$PMX_REPO" --comment "Verified: every \`v$base-pmx.*\` release is public with all its assets, and its provimux-release run for the tag's commit succeeded. $run_url" >/dev/null
       echo "Closed #$n"
     done
     [[ -n "$numbers" ]] || echo "Published; no open issue for $label."
