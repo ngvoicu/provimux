@@ -9,10 +9,16 @@
 # Order and trust:
 #   meta, catalogs, build-*, image, prepare  read-only token, checkout without a
 #       stored credential; these are the only jobs that run repository code.
-#   publish-release (contents: write), image-push and image-latest (packages:
-#       write), tap-publish (PROVIMUX_TOKEN)  no checkout, no repository script: fixed
-#       inline steps on the files the read-only jobs prepared. image-dryrun (the
-#       dry run's push rehearsal and smoke test) is read-only.
+#   provenance (a tag push): the tag's commit carries the owner's authorization for
+#       exactly this tag (commit status provimux-release/<tag>); nothing publishes
+#       without it.
+#   publish-release, release-latest (contents: write), image-push and image-latest
+#       (packages: write)  no checkout, no repository script: fixed inline steps on
+#       the files the read-only jobs prepared. image-dryrun (the dry run's push
+#       rehearsal and smoke test) is read-only.
+#   No job has a secret beyond GITHUB_TOKEN or an environment. The Homebrew tap is
+#       updated by provimux-publish (main only) from the formula that tap-check
+#       verified here; report tells a failed run in the issue "sync: v<base>".
 #   publish-release runs only when every archive and both images have built; the
 #   image tags and the formula move only after the release is public, not a
 #   prerelease, with all its assets; each promotion job checks that again first.
@@ -860,28 +866,31 @@ jobs:
           if-no-files-found: error
 
   # Release provenance (SYNC.md, "Release provenance"). Only an admin can create, move or
-  # delete a v* tag (tag ruleset), and nothing is released for a tag unless it is exactly
-  # what a provimux-publish run pushed (its record pmx-pushed, written after its push
-  # step succeeded) or what the owner recorded in the repository variable
-  # PMX_HAND_RELEASES ("<tag> <commit>" lines; only the owner can set it). Every job that
-  # publishes (publish-release and all after it, tap-publish) needs this one.
+  # delete a v* tag (tag ruleset 27670572), and nothing is released for a tag unless
+  # its commit carries the durable authorization for exactly that tag: the commit status
+  # "provimux-release/<tag>" with state success, created by the repository owner (the
+  # publish job sets it with PROVIMUX_TOKEN, publish.sh by hand with the owner's gh;
+  # GITHUB_TOKEN would create it as github-actions[bot], which does not count). It stays
+  # on the commit, so a rerun of the release at any later time finds it. Every job that
+  # publishes (publish-release and all after it) needs this one.
   provenance:
     needs: meta
     if: ${{ needs.meta.outputs.publish == 'true' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
     permissions:
       contents: read
-      actions: read
+      statuses: read
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
+      OWNER: ${{ github.repository_owner }}
       TAG: ${{ github.ref_name }}
       SHA: ${{ github.sha }}
-      HAND: ${{ vars.PMX_HAND_RELEASES }}
     steps:
-      - name: The tag is what provimux-publish pushed, or what the owner recorded
+      - name: The owner authorized exactly this tag at this commit
         run: |
+          # >>> provenance
           set -euo pipefail
           fail() { echo "::error title=provimux-release refused::$*"; exit 1; }
           [[ "$GITHUB_REF" == "refs/tags/$TAG" && "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-pmx\.[0-9]+$ && "$SHA" =~ ^[0-9a-f]{40}$ ]] ||
@@ -890,34 +899,27 @@ jobs:
           now="$(git ls-remote "https://github.com/$GH_REPO.git" "refs/tags/$TAG" "refs/tags/$TAG^{}" |
             awk -v t="refs/tags/$TAG" '$2 == t "^{}" {p = $1} $2 == t {l = $1} END {print (p != "" ? p : l)}')" || now=''
           [[ "$now" == "$SHA" ]] || fail "refs/tags/$TAG is now '$now', not this run's $SHA"
-          # 1. The owner's record.
-          while read -r t c _; do
-            if [[ "$t" == "$TAG" && "$c" == "$SHA" ]]; then echo "The owner recorded $TAG at $SHA (PMX_HAND_RELEASES)."; exit 0; fi
-          done <<<"${HAND:-}"
-          # 2. A provimux-publish run of main that pushed exactly this tag and commit. Its
-          #    record is uploaded right after its push, so wait up to 10 minutes for it.
-          tmp="$(mktemp -d)"
-          for _ in $(seq 1 20); do
-            runs="$(gh api "repos/$GH_REPO/actions/workflows/provimux-publish.yml/runs?event=workflow_run&per_page=20" \
-              --jq '.workflow_runs[] | select(.head_branch == "main" and .path == ".github/workflows/provimux-publish.yml" and .repository.full_name == env.GH_REPO) | .id')" ||
-              fail "cannot list the provimux-publish runs"
-            for run in $runs; do
-              arts="$(gh api "repos/$GH_REPO/actions/runs/$run/artifacts?name=pmx-pushed" \
-                --jq ".artifacts[] | select((.expired | not) and .workflow_run.id == $run) | .id")" || continue
-              for a in $arts; do
-                rm -rf "$tmp/a" && mkdir -p "$tmp/a"
-                if ! gh api "repos/$GH_REPO/actions/artifacts/$a/zip" >"$tmp/a/z.zip" || ! unzip -q -o "$tmp/a/z.zip" -d "$tmp/a"; then continue; fi
-                [[ "$(cat "$tmp/a/pushed.txt" 2>/dev/null)" == "$TAG $SHA" ]] || continue
-                pushed="$(gh api "repos/$GH_REPO/actions/runs/$run/jobs?filter=all&per_page=100" \
-                  --jq '[.jobs[] | select(.name == "publish") | .steps[] | select(.name == "Push (the only step with the token)" and .conclusion == "success")] | length')" || continue
-                [[ "$pushed" -ge 1 ]] || continue
-                echo "provimux-publish run $run pushed $TAG at $SHA (record: artifact $a)." | tee -a "$GITHUB_STEP_SUMMARY"
-                exit 0
-              done
-            done
-            sleep 30
+          # provimux-publish sets the status right after its push (a commit status needs the
+          # commit on GitHub), so a missing one is waited for, up to 10 minutes. A read
+          # error is not "no authorization": it stops with its own message.
+          st="$(mktemp)"
+          for _ in $(seq 1 30); do
+            gh api --paginate "repos/$GH_REPO/commits/$SHA/statuses?per_page=100" >"$st" ||
+              fail "cannot read the commit statuses of $SHA; rerun when GitHub answers"
+            ok="$(jq -rs --arg ctx "provimux-release/$TAG" --arg owner "$OWNER" \
+              '[.[][] | select(.context == $ctx)] | sort_by(.id) | last
+               | if . == null then "none"
+                 elif .state == "success" and .creator.login == $owner and .creator.type == "User" then "ok"
+                 else "\(.state) by \(.creator.login) (\(.creator.type))" end' "$st")"
+            [[ "$ok" == none && -z "${PMX_NO_WAIT:-}" ]] || break
+            sleep 20
           done
-          fail "No provimux-publish run recorded pushing $TAG at $SHA, and PMX_HAND_RELEASES does not name it: nothing is released. A tag pushed by hand is released only after the owner records it (SYNC.md, \"Release provenance\"); then rerun this run."
+          case "$ok" in
+            ok) echo "The owner authorized $TAG at $SHA (commit status provimux-release/$TAG)." | tee -a "$GITHUB_STEP_SUMMARY" ;;
+            none) fail "$SHA has no commit status provimux-release/$TAG: nothing is released. provimux-publish sets it before its push; for a tag pushed by hand the owner sets it (SYNC.md, \"Release provenance\"), then reruns this run." ;;
+            *) fail "the newest commit status provimux-release/$TAG on $SHA is $ok, not success by the owner $OWNER: nothing is released" ;;
+          esac
+          # <<< provenance
 
   # Publish the GitHub release. Assets of a published release are never replaced: a
   # rerun checks that they match this run's files and stops otherwise. A draft left
@@ -929,6 +931,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      # The release this run published and verified: release-latest promotes only it.
+      release_id: ${{ steps.publish.outputs.release_id }}
     env:
       GH_REPO: ${{ github.repository }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -939,6 +944,7 @@ jobs:
           name: release
           path: dist
       - name: Publish release
+        id: publish
         working-directory: dist
         run: |
           set -euo pipefail
@@ -1012,6 +1018,7 @@ jobs:
           # tag can no longer change. Nothing is promoted from a release that is not.
           [[ "$(gh api "repos/$GH_REPO/releases/tags/$TAG" --jq '.immutable')" == true ]] ||
             fail "Release $TAG is published but not immutable (Settings → General → Releases → immutable releases); nothing is promoted."
+          echo "release_id=$(jq -r '.[0].id' <<<"$pub")" >>"$GITHUB_OUTPUT"
           echo "Release $TAG is public and immutable with ${#want[@]} assets, all matching." | tee -a "$GITHUB_STEP_SUMMARY"
 
   # Formula/provimux.rb for ngvoicu/homebrew-tap, written without write access from
@@ -1021,6 +1028,9 @@ jobs:
     needs: [meta, prepare, publish-release]
     if: ${{ !cancelled() && needs.prepare.result == 'success' && (needs.meta.outputs.publish != 'true' || needs.publish-release.result == 'success') }}
     runs-on: ubuntu-latest
+    outputs:
+      artifact: ${{ steps.upload.outputs.artifact-id }}
+      digest: ${{ steps.upload.outputs.artifact-digest }}
     env:
       PROVIMUX_VERSION: ${{ needs.meta.outputs.provimux_version }}
       BASE_URL: ${{ needs.meta.outputs.publish == 'true' && format('https://github.com/{0}/releases/download/{1}', github.repository, github.ref_name) || '' }}
@@ -1078,6 +1088,7 @@ jobs:
           cp "$formula" formula/provimux.rb
           diff -u formula/base.rb formula/provimux.rb | tee -a "$GITHUB_STEP_SUMMARY" || true
       - uses: actions/upload-artifact@v4
+        id: upload
         with:
           name: formula
           path: formula/
@@ -1087,22 +1098,21 @@ jobs:
   # anyone sees it (the tag endpoint does not return drafts). Checked again in every
   # promotion job, right before it promotes.
   #
-  # Commit the prepared formula to ngvoicu/homebrew-tap: no checkout, no repository
-  # script. The tap only moves forward, only from the formula the file was prepared
-  # from, and only in its version, url and sha256 lines: every other line of the
-  # prepared formula must be the tap's own, the URLs must name this version's
-  # archives and each sha256 must be the release checksums.txt's for its URL. On a
-  # real run a missing secret PROVIMUX_TOKEN (fine-grained; Contents: read and write on
-  # ngvoicu/homebrew-tap) fails the job, and so does a different formula for the same
-  # version. A dry run makes every check against the tap and commits nothing.
-  tap-publish:
-    needs: [meta, formula, provenance]
-    if: ${{ !cancelled() && needs.formula.result == 'success' && (needs.meta.outputs.publish != 'true' || needs.provenance.result == 'success') }}
+  # The Homebrew tap is NOT updated here: no job of this workflow has a token beyond
+  # GITHUB_TOKEN or an environment (a tag run uses the tag's own workflow file). This
+  # job checks the prepared formula against the tap, as a dry run, and binds the formula
+  # artifact to itself (one annotation "provimux-formula-artifact: <id> formula
+  # sha256:<digest>"). provimux-publish (main only) updates the tap from exactly that
+  # artifact after this run succeeded (tap.sh artifact, tap.sh prepare); by hand,
+  # publish.sh --tap. The tap only moves forward, and only in its version, url and
+  # sha256 lines (tap.sh verify).
+  tap-check:
+    needs: [meta, formula]
+    if: ${{ !cancelled() && needs.formula.result == 'success' }}
     runs-on: ubuntu-latest
-    # PROVIMUX_TOKEN is a secret of the environment provimux-token (branch main, tags
-    # v*-pmx.*), requested only for a real tag push; a branch dry run (workflow_dispatch)
-    # requests no environment and validates the formula without the token.
-    environment: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && 'provimux-token' || '' }}
+    permissions:
+      contents: read
+      actions: read
     env:
       PROVIMUX_VERSION: ${{ needs.meta.outputs.provimux_version }}
       PUBLISH: ${{ needs.meta.outputs.publish }}
@@ -1121,118 +1131,75 @@ jobs:
           [[ "$state" == "draft=false prerelease=false immutable=true" ]] ||
             { echo "::error::Release $TAG is $state; nothing is promoted from a draft, a prerelease or a release that is not immutable."; exit 1; }
           echo "Release $TAG: $state"
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v6
         with:
-          name: formula
-          path: formula
+          sparse-checkout: .github/provimux
+          persist-credentials: false
+      - name: The formula artifact, by id
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PMX_REPO: ${{ github.repository }}
+          PMX_RUN_ID: ${{ github.run_id }}
+          ID: ${{ needs.formula.outputs.artifact }}
+          DIGEST: ${{ needs.formula.outputs.digest }}
+        run: bash .github/provimux/check.sh fetch "$ID" formula "$DIGEST" "$RUNNER_TEMP/formula"
       - uses: actions/download-artifact@v4
         if: ${{ needs.meta.outputs.publish != 'true' }}
         with:
           name: release
           path: release
-      - name: Commit the formula
+      - name: Check the formula against the tap (commits nothing)
         env:
-          TAP_TOKEN: ${{ needs.meta.outputs.publish == 'true' && secrets.PROVIMUX_TOKEN || '' }}
           CHECKSUMS_URL: ${{ format('https://github.com/{0}/releases/download/{1}/checksums.txt', github.repository, github.ref_name) }}
         run: |
           set -euo pipefail
           fail() { echo "::error::$*"; exit 1; }
-          dry=true
-          [[ "$PUBLISH" != true ]] || dry=false
-          if ! $dry && [[ -z "${TAP_TOKEN:-}" ]]; then
-            fail "Secret PROVIMUX_TOKEN (environment provimux-token) is not set, so ngvoicu/homebrew-tap is not updated to $PROVIMUX_VERSION (formula prepared in the artifact 'formula'). Set it and rerun this job."
-          fi
           git clone --depth 1 https://github.com/ngvoicu/homebrew-tap.git tap
           formula=tap/Formula/provimux.rb
-          new=formula/provimux.rb
+          new="$RUNNER_TEMP/formula/provimux.rb"
           version_of() { sed -n 's/^  version "\(.*\)"$/\1/p' "$1"; }
           current="$(version_of "$formula")"
           [[ "$(version_of "$new")" == "$PROVIMUX_VERSION" ]] || fail "The prepared formula is not for $PROVIMUX_VERSION."
           if cmp -s "$new" "$formula"; then
-            echo "The tap already has this formula ($current); nothing to push."
+            echo "The tap already has this formula ($current)."
             exit 0
           fi
           [[ "$current" != "$PROVIMUX_VERSION" ]] ||
-            fail "The tap has $PROVIMUX_VERSION with a different formula than this run's; it is left as it is."
-          if ! $dry; then
-            newest="$(printf '%s\n%s\n' "$current" "$PROVIMUX_VERSION" | sort -V | tail -n 1)"
-            if [[ "$newest" != "$PROVIMUX_VERSION" ]]; then
-              echo "::notice::The tap has $current; $PROVIMUX_VERSION is not newer, formula left as it is."
-              exit 0
-            fi
-          fi
-          cmp -s formula/base.rb "$formula" ||
-            fail "Formula/provimux.rb changed in the tap since the formula job read it; rerun the formula and tap-publish jobs."
-          # The checksums of the release (on a dry run, this run's own).
-          if $dry; then
-            cp release/checksums.txt "$RUNNER_TEMP/checksums.txt"
-          else
-            curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors -o "$RUNNER_TEMP/checksums.txt" "$CHECKSUMS_URL"
-          fi
-          # Only the version, url and sha256 lines may differ from the tap's formula.
-          awk -v v="$PROVIMUX_VERSION" '
-            function kind(l) {
-              if (l ~ /^  version "[^"]*"$/) return "version"
-              if (l ~ /^ *url "https:\/\/github\.com\/ngvoicu\/provimux\/releases\/download\/[^"]*"$/) return "url"
-              if (l ~ /^ *sha256 "[^"]*"$/) return "sha256"
-              return "other"
-            }
-            function bad(msg) { printf "::error::Formula line %d: %s\n", FNR, msg; err = 1 }
-            function indent(l) { sub(/[^ ].*/, "", l); return l }
-            function value(l) { sub(/^[^"]*"/, "", l); sub(/"$/, "", l); return l }
-            function suffix(u) { sub(/.*\/provimux_[^_]*_/, "", u); return u }
-            FILENAME == ARGV[1] { if (NF == 2) sum[$2] = $1; next }
-            FILENAME == ARGV[2] { old[++n] = $0; next }
-            {
-              m = FNR; o = old[FNR]; k = kind($0)
-              if (FNR > n) { bad("added: " $0); next }
-              if (expect != "") {
-                if (k != "sha256") bad("the line after an archive URL is not its sha256: " $0)
-                else if (value($0) != expect) bad("sha256 " value($0) " is not the checksums.txt sha256 " expect)
-                if (k == "sha256" && indent($0) != indent(o)) bad("indent changed: " $0)
-                expect = ""; next
-              }
-              if (k == "version" && $0 != "  version \"" v "\"") bad("not version " v ": " $0)
-              if (k == "url") {
-                u = value($0); f = u; sub(/.*\//, "", f)
-                if (u != "https://github.com/ngvoicu/provimux/releases/download/v" v "/provimux_" v "_" suffix(u)) bad("not an archive of " v ": " u)
-                if (kind(o) != "url" || suffix(u) != suffix(value(o)) || indent($0) != indent(o)) bad("archive URL changed beyond its version: -" o " +" $0)
-                if (!(f in sum)) bad(f " is not in checksums.txt")
-                else expect = sum[f]
-                urls++
-                next
-              }
-              if ($0 != o && !(k == "version" && kind(o) == "version")) bad("only the version, url and sha256 lines may change: -" o " +" $0)
-            }
-            END {
-              if (m != n) { print "::error::The prepared formula has " m + 0 " lines, the tap'"'"'s " n + 0 "."; err = 1 }
-              if (expect != "") { print "::error::The last archive URL has no sha256 line."; err = 1 }
-              if (urls == 0) { print "::error::The prepared formula has no archive URL."; err = 1 }
-              exit err
-            }
-          ' "$RUNNER_TEMP/checksums.txt" "$formula" "$new" || fail "The prepared formula changes more than the version, url and sha256 lines; the tap is left as it is."
-          diff -u "$formula" "$new" || true
-          if $dry; then
-            echo "Dry run: the prepared formula passes every check against ngvoicu/homebrew-tap ($current -> $PROVIMUX_VERSION); nothing is committed." | tee -a "$GITHUB_STEP_SUMMARY"
+            fail "The tap has $PROVIMUX_VERSION with a different formula than this run's."
+          if [[ "$PUBLISH" == true && "$(printf '%s\n%s\n' "$current" "$PROVIMUX_VERSION" | sort -V | tail -n 1)" != "$PROVIMUX_VERSION" ]]; then
+            echo "::notice::The tap has $current; $PROVIMUX_VERSION is not newer, the tap will stay as it is."
             exit 0
           fi
-          cp "$new" "$formula"
-          git -C tap config user.name "github-actions[bot]"
-          git -C tap config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git -C tap commit -qam "provimux ${PROVIMUX_VERSION}"
-          auth="$(printf 'x-access-token:%s' "$TAP_TOKEN" | base64 -w0)"
-          git -C tap -c http.extraheader="AUTHORIZATION: basic $auth" push https://github.com/ngvoicu/homebrew-tap.git HEAD:main
-          echo "ngvoicu/homebrew-tap: provimux $current -> $PROVIMUX_VERSION" | tee -a "$GITHUB_STEP_SUMMARY"
+          cmp -s "$RUNNER_TEMP/formula/base.rb" "$formula" ||
+            fail "Formula/provimux.rb changed in the tap since the formula job read it; rerun the formula and tap-check jobs."
+          # The checksums of the release (on a dry run, this run's own).
+          if [[ "$PUBLISH" == true ]]; then
+            curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors -o "$RUNNER_TEMP/checksums.txt" "$CHECKSUMS_URL"
+          else
+            cp release/checksums.txt "$RUNNER_TEMP/checksums.txt"
+          fi
+          bash .github/provimux/tap.sh verify "$PROVIMUX_VERSION" "$RUNNER_TEMP/checksums.txt" "$formula" "$new" ||
+            fail "The prepared formula changes more than the version, url and sha256 lines."
+          diff -u "$formula" "$new" || true
+          echo "The prepared formula passes every check against ngvoicu/homebrew-tap ($current -> $PROVIMUX_VERSION); nothing is committed here." | tee -a "$GITHUB_STEP_SUMMARY"
+      # The binding provimux-publish (tap.sh artifact) reads: only this job's annotation.
+      - name: Bind the formula artifact
+        env:
+          ID: ${{ needs.formula.outputs.artifact }}
+          DIGEST: ${{ needs.formula.outputs.digest }}
+        run: echo "::notice title=provimux-formula-artifact::$ID formula sha256:$DIGEST"
 
-  # Mark the newest Provimux release "latest" on GitHub. publish-release never does (it
-  # publishes with --latest=false; GitHub would otherwise make each newly published
+  # Mark this run's release "latest" on GitHub, only forward. publish-release never does
+  # (it publishes with --latest=false; GitHub would otherwise make every newly published
   # release latest, so an older base's -pmx.<n> published later would move it back).
-  # One job at a time across all runs (queue: max keeps every pending one, as for
-  # image-latest); it stops when the current latest cannot be read, never moves latest
-  # to an older version, and reads it back after the change.
+  # It promotes only the release id publish-release published and verified, never
+  # another release it finds. One job at a time across all runs (queue: max keeps every
+  # pending one, as for image-latest); inside that, it reads the release and the
+  # current latest, stops when either cannot be read, leaves a latest that is not older,
+  # and reads latest back after the change.
   release-latest:
     needs: [meta, publish-release]
-    if: ${{ needs.meta.outputs.publish == 'true' }}
+    if: ${{ needs.meta.outputs.publish == 'true' && needs.publish-release.outputs.release_id != '' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -1243,40 +1210,40 @@ jobs:
     env:
       GH_REPO: ${{ github.repository }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ github.ref_name }}
+      ID: ${{ needs.publish-release.outputs.release_id }}
     steps:
-      - *release-public
-      - name: Mark the newest release latest (only forward)
+      - name: Mark this release latest (only forward)
         run: |
+          # >>> latest
           set -euo pipefail
           fail() { echo "::error::$*"; exit 1; }
           re='^v[0-9]+\.[0-9]+\.[0-9]+-pmx\.[0-9]+$'
-          rels="$(gh api --paginate "repos/$GH_REPO/releases?per_page=100" \
-            --jq '.[] | select((.draft | not) and (.prerelease | not)) | "\(.tag_name) \(.id) \(.immutable)"')" ||
-            fail "Cannot list the releases; latest left as it is."
-          newest="$(awk '{print $1}' <<<"$rels" | grep -E "$re" | sort -V | tail -n 1 || true)"
-          [[ -n "$newest" ]] || fail "No published Provimux release; latest left as it is."
-          read -r _ id imm <<<"$(awk -v t="$newest" '$1 == t' <<<"$rels")"
-          [[ "$imm" == true ]] || fail "The newest release $newest is not immutable; latest left as it is."
+          [[ "$ID" =~ ^[0-9]+$ && "$TAG" =~ $re ]] || fail "No verified release id for $TAG; latest left as it is."
+          mine="$(gh api "repos/$GH_REPO/releases/$ID" --jq '"\(.tag_name) \(.draft) \(.prerelease) \(.immutable)"')" ||
+            fail "Cannot read release $ID; latest left as it is."
+          [[ "$mine" == "$TAG false false true" ]] || fail "Release $ID is '$mine', not $TAG published and immutable; latest left as it is."
           err="$(mktemp)"
-          if cur="$(gh api "repos/$GH_REPO/releases/latest" --jq .tag_name 2>"$err")"; then
-            :
+          if cur="$(gh api "repos/$GH_REPO/releases/latest" --jq '.tag_name // ""' 2>"$err")"; then
+            [[ -n "$cur" ]] || fail "The current latest release has no tag name; latest left as it is."
           elif grep -q 'HTTP 404' "$err"; then
             cur=''
           else
             fail "Cannot read the current latest release ($(head -n 1 "$err")); latest left as it is."
           fi
-          if [[ "$cur" == "$newest" ]]; then
-            echo "Latest is already $newest."
+          if [[ "$cur" == "$TAG" ]]; then
+            echo "Latest is already $TAG."
             exit 0
           fi
-          if [[ "$cur" =~ $re && "$(printf '%s\n%s\n' "$cur" "$newest" | sort -V | tail -n 1)" == "$cur" ]]; then
-            echo "::notice::Latest is $cur, not older than $newest; left as it is."
+          if [[ "$cur" =~ $re && "$(printf '%s\n%s\n' "$cur" "$TAG" | sort -V | tail -n 1)" == "$cur" ]]; then
+            echo "::notice::Latest is $cur, not older than $TAG; left as it is."
             exit 0
           fi
-          gh api -X PATCH "repos/$GH_REPO/releases/$id" -f make_latest=true >/dev/null
-          after="$(gh api "repos/$GH_REPO/releases/latest" --jq .tag_name)" || fail "Marked $newest latest, but cannot read latest back."
-          [[ "$after" == "$newest" ]] || fail "Marked $newest latest, but latest reads back as $after."
-          echo "Latest: ${cur:-none} -> $newest" | tee -a "$GITHUB_STEP_SUMMARY"
+          gh api -X PATCH "repos/$GH_REPO/releases/$ID" -f make_latest=true >/dev/null
+          after="$(gh api "repos/$GH_REPO/releases/latest" --jq '.tag_name // ""')" || fail "Marked $TAG latest, but cannot read latest back."
+          [[ "$after" == "$TAG" ]] || fail "Marked $TAG latest, but latest reads back as '$after'."
+          echo "Latest: ${cur:-none} -> $TAG"
+          # <<< latest
 
   # Push the images checked by the image job, byte for byte, by digest; then the
   # multi-arch index prepared by the prepare job; then the version tag (never moved
@@ -1326,11 +1293,15 @@ jobs:
           accept='application/vnd.oci.image.index.v1+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.docker.distribution.manifest.v2+json'
           # Digest a tag or digest resolves to; empty when it does not exist.
           ref_digest() {
-            local hdr code
+            local hdr code d
             hdr="$(mktemp)"
             code="$(curl -sS "${auth[@]}" -I -H "Accept: $accept" -D "$hdr" -o /dev/null -w '%{http_code}' "$api/manifests/$1")"
             case "$code" in
-              200) awk 'tolower($1) == "docker-content-digest:" { print $2 }' "$hdr" | tr -d '\r' ;;
+              200)
+                # A 200 without a valid digest is not "absent": stop.
+                d="$(awk 'tolower($1) == "docker-content-digest:" { print $2 }' "$hdr" | tr -d '\r')"
+                [[ "$d" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::HEAD $api/manifests/$1: HTTP 200 without a valid Docker-Content-Digest ('$d')" >&2; return 1; }
+                echo "$d" ;;
               404) ;;
               *) echo "::error::HEAD $api/manifests/$1: HTTP $code" >&2; return 1 ;;
             esac
@@ -1489,3 +1460,45 @@ jobs:
           out="$(docker run --rm --platform linux/amd64 "$ref" ./provimux --help 2>&1 || true)"
           grep -m1 '^Provimux Version:' <<<"$out"
           docker buildx imagetools inspect "$ref"
+
+  # A failed or cancelled release run reports itself in the issue "sync: v<base>" (opened
+  # when none is open), so that a failure is told even when no check or publish run
+  # looks at this base again. No checkout, no repository script.
+  report:
+    needs: [meta, catalogs, build-hosted, build-linux-glibc, build-linux-no-plugin, build-freebsd, image, prepare, provenance, publish-release, formula, tap-check, release-latest, image-push, image-latest]
+    if: ${{ always() && github.event_name == 'push' && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')) }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
+      SHA: ${{ github.sha }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      ATTEMPT: ${{ github.run_attempt }}
+    steps:
+      - name: Tell the sync issue
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)-pmx\.[0-9]+$ ]] || { echo "::error::$TAG is not v<base>-pmx.<n>"; exit 1; }
+          base="${BASH_REMATCH[1]}"
+          failed="$(gh api "repos/$GH_REPO/actions/runs/$GITHUB_RUN_ID/attempts/$ATTEMPT/jobs?per_page=100" \
+            --jq '[.jobs[] | select(.conclusion == "failure" or .conclusion == "cancelled") | "\(.name) (\(.conclusion))"] | join(", ")')" || failed="(cannot list the jobs)"
+          title="sync: v$base — release $TAG failed, owner needed"
+          marker="<!-- provimux-release $GITHUB_RUN_ID/$ATTEMPT -->"
+          # shellcheck disable=SC2016 # Markdown backticks in the text
+          body="$(printf '%s\n**The release run for `%s` (`%s`) failed.** Failed jobs: %s.\n\nNothing after the failed jobs ran. When the cause is fixed, rerun the failed jobs (published assets and tags are never replaced; every promotion only moves forward):\n\n```sh\ngh run rerun %s --failed -R %s\n```\n\nThen check the release (SYNC.md, "Check a release"). The Homebrew tap is updated by provimux-publish after a successful release run, or by `publish.sh --tap %s`.\n\nRun: %s\n' \
+            "$marker" "$TAG" "${SHA:0:12}" "$failed" "$GITHUB_RUN_ID" "$GH_REPO" "$TAG" "$RUN_URL")"
+          number="$(gh api --paginate "repos/$GH_REPO/issues?state=open&per_page=100" \
+            --jq ".[] | select(.pull_request == null) | select(.title == \"sync: v$base\" or (.title | startswith(\"sync: v$base \"))) | .number" | sort -n | head -n 1)"
+          if [[ -z "$number" ]]; then
+            gh issue create -R "$GH_REPO" --title "$title" --body "$body"
+          else
+            gh issue edit "$number" -R "$GH_REPO" --title "$title" >/dev/null
+            if ! gh api --paginate "repos/$GH_REPO/issues/$number/comments?per_page=100" --jq '.[].body' | grep -qF -- "$marker"; then
+              gh issue comment "$number" -R "$GH_REPO" --body "$body" >/dev/null
+            fi
+            echo "Reported on #$number: $title"
+          fi
