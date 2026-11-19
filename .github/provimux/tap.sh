@@ -33,6 +33,11 @@
 #       verify (above) and one commit on the tap's main with the verified formula.
 #       Prints, and writes to $GITHUB_OUTPUT: action=push|none, repo=<git dir>,
 #       lease=refs/heads/main:<tap main read>, ref=<commit>:refs/heads/main, version=, from=.
+#   tap.sh still <v<base>-pmx.<n>>
+#       Right before a push of what prepare committed (both writers): GitHub's latest read
+#       again, strictly. still=yes when it is still <tag>; still=no, with "superseded by
+#       <newest>; tap left alone", when a newer release became latest (exit 0, no push);
+#       exit 1 when unreadable or anything else. Prints, and writes to $GITHUB_OUTPUT.
 #   tap.sh check <v<base>-pmx.<n>> <dir>
 #       Read-only, for the owner (the issue "homebrew tap: <tag> needs the owner" names
 #       it): "ok" (exit 0) only when <tag> is the newest release and the tap's formula is
@@ -212,6 +217,16 @@ prepare() {
   out ref "$(t rev-parse HEAD):refs/heads/main"
 }
 
+still() {
+  local tag=$1 n
+  [[ "$tag" =~ $PMX_PMX_RE ]] || die "'$tag' is not v<base>-pmx.<n>"
+  n="$(newest)" || die "cannot read the newest release of $PMX_REPO again before the push; nothing pushed"
+  if [[ "$n" == "$tag" ]]; then out still yes; return 0; fi
+  [[ "$(version_cmp "${tag#v}" "${n#v}")" == lt ]] || die "GitHub's latest is now $n, not $tag; nothing pushed"
+  echo "tap: $tag is superseded by $n; tap left alone" >&2
+  out still no
+}
+
 check() {
   local tag=$1 dir=$2 v cur n f
   [[ "$tag" =~ $PMX_PMX_RE ]] || { echo "tap: '$tag' is not v<base>-pmx.<n>" >&2; exit 2; }
@@ -237,6 +252,7 @@ case "${1:-}" in
   release) release "${2:?}" "${3:?}" ;;
   artifact) artifact "${2:?}" "${3:?}" "${4:?}" ;;
   prepare) prepare "${2:?}" "${3:?}" "${4:-}" ;;
+  still) still "${2:?}" ;;
   check) check "${2:?}" "${3:?}" ;;
-  *) echo "usage: tap.sh verify|release|artifact|prepare|check ..." >&2; exit 2 ;;
+  *) echo "usage: tap.sh verify|release|artifact|prepare|still|check ..." >&2; exit 2 ;;
 esac
