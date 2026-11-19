@@ -8,7 +8,8 @@
 # Cases:
 #   testcmp.jq    an owner-only test failing twice while an unrelated test fails upstream;
 #                 a failing test whose package rerun does not build; a rerun with no valid
-#                 exit status; and the two waivers that must still hold (same test fails
+#                 exit status; a test first seen failing on the rerun; a package-level
+#                 failure on both trees; and the two waivers that must still hold (same test fails
 #                 on the tag; explicit pass on the rerun)
 #   guard.sh      base only upstream (no local tag); a reachable base tag withdrawn or
 #                 moved upstream; the expected base
@@ -90,6 +91,20 @@ pris="$(ev pass x/e)"
 rerun="$(ev pass x/e)"
 expect "[package] failure, package passes on the rerun: flaky" "true new= flaky=x/e [package] upstream=" "$(cmp "$cand" "$pris" "$rerun" 1 0 0 x/e)"
 expect "[package] failure, no rerun: fails the check" "false new=x/e [package] flaky= upstream=" "$(cmp "$cand" "$pris" - 1 0 null x/e)"
+# F: a transient panic in TestEarly stops the first run before TestOwnerFeature; on the
+# rerun TestEarly passes and TestOwnerFeature fails (both pass on the tag).
+cand="$(ev fail x/f TestEarly; ev fail x/f)"
+pris="$(ev pass x/f TestEarly; ev pass x/f TestOwnerFeature; ev pass x/f)"
+rerun="$(ev pass x/f TestEarly; ev fail x/f TestOwnerFeature; ev fail x/f)"
+expect "test first seen failing on the rerun: fails the check" \
+  "false new=x/f TestOwnerFeature flaky=x/f TestEarly upstream=" "$(cmp "$cand" "$pris" "$rerun" 1 0 1 x/f)"
+# G: package-level failure (setup, no test name) twice on the candidate; upstream's setup
+# fails too, for another reason. Never waived by the tag.
+cand="$(ev fail x/g)"
+pris="$(ev fail x/g)"
+rerun="$(ev fail x/g)"
+expect "package-level failure, also package-level on the tag: fails the check" \
+  "false new=x/g [package] flaky= upstream=" "$(cmp "$cand" "$pris" "$rerun" 1 1 1 x/g)"
 
 # --- fixture repositories ------------------------------------------------------------------------
 # up: "upstream" with v1.0.0 -> v1.1.0, and an unrelated commit (for a moved tag).
