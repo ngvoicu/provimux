@@ -398,7 +398,7 @@ do_run() {
 case "$mode" in
   select)
     # When there is something to check, result.json says so until run replaces it.
-    trap 'save_state; if [[ "$status" == check ]]; then write_result error "the run step did not finish (see the job log)"; else write_result; fi' EXIT
+    trap 'save_state; if [[ "$status" == check ]]; then step=run; write_result error "the run step did not finish (see the job log)"; else write_result; fi' EXIT
     do_select
     ;;
   run)
