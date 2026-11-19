@@ -12,8 +12,10 @@ info:
     - Times are RFC 3339 in UTC.
     - The server only adds properties. It never removes one or changes a type or a meaning.
       Clients ignore properties and enum values they do not know.
+    - Both report state Provimux has recorded. They do not predict what the router will do: which route
+      a request gets, whether a route is selectable now, or when a fetch is retried.
     - No response carries an API key, a token, an auth ID, a base URL beyond its host, or a
-      provider's error text other than the live-list failure message described below.
+      provider's error text. A live-list failure is a category code and an HTTP status, never error text.
 servers:
   - url: http://127.0.0.1:8317/v8/management
 security:
@@ -23,7 +25,7 @@ paths:
   /provimux/model-routes:
     get:
       operationId: provimuxModelRoutes
-      summary: Per model, every enabled login or key that can serve it
+      summary: Per model, every enabled login or key that registered it, with its recorded cooldown
       parameters:
         - name: model
           in: query
@@ -118,13 +120,17 @@ components:
       properties:
         name:
           type: [string, "null"]
-          description: Auth file name, as GET /credentials returns it. Null for a configured API key.
+          description: |
+            Auth file name, only for a login GET /credentials lists under a file. Null for a configured API key,
+            for a runtime credential (identified by auth_index only) and for a login the credentials list hides.
         email:
           type: [string, "null"]
-          description: Account email, as GET /credentials returns it. Null when there is none, and for API keys.
+          description: Account email, under the same condition as name. Null when there is none.
         label:
           type: [string, "null"]
-          description: The credential's label. For a configured key the entry's name, or "<provider>-apikey".
+          description: |
+            The credential's label, for a login under the same condition as name. For a configured key the
+            OpenAI-compatible entry's name, or "<provider>-apikey". Null for runtime credentials.
     Limits:
       type: object
       required: [context, output]
@@ -162,17 +168,25 @@ components:
           oneOf:
             - $ref: "#/components/schemas/ReasoningBudget"
             - type: "null"
-    Cooldown:
+    RecordedCooldown:
       type: object
-      description: An unexpired retry restriction that ends on its own.
-      required: [scope, reason, retry_at, remaining_seconds, http_status, backoff_level]
+      description: |
+        An unexpired cooldown as the auth manager recorded it on the credential. It is a record, not an
+        availability verdict: a route without one can still be unusable (an expired token, for example),
+        and the router decides the rest.
+      required: [scope, model, reason, until, http_status, backoff_level]
       properties:
         scope:
           type: string
           description: |
-            "credential": the whole credential is paused. "model": only this model on this credential.
+            "credential": recorded for the whole credential. "model": recorded for one model on this credential.
             Clients treat other values as unknown.
           example: model
+        model:
+          type: [string, "null"]
+          description: |
+            For scope "model", the model the cooldown is recorded under, as the auth manager keys it (prefix cut,
+            OAuth alias resolved). Null for scope "credential".
         reason:
           type: string
           description: |
@@ -180,11 +194,8 @@ components:
             transient_error, unauthorized, payment_required, not_found, model_not_supported, invalid_grant,
             cloudflare_challenge, unknown. Clients treat other values as unknown.
           example: quota
-        retry_at:
+        until:
           $ref: "#/components/schemas/Timestamp"
-        remaining_seconds:
-          type: integer
-          description: Seconds from observed_at to retry_at, rounded up.
         http_status:
           type: [integer, "null"]
           description: The provider's status behind the cooldown, when it is known and matches the reason.
@@ -192,7 +203,7 @@ components:
           type: [integer, "null"]
     ModelRoute:
       type: object
-      description: One credential serving one model.
+      description: One credential that registered one model.
       required:
         - auth_index
         - provider
@@ -202,9 +213,7 @@ components:
         - login
         - limits
         - reasoning
-        - available
-        - cooldown
-        - last_served_at
+        - recorded_cooldown
       properties:
         auth_index:
           type: [string, "null"]
@@ -220,7 +229,7 @@ components:
           example: oauth
         priority:
           type: integer
-          description: Higher is tried first.
+          description: The credential's configured priority; higher is preferred.
         host:
           type: [string, "null"]
           description: Lower-case host of an API key's base URL. No port, path, query or user info. Null for logins and for keys without a base URL.
@@ -234,23 +243,13 @@ components:
             - $ref: "#/components/schemas/Reasoning"
             - type: "null"
           description: Null when the credential declares no reasoning support for the model.
-        available:
-          type: boolean
-          description: |
-            Whether the scheduler may pick this route now. False with cooldown null is a block without a
-            timer: the login must sign in again, its token expired, or the model is disabled for it.
-        cooldown:
+        recorded_cooldown:
           oneOf:
-            - $ref: "#/components/schemas/Cooldown"
-            - type: "null"
-        last_served_at:
-          oneOf:
-            - $ref: "#/components/schemas/Timestamp"
+            - $ref: "#/components/schemas/RecordedCooldown"
             - type: "null"
           description: |
-            When this credential last completed an upstream generation attempt for this model without
-            failing. Kept in memory since last_served.recording_since, whatever usage-statistics-enabled says.
-            Null: not since then.
+            The later-ending of the credential's recorded cooldown and this model's. Null when none is recorded,
+            and for an alias pooling several upstream models (their cooldowns are recorded under their own names).
     Model:
       type: object
       required: [id, display_name, owned_by, limits, routes]
@@ -275,17 +274,10 @@ components:
             $ref: "#/components/schemas/ModelRoute"
     ModelRoutesResponse:
       type: object
-      required: [observed_at, last_served, models]
+      required: [observed_at, models]
       properties:
         observed_at:
           $ref: "#/components/schemas/Timestamp"
-        last_served:
-          type: object
-          required: [recording_since]
-          properties:
-            recording_since:
-              $ref: "#/components/schemas/Timestamp"
-              description: Since when last_served_at has been recorded; the process start.
         models:
           type: array
           description: Sorted by id. Every model at least one enabled credential registered, also while all its routes are cooling.
@@ -293,19 +285,21 @@ components:
             $ref: "#/components/schemas/Model"
     LiveListFailure:
       type: object
-      description: The latest fetch attempt, when it failed.
-      required: [at, http_status, message]
+      description: The latest fetch attempt of the login's current account, when it failed. Codes only, no error text.
+      required: [at, category, http_status]
       properties:
         at:
           $ref: "#/components/schemas/Timestamp"
+        category:
+          type: string
+          description: |
+            http_status (the provider answered with another status than 200), credentials (preparing the
+            login's credentials failed), invalid_response (the answer was not a usable model list), network
+            (no answer), other. Clients treat other values as unknown.
+          example: http_status
         http_status:
           type: [integer, "null"]
-          description: The provider's status, when the failure was one.
-        message:
-          type: [string, "null"]
-          maxLength: 200
-          description: |
-            The fetcher's error as it is written to the log, one line. Null when the server does not record it.
+          description: The provider's status, for category http_status; otherwise null.
     LiveListLogin:
       type: object
       required:
@@ -314,14 +308,11 @@ components:
         - login
         - disabled
         - source
-        - reason
         - fetching
         - fetched_at
         - listed_models
         - registered_models
         - last_failure
-        - next_retry_at
-        - refresh_due_at
       properties:
         auth_index:
           type: [string, "null"]
@@ -336,16 +327,10 @@ components:
         source:
           type: string
           description: |
-            "live": a list of this account is held and filters the login's models. "catalog": the built-in
-            catalog is used unchanged. Clients treat other values as unknown.
+            "live": models.live-lists is on and a list of this account is held, so it filters the login's models.
+            "catalog": the built-in catalog is used unchanged (the option is off, or no list of this account is
+            held). Clients treat other values as unknown.
           example: live
-        reason:
-          type: [string, "null"]
-          description: |
-            Why the source is "catalog"; null when it is "live". Known values, first that applies:
-            option_off (models.live-lists is off), login_disabled, failed (no list and a failure is waiting
-            for its retry), pending (no list yet). Clients treat other values as unknown.
-          example: pending
         fetching:
           type: boolean
           description: A fetch for this login is running now.
@@ -353,7 +338,7 @@ components:
           oneOf:
             - $ref: "#/components/schemas/Timestamp"
             - type: "null"
-          description: When the held list arrived.
+          description: When the held list of this account arrived. Null without one.
         listed_models:
           type: [integer, "null"]
           description: How many model ids the provider returned. Null without a list.
@@ -364,20 +349,12 @@ components:
           oneOf:
             - $ref: "#/components/schemas/LiveListFailure"
             - type: "null"
-          description: Null once a fetch succeeds. With source "live" it means the previous list is kept.
-        next_retry_at:
-          oneOf:
-            - $ref: "#/components/schemas/Timestamp"
-            - type: "null"
-          description: After a failure, not fetched again before this unless a refresh is forced.
-        refresh_due_at:
-          oneOf:
-            - $ref: "#/components/schemas/Timestamp"
-            - type: "null"
-          description: When the held list becomes due again. fetched_at plus timing.refresh_seconds.
+          description: |
+            The account's last fetch, when it failed; null once a fetch succeeds, and for an earlier account in the
+            same auth file. With source "live" the previous list is kept.
     LiveListsResponse:
       type: object
-      required: [observed_at, enabled, providers, timing, logins]
+      required: [observed_at, enabled, providers, logins]
       properties:
         observed_at:
           $ref: "#/components/schemas/Timestamp"
@@ -389,19 +366,6 @@ components:
           description: Providers whose logins have live lists. Logins of other providers and all API keys keep the catalog and are not listed.
           items:
             type: string
-        timing:
-          type: object
-          required: [refresh_seconds, retry_seconds, scan_seconds]
-          properties:
-            refresh_seconds:
-              type: integer
-              description: A list older than this is fetched again.
-            retry_seconds:
-              type: integer
-              description: Wait after a failed fetch.
-            scan_seconds:
-              type: integer
-              description: How often due logins are looked for; a fetch starts up to this long after it is due.
         logins:
           type: array
           description: Sorted by provider, login name, auth_index. Disabled logins included.
