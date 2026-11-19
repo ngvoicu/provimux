@@ -6,56 +6,62 @@
 
 | Piece | Where it runs | What it may do |
 |---|---|---|
-| `.github/workflows/provimux-check.yml`, job `check` (`check.sh`) | GitHub Actions | `contents: read`, nothing else. It runs upstream's and the candidate's code (build, tests). |
-| `.github/workflows/provimux-check.yml`, job `report` (`report.sh`) | GitHub Actions | `issues: write`. It runs only the default branch's scripts, never candidate code or `go`. |
+| `provimux-check.yml`, job `prepare` (`check.sh select`, `check.sh prepare`) | GitHub Actions | `contents: read`. git only: runs no repository code. |
+| `provimux-check.yml`, jobs `test (candidate)` and `test (tag)` (`check.sh tree`, `check.sh test`) | GitHub Actions | `contents: read`. The only jobs that run upstream's and the candidate's code (build, tests), one tree per job. They write only raw `go` output and decide nothing. |
+| `provimux-check.yml`, job `verdict` (`check.sh verdict`) | GitHub Actions | `contents: read`. Reads the raw output as data and writes `result.json`. Runs no repository code. |
+| `provimux-check.yml`, job `report` (`report.sh`) | GitHub Actions | `issues: write`. Runs only the run's own scripts, never candidate code or `go`. |
 | `.github/provimux/publish.sh` | the owner's Mac | Pushes `main` and the tags with the owner's `git` and `gh` credentials. |
 
 ## The check
 
-It runs every 3 hours and can be started by hand (Actions → provimux-check → Run workflow, input `tag`; or `gh workflow run provimux-check -R ngvoicu/provimux -f tag=v8.0.78`). One run at a time.
+It runs every 3 hours and can be started by hand (Actions → provimux-check → Run workflow, input `tag`; or `gh workflow run provimux-check -R ngvoicu/provimux -f tag=v8.0.78`). One run at a time. Every job checks out the run's own commit (`github.sha`, the run's `head_sha`) and runs that commit's scripts, so a run checks exactly the `main` it names.
 
-**Job `check`** (`check.sh select`, then `check.sh run`):
+**Job `prepare`** (`check.sh select`, then `check.sh prepare`; git and the API only):
 
 1. **Release.** It takes the newest *stable* release of `router-for-me/CLIProxyAPI`: published, neither a draft nor a prerelease, with a `vX.Y.Z` tag. An explicit `tag` must be a stable release too. It records the commit the tag points to.
-2. **Old base.** The base of `main` is the newest `vX.Y.Z` tag reachable from it. It must be upstream's tag at the same commit; the check never falls back to an older tag.
+2. **Old base.** The base of `main` is the newest `vX.Y.Z` tag of upstream, read from upstream's refs (`git ls-remote`), whose commit is an ancestor of `main`; no local tag is needed. If a `vX.Y.Z` tag reachable from `main` here, as new as that base or newer, was withdrawn or moved upstream, the check fails: it never falls back to an older tag. `guard.sh` and `release-meta.sh` use the same rule.
 3. **Already done?**
-   - If `v<base>-pmx.*` exists, the status is `published` when every such release is complete and its whole `provimux-release` run succeeded, `in-progress` while a release run runs, and `incomplete` otherwise (that case is reported).
+   - If `v<base>-pmx.*` exists, the status is `published` when, for every such tag, the GitHub release is public (not a draft, not a prerelease) with all its assets and the newest `provimux-release` run for that tag **at the tag's commit** succeeded; `in-progress` while such a run runs; and `incomplete` otherwise (that case is reported). A run for another commit does not count.
    - If `main` is already on the tag but no `-pmx` tag exists, the status is `unreleased` (reported).
    - If the tag does not descend from the old base, the check fails.
 4. **Rebase.** It runs `git rebase --committer-date-is-author-date <tag commit>` in a temporary worktree, never `--onto`, so the same inputs give the same candidate commit.
 5. **range-diff.** It runs `git range-diff <old base>..<old main> <new base>..<candidate>`. Patches that the rebase **dropped** (`<`) or **changed** (`!`) need the owner's decision.
-6. **Workflow files.** It compares the complete path sets of `.github/workflows/` at the old base and at the new base. Every new path (added, renamed or copied) needs the owner's decision.
-7. **Guard.** It runs `guard.sh` on the candidate with `PMX_EXPECT_BASE=<tag>` and `PMX_EXPECT_BASE_COMMIT=<commit>`. The base the guard reports must be exactly that commit.
-8. **Build.** It runs `go build ./...` on the candidate.
-9. **Tests.** It runs `go test -json ./...` on the candidate and on the pristine tag, each in a copy of the tree without `.git` (`testsum.jq`, `testcmp.jq`):
-   - The exit status of `go test` is kept. Both trees must have a terminal result (pass, fail or skip) for every package that `go list ./...` lists.
-   - Every candidate package with a failing test is rerun as a whole package.
-   - A test fails the check when it fails on the candidate, fails again in the package rerun, and does not fail on the tag. A test that the tag does not have counts against the candidate, because it is the owner's test.
-   - A package that does not build on the candidate fails the check.
-   - Tests that also fail on the tag are listed but not counted.
+6. **Workflow files.** It compares the complete path sets of `.github/workflows/` at the old base and at the new base. Every new path (added, renamed or copied) is listed, and `publish.sh` refuses such a release (see "New upstream workflow files").
+7. **Guard.** It runs `guard.sh` on the candidate with `PMX_EXPECT_BASE=<tag>` and `PMX_EXPECT_BASE_COMMIT=<commit>`. The base the guard finds must be exactly that commit.
 
-   The gate is "no worse than upstream", because upstream does not gate its releases on tests.
+**Jobs `test (candidate)` and `test (tag)`**, one runner each: the tree (`check.sh tree`, from the upstream tag and the candidate bundle, without `.git`), then `check.sh test`: `go build ./...` (candidate), `go list ./...`, `go test -json ./...`, and on the candidate every package with a failing test again, as a whole package. They keep the raw output and the exit statuses, and decide nothing.
 
-The job uploads one artifact, `provimux-check-<tag>`:
+**Job `verdict`** (`check.sh verdict`) reads that output as data (`testevents.jq`, `testsum.jq`, `testcmp.jq`):
+
+- `go build ./...` must succeed on the candidate, and every package must build.
+- The exit status of each `go test` must match its results. Both trees must have a terminal result (pass, fail or skip) for every package that `go list ./...` lists.
+- Every failure on the candidate (a test, or a package that failed without a failing test) fails the check, unless one of two waivers holds, and nothing else waives it:
+  - **baseline:** the *same* test (package and name) failed on the pristine tag. An unrelated failure upstream, or a package that failed there as a whole, waives nothing;
+  - **flaky:** the whole-package rerun has an *explicit pass* for it: the rerun exited with a valid status, its package has a result and built, and the test passed (for a package failure: the package passed). A rerun that did not build, was killed, or has no result for the test waives nothing.
+- A test that the tag does not have counts against the candidate, because it is the owner's test.
+
+The gate is "no worse than upstream", because upstream does not gate its releases on tests. Upstream always has failing tests of its own, so the waivers are exercised on every run; the issue lists them.
+
+The verdict job uploads the artifact `provimux-check-<tag>`. An artifact name is unique in a run, and the run succeeds only if this upload does, so in a successful run that artifact is the verdict job's:
 
 - `candidate.bundle`: a git bundle of `<tag commit>..candidate`;
 - `result.json`: the status (`pass`, `fail`, `error`, `published`, `in-progress`, `incomplete`, `unreleased`) and why, the upstream tag and commit, the old `main` and its base, the candidate, the dropped and changed commits, the new workflow paths, the build, guard and test results, and the range-diff;
-- `logs/`: rebase, range-diff, guard, build, and `go test -json` of both trees and of the reruns.
+- `logs/`: rebase, range-diff, guard, build, and the test summaries. The raw `go test -json` output of each tree is in the artifacts `pmx-test-candidate` and `pmx-test-tag`.
 
-**Job `report`** (`report.sh`, `if: always()`): reads the artifact, or notes that there is none, and keeps **one issue per base**, `sync: v<base> — <state>`:
+**Job `report`** (`report.sh`, `if: always()`): reads the artifact, or notes that there is none, and keeps **one issue per base**, `sync: v<base> — <state>`. A `pass` counts only when every job of the run succeeded. `published`, `in-progress` and `incomplete` are never taken from `result.json`: `report.sh` reads the releases and their release runs itself (same rule as step 3), and closes the issue only when they are published and every job of the check succeeded.
 
 | State | Meaning |
 |---|---|
 | ready to publish | The check passed. The issue gives the summary, the decisions needed and the publish command. |
 | failed | The issue gives the step and the details: the commit where the rebase stopped and the conflicting files, the failing tests, the build output, the guard output, or a check job that ended without a result. |
 | release incomplete | A `-pmx` tag exists, no release run is still running, and the release is incomplete or its `provimux-release` run did not succeed. |
-| main on base, not released | The state after `publish.sh --main-only`. |
+| main on base, not released | `main` is on the base but no `-pmx` tag exists: the state between the two pushes of "New upstream workflow files". |
 
-An open issue is updated in place. It gets a comment when its state or candidate changes. It is closed only when a check finds every `v<base>-pmx.*` release complete with a successful release run, or when `publish.sh` has verified both.
+An open issue is updated in place. It gets a comment when its state or candidate changes. It is closed only when a check finds every `v<base>-pmx.*` release complete with a successful release run for the tag's commit, or when `publish.sh` has verified both.
 
 ## Publishing: `publish.sh`
 
-Run it on the owner's Mac from a clone of `ngvoicu/provimux`, such as a scratch worktree of `provimux/main`. It changes nothing in the clone: it works in a temporary repository that borrows the clone's objects.
+Run it on the owner's Mac from a clone of `ngvoicu/provimux`, such as a scratch worktree of `provimux/main`. It changes nothing in the clone: it works in a temporary repository that borrows the clone's objects. It runs no code of the candidate or of upstream: only `git`, `gh`, `jq` and the guard of the owner's current `main`.
 
 ```sh
 git fetch provimux
@@ -67,29 +73,25 @@ cd - && git worktree remove ../pmx-publish
 
 `publish.sh` works through these steps:
 
-1. **Artifact.** It downloads `provimux-check-<tag>` from the newest successful provimux-check run on `main` (or from `--run <id>`).
+1. **Check run.** It takes the newest run with an artifact `provimux-check-<tag>` that is a `provimux-check` run of `ngvoicu/provimux`, on `main` (event `schedule` or `workflow_dispatch`), completed with conclusion `success`, and whose `head_sha` is the remote `main` now. `--run <id>` only picks among such runs. It downloads that artifact.
 2. **Re-checks.** It refuses unless all of these hold:
-   - `result.json` says `pass` (tests, build and guard ok) for this tag;
+   - `result.json` says `pass` (tests, build and guard ok) for this tag, and its old `main` is the run's `head_sha`;
    - the bundle's only head is the recorded candidate;
-   - upstream's tag still points at the recorded commit and is still a stable release;
+   - upstream's tag still points at the recorded commit and is still a stable release (and the old base tag still at its commit);
    - the remote `main` still is the recorded old `main`;
    - no `v<base>-pmx.*` exists yet.
-3. **Verifies again locally.** The check job ran untrusted code, so its claims are not taken on trust. Locally, `publish.sh` checks that:
+3. **Verifies again locally.** `result.json` is not taken on trust for the structure. Locally, `publish.sh` checks that:
    - the new base descends from the old base, and the candidate from the new base, with no merge commits;
    - the range-diff and the new workflow paths, recomputed here, match `result.json`;
-   - the old `main`'s own `guard.sh` passes on the candidate with the exact expected base.
-4. **Decisions.** Dropped patches, changed patches and new workflow paths are refused unless each one is named:
-   - `--accept-dropped <sha,...>` and `--accept-changed <sha,...>` take the old `main`'s commits, at least 7 hex digits each;
-   - `--accept-workflows <path,...>` takes the full paths.
-
-   A name that matches nothing is refused too. New workflow files also require the two-step publish below.
-5. **Plan and confirmation.** It prints what it will push and asks for confirmation (`--yes` skips the question). Then it makes **one atomic push**:
+   - the `guard.sh` of the owner's current `main` (the remote `main`, which is the old `main` and the run's `head_sha`) passes on the candidate with the exact expected base. Never the candidate's copy.
+4. **Decisions.** Dropped and changed patches are refused unless each one is named: `--accept-dropped <sha,...>` and `--accept-changed <sha,...>` take the old `main`'s commits, at least 7 hex digits each. A name that matches nothing is refused too. A release that adds or renames workflow files is refused outright: see "New upstream workflow files".
+5. **Plan and confirmation.** It prints what it will push and asks for confirmation (`--yes` skips the question). After the confirmation it runs the re-checks of step 2 again (upstream's release state and tag commit, the remote `main`, no `-pmx` tag), immediately before pushing. Then it makes **one atomic push**, always all three refs:
    - `main`, with `--force-with-lease=refs/heads/main:<recorded old main>`, a literal SHA;
    - the tag `v<base>`, at upstream's commit;
    - the tag `v<base>-pmx.1`, at the candidate.
 
    The `-pmx` tag starts `provimux-release.yml` (archives, image, GitHub release, Homebrew tap).
-6. **Wait and close.** It polls until the whole `provimux-release` run for `v<base>-pmx.1` has finished, including the image push and `tap-publish`, then prints the run's conclusion and each job's result. It closes the issue only when that run succeeded and the GitHub release is published with all 11 assets (10 archives and `checksums.txt`). If the run fails or `--timeout` (120 minutes by default) runs out, it stops and the issue stays open.
+6. **Wait and close.** It polls until the whole `provimux-release` run for `v<base>-pmx.1` at the candidate commit has finished, including the image push and `tap-publish`, then prints the run's conclusion and each job's result. It closes the issue only when that run succeeded and the GitHub release is published with all 11 assets (10 archives and `checksums.txt`). If the run fails or `--timeout` (120 minutes by default) runs out, it stops and the issue stays open.
 
 The owner's credentials do what no workflow token could: they bypass ruleset 27584853 (required check `provimux-guard`, admins only), they may push commits that change `.github/workflows/*` (gh's `workflow` scope), and their tag push starts the release workflows.
 
@@ -129,38 +131,73 @@ The issue's "decisions needed" lists the commits. A clean rebase drops a patch w
 
 ### New upstream workflow files
 
-Provimux carries upstream's workflow files unchanged and disables each one in the repository settings (`upstream-workflows.md`). A new file would run as soon as it reaches `main` if it triggers on a push, and on the tags if it triggers on tags. So never push `main` and then disable. Close the window first:
+Provimux carries upstream's workflow files unchanged and disables each one in the repository settings (`upstream-workflows.md`). A new file would run as soon as it reaches `main` if it triggers on a push, and on the tags if it triggers on tags. A workflow can only be disabled once it exists on `main`, so `publish.sh` refuses such a release and the owner publishes it by hand, in two pushes, with Actions off in between.
 
-1. Read each new file in the issue's list (`git show <tag>:<path>`).
-2. Turn Actions off for the repository. While it is off, no workflow runs, and pushes queue nothing:
+In the owner's credentialed shell this procedure runs only `git`, `gh` and `jq`: never `go`, `go test`, `publish.sh`, `guard.sh` or any other script of the repository. The checks come from the CI check run, which built, tested and guarded this candidate. To repeat a check yourself, do it in a throwaway environment without credentials (see "Run the tests without credentials").
+
+1. Take the facts from the check run, not from a local tree. The issue "ready to publish" links the run; it must be a successful `provimux-check` run on `main` whose `head_sha` is the remote `main`:
+
+   ```sh
+   run=<the run id from the issue>
+   gh api repos/ngvoicu/provimux/actions/runs/$run --jq '[.path, .event, .head_branch, .conclusion, .head_sha] | @tsv'
+   git ls-remote https://github.com/ngvoicu/provimux refs/heads/main          # must be that head_sha
+   art=$(mktemp -d) && gh run download $run -R ngvoicu/provimux -n provimux-check-v<base> -D "$art"
+   jq -r '.status, .upstream.commit, .old.main, .candidate, .decisions.new_workflows[]' "$art/result.json"
+   ```
+
+   `status` must be `pass` and `old.main` the `head_sha`. Note `upstream.commit` as `$up`, `old.main` as `$lease`, `candidate` as `$cand`.
+2. Read each new file: `git fetch https://github.com/router-for-me/CLIProxyAPI tag v<base> && git show v<base>:<path>`.
+3. Get the candidate from the bundle and look at it with git only:
+
+   ```sh
+   git fetch "$art/candidate.bundle" refs/pmx-check/candidate && [ "$(git rev-parse FETCH_HEAD)" = "$cand" ]
+   git range-diff "$(jq -r .old.base_commit "$art/result.json")..$lease" "$up..$cand"
+   ```
+4. Turn Actions off for the repository. While it is off, no workflow runs, and pushes queue nothing:
 
    ```sh
    gh api -X PUT repos/ngvoicu/provimux/actions/permissions -F enabled=false
    ```
-3. Push only `main`:
+5. Push only `main`, with the literal lease:
 
    ```sh
-   bash .github/provimux/publish.sh v<base> --main-only --accept-workflows <path,...> [--accept-...]
+   git push --atomic --force-with-lease=refs/heads/main:$lease https://github.com/ngvoicu/provimux "$cand:refs/heads/main"
    ```
-4. Disable each new workflow and check that it shows `disabled_manually`. If a workflow is not listed, don't go on; leave Actions off and investigate.
+6. Disable each new workflow and check that it shows `disabled_manually`. If a workflow is not listed, don't go on; leave Actions off and investigate.
 
    ```sh
    gh workflow disable <file name> -R ngvoicu/provimux
    gh workflow list -a -R ngvoicu/provimux
    ```
-5. Turn Actions back on. With the new workflows disabled, nothing new can run:
+7. Turn Actions back on. With the new workflows disabled, nothing new can run:
 
    ```sh
    gh api -X PUT repos/ngvoicu/provimux/actions/permissions -F enabled=true -f allowed_actions=all
    ```
-6. Push the tags. `--tags-only` requires the remote `main` to be the candidate. It then waits for the release and closes the issue:
+8. Check upstream's release once more, then push both tags in one atomic push. The `-pmx` tag starts `provimux-release.yml`:
 
    ```sh
-   bash .github/provimux/publish.sh v<base> --tags-only --accept-workflows <path,...> [--accept-...]
+   gh release view v<base> -R router-for-me/CLIProxyAPI --json isDraft,isPrerelease --jq '[.isDraft, .isPrerelease]'   # [false,false]
+   git ls-remote https://github.com/router-for-me/CLIProxyAPI "refs/tags/v<base>" "refs/tags/v<base>^{}"           # still $up
+   [ "$(git ls-remote https://github.com/ngvoicu/provimux refs/heads/main | cut -f1)" = "$cand" ] &&
+     git push --atomic https://github.com/ngvoicu/provimux "$up:refs/tags/v<base>" "$cand:refs/tags/v<base>-pmx.1"
    ```
-7. Add a row for each new workflow to `upstream-workflows.md` (a layer commit, `Provimux-Layer: branding`).
 
-Between steps 3 and 6, a check run finds `main` on the new base without a `-pmx` tag and opens "main on base, not released". `--tags-only` closes that issue.
+   Leave out `$up:refs/tags/v<base>` if Provimux already has that tag (at `$up`).
+9. Check the release ("Check a release"). The next check closes the issue once it is complete.
+10. Add a row for each new workflow to `upstream-workflows.md` (a layer commit, `Provimux-Layer: branding`).
+
+Between steps 5 and 8, a check run finds `main` on the new base without a `-pmx` tag and opens "main on base, not released"; the check after step 8 replaces it.
+
+### Run the tests without credentials
+
+When a manual procedure needs `go test` or `go build`, run it in a throwaway container that has none of the owner's credentials (no home directory, no SSH agent, no keychain), on an exported copy of the tree:
+
+```sh
+git archive <commit> | docker run --rm -i golang:<go version> sh -c 'mkdir /src && tar -x -C /src && cd /src && go build ./... && go test ./...'
+```
+
+Or push the stack to a branch of a fork and let CI run it. Never in the shell that holds the owner's `git` and `gh` credentials.
 
 ### Move a changed patch from the fork `ngvoicu/CLIProxyAPI` onto `main`
 
@@ -174,8 +211,8 @@ git checkout --detach "$layer^"                            # the top of the patc
 git rebase -i "$base"                                      # delete the PR's old commits
 git cherry-pick <first>^..<last>                           # the PR branch's commits (rebase the branch onto $base first if it is based elsewhere)
 git cherry-pick "$layer^..$lease"                          # the layer back on top
-bash .github/provimux/guard.sh
-go build ./... && go test ./...                            # in a scratch worktree, not next to a running proxy
+git show "$lease:.github/provimux/guard.sh" >"${TMPDIR:-/tmp}/guard.sh" && bash "${TMPDIR:-/tmp}/guard.sh"   # main's guard, not the branch's
+git archive HEAD | docker run --rm -i golang:<go version> sh -c 'mkdir /src && tar -x -C /src && cd /src && go build ./... && go test ./...'   # "Run the tests without credentials"
 git range-diff "$base..$lease" "$base..HEAD"               # only the PR's commits differ
 git push --force-with-lease=refs/heads/main:$lease provimux HEAD:refs/heads/main
 ```
@@ -211,7 +248,8 @@ If the release run failed, rerun its failed jobs (`gh run rerun <id> --failed -R
 
 ## Testing the scripts
 
-- `check.sh`, `report.sh` and `publish.sh` run with macOS bash 3.2.
-- `PMX_REPORT_DRY_RUN=1 RESULT=<result.json> CHECK_JOB=success bash .github/provimux/report.sh` prints the issue that a result would produce.
-- `check.sh select` alone runs no repository code.
-- `check.sh run` runs `go test ./...`. Some tests use the proxy's default port 8317, so don't run it on a machine where the proxy is serving.
+- `bash .github/provimux/selftest.sh` runs the fixture tests offline (local repositories, a stub `gh`): the test gate's waivers, the guard and `release-meta.sh` with a base only upstream or withdrawn or moved, and `report.sh` with a release run for the wrong commit and with a failure. Run it after changing any of these scripts.
+- `check.sh`, `report.sh`, `publish.sh` and `selftest.sh` run with macOS bash 3.2.
+- `PMX_REPORT_DRY_RUN=1 RESULT=<result.json> CHECK_JOB=success bash .github/provimux/report.sh` prints the issue that a result would produce (it still reads the release state from GitHub).
+- `check.sh select` and `check.sh prepare` run no repository code.
+- `check.sh test` and `check.sh` (all steps) run `go test ./...`: only in a throwaway environment without credentials (above). Some tests use the proxy's default port 8317, so don't run it on a machine where the proxy is serving.
