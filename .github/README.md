@@ -256,6 +256,23 @@ Their READMEs describe the settings.
 Provimux uses the same `config.yaml`, auth folder (`~/.cli-proxy-api`) and management console as CLIProxyAPI, so an
 existing CLIProxyAPI setup works as it is: stop CLIProxyAPI and start Provimux in its place.
 
+**Homebrew** (macOS, Apple silicon and Intel; Linux, x64 and Arm):
+
+```bash
+brew install ngvoicu/tap/provimux
+brew services start provimux
+```
+
+The config is `$(brew --prefix)/etc/provimux.conf`, created from `config.example.yaml` on first install and never
+overwritten. To reuse an existing Homebrew CLIProxyAPI setup, stop its service (both listen on port 8317 by default) and
+point Provimux at its config:
+
+```bash
+brew services stop cliproxyapi
+ln -sf "$(brew --prefix)/etc/cliproxyapi.conf" "$(brew --prefix)/etc/provimux.conf"
+brew services start provimux
+```
+
 **Release archives:** download the archive for your system from
 [Releases](https://github.com/ngvoicu/provimux/releases):
 
