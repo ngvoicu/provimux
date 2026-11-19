@@ -36,7 +36,6 @@ jobs:
       tag: ${{ steps.select.outputs.tag }}
       status: ${{ steps.run.outputs.status || steps.select.outputs.status }}
     env:
-      PMX_CHECK_OUT: ${{ runner.temp }}/check
       PMX_REPO: ${{ github.repository }}
       PMX_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       # The release may need a newer Go than main's go.mod.
@@ -50,7 +49,9 @@ jobs:
           persist-credentials: false
       # The scripts as they are on main, outside the tree the check rebases and tests.
       - name: Copy the check scripts
-        run: cp -R .github/provimux "$RUNNER_TEMP/pmx"
+        run: |
+          cp -R .github/provimux "$RUNNER_TEMP/pmx"
+          echo "PMX_CHECK_OUT=$RUNNER_TEMP/check" >> "$GITHUB_ENV"
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
