@@ -243,7 +243,7 @@ gotest() {
   [[ $waited -ge $limit ]] && e=124
   set -e
   echo "$e" >"$prefix.exit"
-  jq -R -s -f "$here/testsum.jq" "$prefix.json" >"$prefix.sum.json"
+  jq -R -c -f "$here/testevents.jq" "$prefix.json" | jq -s -f "$here/testsum.jq" >"$prefix.sum.json"
 }
 
 # sample_resources FILE: memory, load and the largest processes every 60s (Linux), until killed.
