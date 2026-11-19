@@ -1,5 +1,5 @@
 {
-  "observed_at": "2026-11-19T18:04:11Z",
+  "observed_at": "2026-11-19T18:04:11.482Z",
   "enabled": true,
   "providers": [
     "claude",
@@ -18,7 +18,7 @@
       "disabled": false,
       "source": "live",
       "fetching": false,
-      "fetched_at": "2026-11-19T16:10:44Z",
+      "fetched_at": "2026-11-19T16:10:44.207Z",
       "listed_models": 11,
       "registered_models": 9,
       "last_failure": null
@@ -34,11 +34,11 @@
       "disabled": false,
       "source": "live",
       "fetching": false,
-      "fetched_at": "2026-11-19T13:02:19Z",
+      "fetched_at": "2026-11-19T13:02:19.207Z",
       "listed_models": 11,
       "registered_models": 9,
       "last_failure": {
-        "at": "2026-11-19T18:02:20Z",
+        "at": "2026-11-19T18:02:20.207Z",
         "category": "http_status",
         "http_status": 529
       }
@@ -58,7 +58,7 @@
       "listed_models": null,
       "registered_models": 14,
       "last_failure": {
-        "at": "2026-11-19T17:58:02Z",
+        "at": "2026-11-19T17:58:02.207Z",
         "category": "http_status",
         "http_status": 401
       }

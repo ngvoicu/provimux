@@ -329,7 +329,9 @@ func provimuxValue(value *string) string {
 	return *value
 }
 
-// provimuxTime formats t as RFC 3339 in UTC.
+// provimuxTime formats t as RFC 3339 in UTC, with the fraction of a second it has: a cooldown with
+// less than a second left, or a fetch that ends within the second of a click, must not read as over
+// or as earlier.
 func provimuxTime(t time.Time) string {
-	return t.UTC().Format(time.RFC3339)
+	return t.UTC().Format(time.RFC3339Nano)
 }
