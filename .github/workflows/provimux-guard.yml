@@ -1,11 +1,5 @@
-# Provimux guard (PMX-03).
-#
-# Requests to AI providers must stay byte-identical to stock CPA except where an
-# owner patch intends otherwise. main = upstream release tag + owner patches +
-# Provimux layer. This job checks, over <base tag>..HEAD:
-#   1. once a commit carries the trailer "Provimux-Layer: branding", every later
-#      commit carries it too (the layer stays on top of the patches);
-#   2. no commit carrying the trailer touches the provider-facing paths below.
+# Provimux guard (PMX-03): Provimux-layer commits and pull requests must not change
+# the code that talks to AI providers. The checks are in .github/provimux/guard.sh.
 name: provimux-guard
 
 on:
@@ -31,40 +25,7 @@ jobs:
 
       - name: Check Provimux layer commits
         shell: bash
-        run: |
-          set -euo pipefail
-          protected='internal/runtime/executor/ internal/auth/ internal/misc/ internal/translator/ sdk/cliproxy/session/'
-
-          base=$(git tag --merged HEAD --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)
-          if [ -z "$base" ]; then
-            echo "::error::No release tag vX.Y.Z is reachable from HEAD; cannot find the base."
-            exit 1
-          fi
-          echo "Base: $base ($(git rev-parse --short "$base^{commit}")), head: $(git rev-parse --short HEAD)"
-
-          fail=0
-          in_layer=0
-          first_layer=''
-          for c in $(git rev-list --reverse --topo-order "$base..HEAD"); do
-            short=$(git rev-parse --short "$c")
-            subject=$(git log -1 --format=%s "$c")
-            if git log -1 --format='%(trailers:key=Provimux-Layer,valueonly)' "$c" | sed 's/[[:space:]]*$//' | grep -qx 'branding'; then
-              if [ "$in_layer" -eq 0 ]; then in_layer=1; first_layer=$short; fi
-              # Against the first parent: also covers a merge commit's whole change.
-              for f in $(git diff-tree -r --no-commit-id --name-only "$c^" "$c"); do
-                for p in $protected; do
-                  case "$f" in
-                    "$p"*)
-                      echo "::error::Provimux-layer commit $short (\"$subject\") touches protected path $f. Layer commits must not change anything under: $protected"
-                      fail=1 ;;
-                  esac
-                done
-              done
-            elif [ "$in_layer" -eq 1 ]; then
-              echo "::error::Commit $short (\"$subject\") has no 'Provimux-Layer: branding' trailer but follows layer commit $first_layer. Patch commits must sit below the Provimux layer; rebase it under the layer, or add the trailer if it belongs to the layer."
-              fail=1
-            fi
-          done
-
-          if [ "$fail" -ne 0 ]; then exit 1; fi
-          echo "OK: $(git rev-list --count "$base..HEAD") commits since $base; layer starts at ${first_layer:-<none>}; no layer commit touches a protected path."
+        env:
+          # Set only for pull requests: the target branch's commit.
+          PMX_TARGET: ${{ github.event.pull_request.base.sha }}
+        run: bash .github/provimux/guard.sh
