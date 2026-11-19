@@ -9,7 +9,8 @@ info:
 
     Rules of the contract:
     - Every property listed as required is always present. A value that is not known is null.
-    - Times are RFC 3339 in UTC.
+    - Times are RFC 3339 in UTC with the fraction of a second the server recorded (up to nanoseconds;
+      none when it is zero), e.g. 2026-11-19T18:04:11.482Z. Compare them as times, not as strings.
     - The server only adds properties. It never removes one or changes a type or a meaning.
       Clients ignore properties and enum values they do not know.
     - Both report state Provimux has recorded. They do not predict what the router will do: which route
@@ -112,7 +113,7 @@ components:
     Timestamp:
       type: string
       format: date-time
-      description: RFC 3339, UTC.
+      description: RFC 3339, UTC, with fractional seconds when the recorded time has them.
     Login:
       type: object
       description: How the credentials page names this credential. Never a secret.

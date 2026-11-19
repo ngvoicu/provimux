@@ -1,5 +1,5 @@
 {
-  "observed_at": "2026-11-19T18:04:11Z",
+  "observed_at": "2026-11-19T18:04:11.482Z",
   "models": [
     {
       "id": "anthropic/claude-opus-5.5",
@@ -105,7 +105,7 @@
             "scope": "model",
             "model": "claude-opus-5-5",
             "reason": "quota",
-            "until": "2026-11-19T18:31:00Z",
+            "until": "2026-11-19T18:31:00.731Z",
             "http_status": 429,
             "backoff_level": 2
           }
@@ -141,7 +141,7 @@
             "scope": "model",
             "model": "devin-opus-5-5",
             "reason": "quota",
-            "until": "2026-11-19T19:00:00Z",
+            "until": "2026-11-19T19:00:00.731Z",
             "http_status": null,
             "backoff_level": null
           }
