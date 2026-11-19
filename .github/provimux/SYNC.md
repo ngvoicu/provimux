@@ -31,6 +31,7 @@ It runs every 3 hours and can be started by hand (Actions → provimux-check →
 5. **range-diff.** It runs `git range-diff <old base>..<old main> <new base>..<candidate>`. Patches that the rebase **dropped** (`<`) or **changed** (`!`) need the owner's decision.
 6. **Workflow files.** It compares the complete path sets of `.github/workflows/` at the old base and at the new base. Every new path (added, renamed or copied) is listed, and `publish.sh` refuses such a release (see "New upstream workflow files").
 7. **Guard.** It runs `guard.sh` on the candidate with `PMX_EXPECT_BASE=<tag>` and `PMX_EXPECT_BASE_COMMIT=<commit>`. The base the guard finds must be exactly that commit.
+8. **Tested tree = released tree.** The test jobs build and test `git archive` of each commit; the release builds a checkout of it. For the candidate and the tag, `archive_matches` (`common.sh`) compares the archive's files with the commit's tree: names, blob ids (hashed without filters) and modes (regular, executable, symlink; submodules are in neither). Any difference, for example `export-ignore` or `export-subst` in upstream's `.gitattributes`, fails the check, and `logs/archive-<tree>.txt` lists it. `check.sh tree` makes the same comparison on the tree it hands to the tests and stops on a difference.
 
 **Jobs `test (candidate)` and `test (tag)`**, one runner each: the tree (`check.sh tree`, from the upstream tag and the candidate bundle, without `.git`), then `check.sh test`: `go build ./...` (candidate), `go list ./...`, `go test -json ./...`, and on the candidate every package with a failing test again, as a whole package. They keep the raw output and the exit statuses, and decide nothing.
 
@@ -79,14 +80,18 @@ An open issue is updated in place. It gets a comment when its state or candidate
 3. **`PROVIMUX_TOKEN` is set**: if not, red with that message; nothing is pushed.
 4. **Push**, the only step with the token: inline, it reads the plan (each value checked against its pattern; the old `main` must be the checked commit) and runs one `git push --atomic --force-with-lease=refs/heads/main:<that commit>` of `main` and the tags from the plan's bare repository, with `core.hooksPath=/dev/null`, no global or system git config, and a credential helper that reads the token from that process's environment (never a file, URL, argument or log). On a dry run it is `git push --dry-run`.
 5. **Wait** (`publish.sh --ci --wait <dir>`, no token): waits for the whole `provimux-release` run of the `-pmx.1` tag at the candidate and the complete release, then closes the issue with the release link, as by hand.
-6. **Tell the sync issue** (`autopublish.sh notify`, only after a refusal or failure, not on a dry run): it retitles `sync: v<base>` and comments the `publish:` reasons:
-   - `ready, publishing waits for PROVIMUX_TOKEN`: the secret is missing;
-   - `publish refused, owner needed`: nothing was pushed (dropped or changed patches, new workflow files, `main` moved since the check, upstream release withdrawn or moved, a verification mismatch, a failed push);
-   - `pushed, release not complete`: the push happened but the release run failed or the wait timed out (see "Check a release").
 
-   The run stays red. Each distinct reason is commented once, so a check that passes again every 3 hours and meets the same refusal only resets the title. A refusal in job `select` (a check of an older `main`) touches no issue: it runs before any repository script.
+**Job `notify`** (after any failure or cancellation of `select` or `publish`, not on a dry run; `issues: write`): it checks out the *current* `main` (inline `git ls-remote` first, then a `HEAD` check) and runs its `autopublish.sh notify`, with the select job's reason and the publish job's log and plan (artifact `pmx-publish-log`). Before writing any instruction it reads the remote: `main`, `v<base>`, every `v<base>-pmx.*` with its release and its release run for the tag's commit. Then it retitles `sync: v<base>` and comments what is true there, the reasons, and what to do:
+- a `-pmx` tag exists: `released` (complete; nothing to do), `pushed, release running` (wait), or `pushed, release not complete, owner needed` with the `gh run rerun <id> --failed` command (never "publish again": an automatic retry skips the existing tag and `publish.sh` refuses it). This also covers a push whose acknowledgement was lost: the remote decides, not the run;
+- no `-pmx` tag and `main` is the checked commit (or the run stopped before its push): `ready, publishing waits for PROVIMUX_TOKEN` (the secret is missing) or `publish refused, owner needed` (dropped or changed patches, new workflow files, upstream release withdrawn or moved, a verification mismatch, a failed push), with the commands to publish by hand;
+- no `-pmx` tag and `main` is this run's candidate: `main pushed without its tags, owner needed`, with the tag push;
+- no `-pmx` tag and `main` is another commit: `main moved, waits for the next check` (no action);
+- the remote cannot be read: `publish failed, state unknown, owner needed` (look before acting);
+- the run failed before it knew the tag: a comment on the one open `sync: v*` issue, or the issue `provimux-publish: failed`.
 
-**By hand:** Actions → provimux-publish → Run workflow on `main`, input `tag`, optional `run` (empty: the newest successful check run on the current `main`), `dry_run` (default on: everything including `git push --dry-run` with the token; no wait, no issue change). It goes through exactly the same steps and the same artifact lookup.
+The run stays red. Each distinct state and reason is commented once, so a check that passes again every 3 hours and meets the same refusal only resets the title.
+
+**By hand:** Actions → provimux-publish → Run workflow on `main`, input `tag`, optional `run` (empty: the newest successful check run on the current `main`), `dry_run` (default on: everything including `git push --dry-run` with the token; no wait, no issue change). A typed tag that already has a `v<base>-pmx.*` tag is refused (red) before any check run is read. It goes through exactly the same steps and the same artifact lookup.
 
 Why a token of the owner and not `GITHUB_TOKEN`: events caused by `GITHUB_TOKEN` start no workflow runs (except `workflow_dispatch` and `repository_dispatch`), so its tag push would start no `provimux-release` run; and `GITHUB_TOKEN` has no `workflows` permission, which pushing commits that change `.github/workflows/` needs (a rebase onto a new upstream release usually does). The owner's token also bypasses ruleset 27584853 as the owner's own pushes do (bypass: repository admins).
 
@@ -312,7 +317,7 @@ If the release run failed, rerun its failed jobs (`gh run rerun <id> --failed -R
 
 ## Testing the scripts
 
-- `bash .github/provimux/selftest.sh` runs the fixture tests offline (local repositories, a stub `gh`): the test gate's waivers, the guard and `release-meta.sh` with a base only upstream or withdrawn or moved, `report.sh` with a release run for the wrong commit and with a failure, `autopublish.sh` (which check runs publish, the issue text after a refusal) and `publish.sh --ci` without its token. Run it after changing any of these scripts.
+- `bash .github/provimux/selftest.sh` runs the fixture tests offline (local repositories, a stub `gh`): the test gate's waivers, the guard and `release-meta.sh` with a base only upstream or withdrawn or moved, `report.sh` with a release run for the wrong commit and with a failure, `archive_matches` (`export-ignore`, `export-subst`, executables, symlinks), `autopublish.sh` (which check runs publish, a typed tag already released, the issue text for each remote state) and `publish.sh --ci`. Run it after changing any of these scripts.
 - `check.sh`, `report.sh`, `publish.sh`, `autopublish.sh` and `selftest.sh` run with macOS bash 3.2.
 - `PMX_NOTIFY_DRY_RUN=1 TAG=v8.0.78 OUTCOME=failed LOG=<publish log> bash .github/provimux/autopublish.sh notify` prints what a refusal would write in the issue.
 - `PMX_REPORT_DRY_RUN=1 RESULT=<result.json> CHECK_JOB=success bash .github/provimux/report.sh` prints the issue that a result would produce (it still reads the release state from GitHub).
