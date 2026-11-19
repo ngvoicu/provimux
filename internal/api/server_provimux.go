@@ -7,4 +7,5 @@ import "github.com/gin-gonic/gin"
 // Stock CLIProxyAPI has none of them, so the console takes a 404 as "not a Provimux server".
 func (s *Server) registerProvimuxRoutes(v8 *gin.RouterGroup) {
 	v8.GET("/provimux/model-routes", s.mgmt.ProvimuxModelRoutes)
+	v8.GET("/provimux/live-lists", s.mgmt.ProvimuxLiveLists)
 }
