@@ -167,6 +167,7 @@ jobs:
       # The artifact publish.sh reads. The run succeeds only if this upload does, and an
       # artifact name is unique in a run, so a run that succeeded has this job's copy.
       - uses: actions/upload-artifact@v4
+        id: upload
         if: ${{ always() }}
         with:
           name: provimux-check-${{ needs.prepare.outputs.tag || 'none' }}
@@ -175,6 +176,17 @@ jobs:
             ${{ runner.temp }}/check/candidate.bundle
             ${{ runner.temp }}/check/logs/
           if-no-files-found: warn
+      # Binds the artifact to this job: publish.sh and autopublish.sh (check_artifact in
+      # common.sh) take only the artifact this annotation names, the only one of this
+      # title on this job. The test jobs can upload artifacts too, but cannot annotate
+      # this job; a second annotation of this title (from any output) fails the lookup.
+      - name: Bind the artifact to the verdict
+        if: ${{ always() && steps.upload.outputs.artifact-id != '' }}
+        env:
+          ID: ${{ steps.upload.outputs.artifact-id }}
+          NAME: provimux-check-${{ needs.prepare.outputs.tag || 'none' }}
+          DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        run: echo "::notice title=provimux-check-artifact::$ID $NAME${DIGEST:+ sha256:$DIGEST}"
 
   report:
     needs: [prepare, test, verdict]
