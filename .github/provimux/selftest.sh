@@ -9,7 +9,8 @@
 #   testcmp.jq    an owner-only test failing twice while an unrelated test fails upstream;
 #                 a failing test whose package rerun does not build; a rerun with no valid
 #                 exit status; a test first seen failing on the rerun; a package-level
-#                 failure on both trees; and the two waivers that must still hold (same test fails
+#                 failure on both trees; a package rerun that does not build after an
+#                 upstream-waived failure; and the two waivers that must still hold (same test fails
 #                 on the tag; explicit pass on the rerun)
 #   guard.sh      base only upstream (no local tag); a reachable base tag withdrawn or
 #                 moved upstream; the expected base
@@ -105,6 +106,14 @@ pris="$(ev fail x/g)"
 rerun="$(ev fail x/g)"
 expect "package-level failure, also package-level on the tag: fails the check" \
   "false new=x/g [package] flaky= upstream=" "$(cmp "$cand" "$pris" "$rerun" 1 1 1 x/g)"
+# H: the same named test fails on the tag, and the candidate's package rerun fails to
+# build: the baseline waiver holds for the test, but the build failure fails the check.
+cand="$(ev fail x/h TestUp; ev fail x/h)"
+pris="$(ev fail x/h TestUp; ev fail x/h)"
+rerun='{"Action":"build-fail","ImportPath":"x/h [x/h.test]"}
+{"Action":"fail","Package":"x/h","FailedBuild":"x/h [x/h.test]"}'
+expect "upstream-waived failure whose package rerun fails to build: fails the check" \
+  "false new= flaky= upstream=x/h TestUp" "$(cmp "$cand" "$pris" "$rerun" 1 1 1 x/h)"
 
 # --- fixture repositories ------------------------------------------------------------------------
 # up: "upstream" with v1.0.0 -> v1.1.0, and an unrelated commit (for a moved tag).
