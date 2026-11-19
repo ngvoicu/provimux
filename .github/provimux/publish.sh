@@ -78,7 +78,7 @@ pmx_tag="v$base-pmx.1"
 
 # --- CI: the push credential, from the environment only -------------------------------
 if [[ $ci -eq 1 ]]; then
-  [[ -n "${PMX_PUSH_TOKEN:-}" ]] || die "--ci: no token in PMX_PUSH_TOKEN (the repository secret PUBLISH_TOKEN is not set; SYNC.md, \"The token\"); nothing pushed"
+  [[ -n "${PMX_PUSH_TOKEN:-}" ]] || die "--ci: no token in PMX_PUSH_TOKEN (the repository secret PROVIMUX_TOKEN is not set; SYNC.md, \"The token\"); nothing pushed"
   [[ $yes -eq 1 || $dry_run -eq 1 ]] || die "--ci needs --yes or --dry-run (there is no terminal to confirm on)"
   export GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never
   # The helper is a shell function in the config value; it prints the token from the
