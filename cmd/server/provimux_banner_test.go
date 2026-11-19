@@ -20,11 +20,11 @@ func TestProvimuxBannerShowsDisplayVersion(t *testing.T) {
 		name, ldflags, want string
 	}{
 		{"no provimux flag", "-X main.Version=8.0.77",
-			"Provimux Version: 8.0.77 (based on CLIProxyAPI 8.0.77), Commit: none, BuiltAt: unknown"},
+			"Provimux Version: 8.0.77 (based on CLIProxyAPI 8.0.77) by providers.dev, Commit: none, BuiltAt: unknown"},
 		{"empty provimux flag", "-X main.Version=8.0.77 " + pmxFlag,
-			"Provimux Version: 8.0.77 (based on CLIProxyAPI 8.0.77), Commit: none, BuiltAt: unknown"},
+			"Provimux Version: 8.0.77 (based on CLIProxyAPI 8.0.77) by providers.dev, Commit: none, BuiltAt: unknown"},
 		{"provimux version", "-X main.Version=8.0.77 " + pmxFlag + "8.0.77-pmx.1",
-			"Provimux Version: 8.0.77-pmx.1 (based on CLIProxyAPI 8.0.77), Commit: none, BuiltAt: unknown"},
+			"Provimux Version: 8.0.77-pmx.1 (based on CLIProxyAPI 8.0.77) by providers.dev, Commit: none, BuiltAt: unknown"},
 	}
 	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
