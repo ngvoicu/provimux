@@ -10,18 +10,18 @@
 #
 # Runs only git, gh and jq: no code of the candidate or of upstream.
 #
-# decide, env: PMX_EVENT (workflow_run | workflow_dispatch); for workflow_run PMX_CHECK_RUN
-# (the provimux-check run id); for workflow_dispatch PMX_TAG_INPUT (vX.Y.Z) and
-# PMX_RUN_INPUT (optional run id). GH_TOKEN with actions: read.
-#   workflow_run: skip (green) unless the run is a successful provimux-check run of
-#   PMX_REPO on main (schedule or workflow_dispatch) whose artifact provimux-check-<tag>
-#   has result.json status "pass" for that tag and no v<base>-pmx.* exists yet; then
-#   publish <tag> with --run <that run>. The tag comes from the artifact, never from
-#   free text. Exit 1 when the run or artifact is malformed.
-#   workflow_dispatch: publish the given tag (publish.sh picks or checks the run).
-#
-# notify, env: TAG, OUTCOME (no-token | failed), LOG (publish.sh's output; may not
-# exist), STATE (file publish.sh writes "pushed" to after its push; may not exist),
+# decide, env: PMX_CHECK_RUN (the provimux-check run id the workflow's first step chose and
+# verified), PMX_EXPECT_MAIN (the current main, = that run's head_sha, = the checkout),
+# PMX_TAG_INPUT (workflow_dispatch: the tag the owner typed; it only confirms the tag of the
+# run's result). GH_TOKEN with actions: read and checks: read.
+#   Skip (green) unless the run is a successful provimux-check run of PMX_REPO on main
+#   (schedule or workflow_dispatch) at PMX_EXPECT_MAIN whose verdict artifact (the one
+#   its verdict job bound to itself: check_artifact in common.sh) is provimux-check-<tag>
+#   with result.json status "pass" for that tag, and no v<base>-pmx.* exists yet; then
+#   publish <tag> from that run. Exit 1 when the run or its artifact is malformed, or when
+#   a typed tag differs from the result's.
+# notify, env: TAG, OUTCOME (no-token | failed), LOG (publish.sh's output and the push
+# step's message; may not exist), STATE (file the push step writes "pushed" to; may not exist),
 # RUN_URL, GH_TOKEN with issues: write. PMX_NOTIFY_DRY_RUN=1 prints instead.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -33,40 +33,33 @@ skip() { out action skip; out why "$1"; exit 0; }
 die() { echo "autopublish: $*" >&2; out action error; out why "$*"; exit 1; }
 
 decide() {
-  local tmp names tag status
-  case "${PMX_EVENT:-}" in
-    workflow_dispatch)
-      [[ "${PMX_TAG_INPUT:-}" =~ $PMX_STABLE_RE ]] || die "input tag '${PMX_TAG_INPUT:-}' is not vX.Y.Z"
-      [[ -z "${PMX_RUN_INPUT:-}" || "$PMX_RUN_INPUT" =~ ^[0-9]+$ ]] || die "input run '$PMX_RUN_INPUT' is not a run id"
-      out action publish; out tag "$PMX_TAG_INPUT"; out run "${PMX_RUN_INPUT:-}"; out why "dispatched"
-      return 0 ;;
-    workflow_run) ;;
-    *) die "unknown event '${PMX_EVENT:-}'" ;;
-  esac
+  local tmp bound name tag status
   [[ "${PMX_CHECK_RUN:-}" =~ ^[0-9]+$ ]] || die "no check run id"
+  [[ "${PMX_EXPECT_MAIN:-}" =~ $PMX_SHA_RE ]] || die "no expected main"
+  [[ -z "${PMX_TAG_INPUT:-}" || "$PMX_TAG_INPUT" =~ $PMX_STABLE_RE ]] || die "input tag '${PMX_TAG_INPUT:-}' is not vX.Y.Z"
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/provimux-autopublish.XXXXXX")"
   # shellcheck disable=SC2064 # expand now
   trap "rm -rf '${tmp:?}'" EXIT
   gh api "repos/$PMX_REPO/actions/runs/$PMX_CHECK_RUN" >"$tmp/run.json" || die "cannot read run $PMX_CHECK_RUN"
   jq -e --arg repo "$PMX_REPO" "$PMX_CHECK_RUN_OK" "$tmp/run.json" >/dev/null ||
     skip "run $PMX_CHECK_RUN is not a successful provimux-check run of $PMX_REPO on main"
-  names="$(gh api "repos/$PMX_REPO/actions/runs/$PMX_CHECK_RUN/artifacts?per_page=100" \
-    --jq '.artifacts[] | select(.expired | not) | .name' | grep -E '^provimux-check-' || true)"
-  [[ -n "$names" ]] || die "run $PMX_CHECK_RUN has no artifact provimux-check-*"
-  [[ "$(wc -l <<<"$names" | tr -d ' ')" == 1 ]] || die "run $PMX_CHECK_RUN has more than one artifact provimux-check-*"
-  [[ "$names" == provimux-check-none ]] && skip "the check selected no release"
-  tag="${names#provimux-check-}"
-  [[ "$tag" =~ $PMX_STABLE_RE ]] || die "artifact '$names' does not name a vX.Y.Z tag"
-  gh run download "$PMX_CHECK_RUN" -R "$PMX_REPO" -n "$names" -D "$tmp/a" >/dev/null ||
-    die "cannot download $names of run $PMX_CHECK_RUN"
-  [[ -s "$tmp/a/result.json" ]] || die "$names has no result.json"
-  status="$(jq -r '.status // "" | tostring' "$tmp/a/result.json")" || die "$names: result.json is not JSON"
+  [[ "$(jq -r .head_sha "$tmp/run.json")" == "$PMX_EXPECT_MAIN" ]] ||
+    die "run $PMX_CHECK_RUN checked $(jq -r .head_sha "$tmp/run.json"), not the current main $PMX_EXPECT_MAIN"
+  bound="$(check_artifact "$PMX_CHECK_RUN" "$tmp/a" 2>"$tmp/err")" || die "run $PMX_CHECK_RUN: $(cat "$tmp/err")"
+  name="${bound#* }"
+  [[ "$name" != provimux-check-none ]] || skip "the check selected no release"
+  tag="${name#provimux-check-}"
+  [[ -s "$tmp/a/result.json" ]] || die "$name has no result.json"
+  status="$(jq -r '.status // "" | tostring' "$tmp/a/result.json")" || die "$name: result.json is not JSON"
+  [[ "$(jq -r '.upstream.tag // ""' "$tmp/a/result.json")" == "$tag" ]] || die "$name: result.json is for another tag"
+  [[ -z "${PMX_TAG_INPUT:-}" || "$PMX_TAG_INPUT" == "$tag" ]] ||
+    die "run $PMX_CHECK_RUN checked $tag, not the requested $PMX_TAG_INPUT"
   [[ "$status" == pass ]] || skip "the check's status for $tag is '$(tr -cd 'a-z-' <<<"$status")', not pass"
-  [[ "$(jq -r '.upstream.tag // ""' "$tmp/a/result.json")" == "$tag" ]] || die "$names: result.json is for another tag"
   if [[ -n "$(git ls-remote --tags "$PMX_REPO_URL" "refs/tags/${tag}-pmx.*")" ]]; then
     skip "${tag}-pmx.* already exists"
   fi
-  out action publish; out tag "$tag"; out run "$PMX_CHECK_RUN"; out why "check run $PMX_CHECK_RUN passed for $tag"
+  out action publish; out tag "$tag"; out run "$PMX_CHECK_RUN"; out artifact "${bound%% *}"
+  out why "check run $PMX_CHECK_RUN passed for $tag (verdict artifact ${bound%% *}, main $PMX_EXPECT_MAIN)"
 }
 
 notify() {
@@ -83,7 +76,7 @@ notify() {
     title="sync: $tag — ready, publishing waits for PROVIMUX_TOKEN"
     key="no-token"
     {
-      echo "**Automatic publishing waits for the token.** The check passed, but the repository secret \`PROVIMUX_TOKEN\` is not set, so \`provimux-publish\` pushed nothing."
+      echo "**Automatic publishing waits for the token.** The check passed, but the secret \`PROVIMUX_TOKEN\` of the environment \`provimux-publish\` is not set, so \`provimux-publish\` pushed nothing."
       echo
       echo "The owner either creates the token (SYNC.md, \"The token\"; the next passing check publishes), or publishes by hand (SYNC.md, \"Publishing by hand\"):"
     } >"$tmp/main.md"
