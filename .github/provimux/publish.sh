@@ -6,16 +6,18 @@
 #
 #   publish.sh <vX.Y.Z> [--dry-run] [--yes] [--run <id>] [--expect-main <sha>] [--remote <name>]
 #              [--accept-dropped <sha,...>] [--accept-changed <sha,...>] [--timeout <minutes>]
-#   publish.sh <vX.Y.Z> --ci --plan <dir> --run <id> --expect-main <sha>   (provimux-publish.yml)
-#   publish.sh <vX.Y.Z> --ci --wait <dir>                                   (provimux-publish.yml)
+#   publish.sh <vX.Y.Z> --ci --plan <dir> --run <id> --attempt <n> --artifact <id> --expect-main <sha>
+#   publish.sh <vX.Y.Z> --ci --wait <dir>                    (both: provimux-publish.yml)
 #
 # 1. Picks the check run: a provimux-check run of this repository, on main (event schedule
 #    or workflow_dispatch), completed with conclusion success, whose head_sha is the
 #    remote main now (and --expect-main, when given); the newest such run whose verdict
-#    artifact is provimux-check-<tag> (--run only picks among such runs). The artifact is
-#    the one the run's verdict job bound to itself (check_artifact in common.sh), never
-#    one found by name. Verifies it: result.json says pass for this tag and its old main
-#    is the run's head_sha; the bundle's tip is result.json's candidate.
+#    artifact is provimux-check-<tag> (--run only picks among such runs). The run's
+#    success and its attempt come from one read (with --attempt: of exactly that
+#    attempt). The artifact is the one that attempt's verdict job bound to itself
+#    (check_artifact in common.sh), never one found by name; with --artifact it must be
+#    that id. Verifies it: result.json says pass for this tag and its old main is the
+#    run's head_sha; the bundle's tip is result.json's candidate.
 # 2. Rechecks the world: the upstream tag is still a published, non-draft, non-prerelease
 #    release at the recorded commit, the old base tag too; the remote main is the
 #    recorded old main; v<base>-pmx.* does not exist yet.
@@ -42,8 +44,10 @@
 #                PMX_PUSH_TOKEN is in its environment. Two halves around the workflow's
 #                own push step:
 #                --plan <dir>  steps 1 to 4 without the question and without the push
-#                              (needs --run and --expect-main): leaves <dir>/plan.env and
-#                              the verified repository <dir>/work/repo.git for the push
+#                              (needs --run, --attempt, --artifact and --expect-main, the
+#                              values the workflow's verifier proved): leaves
+#                              <dir>/plan.env and the verified repository
+#                              <dir>/work/repo.git for the push
 #                --wait <dir>  step 5 for the plan in <dir>, after the workflow pushed it
 #                Without --ci nothing changes: the owner's own git and gh credentials.
 #
@@ -55,11 +59,11 @@ here="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=common.sh
 . "$here/common.sh"
 
-usage() { sed -n '2,52p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,57p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 die() { echo "publish: $*" >&2; exit 1; }
 log() { echo "==> $*" >&2; }
 
-tag='' dry_run=0 yes=0 ci=0 plan_dir='' wait_dir='' expect_main='' run_id='' remote='' accept_dropped='' accept_changed=''
+tag='' dry_run=0 yes=0 ci=0 plan_dir='' wait_dir='' expect_main='' run_id='' attempt='' artifact_id='' remote='' accept_dropped='' accept_changed=''
 timeout_min=120
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -70,6 +74,8 @@ while [[ $# -gt 0 ]]; do
     --wait) wait_dir="${2:?}"; shift ;;
     --expect-main) expect_main="${2:?}"; shift ;;
     --run) run_id="${2:?}"; shift ;;
+    --attempt) attempt="${2:?}"; shift ;;
+    --artifact) artifact_id="${2:?}"; shift ;;
     --remote) remote="${2:?}"; shift ;;
     --accept-dropped) accept_dropped="${2:?}"; shift ;;
     --accept-changed) accept_changed="${2:?}"; shift ;;
@@ -82,6 +88,9 @@ while [[ $# -gt 0 ]]; do
 done
 [[ "$tag" =~ $PMX_STABLE_RE ]] || usage
 [[ -z "$run_id" || "$run_id" =~ ^[0-9]+$ ]] || die "--run takes a run id (digits)"
+[[ -z "$attempt" || "$attempt" =~ ^[0-9]+$ ]] || die "--attempt takes a run attempt (digits)"
+[[ -z "$artifact_id" || "$artifact_id" =~ ^[0-9]+$ ]] || die "--artifact takes an artifact id (digits)"
+[[ -z "$attempt$artifact_id" || -n "$run_id" ]] || die "--attempt and --artifact need --run"
 base="${tag#v}"
 pmx_tag="v$base-pmx.1"
 
@@ -94,7 +103,8 @@ if [[ $ci -eq 1 ]]; then
   [[ -n "$plan_dir" || -n "$wait_dir" ]] && [[ -z "$plan_dir" || -z "$wait_dir" ]] ||
     die "--ci needs exactly one of --plan <dir> or --wait <dir>"
   if [[ -n "$plan_dir" ]]; then
-    [[ -n "$run_id" && -n "$expect_main" ]] || die "--ci --plan needs --run and --expect-main"
+    [[ -n "$run_id" && -n "$attempt" && -n "$artifact_id" && -n "$expect_main" ]] ||
+      die "--ci --plan needs --run, --attempt, --artifact and --expect-main"
   fi
   export GIT_TERMINAL_PROMPT=0
 elif [[ -n "$plan_dir$wait_dir" ]]; then
@@ -182,32 +192,42 @@ remote_main="$(git ls-remote "$push_url" refs/heads/main | awk '{print $1}')"
   die "the remote main is $remote_main, not the expected $expect_main"
 
 # --- 1. the check run and its artifact -------------------------------------------------------
-# check_run_sha ID: the run's head_sha when ID is a successful provimux-check run of
-# PMX_REPO on main (schedule or workflow_dispatch); fails otherwise.
-check_run_sha() {
-  gh api "repos/$PMX_REPO/actions/runs/$1" >"$work/run-$1.json" 2>/dev/null || return 1
-  jq -er --arg repo "$PMX_REPO" "$PMX_CHECK_RUN_OK"' | .head_sha' "$work/run-$1.json"
+# check_run ID [ATTEMPT]: "<head_sha> <attempt>" when ID (its latest attempt, or exactly
+# ATTEMPT) is a successful provimux-check run of PMX_REPO on main (schedule or
+# workflow_dispatch); fails otherwise. Success, head_sha and attempt come from one read.
+check_run() {
+  local path="repos/$PMX_REPO/actions/runs/$1"
+  [[ -z "${2:-}" ]] || path="$path/attempts/$2"
+  gh api "$path" >"$work/run-$1.json" 2>/dev/null || return 1
+  jq -er --arg repo "$PMX_REPO" --arg att "${2:-}" "$PMX_CHECK_RUN_OK"'
+    | select(($att == "" or (.run_attempt | tostring) == $att) and (.run_attempt | tostring | test("^[0-9]+$")))
+    | "\(.head_sha) \(.run_attempt)"' "$work/run-$1.json"
 }
 if [[ -n "$run_id" ]]; then
-  run_sha="$(check_run_sha "$run_id")" ||
-    die "run $run_id is not a successful provimux-check run of $PMX_REPO on main"
+  ra="$(check_run "$run_id" "$attempt")" ||
+    die "run $run_id${attempt:+ attempt $attempt} is not a successful provimux-check run of $PMX_REPO on main"
+  run_sha="${ra%% *}" attempt="${ra#* }"
   [[ "$run_sha" == "$remote_main" ]] ||
     die "run $run_id checked main $run_sha, but the remote main is $remote_main; run the check again"
-  bound="$(check_artifact "$run_id" "$work/artifact" 2>"$work/artifact.err")" ||
+  bound="$(check_artifact "$run_id" "$attempt" "$work/artifact" 2>"$work/artifact.err")" ||
     die "run $run_id: $(cat "$work/artifact.err")"
+  [[ -z "$artifact_id" || "${bound%% *}" == "$artifact_id" ]] ||
+    die "run $run_id attempt $attempt binds artifact ${bound%% *}, not the verified $artifact_id"
 else
   # The newest qualifying run on the current main whose verdict artifact is for this tag.
   for id in $(gh api "repos/$PMX_REPO/actions/workflows/provimux-check.yml/runs?branch=main&head_sha=$remote_main&status=success&per_page=50" \
     --jq '.workflow_runs | sort_by(.created_at) | reverse | .[].id'); do
-    run_sha="$(check_run_sha "$id")" && [[ "$run_sha" == "$remote_main" ]] || continue
+    ra="$(check_run "$id")" || continue
+    run_sha="${ra%% *}" attempt="${ra#* }"
+    [[ "$run_sha" == "$remote_main" ]] || continue
     rm -rf "$work/artifact"
-    bound="$(check_artifact "$id" "$work/artifact" 2>/dev/null)" || continue
+    bound="$(check_artifact "$id" "$attempt" "$work/artifact" 2>/dev/null)" || continue
     if [[ "${bound#* }" == "provimux-check-$tag" ]]; then run_id="$id"; break; fi
   done
   [[ -n "$run_id" ]] || die "no successful provimux-check run on main for the current main ${remote_main:0:12} has a verdict artifact provimux-check-$tag; run the check first (Actions → provimux-check)"
 fi
 [[ "${bound#* }" == "provimux-check-$tag" ]] || die "run $run_id's verdict artifact is ${bound#* }, not provimux-check-$tag"
-log "check run https://github.com/$PMX_REPO/actions/runs/$run_id (main $run_sha), verdict artifact ${bound%% *}"
+log "check run https://github.com/$PMX_REPO/actions/runs/$run_id attempt $attempt (main $run_sha), verdict artifact ${bound%% *}"
 res="$work/artifact/result.json"
 bundle="$work/artifact/candidate.bundle"
 [[ -s "$res" ]] || die "the artifact has no result.json"
@@ -407,6 +427,9 @@ if [[ -n "$plan_dir" ]]; then
     echo "UPSTREAM_COMMIT=$upstream_commit"
     echo "PUSH_BASE_TAG=$([[ -z "$remote_base_tag" ]] && echo 1 || echo 0)"
     echo "REPO=$repo"
+    echo "RUN=$run_id"
+    echo "ATTEMPT=$attempt"
+    echo "ARTIFACT=${bound%% *}"
   } >"$plan_dir/plan.env"
   echo "Plan written: $plan_dir/plan.env (nothing pushed)."
   exit 0
