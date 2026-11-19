@@ -1,0 +1,570 @@
+# Provimux release (PMX-09): a tag v<base>-pmx.<n> builds the same 10 archives as
+# CLIProxyAPI's release.yaml, under Provimux names, and publishes a GitHub release.
+# A manual run (workflow_dispatch) is a dry run: it builds everything and keeps the
+# archives, checksums and release notes as workflow artifacts; it publishes nothing.
+#
+# The build jobs are copied from upstream's .github/workflows/release.yaml (left
+# unchanged and disabled in this repo). Differences: binary provimux, archive names
+# provimux_<base>-pmx.<n>_*, the extra ProvimuxVersion ldflag, the Go version read
+# from release.yaml at run time, a banner check on native runners, and one release
+# job that publishes only after every archive has built.
+#
+# main.Version stays exactly what stock CLIProxyAPI sets for its archives (the base
+# version without "v"): providers see it in user agents.
+name: provimux-release
+
+on:
+  push:
+    tags:
+      - 'v*-pmx.*'
+  workflow_dispatch:
+    inputs:
+      provimux_version:
+        description: 'Provimux version for the dry run (e.g. 8.0.77-pmx.0-dryrun); empty = <base>-pmx.0-dryrun'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      base: ${{ steps.meta.outputs.base }}
+      provimux_version: ${{ steps.meta.outputs.provimux_version }}
+      go_version: ${{ steps.meta.outputs.go_version }}
+      commit: ${{ steps.meta.outputs.commit }}
+      build_date: ${{ steps.meta.outputs.build_date }}
+      ldflags: ${{ steps.meta.outputs.ldflags }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Versions and build metadata
+        id: meta
+        env:
+          INPUT_VERSION: ${{ inputs.provimux_version }}
+        run: bash .github/provimux/release-meta.sh
+
+  build-hosted:
+    name: build ${{ matrix.target }}
+    needs: meta
+    runs-on: ${{ matrix.runner }}
+    env:
+      RELEASE_VERSION: ${{ needs.meta.outputs.base }}
+      PROVIMUX_VERSION: ${{ needs.meta.outputs.provimux_version }}
+      LDFLAGS: ${{ needs.meta.outputs.ldflags }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-amd64
+            runner: macos-15-intel
+            goos: darwin
+            goarch: amd64
+            asset_arch: amd64
+            archive_format: tar.gz
+          - target: darwin-arm64
+            runner: macos-15
+            goos: darwin
+            goarch: arm64
+            asset_arch: aarch64
+            archive_format: tar.gz
+          - target: windows-amd64
+            runner: windows-latest
+            goos: windows
+            goarch: amd64
+            asset_arch: amd64
+            archive_format: zip
+          - target: windows-arm64
+            runner: windows-11-arm
+            goos: windows
+            goarch: arm64
+            asset_arch: aarch64
+            archive_format: zip
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ needs.meta.outputs.go_version }}
+          cache: true
+      - name: Refresh models catalog
+        shell: bash
+        run: bash .github/scripts/refresh-model-catalogs.sh
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            go-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}-
+            go-${{ runner.os }}-${{ runner.arch }}-
+      - name: Build archive
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          ASSET_ARCH: ${{ matrix.asset_arch }}
+          ARCHIVE_FORMAT: ${{ matrix.archive_format }}
+        run: |
+          set -euo pipefail
+          binary_name="provimux"
+          if [[ "$GOOS" == "windows" ]]; then
+            binary_name="provimux.exe"
+          fi
+
+          archive_dir="dist/${TARGET}/archive"
+          archive_name="provimux_${PROVIMUX_VERSION}_${GOOS}_${ASSET_ARCH}.${ARCHIVE_FORMAT}"
+          rm -rf "dist/${TARGET}"
+          mkdir -p "$archive_dir"
+
+          CGO_ENABLED=1 GOOS="$GOOS" GOARCH="$GOARCH" go build \
+            -ldflags="${LDFLAGS}" \
+            -o "$archive_dir/$binary_name" ./cmd/server/
+
+          cp LICENSE README.md README_CN.md config.example.yaml "$archive_dir/"
+          cp .github/README.md "$archive_dir/README_PROVIMUX.md"
+          if [[ "$ARCHIVE_FORMAT" == "zip" ]]; then
+            powershell -NoProfile -Command "Compress-Archive -Path '${archive_dir}/*' -DestinationPath 'dist/${archive_name}' -Force"
+          else
+            tar -C "$archive_dir" -czf "dist/$archive_name" "$binary_name" LICENSE README.md README_CN.md README_PROVIMUX.md config.example.yaml
+          fi
+          echo "BINARY=$PWD/$archive_dir/$binary_name" >> "$GITHUB_ENV"
+      - name: Check banner
+        shell: bash
+        run: bash .github/provimux/check-banner.sh "$BINARY" "$PROVIMUX_VERSION" "$RELEASE_VERSION"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/provimux_*
+          if-no-files-found: error
+
+  build-linux-glibc:
+    name: build linux-${{ matrix.goarch }} glibc
+    needs: meta
+    runs-on: ${{ matrix.runner }}
+    env:
+      GO_VERSION: ${{ needs.meta.outputs.go_version }}
+      RELEASE_VERSION: ${{ needs.meta.outputs.base }}
+      PROVIMUX_VERSION: ${{ needs.meta.outputs.provimux_version }}
+      LDFLAGS: ${{ needs.meta.outputs.ldflags }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-amd64
+            runner: ubuntu-latest
+            goarch: amd64
+            asset_arch: amd64
+            manylinux_image: quay.io/pypa/manylinux2014_x86_64
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+            goarch: arm64
+            asset_arch: aarch64
+            manylinux_image: quay.io/pypa/manylinux2014_aarch64
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ needs.meta.outputs.go_version }}
+          cache: true
+      - name: Refresh models catalog
+        shell: bash
+        run: bash .github/scripts/refresh-model-catalogs.sh
+      - name: Build archive
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          GOARCH: ${{ matrix.goarch }}
+          ASSET_ARCH: ${{ matrix.asset_arch }}
+          MANYLINUX_IMAGE: ${{ matrix.manylinux_image }}
+        run: |
+          set -euo pipefail
+
+          archive_dir="dist/${TARGET}/archive"
+          archive_name="provimux_${PROVIMUX_VERSION}_linux_${ASSET_ARCH}.tar.gz"
+          rm -rf "dist/${TARGET}"
+          mkdir -p "$archive_dir"
+
+          docker run --rm \
+            -v "$PWD:/src" \
+            -w /src \
+            -e GO_VERSION \
+            -e GOARCH \
+            -e LDFLAGS \
+            "$MANYLINUX_IMAGE" \
+            bash -euo pipefail -c '
+              go_archive="go${GO_VERSION}.linux-${GOARCH}.tar.gz"
+              curl -fsSL "https://go.dev/dl/${go_archive}" -o "/tmp/${go_archive}"
+              rm -rf /usr/local/go
+              tar -C /usr/local -xzf "/tmp/${go_archive}"
+              export PATH="/usr/local/go/bin:${PATH}"
+
+              CGO_ENABLED=1 GOOS=linux GOARCH="${GOARCH}" go build -buildvcs=false \
+                -ldflags="${LDFLAGS}" \
+                -o "'"$archive_dir"'/provimux" ./cmd/server/
+
+              glibc_versions="$(readelf --version-info "'"$archive_dir"'/provimux" | sed -n "s/.*Name: GLIBC_\([0-9.]*\).*/\1/p" | sort -Vu)"
+              if [[ -n "${glibc_versions}" ]]; then
+                printf "GLIBC versions:\n%s\n" "${glibc_versions}"
+                max_glibc="$(printf "%s\n" "${glibc_versions}" | sort -V | tail -n 1)"
+                if [[ "$(printf "2.17\n%s\n" "${max_glibc}" | sort -V | tail -n 1)" != "2.17" ]]; then
+                  printf "linux ${GOARCH} binary requires GLIBC_%s, expected GLIBC_2.17 or older\n" "${max_glibc}" >&2
+                  exit 1
+                fi
+              fi
+            '
+
+          sudo chown -R "$(id -u):$(id -g)" dist
+          cp LICENSE README.md README_CN.md config.example.yaml "$archive_dir/"
+          cp .github/README.md "$archive_dir/README_PROVIMUX.md"
+          tar -C "$archive_dir" -czf "dist/$archive_name" provimux LICENSE README.md README_CN.md README_PROVIMUX.md config.example.yaml
+          echo "BINARY=$PWD/$archive_dir/provimux" >> "$GITHUB_ENV"
+      - name: Check banner
+        shell: bash
+        run: bash .github/provimux/check-banner.sh "$BINARY" "$PROVIMUX_VERSION" "$RELEASE_VERSION"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/provimux_*
+          if-no-files-found: error
+
+  build-linux-no-plugin:
+    name: build linux-${{ matrix.goarch }} no-plugin
+    needs: meta
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_VERSION: ${{ needs.meta.outputs.base }}
+      PROVIMUX_VERSION: ${{ needs.meta.outputs.provimux_version }}
+      LDFLAGS: ${{ needs.meta.outputs.ldflags }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-amd64-no-plugin
+            goarch: amd64
+            asset_arch: amd64
+            native: true
+          - target: linux-arm64-no-plugin
+            goarch: arm64
+            asset_arch: aarch64
+            native: false
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ needs.meta.outputs.go_version }}
+          cache: true
+      - name: Refresh models catalog
+        shell: bash
+        run: bash .github/scripts/refresh-model-catalogs.sh
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-linux-no-plugin-${{ matrix.goarch }}-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            go-linux-no-plugin-${{ matrix.goarch }}-
+            go-linux-no-plugin-
+      - name: Build archive
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          GOARCH: ${{ matrix.goarch }}
+          ASSET_ARCH: ${{ matrix.asset_arch }}
+        run: |
+          set -euo pipefail
+
+          archive_dir="dist/${TARGET}/archive"
+          archive_name="provimux_${PROVIMUX_VERSION}_linux_${ASSET_ARCH}_no-plugin.tar.gz"
+          rm -rf "dist/${TARGET}"
+          mkdir -p "$archive_dir"
+
+          CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH" go build -buildvcs=false \
+            -ldflags="${LDFLAGS}" \
+            -o "$archive_dir/provimux" ./cmd/server/
+
+          if readelf -l "$archive_dir/provimux" | grep -q 'Requesting program interpreter'; then
+            readelf -l "$archive_dir/provimux" >&2
+            echo "no-plugin linux binary must not require a dynamic interpreter" >&2
+            exit 1
+          fi
+
+          cp LICENSE README.md README_CN.md config.example.yaml "$archive_dir/"
+          cp .github/README.md "$archive_dir/README_PROVIMUX.md"
+          tar -C "$archive_dir" -czf "dist/$archive_name" provimux LICENSE README.md README_CN.md README_PROVIMUX.md config.example.yaml
+          echo "BINARY=$PWD/$archive_dir/provimux" >> "$GITHUB_ENV"
+      - name: Check banner
+        if: ${{ matrix.native }}
+        shell: bash
+        run: bash .github/provimux/check-banner.sh "$BINARY" "$PROVIMUX_VERSION" "$RELEASE_VERSION"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/provimux_*
+          if-no-files-found: error
+
+  build-freebsd:
+    name: build ${{ matrix.target }}
+    needs: meta
+    runs-on: ubuntu-latest
+    env:
+      TARGET: ${{ matrix.target }}
+      TARGET_GOARCH: ${{ matrix.goarch }}
+      ASSET_ARCH: ${{ matrix.asset_arch }}
+      ASSET_SUFFIX: ${{ matrix.asset_suffix }}
+      RELEASE_VERSION: ${{ needs.meta.outputs.base }}
+      PROVIMUX_VERSION: ${{ needs.meta.outputs.provimux_version }}
+      LDFLAGS: ${{ needs.meta.outputs.ldflags }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: freebsd-amd64
+            goarch: amd64
+            asset_arch: amd64
+            asset_suffix: ''
+            cgo_enabled: true
+          - target: freebsd-arm64-no-plugin
+            goarch: arm64
+            asset_arch: aarch64
+            asset_suffix: _no-plugin
+            cgo_enabled: false
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ needs.meta.outputs.go_version }}
+          cache: true
+      - name: Refresh models catalog
+        run: bash .github/scripts/refresh-model-catalogs.sh
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-freebsd-${{ matrix.goarch }}-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            go-freebsd-${{ matrix.goarch }}-
+            go-freebsd-
+      - name: Prepare FreeBSD output
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "dist/${TARGET}"
+      - name: Install FreeBSD cross-build dependencies
+        if: ${{ matrix.cgo_enabled }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y clang lld curl
+      - name: Build FreeBSD binary with CGO
+        if: ${{ matrix.cgo_enabled }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "dist/${TARGET}/bin"
+          sysroot_dir="/tmp/freebsd-sysroot"
+          rm -rf "$sysroot_dir"
+          mkdir -p "$sysroot_dir"
+          trap 'sudo rm -rf "$sysroot_dir" /tmp/base.txz' EXIT
+
+          case "$TARGET_GOARCH" in
+            amd64)
+              freebsd_arch="amd64"
+              clang_target="x86_64-unknown-freebsd14"
+              ;;
+            arm64)
+              freebsd_arch="arm64"
+              clang_target="aarch64-unknown-freebsd14"
+              ;;
+            *)
+              echo "Unsupported FreeBSD architecture: $TARGET_GOARCH" >&2
+              exit 1
+              ;;
+          esac
+
+          urls=(
+            "https://download.freebsd.org/releases/${freebsd_arch}/14.4-RELEASE/base.txz"
+            "https://archive.freebsd.org/old-releases/${freebsd_arch}/14.4-RELEASE/base.txz"
+            "https://archive.freebsd.org/old-releases/${freebsd_arch}/14.3-RELEASE/base.txz"
+          )
+
+          downloaded=false
+          for url in "${urls[@]}"; do
+            echo "Attempting to download FreeBSD base.txz from ${url}..."
+            if curl -fsSL --retry 3 --retry-connrefused "$url" -o /tmp/base.txz; then
+              echo "Successfully downloaded FreeBSD base.txz from ${url}"
+              downloaded=true
+              break
+            else
+              echo "Download failed from ${url}, trying next candidate..."
+            fi
+          done
+
+          if [[ "$downloaded" != "true" ]]; then
+            echo "Error: Failed to download FreeBSD base.txz from all candidate mirrors" >&2
+            exit 1
+          fi
+
+          echo "Extracting FreeBSD sysroot to ${sysroot_dir}..."
+          sudo tar -xf /tmp/base.txz -C "$sysroot_dir"
+          rm -f /tmp/base.txz
+
+          echo "Building FreeBSD ${TARGET} binary with CGO..."
+          CGO_ENABLED=1 \
+          GOOS=freebsd \
+          GOARCH="$TARGET_GOARCH" \
+          CGO_LDFLAGS="-fuse-ld=lld" \
+          CC="clang --target=${clang_target} --sysroot=${sysroot_dir}" \
+          go build -buildvcs=false \
+            -ldflags="${LDFLAGS}" \
+            -o "dist/${TARGET}/bin/provimux" ./cmd/server/
+      - name: Build FreeBSD no-plugin binary
+        if: ${{ !matrix.cgo_enabled }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "dist/${TARGET}/bin"
+          CGO_ENABLED=0 GOOS=freebsd GOARCH="$TARGET_GOARCH" go build -buildvcs=false \
+            -ldflags="${LDFLAGS}" \
+            -o "dist/${TARGET}/bin/provimux" ./cmd/server/
+      - name: Package FreeBSD archive
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          archive_dir="dist/${TARGET}/archive"
+          archive_name="provimux_${PROVIMUX_VERSION}_freebsd_${ASSET_ARCH}${ASSET_SUFFIX}.tar.gz"
+          mkdir -p "$archive_dir"
+
+          echo "Packaging ${archive_name}"
+          cp "dist/${TARGET}/bin/provimux" "$archive_dir/provimux"
+          cp LICENSE README.md README_CN.md config.example.yaml "$archive_dir/"
+          cp .github/README.md "$archive_dir/README_PROVIMUX.md"
+          tar -C "$archive_dir" -czf "dist/$archive_name" provimux LICENSE README.md README_CN.md README_PROVIMUX.md config.example.yaml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/provimux_*
+          if-no-files-found: error
+
+  release:
+    runs-on: ubuntu-latest
+    needs:
+      - meta
+      - build-hosted
+      - build-linux-glibc
+      - build-linux-no-plugin
+      - build-freebsd
+    permissions:
+      contents: write
+    env:
+      GH_REPO: ${{ github.repository }}
+      BASE: ${{ needs.meta.outputs.base }}
+      PROVIMUX_VERSION: ${{ needs.meta.outputs.provimux_version }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Check archives and write checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          p="provimux_${PROVIMUX_VERSION}"
+          expected=(
+            "${p}_darwin_aarch64.tar.gz"
+            "${p}_darwin_amd64.tar.gz"
+            "${p}_freebsd_aarch64_no-plugin.tar.gz"
+            "${p}_freebsd_amd64.tar.gz"
+            "${p}_linux_aarch64.tar.gz"
+            "${p}_linux_aarch64_no-plugin.tar.gz"
+            "${p}_linux_amd64.tar.gz"
+            "${p}_linux_amd64_no-plugin.tar.gz"
+            "${p}_windows_aarch64.zip"
+            "${p}_windows_amd64.zip"
+          )
+          missing=0
+          for f in "${expected[@]}"; do
+            [[ -f "$f" ]] || { echo "::error::Missing archive $f"; missing=1; }
+          done
+          shopt -s nullglob
+          archives=(provimux_*.tar.gz provimux_*.zip)
+          [[ ${#archives[@]} -eq ${#expected[@]} ]] || { echo "::error::Expected ${#expected[@]} archives, found ${#archives[@]}: ${archives[*]}"; missing=1; }
+          [[ $missing -eq 0 ]] || exit 1
+          sha256sum "${archives[@]}" | sort -k2 > checksums.txt
+          cat checksums.txt
+      - name: Write release notes
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            ref="$GITHUB_REF_NAME"
+          else
+            ref="HEAD"
+          fi
+          # Layer commits since the previous Provimux release reachable from here;
+          # without one (first release, or the layer was rebased onto a new
+          # CLIProxyAPI release), since the CLIProxyAPI base.
+          if previous="$(git describe --tags --abbrev=0 --match 'v*-pmx.*' "${ref}^" 2>/dev/null)"; then
+            range="${previous}..${ref}"
+          else
+            previous=""
+            range="v${BASE}..${ref}"
+          fi
+          readme="https://github.com/${GH_REPO}/blob/${ref/HEAD/$GITHUB_SHA}/.github/README.md"
+          {
+            echo "Provimux ${PROVIMUX_VERSION}, built on CLIProxyAPI ${BASE}."
+            echo
+            echo "- CLIProxyAPI ${BASE}: https://github.com/router-for-me/CLIProxyAPI/releases/tag/v${BASE}"
+            echo "- What Provimux adds: ${readme}#provimux"
+            echo
+            if [[ -n "$previous" ]]; then
+              echo "## Provimux changes since ${previous}"
+            else
+              echo "## Provimux changes on CLIProxyAPI ${BASE}"
+            fi
+            echo
+            git log --reverse --format='- %s (%h)' --grep='^Provimux-Layer: branding$' "$range"
+          } > dist/release-notes.md
+          cat dist/release-notes.md
+          cat dist/release-notes.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release
+          path: |
+            dist/checksums.txt
+            dist/release-notes.md
+          if-no-files-found: error
+      - name: Publish release
+        if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          cd dist
+          files=(provimux_*.tar.gz provimux_*.zip checksums.txt)
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file release-notes.md
+            gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" \
+              --notes-file release-notes.md "${files[@]}"
+          fi
