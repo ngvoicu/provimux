@@ -7,7 +7,9 @@
 #   publish.sh <vX.Y.Z> [--dry-run] [--yes] [--run <id>] [--expect-main <sha>] [--remote <name>]
 #              [--accept-dropped <sha,...>] [--accept-changed <sha,...>] [--timeout <minutes>]
 #   publish.sh <vX.Y.Z> --ci --plan <dir> --run <id> --attempt <n> --artifact <id> --expect-main <sha>
-#   publish.sh <vX.Y.Z> --ci --wait <dir>                    (both: provimux-publish.yml)
+#   publish.sh <vX.Y.Z> --ci --wait <dir> | --ci --close <dir>   (provimux-publish.yml)
+#   publish.sh --authorize <v<base>-pmx.<n>> <commit>   the owner authorizes that release
+#   publish.sh --tap <v<base>-pmx.<n>>                  the owner updates the Homebrew tap
 #
 # 1. Picks the check run: a provimux-check run of this repository, on main (event schedule
 #    or workflow_dispatch), completed with conclusion success, whose head_sha is the
@@ -29,14 +31,27 @@
 #    --accept-* flags (commits: the old main's commit, 7 or more hex digits). A release
 #    that adds or renames workflow files is refused: SYNC.md, "New upstream workflow files".
 # 4. Prints what it will push and asks (--yes skips the question), rechecks step 2
-#    immediately before pushing, records "<v<base>-pmx.1> <candidate>" in the repository
-#    variable PMX_HAND_RELEASES (the release workflow releases only a tag that
-#    provimux-publish or the owner recorded), then makes one atomic push: main with
+#    immediately before pushing (and that gh is the repository owner), then makes one
+#    atomic push: main with
 #    --force-with-lease=refs/heads/main:<recorded old main> (a literal SHA), tag v<base> at
 #    upstream's commit, tag v<base>-pmx.1 at the candidate.
+#    Right after the push it authorizes the release (--authorize, below).
 # 5. Waits until the provimux-release run for v<base>-pmx.1 at the candidate has finished
-#    successfully (archives, image push, GitHub release, tap) and the release has every
-#    asset, prints the run's conclusion and jobs, then closes the "sync: v<base>" issue.
+#    successfully (archives, image push, GitHub release, formula check) and the release
+#    has every asset, prints the run's conclusion and jobs, updates the Homebrew tap
+#    (--tap, below), then closes the "sync: v<base>" issue.
+#
+#   --authorize <tag> <commit>  sets the commit status provimux-release/<tag> (state
+#                success) on <commit> with the owner's gh: the durable authorization
+#                provimux-release.yml requires before it publishes anything for <tag>
+#                (SYNC.md, "Release provenance"). Refuses unless gh is logged in as the
+#                repository owner (the release workflow counts only the owner's status).
+#   --tap <tag>  tap.sh prepare for the published release <tag> (immutable, every asset,
+#                digests = checksums.txt), the formula from the tap's own by
+#                update-formula.sh, checked, committed; then one git push to
+#                ngvoicu/homebrew-tap with the owner's git credentials and the lease on
+#                the tap's main as read. Only forward. For a hand -pmx.<n>, or when the
+#                automatic tap update failed.
 #
 #   --dry-run    everything except the push (shows git push --dry-run), no wait, no close
 #   --expect-main <sha>  refuse unless the remote main, the check run's head_sha and the
@@ -50,7 +65,10 @@
 #                              values the workflow's verifier proved): leaves
 #                              <dir>/plan.env and the verified repository
 #                              <dir>/work/repo.git for the push
-#                --wait <dir>  step 5 for the plan in <dir>, after the workflow pushed it
+#                --wait <dir>  the wait of step 5 for the plan in <dir>, after the
+#                              workflow pushed it (no tap, no close: the workflow updates
+#                              the tap in its own token step)
+#                --close <dir> the close of step 5, after the workflow updated the tap
 #                Without --ci nothing changes: the owner's own git and gh credentials.
 #
 # Run it from a clone of ngvoicu/provimux (any branch, nothing is checked out or changed:
@@ -61,11 +79,11 @@ here="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=common.sh
 . "$here/common.sh"
 
-usage() { sed -n '2,58p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,77p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 die() { echo "publish: $*" >&2; exit 1; }
 log() { echo "==> $*" >&2; }
 
-tag='' dry_run=0 yes=0 ci=0 plan_dir='' wait_dir='' expect_main='' run_id='' attempt='' artifact_id='' remote='' accept_dropped='' accept_changed=''
+tag='' dry_run=0 yes=0 ci=0 plan_dir='' wait_dir='' close_dir='' auth_tag='' auth_sha='' tap_tag='' expect_main='' run_id='' attempt='' artifact_id='' remote='' accept_dropped='' accept_changed=''
 timeout_min=120
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -74,6 +92,9 @@ while [[ $# -gt 0 ]]; do
     --ci) ci=1 ;;
     --plan) plan_dir="${2:?}"; shift ;;
     --wait) wait_dir="${2:?}"; shift ;;
+    --close) close_dir="${2:?}"; shift ;;
+    --authorize) auth_tag="${2:?}"; auth_sha="${3:?}"; shift 2 ;;
+    --tap) tap_tag="${2:?}"; shift ;;
     --expect-main) expect_main="${2:?}"; shift ;;
     --run) run_id="${2:?}"; shift ;;
     --attempt) attempt="${2:?}"; shift ;;
@@ -88,6 +109,39 @@ while [[ $# -gt 0 ]]; do
   esac
   shift
 done
+PMX_PMX_RE='^v[0-9]+\.[0-9]+\.[0-9]+-pmx\.[0-9]+$'
+
+# --- the owner's two single steps --------------------------------------------------------
+# authorize TAG COMMIT: the commit status provimux-release/TAG = success, as the owner.
+authorize() {
+  local t=$1 c=$2 me
+  [[ "$t" =~ $PMX_PMX_RE && "$c" =~ $PMX_SHA_RE ]] || die "--authorize takes v<base>-pmx.<n> and a full commit SHA"
+  me="$(gh api user --jq .login)" || die "cannot read the gh user"
+  [[ "$me" == "${PMX_REPO%%/*}" ]] || die "gh is logged in as $me, not the repository owner ${PMX_REPO%%/*}: the release workflow would not count the status"
+  gh api -X POST "repos/$PMX_REPO/statuses/$c" -f state=success -f "context=provimux-release/$t" \
+    -f "description=authorized by the owner (publish.sh)" >/dev/null || die "cannot set the commit status provimux-release/$t on $c"
+  log "authorized $t at $c (commit status provimux-release/$t)"
+}
+# hand_tap TAG: tap.sh prepare, then the owner's git push (hooks off, lease as read).
+hand_tap() {
+  local t=$1 d o action repo lease ref
+  [[ "$t" =~ $PMX_PMX_RE ]] || die "--tap takes v<base>-pmx.<n>"
+  d="$(mktemp -d "${TMPDIR:-/tmp}/provimux-tap.XXXXXX")"
+  o="$(GITHUB_OUTPUT='' bash "$here/tap.sh" prepare "$t" "$d")" || { rm -rf "${d:?}"; die "the tap update for $t was refused"; }
+  action="$(sed -n 's/^action=//p' <<<"$o")" repo="$(sed -n 's/^repo=//p' <<<"$o")"
+  lease="$(sed -n 's/^lease=//p' <<<"$o")" ref="$(sed -n 's/^ref=//p' <<<"$o")"
+  if [[ "$action" == push ]]; then
+    git --git-dir="$repo" -c core.hooksPath=/dev/null push "--force-with-lease=$lease" https://github.com/ngvoicu/homebrew-tap.git "$ref" ||
+      { rm -rf "${d:?}"; die "the push to ngvoicu/homebrew-tap failed"; }
+    echo "Homebrew tap: provimux $(sed -n 's/^from=//p' <<<"$o") -> ${t#v}"
+  else
+    echo "Homebrew tap: left as it is ($(sed -n 's/^from=//p' <<<"$o"))"
+  fi
+  rm -rf "${d:?}"
+}
+if [[ -n "$auth_tag" ]]; then authorize "$auth_tag" "$auth_sha"; exit 0; fi
+if [[ -n "$tap_tag" ]]; then hand_tap "$tap_tag"; exit 0; fi
+
 [[ "$tag" =~ $PMX_STABLE_RE ]] || usage
 [[ -z "$run_id" || "$run_id" =~ ^[0-9]+$ ]] || die "--run takes a run id (digits)"
 [[ -z "$attempt" || "$attempt" =~ ^[0-9]+$ ]] || die "--attempt takes a run attempt (digits)"
@@ -102,23 +156,24 @@ pmx_tag="v$base-pmx.1"
 if [[ $ci -eq 1 ]]; then
   [[ -z "${PROVIMUX_TOKEN:-}" && -z "${PMX_PUSH_TOKEN:-}" ]] ||
     die "--ci: a push token is in the environment; publish.sh must never see it (only the workflow's push step has it)"
-  [[ -n "$plan_dir" || -n "$wait_dir" ]] && [[ -z "$plan_dir" || -z "$wait_dir" ]] ||
-    die "--ci needs exactly one of --plan <dir> or --wait <dir>"
+  [[ "$( (for x in "$plan_dir" "$wait_dir" "$close_dir"; do [[ -z "$x" ]] || echo x; done) | wc -l | tr -d ' ')" == 1 ]] ||
+    die "--ci needs exactly one of --plan <dir>, --wait <dir> or --close <dir>"
   if [[ -n "$plan_dir" ]]; then
     [[ -n "$run_id" && -n "$attempt" && -n "$artifact_id" && -n "$expect_main" ]] ||
       die "--ci --plan needs --run, --attempt, --artifact and --expect-main"
   fi
   export GIT_TERMINAL_PROMPT=0
-elif [[ -n "$plan_dir$wait_dir" ]]; then
-  die "--plan and --wait are for --ci"
+elif [[ -n "$plan_dir$wait_dir$close_dir" ]]; then
+  die "--plan, --wait and --close are for --ci"
 fi
 
-# --- 5. wait for the whole release run, then close the issue ---------------------------------
+# --- 5. wait for the whole release run; then the tap; then close the issue -----------------------
 # Done means: the provimux-release run for the tag finished successfully (every job:
-# archives, image, publish-release, formula, tap-publish, image-push, image-latest) and the GitHub
-# release is published with all its assets; only a run for the candidate commit counts.
-wait_and_close() {
-  local deadline s run_state run run_url url n
+# archives, image, publish-release, formula, tap-check, release-latest, image-push,
+# image-latest) and the GitHub release is published with all its assets; only a run for
+# the candidate commit counts.
+wait_release() {
+  local deadline s run_state run run_url
   log "waiting for the provimux-release run of $pmx_tag and its release (up to $timeout_min minutes)"
   deadline=$(( $(date +%s) + timeout_min * 60 ))
   while :; do
@@ -143,10 +198,15 @@ wait_and_close() {
   fi
   s="$(release_state "$pmx_tag")"
   [[ "$s" == complete ]] || die "the release run succeeded but the release $pmx_tag is $s; the issue stays open"
+  echo "Published: https://github.com/$PMX_REPO/releases/tag/$pmx_tag"
+}
+close_issues() {
+  local url run run_url n
   url="https://github.com/$PMX_REPO/releases/tag/$pmx_tag"
-  echo "Published: $url"
+  run="$(release_run_id "$pmx_tag" "$candidate")"
+  run_url="https://github.com/$PMX_REPO/actions/runs/$run"
   for n in $(sync_issues "$base"); do
-    gh issue close "$n" -R "$PMX_REPO" --comment "Published $url (main ${old_main:0:12} -> ${candidate:0:12}): the release has all its assets and the provimux-release run succeeded (image push and tap included): $run_url" >/dev/null
+    gh issue close "$n" -R "$PMX_REPO" --comment "Published $url (main ${old_main:0:12} -> ${candidate:0:12}): the release has all its assets, the provimux-release run succeeded (image push included) and the Homebrew tap is updated: $run_url" >/dev/null
     echo "Closed issue #$n"
   done
 }
@@ -158,14 +218,14 @@ plan_get() {
   [[ "$v" =~ $3 ]] || die "plan: $2 is '$v'"
   echo "$v"
 }
-if [[ -n "$wait_dir" ]]; then
-  plan="$wait_dir/plan.env"
-  [[ -s "$plan" ]] || die "no plan in $wait_dir"
+if [[ -n "$wait_dir$close_dir" ]]; then
+  plan="${wait_dir:-$close_dir}/plan.env"
+  [[ -s "$plan" ]] || die "no plan in ${wait_dir:-$close_dir}"
   [[ "$(plan_get "$plan" TAG "$PMX_STABLE_RE")" == "$tag" ]] || die "the plan is for another tag"
   pmx_tag="$(plan_get "$plan" PMX_TAG '^v[0-9]+\.[0-9]+\.[0-9]+-pmx\.1$')"
   candidate="$(plan_get "$plan" CANDIDATE "$PMX_SHA_RE")"
   old_main="$(plan_get "$plan" OLD_MAIN "$PMX_SHA_RE")"
-  wait_and_close
+  if [[ -n "$wait_dir" ]]; then wait_release; else close_issues; fi
   exit 0
 fi
 
@@ -455,18 +515,14 @@ fi
 log "rechecking upstream's $tag and the remote before pushing"
 recheck
 push_refs
-# provimux-release.yml releases a tag only when provimux-publish recorded pushing it, or
-# when the owner recorded it here (SYNC.md, "Release provenance"): one "<tag> <commit>"
-# line in the repository variable PMX_HAND_RELEASES, set with the owner's gh.
-record_hand_release() {
-  local cur
-  cur="$(gh variable get PMX_HAND_RELEASES -R "$PMX_REPO" 2>/dev/null || true)"
-  printf '%s\n%s %s\n' "$cur" "$pmx_tag" "$candidate" | sed '/^$/d' | sort -u | gh variable set PMX_HAND_RELEASES -R "$PMX_REPO" ||
-    die "cannot record $pmx_tag in the repository variable PMX_HAND_RELEASES; nothing pushed"
-  log "recorded $pmx_tag $candidate in PMX_HAND_RELEASES"
-}
-record_hand_release
+# The authorization right after the push must be the owner's: check that first.
+[[ "$(gh api user --jq .login)" == "${PMX_REPO%%/*}" ]] || die "gh is not logged in as the repository owner ${PMX_REPO%%/*}; nothing pushed"
 g push "${pushargs[@]}" "$push_url" "${refs[@]}" || die "the push failed; nothing was changed on $remote (atomic)"
 echo "Pushed."
+# The durable authorization the release workflow waits for (a commit status needs the
+# commit on GitHub, so it comes right after the push).
+authorize "$pmx_tag" "$candidate"
 
-wait_and_close
+wait_release
+hand_tap "$pmx_tag"
+close_issues
