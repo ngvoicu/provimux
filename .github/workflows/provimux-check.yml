@@ -38,6 +38,9 @@ jobs:
     outputs:
       tag: ${{ steps.select.outputs.tag }}
       status: ${{ steps.prepare.outputs.status || steps.select.outputs.status }}
+      # Every later job reads this job's artifact by this id and digest, never by name.
+      artifact: ${{ steps.upload.outputs.artifact-id }}
+      digest: ${{ steps.upload.outputs.artifact-digest }}
     env:
       PMX_REPO: ${{ github.repository }}
       PMX_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -67,97 +70,189 @@ jobs:
           git config --global --add safe.directory "$PWD"
           bash "$RUNNER_TEMP/pmx/check.sh" prepare
       - uses: actions/upload-artifact@v4
+        id: upload
         if: ${{ always() }}
         with:
           name: pmx-prepare
           path: ${{ runner.temp }}/check/
           if-no-files-found: warn
 
-  # One job per tree: upstream's and the candidate's code run here, and only raw
-  # go output leaves the job.
-  test:
+  # One job per tree: upstream's and the candidate's code run here, and only raw go output
+  # leaves the job. Two jobs, not a matrix, so that each hands its own artifact id and
+  # step outcomes to the verdict.
+  test-candidate:
+    name: test (candidate)
     needs: prepare
     if: ${{ needs.prepare.outputs.status == 'test' }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:
       contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        tree: [candidate, tag]
+      actions: read
+    outputs:
+      artifact: ${{ steps.upload.outputs.artifact-id }}
+      digest: ${{ steps.upload.outputs.artifact-digest }}
+      build: ${{ steps.build.outcome }}
+      test: ${{ steps.test.outcome }}
+      rerun: ${{ steps.rerun.outcome }}
     env:
       # The release may need a newer Go than the one its go.mod names.
       GOTOOLCHAIN: auto
+      PMX_REPO: ${{ github.repository }}
+      PMX_RUN_ID: ${{ github.run_id }}
     steps:
       - uses: actions/checkout@v6
         with:
           ref: ${{ github.sha }}
           sparse-checkout: .github/provimux
           persist-credentials: false
-      - uses: actions/download-artifact@v4
-        with:
-          name: pmx-prepare
-          path: ${{ runner.temp }}/check
-      - name: Export the ${{ matrix.tree }} tree (git only)
-        run: |
-          echo "PMX_CHECK_OUT=$RUNNER_TEMP/check" >> "$GITHUB_ENV"
-          export PMX_CHECK_OUT="$RUNNER_TEMP/check"
-          bash .github/provimux/check.sh tree ${{ matrix.tree }}
+      - name: Paths
+        run: echo "PMX_CHECK_OUT=$RUNNER_TEMP/check" >> "$GITHUB_ENV"
+      # Before any of the tree's code runs; the token only in this step.
+      - name: The prepare job's artifact, by id
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ID: ${{ needs.prepare.outputs.artifact }}
+          DIGEST: ${{ needs.prepare.outputs.digest }}
+        run: bash .github/provimux/check.sh fetch "$ID" pmx-prepare "$DIGEST" "$PMX_CHECK_OUT"
+      - name: Export the candidate tree (git only)
+        run: bash .github/provimux/check.sh tree candidate
       - uses: actions/setup-go@v6
         with:
-          go-version-file: ${{ runner.temp }}/check/trees/${{ matrix.tree }}/go.mod
+          go-version-file: ${{ runner.temp }}/check/trees/candidate/go.mod
           cache: false
-      - name: go build, go list, go test -json (runs the tree's code; raw output only)
-        run: bash .github/provimux/check.sh test ${{ matrix.tree }}
+      # Each part is its own step whose exit status is the command's; the runner keeps
+      # its outcome (a job output below), which the tree's code cannot write.
+      - name: go build (runs the tree's code)
+        id: build
+        continue-on-error: true
+        run: bash .github/provimux/check.sh test candidate build
+      - name: go list, go test -json (runs the tree's code; raw output only)
+        id: test
+        continue-on-error: true
+        run: bash .github/provimux/check.sh test candidate test
+      - name: go test again, whole, the packages with a failing test (runs the tree's code)
+        id: rerun
+        continue-on-error: true
+        run: bash .github/provimux/check.sh test candidate rerun
       - uses: actions/upload-artifact@v4
+        id: upload
         if: ${{ always() }}
         with:
-          name: pmx-test-${{ matrix.tree }}
-          path: ${{ runner.temp }}/check/test/${{ matrix.tree }}/
+          name: pmx-test-candidate
+          path: ${{ runner.temp }}/check/test/candidate/
           if-no-files-found: warn
 
-  # Turns the raw output into the result. Runs no repository code.
+  test-tag:
+    name: test (tag)
+    needs: prepare
+    if: ${{ needs.prepare.outputs.status == 'test' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      artifact: ${{ steps.upload.outputs.artifact-id }}
+      digest: ${{ steps.upload.outputs.artifact-digest }}
+      test: ${{ steps.test.outcome }}
+    env:
+      # The release may need a newer Go than the one its go.mod names.
+      GOTOOLCHAIN: auto
+      PMX_REPO: ${{ github.repository }}
+      PMX_RUN_ID: ${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          sparse-checkout: .github/provimux
+          persist-credentials: false
+      - name: Paths
+        run: echo "PMX_CHECK_OUT=$RUNNER_TEMP/check" >> "$GITHUB_ENV"
+      # Before any of the tree's code runs; the token only in this step.
+      - name: The prepare job's artifact, by id
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ID: ${{ needs.prepare.outputs.artifact }}
+          DIGEST: ${{ needs.prepare.outputs.digest }}
+        run: bash .github/provimux/check.sh fetch "$ID" pmx-prepare "$DIGEST" "$PMX_CHECK_OUT"
+      - name: Export the tag tree (git only)
+        run: bash .github/provimux/check.sh tree tag
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: ${{ runner.temp }}/check/trees/tag/go.mod
+          cache: false
+      # Each part is its own step whose exit status is the command's; the runner keeps
+      # its outcome (a job output below), which the tree's code cannot write.
+      - name: go list, go test -json (runs the tree's code; raw output only)
+        id: test
+        continue-on-error: true
+        run: bash .github/provimux/check.sh test tag test
+      - uses: actions/upload-artifact@v4
+        id: upload
+        if: ${{ always() }}
+        with:
+          name: pmx-test-tag
+          path: ${{ runner.temp }}/check/test/tag/
+          if-no-files-found: warn
+
+  # Turns the raw output into the result. Runs no repository code. Every input is the
+  # artifact its producing job named by id and digest (a job output); an artifact of the
+  # same name uploaded or replaced by another job (a new id) is never read. The test
+  # outcomes are the runner's step outcomes and the jobs' conclusions (jobs API), checked
+  # against the exit statuses in the artifacts.
   verdict:
-    needs: [prepare, test]
+    needs: [prepare, test-candidate, test-tag]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
       contents: read
+      actions: read
+    outputs:
+      artifact: ${{ steps.upload.outputs.artifact-id }}
+      digest: ${{ steps.upload.outputs.artifact-digest }}
     env:
       PMX_REPO: ${{ github.repository }}
       PMX_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      PMX_RUN_ID: ${{ github.run_id }}
+      PMX_RUN_ATTEMPT: ${{ github.run_attempt }}
       PMX_PREP_JOB: ${{ needs.prepare.result }}
-      PMX_TEST_JOB: ${{ needs.test.result }}
+      PMX_TEST_JOB: candidate ${{ needs.test-candidate.result }}, tag ${{ needs.test-tag.result }}
     steps:
       - uses: actions/checkout@v6
         with:
           ref: ${{ github.sha }}
           sparse-checkout: .github/provimux
           persist-credentials: false
-      - uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          name: pmx-prepare
-          path: ${{ runner.temp }}/check
-      - uses: actions/download-artifact@v4
-        if: ${{ needs.prepare.outputs.status == 'test' }}
-        continue-on-error: true
-        with:
-          name: pmx-test-candidate
-          path: ${{ runner.temp }}/check/test/candidate
-      - uses: actions/download-artifact@v4
-        if: ${{ needs.prepare.outputs.status == 'test' }}
-        continue-on-error: true
-        with:
-          name: pmx-test-tag
-          path: ${{ runner.temp }}/check/test/tag
-      - name: Verdict
+      - name: Paths
+        run: echo "PMX_CHECK_OUT=$RUNNER_TEMP/check" >> "$GITHUB_ENV"
+      - name: The prepare and test artifacts, by id
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STATUS: ${{ needs.prepare.outputs.status }}
+          PREP: ${{ needs.prepare.outputs.artifact }} ${{ needs.prepare.outputs.digest }}
+          CAND: ${{ needs.test-candidate.outputs.artifact }} ${{ needs.test-candidate.outputs.digest }}
+          TAG: ${{ needs.test-tag.outputs.artifact }} ${{ needs.test-tag.outputs.digest }}
         run: |
-          echo "PMX_CHECK_OUT=$RUNNER_TEMP/check" >> "$GITHUB_ENV"
-          export PMX_CHECK_OUT="$RUNNER_TEMP/check"
-          bash .github/provimux/check.sh verdict
+          # A missing or mismatched artifact leaves its files absent: the verdict then
+          # reports which result is missing.
+          read -r id d <<<"$PREP"
+          bash .github/provimux/check.sh fetch "${id:-}" pmx-prepare "${d:-}" "$PMX_CHECK_OUT" || true
+          if [ "$STATUS" = test ]; then
+            read -r id d <<<"$CAND"
+            bash .github/provimux/check.sh fetch "${id:-}" pmx-test-candidate "${d:-}" "$PMX_CHECK_OUT/test/candidate" || true
+            read -r id d <<<"$TAG"
+            bash .github/provimux/check.sh fetch "${id:-}" pmx-test-tag "${d:-}" "$PMX_CHECK_OUT/test/tag" || true
+          fi
+      - name: Verdict
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PMX_OUTCOME_BUILD: ${{ needs.test-candidate.outputs.build }}
+          PMX_OUTCOME_CAND_TEST: ${{ needs.test-candidate.outputs.test }}
+          PMX_OUTCOME_RERUN: ${{ needs.test-candidate.outputs.rerun }}
+          PMX_OUTCOME_TAG_TEST: ${{ needs.test-tag.outputs.test }}
+        run: bash .github/provimux/check.sh verdict
       - name: Summary
         if: ${{ always() }}
         run: |
@@ -189,12 +284,13 @@ jobs:
         run: echo "::notice title=provimux-check-artifact::$ID $NAME${DIGEST:+ sha256:$DIGEST}"
 
   report:
-    needs: [prepare, test, verdict]
+    needs: [prepare, test-candidate, test-tag, verdict]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: read
+      actions: read
       issues: write
     steps:
       - uses: actions/checkout@v6
@@ -202,18 +298,24 @@ jobs:
           ref: ${{ github.sha }}
           sparse-checkout: .github/provimux
           persist-credentials: false
-      - uses: actions/download-artifact@v4
+      # The verdict's artifact by its id and digest (no lookup by name).
+      - name: The verdict's artifact, by id
         continue-on-error: true
-        with:
-          name: provimux-check-${{ needs.prepare.outputs.tag || 'none' }}
-          path: ${{ runner.temp }}/artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PMX_REPO: ${{ github.repository }}
+          PMX_RUN_ID: ${{ github.run_id }}
+          ID: ${{ needs.verdict.outputs.artifact }}
+          DIGEST: ${{ needs.verdict.outputs.digest }}
+          NAME: provimux-check-${{ needs.prepare.outputs.tag || 'none' }}
+        run: bash .github/provimux/check.sh fetch "$ID" "$NAME" "$DIGEST" "$RUNNER_TEMP/artifact"
       - name: Open, update or close the sync issue
         env:
           GH_TOKEN: ${{ github.token }}
           PMX_REPO: ${{ github.repository }}
           RESULT: ${{ runner.temp }}/artifact/result.json
           # success only when every job of the check did (the test jobs may be skipped).
-          CHECK_JOB: ${{ (needs.prepare.result == 'success' && needs.verdict.result == 'success' && (needs.test.result == 'success' || needs.test.result == 'skipped')) && 'success' || format('prepare {0}, test {1}, verdict {2}', needs.prepare.result, needs.test.result, needs.verdict.result) }}
+          CHECK_JOB: ${{ (needs.prepare.result == 'success' && needs.verdict.result == 'success' && (needs.test-candidate.result == 'success' || needs.test-candidate.result == 'skipped') && (needs.test-tag.result == 'success' || needs.test-tag.result == 'skipped')) && 'success' || format('prepare {0}, test (candidate) {1}, test (tag) {2}, verdict {3}', needs.prepare.result, needs.test-candidate.result, needs.test-tag.result, needs.verdict.result) }}
           TAG_HINT: ${{ needs.prepare.outputs.tag }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: bash .github/provimux/report.sh
