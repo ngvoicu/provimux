@@ -350,7 +350,7 @@ func (h *Handler) SetPostAuthPersistHook(hook coreauth.PostAuthHook) {
 // Additionally, remote access requires allow-remote-management=true.
 func (h *Handler) Middleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		c.Header("X-CPA-VERSION", buildinfo.Version)
+		c.Header("X-CPA-VERSION", buildinfo.DisplayVersion())
 		c.Header("X-CPA-COMMIT", buildinfo.Commit)
 		c.Header("X-CPA-BUILD-DATE", buildinfo.BuildDate)
 		c.Header("X-CPA-SUPPORT-PLUGIN", pluginhost.SupportPluginHeaderValue())

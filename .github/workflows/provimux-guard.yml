@@ -1,0 +1,39 @@
+# Provimux guard (PMX-03): Provimux-layer commits and pull requests must not change
+# the code that talks to AI providers. The checks are in .github/provimux/guard.sh.
+name: provimux-guard
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  provimux-guard:
+    name: provimux-guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          # For a PR, check the PR's own commits, not GitHub's synthetic merge commit.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Check Provimux layer commits
+        shell: bash
+        env:
+          # Set only for pull requests: the target branch's commit.
+          PMX_TARGET: ${{ github.event.pull_request.base.sha }}
+        # For a PR, run the target branch's copy of the script: the PR can neither
+        # weaken it nor lack it (a branch based below the layer has no guard.sh).
+        run: |
+          if [ -n "$PMX_TARGET" ]; then
+            git show "$PMX_TARGET:.github/provimux/guard.sh" > "$RUNNER_TEMP/guard.sh"
+          else
+            cp .github/provimux/guard.sh "$RUNNER_TEMP/guard.sh"
+          fi
+          bash "$RUNNER_TEMP/guard.sh"
