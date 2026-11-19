@@ -78,6 +78,12 @@ release_run_state() {
   esac
 }
 
+# release_run_id TAG: the id of the newest provimux-release run for the push of TAG, or "".
+release_run_id() {
+  gh api "repos/$PMX_REPO/actions/runs?event=push&branch=$1&per_page=20" \
+    --jq '[.workflow_runs[] | select(.path == ".github/workflows/provimux-release.yml")] | sort_by(.created_at) | last | .id // empty' 2>/dev/null || true
+}
+
 # release_state TAG (v<base>-pmx.<n>): complete | missing | draft | prerelease | partial:<missing files>.
 # Complete = a published, non-draft GitHub release with every expected asset uploaded.
 release_state() {
