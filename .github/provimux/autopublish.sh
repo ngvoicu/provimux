@@ -20,22 +20,22 @@
 #   result.json's status is not "pass", or when v<base>-pmx.* exists already; then
 #   publish <tag>. Exit 1 when the artifact differs or is malformed.
 # notify, env: TAG (may be empty or invalid: then the one open "sync: v*" issue, or the
-# issue "provimux-publish: failed"), OUTCOME (no-token | failed), WHY (the verifier's or
+# issue "provimux-publish: failed"), OUTCOME (no-token | tap-failed | failed), WHY (the verifier's or
 # decide's reason, if any), LOG (the publish log, if any), PLAN (its plan.env, if any),
-# EXPECT_MAIN (the checked main, if known), HAS_TOKEN (true | false | empty = unknown:
-# whether PROVIMUX_TOKEN is set), RUN_URL, GH_TOKEN with issues: write and actions: read.
+# EXPECT_MAIN (the checked main, if known), RUN_URL, GH_TOKEN with issues: write and actions: read.
 # PMX_NOTIFY_DRY_RUN=1 prints instead.
 #   It promises nothing about a later check: a scheduled check only checks the newest
 #   stable release. To retry a release now the owner starts a check of that tag.
 #   It writes no recovery instruction from what the run believes: it reads the remote
 #   first (main, v<base>, v<base>-pmx.* with each release and its release run) and says
 #   what is true there and what to do about that:
-#     a -pmx tag exists      released (closes the open issue; opens none) / release
+#     a -pmx tag exists      released (closes the open issue; opens none) / released
+#                            but the tap update failed (owner: publish.sh --tap) / release
 #                            running / pushed, release not complete (rerun the release
 #                            run; never publish again)
 #     no -pmx tag, main is the checked main (or unknown)
-#                            nothing was pushed: waits for the token (never "publish by
-#                            hand": that would release without the Homebrew tap), or
+#                            nothing was pushed: waits for the token (or the owner
+#                            publishes by hand: publish.sh updates the tap too), or
 #                            refused (owner)
 #     no -pmx tag, main is the candidate
 #                            main pushed without its tags (owner: push the tags)
@@ -143,6 +143,11 @@ notify() {
     { echo "**provimux-publish failed and the remote could not be read.** Do not publish or rerun anything before checking:"
       echo; echo '```sh'; echo "git ls-remote $PMX_REPO_URL refs/heads/main 'refs/tags/$tag*'"; echo '```'
       echo "then follow SYNC.md, \"Check a release\" (a \`$tag-pmx.*\` tag exists) or \"Publishing by hand\" (none does)."; } >"$tmp/head.md"
+  elif [[ "$rs" == published && "$outcome" == tap-failed ]]; then
+    title="sync: $tag — released, Homebrew tap not updated, owner needed"
+    { echo "**The release is complete, but the Homebrew tap update failed** (reasons below). The tap stays on its old version until the owner updates it, with their own credentials (SYNC.md, \"The Homebrew tap\"; only forward, so running it again is safe):"
+      echo; echo '```sh'; echo "bash .github/provimux/publish.sh --tap $(sed -n 's/^PMX_TAG=//p' "${PLAN:-/dev/null}" 2>/dev/null | head -n 1 | grep -E '^v[0-9.]+-pmx\.[0-9]+$' || echo "$tag-pmx.1")"; echo '```'
+      echo "Then close this issue."; } >"$tmp/head.md"
   elif [[ "$rs" == published ]]; then
     title="sync: $tag — released"
     echo "**The release is complete** (every \`$tag-pmx.*\` release is public with all its assets and its release run succeeded); this run failed after that, or was a second run for it. Nothing to publish; this closes the issue." >"$tmp/head.md"
@@ -172,19 +177,14 @@ notify() {
     title="sync: $tag — ready, publishing waits for PROVIMUX_TOKEN"
     { echo "**Automatic publishing waits for the token.** The check passed, but the secret \`PROVIMUX_TOKEN\` of the environment \`provimux-token\` is not set; nothing was pushed."
       echo
-      echo "Do not publish by hand meanwhile: \`tap-publish\` of the release needs the same token, so a hand publish now would release \`$tag\` without the Homebrew tap update until the token exists."
-      echo
-      echo "The owner sets the token once (SYNC.md, \"The token\"), then starts a check of this release; its publish run publishes it (a scheduled check checks only the newest stable release):"
-      echo; echo '```sh'; echo "$recheck"; echo '```'; } >"$tmp/head.md"
+      echo "The owner either sets the token once (SYNC.md, \"The token\") and starts a check of this release, whose publish run publishes it (a scheduled check checks only the newest stable release):"
+      echo; echo '```sh'; echo "$recheck"; echo '```'
+      echo "or publishes by hand with their own credentials (SYNC.md, \"Publishing by hand\"; \`publish.sh\` authorizes the release and updates the Homebrew tap itself):"
+      echo; echo '```sh'; echo "bash .github/provimux/publish.sh $tag --dry-run"; echo "bash .github/provimux/publish.sh $tag"; echo '```'; } >"$tmp/head.md"
   else
     title="sync: $tag — publish refused, owner needed"
     { echo "**Automatic publishing refused; nothing was pushed** (the remote shows no \`$tag-pmx.*\` tag$([[ -n "$expect" ]] && echo " and \`main\` unchanged" || echo ", and this run stopped before its push step")). The owner reads the reasons, fixes what they name or decides (SYNC.md, \"Manual cases\"), then publishes by hand (SYNC.md, \"Publishing by hand\"):"
       echo; echo '```sh'; echo "bash .github/provimux/publish.sh $tag --dry-run"; echo "bash .github/provimux/publish.sh $tag"; echo '```'; } >"$tmp/head.md"
-  fi
-  # Whatever the owner does next ends in a release run, whose tap-publish needs the token.
-  if [[ "${HAS_TOKEN:-}" == false && "$outcome" != no-token && "$rs" != published && -n "$tag" ]]; then
-    { echo
-      echo "**\`PROVIMUX_TOKEN\` is not set** (environment \`provimux-token\`): any release now, by hand or by a rerun, goes out without the Homebrew tap update (\`tap-publish\` fails). Set the token first (SYNC.md, \"The token\")."; } >>"$tmp/head.md"
   fi
   {
     cat "$tmp/head.md"
@@ -215,7 +215,7 @@ notify() {
         --jq '.[] | select(.pull_request == null) | select(.title == "provimux-publish: failed") | .number' | sort -n)"
   fi
   number="$(head -n 1 <<<"$numbers")"
-  if [[ "$rs" == published ]]; then
+  if [[ "$rs" == published && "$outcome" != tap-failed ]]; then
     # Complete: nothing is left to do, so no issue is opened; an open one is closed.
     for number in $numbers; do
       gh issue close "$number" -R "$PMX_REPO" --comment "$(cat "$tmp/main.md")" >/dev/null
