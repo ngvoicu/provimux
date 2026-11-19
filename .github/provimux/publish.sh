@@ -4,7 +4,7 @@
 # it never asks for or stores a token, and it runs no code of the candidate or of upstream
 # (only git, gh, jq, and the guard of the owner's current main).
 #
-#   publish.sh <vX.Y.Z> [--dry-run] [--yes] [--run <id>] [--remote <name>]
+#   publish.sh <vX.Y.Z> [--dry-run] [--yes] [--ci] [--run <id>] [--remote <name>]
 #              [--accept-dropped <sha,...>] [--accept-changed <sha,...>] [--timeout <minutes>]
 #
 # 1. Picks the check run: a provimux-check run of this repository, on main (event schedule
@@ -32,6 +32,14 @@
 #    asset, prints the run's conclusion and jobs, then closes the "sync: v<base>" issue.
 #
 #   --dry-run    everything except the push (shows git push --dry-run), no wait, no close
+#   --ci         for provimux-publish.yml (SYNC.md, "Publishing automatically"): no
+#                terminal (needs --yes or --dry-run), and git authenticates to github.com
+#                with the token in the environment variable PMX_PUSH_TOKEN, through a
+#                credential helper given in the environment (GIT_CONFIG_*): the token is
+#                never written to disk, to a URL or to the log. It is removed from the
+#                environment right after the push. With PMX_PUBLISH_STATE=<file>, writes
+#                "pushed" to that file once the push succeeded. Without --ci nothing
+#                changes: the owner's own git and gh credentials, as before.
 #
 # Run it from a clone of ngvoicu/provimux (any branch, nothing is checked out or changed:
 # the work happens in a temporary repository that borrows this clone's objects).
@@ -41,16 +49,17 @@ here="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=common.sh
 . "$here/common.sh"
 
-usage() { sed -n '2,38p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,46p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 die() { echo "publish: $*" >&2; exit 1; }
 log() { echo "==> $*" >&2; }
 
-tag='' dry_run=0 yes=0 run_id='' remote='' accept_dropped='' accept_changed=''
+tag='' dry_run=0 yes=0 ci=0 run_id='' remote='' accept_dropped='' accept_changed=''
 timeout_min=120
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run) dry_run=1 ;;
     --yes) yes=1 ;;
+    --ci) ci=1 ;;
     --run) run_id="${2:?}"; shift ;;
     --remote) remote="${2:?}"; shift ;;
     --accept-dropped) accept_dropped="${2:?}"; shift ;;
@@ -66,6 +75,22 @@ done
 [[ -z "$run_id" || "$run_id" =~ ^[0-9]+$ ]] || die "--run takes a run id (digits)"
 base="${tag#v}"
 pmx_tag="v$base-pmx.1"
+
+# --- CI: the push credential, from the environment only -------------------------------
+if [[ $ci -eq 1 ]]; then
+  [[ -n "${PMX_PUSH_TOKEN:-}" ]] || die "--ci: no token in PMX_PUSH_TOKEN (the repository secret PUBLISH_TOKEN is not set; SYNC.md, \"The token\"); nothing pushed"
+  [[ $yes -eq 1 || $dry_run -eq 1 ]] || die "--ci needs --yes or --dry-run (there is no terminal to confirm on)"
+  export GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never
+  # The helper is a shell function in the config value; it prints the token from the
+  # environment when git asks for github.com credentials. The empty credential.helper
+  # first drops any other helper.
+  # shellcheck disable=SC2016 # expanded by the helper's shell, not here
+  export GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=credential.helper GIT_CONFIG_VALUE_0='' \
+    GIT_CONFIG_KEY_1=credential.https://github.com.helper \
+    GIT_CONFIG_VALUE_1='!f() { test "$1" = get || exit 0; echo username=x-access-token; echo "password=$PMX_PUSH_TOKEN"; }; f'
+fi
+# drop_push_token: after the push, nothing else needs the token.
+drop_push_token() { unset PMX_PUSH_TOKEN GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_CONFIG_KEY_1 GIT_CONFIG_VALUE_1; }
 
 # --- where to push --------------------------------------------------------------------
 git rev-parse --git-dir >/dev/null 2>&1 || die "run it inside a clone of $PMX_REPO"
@@ -87,13 +112,7 @@ remote_main="$(git ls-remote "$push_url" refs/heads/main | awk '{print $1}')"
 # PMX_REPO on main (schedule or workflow_dispatch); fails otherwise.
 check_run_sha() {
   gh api "repos/$PMX_REPO/actions/runs/$1" >"$work/run-$1.json" 2>/dev/null || return 1
-  jq -er --arg repo "$PMX_REPO" '
-    select(.path == ".github/workflows/provimux-check.yml" and .head_branch == "main"
-           and (.event == "schedule" or .event == "workflow_dispatch")
-           and .status == "completed" and .conclusion == "success"
-           and .repository.full_name == $repo and .head_repository.full_name == $repo
-           and (.head_sha | test("^[0-9a-f]{40}$")))
-    | .head_sha' "$work/run-$1.json"
+  jq -er --arg repo "$PMX_REPO" "$PMX_CHECK_RUN_OK"' | .head_sha' "$work/run-$1.json"
 }
 if [[ -n "$run_id" ]]; then
   run_sha="$(check_run_sha "$run_id")" ||
@@ -301,6 +320,7 @@ if [[ $dry_run -eq 1 ]]; then
   log "dry run: git push --dry-run"
   g push --dry-run "${pushargs[@]}" "$push_url" "${refs[@]}" || die "git push --dry-run failed"
   echo
+  drop_push_token
   echo "Dry run: nothing was pushed."
   exit 0
 fi
@@ -315,6 +335,8 @@ log "rechecking upstream's $tag and the remote before pushing"
 recheck
 push_refs
 g push "${pushargs[@]}" "$push_url" "${refs[@]}" || die "the push failed; nothing was changed on $remote (atomic)"
+drop_push_token
+[[ -z "${PMX_PUBLISH_STATE:-}" ]] || echo pushed >"$PMX_PUBLISH_STATE"
 echo "Pushed."
 
 # --- 5. wait for the whole release run, then close the issue ---------------------------------
