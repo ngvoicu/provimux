@@ -1,16 +1,32 @@
-# Provimux release (PMX-09): a tag v<base>-pmx.<n> builds the same 10 archives as
-# CLIProxyAPI's release.yaml, under Provimux names, and publishes a GitHub release.
-# A manual run (workflow_dispatch) is a dry run: it builds everything and keeps the
-# archives, checksums and release notes as workflow artifacts; it publishes nothing.
+# Provimux release (PMX-09, PMX-10, PMX-13): a tag v<base>-pmx.<n> builds the same
+# 10 archives as CLIProxyAPI's release.yaml, under Provimux names, and the
+# linux/amd64 and linux/arm64 images; publishes the GitHub release; then pushes the
+# images to ghcr.io/<owner>/provimux and updates Formula/provimux.rb in
+# ngvoicu/homebrew-tap. A manual run (workflow_dispatch) is a dry run: it builds
+# everything, rehearses the image push against a registry on the runner and the
+# formula update against the run's own files, and publishes nothing.
+#
+# Order and trust:
+#   meta, catalogs, build-*, image, prepare  read-only token, checkout without a
+#       stored credential; these are the only jobs that run repository code.
+#   publish-release (contents: write), image-push (packages: write), tap-publish
+#       (TAP_TOKEN)  no checkout, no repository script: fixed inline steps on the
+#       files the read-only jobs prepared.
+#   publish-release runs only when every archive and both images have built; the
+#   image tags and the formula move only after the release is public with all its
+#   assets. (One workflow: a release created with GITHUB_TOKEN starts no other.)
+#
+# The model catalogs (router-for-me/models) are fetched once, at one commit,
+# validated, and handed to every build as an artifact; the release notes name the
+# commit. The image pushed is the OCI export of the build that was tested.
 #
 # The build jobs are copied from upstream's .github/workflows/release.yaml (left
 # unchanged and disabled in this repo). Differences: binary provimux, archive names
 # provimux_<base>-pmx.<n>_*, the extra ProvimuxVersion ldflag, the Go version read
-# from release.yaml at run time, a banner check on native runners, and one release
-# job that publishes only after every archive has built.
-#
-# After publishing, the homebrew-tap job updates Formula/provimux.rb in
-# ngvoicu/homebrew-tap (PMX-13, .github/provimux/update-formula.sh).
+# from release.yaml at run time, the catalogs from the catalogs job, a banner check
+# on native runners. The image follows upstream's docker-image.yml with
+# .github/provimux/Dockerfile: VERSION = the base tag WITH "v" (upstream passes the
+# tag name), plus PROVIMUX_VERSION.
 #
 # main.Version stays exactly what stock CLIProxyAPI sets for its archives (the base
 # version without "v"): providers see it in user agents.
@@ -26,9 +42,18 @@ on:
         description: 'Provimux version for the dry run (e.g. 8.0.77-pmx.0-dryrun); empty = <base>-pmx.0-dryrun'
         required: false
         default: ''
+      models_commit:
+        description: 'router-for-me/models commit for the catalogs (40 hex); empty = its main when the run starts'
+        required: false
+        default: ''
 
 permissions:
   contents: read
+
+# One run per tag at a time; a second push of the same tag waits.
+concurrency:
+  group: provimux-release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   meta:
@@ -40,20 +65,107 @@ jobs:
       commit: ${{ steps.meta.outputs.commit }}
       build_date: ${{ steps.meta.outputs.build_date }}
       ldflags: ${{ steps.meta.outputs.ldflags }}
+      publish: ${{ steps.meta.outputs.publish }}
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           fetch-tags: true
+          persist-credentials: false
       - name: Versions and build metadata
         id: meta
         env:
           INPUT_VERSION: ${{ inputs.provimux_version }}
         run: bash .github/provimux/release-meta.sh
 
+  # The model catalogs every build embeds: fetched once, at one commit, validated.
+  catalogs:
+    needs: meta
+    runs-on: ubuntu-latest
+    outputs:
+      models_commit: ${{ steps.fetch.outputs.commit }}
+      catalogs_sha256: ${{ steps.validate.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ needs.meta.outputs.go_version }}
+          cache: true
+      - name: Fetch the catalogs at one commit
+        id: fetch
+        env:
+          MODELS_REPOSITORY: https://github.com/router-for-me/models.git
+          INPUT_COMMIT: ${{ inputs.models_commit }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${INPUT_COMMIT:-}" ]]; then
+            commit="$INPUT_COMMIT"
+          else
+            commit="$(git ls-remote "$MODELS_REPOSITORY" refs/heads/main | cut -f1)"
+          fi
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Not a full commit id: '$commit'"; exit 1; }
+          src="$RUNNER_TEMP/models-src"
+          git init -q "$src"
+          git -C "$src" fetch -q --depth 1 "$MODELS_REPOSITORY" "$commit"
+          [[ "$(git -C "$src" rev-parse FETCH_HEAD)" == "$commit" ]]
+          out="$RUNNER_TEMP/catalogs"
+          mkdir -p "$out"
+          git -C "$src" show "$commit:models.json" > "$out/models.json"
+          git -C "$src" show "$commit:codex_client_models.json" > "$out/codex_client_models.json"
+          echo "$commit" > "$out/MODELS_COMMIT"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+      - name: Validate the catalogs
+        id: validate
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/catalogs"
+          fail() { echo "::error::$*"; exit 1; }
+          m="$out/models.json"
+          # models.json: an object of model lists; the sections validateModelsCatalog
+          # reads must be lists; every model has a non-empty id, unique in its list.
+          jq -e 'type == "object"' "$m" >/dev/null || fail "models.json is not a JSON object."
+          for s in claude gemini vertex aistudio codex-free codex-team codex-plus codex-pro kimi antigravity xai meta; do
+            jq -e --arg s "$s" '.[$s] | type == "array"' "$m" >/dev/null || fail "models.json: section $s is missing or not a list."
+            [[ "$(jq --arg s "$s" '.[$s] | length' "$m")" -gt 0 ]] || echo "::warning::models.json: section $s is empty."
+          done
+          jq -e 'all(.[]; type == "array"
+                   and all(.[]; type == "object" and (.id | type == "string" and test("\\S")))
+                   and ((map(.id | gsub("^\\s+|\\s+$"; "")) | unique | length) == length))' "$m" >/dev/null ||
+            fail "models.json: a section is not a list of models with unique non-empty ids."
+          total="$(jq '[.[] | length] | add' "$m")"
+          [[ "$total" -gt 0 ]] || fail "models.json lists no model."
+          c="$out/codex_client_models.json"
+          jq -e 'type == "object" and (.models | type == "array" and length > 0)' "$c" >/dev/null ||
+            fail "codex_client_models.json has no models list."
+          go run ./cmd/validate_codex_models --file "$c"
+          # The Go validators, on the catalogs embedded as a build would embed them.
+          cp "$m" "$c" internal/registry/models/
+          go test -count=1 -run '^(TestCatalogFetcherSources|TestEmbeddedCodexClientModelsCatalogIsValid)$' ./internal/registry/
+          (cd "$out" && sha256sum codex_client_models.json models.json > SHA256SUMS && cat SHA256SUMS)
+          sha="$(sha256sum "$out/SHA256SUMS" | cut -d' ' -f1)"
+          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Model catalogs"
+            echo
+            echo "- router-for-me/models@\`$(cat "$out/MODELS_COMMIT")\`"
+            echo "- models.json: $total models in $(jq 'length' "$m") sections; codex_client_models.json: $(jq '.models | length' "$c") models"
+            echo "- SHA256SUMS: \`$sha\`"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: model-catalogs
+          path: |
+            ${{ runner.temp }}/catalogs/models.json
+            ${{ runner.temp }}/catalogs/codex_client_models.json
+            ${{ runner.temp }}/catalogs/SHA256SUMS
+            ${{ runner.temp }}/catalogs/MODELS_COMMIT
+          if-no-files-found: error
+
   build-hosted:
     name: build ${{ matrix.target }}
-    needs: meta
+    needs: [meta, catalogs]
     runs-on: ${{ matrix.runner }}
     env:
       RELEASE_VERSION: ${{ needs.meta.outputs.base }}
@@ -91,13 +203,33 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-go@v6
         with:
           go-version: ${{ needs.meta.outputs.go_version }}
           cache: true
-      - name: Refresh models catalog
+      - &catalogs-download
+        name: Download the model catalogs
+        uses: actions/download-artifact@v4
+        with:
+          name: model-catalogs
+          path: internal/registry/models
+      - &catalogs-check
+        name: Check the model catalogs
         shell: bash
-        run: bash .github/scripts/refresh-model-catalogs.sh
+        env:
+          MODELS_COMMIT: ${{ needs.catalogs.outputs.models_commit }}
+          CATALOGS_SHA256: ${{ needs.catalogs.outputs.catalogs_sha256 }}
+        run: |
+          set -euo pipefail
+          cd internal/registry/models
+          sum() { if command -v sha256sum >/dev/null; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
+          got="$(sum SHA256SUMS | cut -d' ' -f1)"
+          [[ "$got" == "$CATALOGS_SHA256" && "$(cat MODELS_COMMIT)" == "$MODELS_COMMIT" ]] || {
+            echo "::error::Catalogs are not the ones the catalogs job validated (SHA256SUMS $got, commit $(cat MODELS_COMMIT))"; exit 1; }
+          sum -c SHA256SUMS
+          rm SHA256SUMS MODELS_COMMIT
+          echo "Model catalogs: router-for-me/models@${MODELS_COMMIT}, SHA256SUMS ${got}" | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/cache@v4
         with:
           path: |
@@ -144,13 +276,13 @@ jobs:
         run: bash .github/provimux/check-banner.sh "$BINARY" "$PROVIMUX_VERSION" "$RELEASE_VERSION"
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.target }}
+          name: archive-${{ matrix.target }}
           path: dist/provimux_*
           if-no-files-found: error
 
   build-linux-glibc:
     name: build linux-${{ matrix.goarch }} glibc
-    needs: meta
+    needs: [meta, catalogs]
     runs-on: ${{ matrix.runner }}
     env:
       GO_VERSION: ${{ needs.meta.outputs.go_version }}
@@ -175,13 +307,13 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-go@v6
         with:
           go-version: ${{ needs.meta.outputs.go_version }}
           cache: true
-      - name: Refresh models catalog
-        shell: bash
-        run: bash .github/scripts/refresh-model-catalogs.sh
+      - *catalogs-download
+      - *catalogs-check
       - name: Build archive
         shell: bash
         env:
@@ -236,13 +368,13 @@ jobs:
         run: bash .github/provimux/check-banner.sh "$BINARY" "$PROVIMUX_VERSION" "$RELEASE_VERSION"
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.target }}
+          name: archive-${{ matrix.target }}
           path: dist/provimux_*
           if-no-files-found: error
 
   build-linux-no-plugin:
     name: build linux-${{ matrix.goarch }} no-plugin
-    needs: meta
+    needs: [meta, catalogs]
     runs-on: ubuntu-latest
     env:
       RELEASE_VERSION: ${{ needs.meta.outputs.base }}
@@ -264,13 +396,13 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-go@v6
         with:
           go-version: ${{ needs.meta.outputs.go_version }}
           cache: true
-      - name: Refresh models catalog
-        shell: bash
-        run: bash .github/scripts/refresh-model-catalogs.sh
+      - *catalogs-download
+      - *catalogs-check
       - uses: actions/cache@v4
         with:
           path: |
@@ -314,13 +446,13 @@ jobs:
         run: bash .github/provimux/check-banner.sh "$BINARY" "$PROVIMUX_VERSION" "$RELEASE_VERSION"
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.target }}
+          name: archive-${{ matrix.target }}
           path: dist/provimux_*
           if-no-files-found: error
 
   build-freebsd:
     name: build ${{ matrix.target }}
-    needs: meta
+    needs: [meta, catalogs]
     runs-on: ubuntu-latest
     env:
       TARGET: ${{ matrix.target }}
@@ -348,12 +480,13 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-go@v6
         with:
           go-version: ${{ needs.meta.outputs.go_version }}
           cache: true
-      - name: Refresh models catalog
-        run: bash .github/scripts/refresh-model-catalogs.sh
+      - *catalogs-download
+      - *catalogs-check
       - uses: actions/cache@v4
         with:
           path: |
@@ -461,32 +594,146 @@ jobs:
           tar -C "$archive_dir" -czf "dist/$archive_name" provimux LICENSE README.md README_CN.md README_PROVIMUX.md config.example.yaml
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.target }}
+          name: archive-${{ matrix.target }}
           path: dist/provimux_*
           if-no-files-found: error
 
-  release:
+
+  # One image per architecture, exported as an OCI layout (pushed later, unchanged)
+  # and loaded into Docker for the checks; the checks confirm the two are the same.
+  image:
+    name: image linux/${{ matrix.arch }}
+    needs: [meta, catalogs]
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    env:
+      # main.Version in the image: the base tag with "v", as upstream's image.
+      VERSION: v${{ needs.meta.outputs.base }}
+      PROVIMUX_VERSION: ${{ needs.meta.outputs.provimux_version }}
+      COMMIT: ${{ needs.meta.outputs.commit }}
+      BUILD_DATE: ${{ needs.meta.outputs.build_date }}
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - *catalogs-download
+      - *catalogs-check
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build (linux/${{ matrix.arch }})
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: .github/provimux/Dockerfile
+          platforms: linux/${{ matrix.arch }}
+          provenance: false
+          sbom: false
+          build-args: |
+            VERSION=${{ env.VERSION }}
+            COMMIT=${{ env.COMMIT }}
+            BUILD_DATE=${{ env.BUILD_DATE }}
+            PROVIMUX_VERSION=${{ env.PROVIMUX_VERSION }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ env.PROVIMUX_VERSION }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.licenses=MIT
+          outputs: |
+            type=oci,dest=${{ runner.temp }}/oci-${{ matrix.arch }}.tar
+            type=docker,name=provimux:check
+          cache-from: type=gha,scope=provimux-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=provimux-${{ matrix.arch }}
+      - name: Check banner and image layout
+        run: |
+          set -euo pipefail
+          expected="Provimux Version: ${PROVIMUX_VERSION} (based on CLIProxyAPI ${VERSION})"
+          for cmd in ./provimux ./CLIProxyAPI; do
+            out="$(docker run --rm provimux:check "$cmd" --help 2>&1 || true)"
+            banner="$(printf '%s\n' "$out" | grep -m1 '^Provimux Version:' || true)"
+            echo "$cmd: $banner"
+            [[ "$banner" == "$expected"* ]] || { printf '%s\n' "$out" | head -n 20; echo "::error::Expected: $expected"; exit 1; }
+          done
+          docker image inspect provimux:check --format 'arch={{.Architecture}} workdir={{.Config.WorkingDir}} cmd={{json .Config.Cmd}} ports={{json .Config.ExposedPorts}}' | tee -a "$GITHUB_STEP_SUMMARY"
+          [[ "$(docker image inspect provimux:check --format '{{.Config.WorkingDir}}')" == "/CLIProxyAPI" ]]
+          [[ "$(docker image inspect provimux:check --format '{{.Architecture}}')" == "$ARCH" ]]
+      - name: Check the OCI export is the image checked
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$*"; exit 1; }
+          dir="$RUNNER_TEMP/oci"
+          mkdir -p "$dir"
+          tar -xf "$RUNNER_TEMP/oci-${ARCH}.tar" -C "$dir"
+          blob() { echo "$dir/blobs/${1%%:*}/${1#*:}"; }
+          for f in "$dir"/blobs/sha256/*; do
+            [[ "$(sha256sum < "$f" | cut -d' ' -f1)" == "$(basename "$f")" ]] || fail "Blob $f does not match its digest."
+          done
+          [[ "$(jq '.manifests | length' "$dir/index.json")" == 1 ]] || fail "The OCI export holds more than one manifest."
+          desc="$(jq -c '.manifests[0] | {mediaType, digest, size}' "$dir/index.json")"
+          [[ "$(jq -r .mediaType <<<"$desc")" == application/vnd.oci.image.manifest.v1+json ]] || fail "Unexpected manifest type: $desc"
+          manifest="$(blob "$(jq -r .digest <<<"$desc")")"
+          config="$(blob "$(jq -r .config.digest "$manifest")")"
+          # Same layers (diff ids) and the same runtime config as the image the banner check ran.
+          [[ "$(jq -c .rootfs.diff_ids "$config")" == "$(docker image inspect provimux:check --format '{{json .RootFS.Layers}}' | jq -c .)" ]] ||
+            fail "The OCI export's layers differ from the image checked."
+          [[ "$(jq -c '.config | {Cmd, WorkingDir, Labels}' "$config")" == "$(docker image inspect provimux:check --format '{{json .Config}}' | jq -c '{Cmd, WorkingDir, Labels}')" ]] ||
+            fail "The OCI export's config differs from the image checked."
+          platform="$(jq -c '{architecture, os} + (if .variant then {variant} else {} end)' "$config")"
+          [[ "$(jq -r .architecture <<<"$platform")" == "$ARCH" ]] || fail "OCI export is $platform, not $ARCH."
+          jq -c --argjson p "$platform" '. + {platform: $p}' <<<"$desc" > "$RUNNER_TEMP/ocidesc-${ARCH}.json"
+          echo "linux/${ARCH}: manifest $(jq -r .digest <<<"$desc"), config $(jq -r .config.digest "$manifest"), loaded image $(docker image inspect provimux:check --format '{{.Id}}')" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: oci-${{ matrix.arch }}
+          path: ${{ runner.temp }}/oci-${{ matrix.arch }}.tar
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ocidesc-${{ matrix.arch }}
+          path: ${{ runner.temp }}/ocidesc-${{ matrix.arch }}.json
+          if-no-files-found: error
+
+  # Everything the publish jobs need, prepared without write access: the archives,
+  # checksums.txt, the release notes and the image index.
+  prepare:
     runs-on: ubuntu-latest
     needs:
       - meta
+      - catalogs
       - build-hosted
       - build-linux-glibc
       - build-linux-no-plugin
       - build-freebsd
-    permissions:
-      contents: write
+      - image
     env:
       GH_REPO: ${{ github.repository }}
       BASE: ${{ needs.meta.outputs.base }}
       PROVIMUX_VERSION: ${{ needs.meta.outputs.provimux_version }}
+      MODELS_COMMIT: ${{ needs.catalogs.outputs.models_commit }}
+      CATALOGS_SHA256: ${{ needs.catalogs.outputs.catalogs_sha256 }}
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           fetch-tags: true
+          persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
           path: dist
+          pattern: archive-*
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          path: ocidesc
+          pattern: ocidesc-*
           merge-multiple: true
       - name: Check archives and write checksums
         run: |
@@ -515,6 +762,25 @@ jobs:
           [[ $missing -eq 0 ]] || exit 1
           sha256sum "${archives[@]}" | sort -k2 > checksums.txt
           cat checksums.txt
+      - name: Write the image index
+        run: |
+          set -euo pipefail
+          mkdir -p image-index
+          [[ -f ocidesc/ocidesc-amd64.json && -f ocidesc/ocidesc-arm64.json ]] || { echo "::error::Missing image descriptors"; exit 1; }
+          jq -cn \
+            --arg v "$PROVIMUX_VERSION" \
+            --arg src "https://github.com/${GH_REPO}" \
+            --arg rev "$GITHUB_SHA" \
+            --slurpfile amd ocidesc/ocidesc-amd64.json \
+            --slurpfile arm ocidesc/ocidesc-arm64.json \
+            '{schemaVersion: 2, mediaType: "application/vnd.oci.image.index.v1+json",
+              manifests: ($amd + $arm),
+              annotations: {"org.opencontainers.image.version": $v, "org.opencontainers.image.source": $src,
+                            "org.opencontainers.image.revision": $rev, "org.opencontainers.image.licenses": "MIT"}}' \
+            > image-index/index.json
+          jq . image-index/index.json
+          echo "sha256:$(sha256sum image-index/index.json | cut -d' ' -f1)" > image-index/digest
+          echo "Image index: $(cat image-index/digest)" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Write release notes
         run: |
           set -euo pipefail
@@ -523,29 +789,45 @@ jobs:
           else
             ref="HEAD"
           fi
-          # Layer commits since the previous Provimux release reachable from here;
-          # without one (first release, or the layer was rebased onto a new
-          # CLIProxyAPI release), since the CLIProxyAPI base.
-          if previous="$(git describe --tags --abbrev=0 --match 'v*-pmx.*' "${ref}^" 2>/dev/null)"; then
+          # Since the previous Provimux release on the same base, when it is reachable
+          # from here; otherwise (first release on this base, or the stack was rebased)
+          # everything since the CLIProxyAPI base.
+          if previous="$(git describe --tags --abbrev=0 --match "v${BASE}-pmx.*" "${ref}^" 2>/dev/null)"; then
             range="${previous}..${ref}"
+            since="since ${previous}"
           else
-            previous=""
             range="v${BASE}..${ref}"
+            since="on CLIProxyAPI ${BASE}"
           fi
+          # Layer commits carry the trailer "Provimux-Layer: branding" (guard.sh); the
+          # owner's patches below the layer do not.
+          patches=() layer=()
+          for c in $(git rev-list --reverse --topo-order "$range"); do
+            line="$(git log -1 --format='- %s (%h)' "$c")"
+            if git log -1 --format='%(trailers:key=Provimux-Layer,valueonly)' "$c" | sed 's/[[:space:]]*$//' | grep -qx 'branding'; then
+              layer+=("$line")
+            else
+              patches+=("$line")
+            fi
+          done
+          list() { if [[ $# -gt 0 ]]; then printf '%s\n' "$@"; else echo "- (none)"; fi; }
           readme="https://github.com/${GH_REPO}/blob/${ref/HEAD/$GITHUB_SHA}/.github/README.md"
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
           {
             echo "Provimux ${PROVIMUX_VERSION}, built on CLIProxyAPI ${BASE}."
             echo
             echo "- CLIProxyAPI ${BASE}: https://github.com/router-for-me/CLIProxyAPI/releases/tag/v${BASE}"
             echo "- What Provimux adds: ${readme}#provimux"
+            echo "- Model catalogs: router-for-me/models at [\`${MODELS_COMMIT:0:12}\`](https://github.com/router-for-me/models/tree/${MODELS_COMMIT}) (SHA256SUMS \`${CATALOGS_SHA256}\`)"
+            echo "- Docker image: \`ghcr.io/${owner}/provimux:${PROVIMUX_VERSION}\` (index \`$(cat image-index/digest)\`)"
             echo
-            if [[ -n "$previous" ]]; then
-              echo "## Provimux changes since ${previous}"
-            else
-              echo "## Provimux changes on CLIProxyAPI ${BASE}"
-            fi
+            echo "## Owner patches ${since}"
             echo
-            git log --reverse --format='- %s (%h)' --grep='^Provimux-Layer: branding$' "$range"
+            list "${patches[@]}"
+            echo
+            echo "## Provimux layer ${since}"
+            echo
+            list "${layer[@]}"
           } > dist/release-notes.md
           cat dist/release-notes.md
           cat dist/release-notes.md >> "$GITHUB_STEP_SUMMARY"
@@ -553,75 +835,383 @@ jobs:
         with:
           name: release
           path: |
+            dist/provimux_*
             dist/checksums.txt
             dist/release-notes.md
           if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image-index
+          path: image-index/
+          if-no-files-found: error
+
+  # Publish the GitHub release. Assets of a published release are never replaced: a
+  # rerun checks that they match this run's files and stops otherwise. A draft left
+  # by a failed run is resumed by uploading only the missing assets; every asset's
+  # digest is checked before the release is published.
+  publish-release:
+    needs: [meta, prepare]
+    if: ${{ needs.meta.outputs.publish == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+          path: dist
       - name: Publish release
-        if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        working-directory: dist
         run: |
           set -euo pipefail
-          cd dist
-          files=(provimux_*.tar.gz provimux_*.zip checksums.txt)
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release edit "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file release-notes.md
-            gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber
+          fail() { echo "::error::$*"; exit 1; }
+          declare -A want
+          while read -r h f; do want[$f]=$h; done < checksums.txt
+          want[checksums.txt]="$(sha256sum checksums.txt | cut -d' ' -f1)"
+          [[ ${#want[@]} -eq 11 ]] || fail "Expected 10 archives and checksums.txt, have ${#want[@]} files."
+          for f in "${!want[@]}"; do
+            [[ "$(sha256sum "$f" | cut -d' ' -f1)" == "${want[$f]}" ]] || fail "$f does not match checksums.txt."
+          done
+          # The release(s) with this tag, drafts included (the tag endpoint skips drafts).
+          release() {
+            gh api --paginate "repos/$GH_REPO/releases?per_page=100" \
+              --jq '.[] | select(.tag_name == env.TAG) | {id, draft, assets: [.assets[] | {id, name, state, digest}]}' | jq -s .
+          }
+          # Check every asset present: expected name, fully uploaded, this run's digest.
+          # Prints the expected names still missing.
+          check() {
+            local r=$1 bad=0 id name state digest got
+            while IFS=$'\t' read -r id name state digest; do
+              if [[ -z "${want[$name]:-}" ]]; then echo "::error::Unexpected asset $name" >&2; bad=1; continue; fi
+              [[ "$state" == uploaded ]] || { echo "::error::Asset $name is $state" >&2; bad=1; continue; }
+              if [[ -z "$digest" || "$digest" == null ]]; then
+                got="sha256:$(gh api -H 'Accept: application/octet-stream' "repos/$GH_REPO/releases/assets/$id" | sha256sum | cut -d' ' -f1)"
+              else
+                got="$digest"
+              fi
+              [[ "$got" == "sha256:${want[$name]}" ]] || { echo "::error::Asset $name is $got, this run built sha256:${want[$name]}" >&2; bad=1; }
+            done < <(jq -r '.[0].assets[] | [.id, .name, .state, (.digest // "")] | @tsv' <<<"$r")
+            [[ $bad -eq 0 ]] || return 1
+            for f in "${!want[@]}"; do
+              jq -e --arg f "$f" '.[0].assets | any(.name == $f)' <<<"$r" >/dev/null || echo "$f"
+            done
+          }
+          r="$(release)"
+          case "$(jq length <<<"$r")" in
+            0)
+              gh release create "$TAG" --draft --verify-tag --title "$TAG" --notes-file release-notes.md "${!want[@]}"
+              r="$(release)"
+              ;;
+            1) ;;
+            *) fail "Several releases have tag $TAG; delete the extra drafts and rerun." ;;
+          esac
+          missing="$(check "$r")" || fail "Release $TAG has assets that are not this run's; it is left as it is."
+          if [[ "$(jq '.[0].draft' <<<"$r")" == false ]]; then
+            [[ -z "$missing" ]] || fail "Published release $TAG lacks: $missing. Assets of a published release are not changed here."
+            echo "Release $TAG is already published with this run's assets; nothing to do."
           else
-            gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" \
-              --notes-file release-notes.md "${files[@]}"
+            if [[ -n "$missing" ]]; then
+              echo "Resuming draft $TAG; uploading: $missing"
+              mapfile -t files <<<"$missing"
+              gh release upload "$TAG" "${files[@]}"
+              r="$(release)"
+              missing="$(check "$r")" || fail "Draft $TAG has assets that are not this run's."
+              [[ -z "$missing" ]] || fail "Draft $TAG still lacks: $missing"
+            fi
+            gh release edit "$TAG" --draft=false
           fi
+          # The public release, as anyone sees it.
+          pub="$(gh api "repos/$GH_REPO/releases/tags/$TAG" --jq '{id, draft, assets: [.assets[] | {id, name, state, digest}]}' | jq -s .)"
+          [[ "$(jq '.[0].draft' <<<"$pub")" == false ]] || fail "Release $TAG is still a draft."
+          missing="$(check "$pub")" || fail "Published release $TAG does not match this run."
+          [[ -z "$missing" ]] || fail "Published release $TAG lacks: $missing"
+          echo "Release $TAG is public with ${#want[@]} assets, all matching." | tee -a "$GITHUB_STEP_SUMMARY"
 
-  # PMX-13: point the Homebrew formula in ngvoicu/homebrew-tap at the release just
-  # published (version, archive URLs, SHA-256s from its checksums.txt). Pushing needs
-  # the secret TAP_TOKEN (fine-grained, Contents: read and write on
-  # ngvoicu/homebrew-tap). Without it, and on a manual dry run, the job prints the
-  # formula diff it would push and succeeds: a release never fails on the tap.
-  homebrew-tap:
+  # Formula/provimux.rb for ngvoicu/homebrew-tap, written without write access from
+  # the assets the formula installs, downloaded from the public release (on a dry
+  # run, from this run's own files) and checked against checksums.txt.
+  formula:
+    needs: [meta, prepare, publish-release]
+    if: ${{ !cancelled() && needs.prepare.result == 'success' && (needs.meta.outputs.publish != 'true' || needs.publish-release.result == 'success') }}
     runs-on: ubuntu-latest
-    needs:
-      - meta
-      - release
-    permissions:
-      contents: read
     env:
       PROVIMUX_VERSION: ${{ needs.meta.outputs.provimux_version }}
-      PUBLISH: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') }}
+      BASE_URL: ${{ needs.meta.outputs.publish == 'true' && format('https://github.com/{0}/releases/download/{1}', github.repository, github.ref_name) || '' }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
           name: release
           path: release
-      - name: Update the formula
+      - name: Fetch the tap
+        run: git clone --depth 1 https://github.com/ngvoicu/homebrew-tap.git tap
+      - name: Download and check the archives the formula installs
+        run: |
+          set -euo pipefail
+          formula=tap/Formula/provimux.rb
+          if [[ -n "${BASE_URL:-}" ]]; then
+            src="$BASE_URL"
+          else
+            src="file://$PWD/release"
+            echo "Dry run: no public release; checking this run's own files."
+          fi
+          dl="$RUNNER_TEMP/download"
+          rm -rf "$dl"
+          mkdir -p "$dl"
+          get() { curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors -o "$dl/$1" "$src/$1"; }
+          get checksums.txt
+          cmp -s "$dl/checksums.txt" release/checksums.txt || {
+            diff release/checksums.txt "$dl/checksums.txt" || true
+            echo "::error::checksums.txt at $src is not the one this run built."
+            exit 1
+          }
+          suffixes=()
+          while IFS= read -r s; do suffixes+=("$s"); done < <(sed -n 's|^ *url "https://github\.com/ngvoicu/provimux/releases/download/[^"]*/provimux_[^_"]*_\([^"]*\)"$|\1|p' "$formula")
+          [[ ${#suffixes[@]} -gt 0 ]] || { echo "::error::No release archive URL in $formula."; exit 1; }
+          bad=0
+          for s in "${suffixes[@]}"; do
+            f="provimux_${PROVIMUX_VERSION}_${s}"
+            want="$(awk -v f="$f" '$2 == f { print $1 }' "$dl/checksums.txt")"
+            [[ -n "$want" ]] || { echo "::error::$f is not in checksums.txt."; bad=1; continue; }
+            get "$f"
+            got="$(sha256sum "$dl/$f" | cut -d' ' -f1)"
+            if [[ "$got" == "$want" ]]; then
+              echo "OK $f $got"
+            else
+              echo "::error::$f from $src is $got; checksums.txt says $want."
+              bad=1
+            fi
+          done
+          [[ $bad -eq 0 ]] || exit 1
+          mkdir -p formula
+          cp "$formula" formula/base.rb
+          bash .github/provimux/update-formula.sh "$PROVIMUX_VERSION" "$dl/checksums.txt" "$formula"
+          cp "$formula" formula/provimux.rb
+          diff -u formula/base.rb formula/provimux.rb | tee -a "$GITHUB_STEP_SUMMARY" || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: formula
+          path: formula/
+          if-no-files-found: error
+
+  # Commit the prepared formula to ngvoicu/homebrew-tap: no checkout, no repository
+  # script. The tap only moves forward, and only from the formula the file was
+  # prepared from. Without the secret TAP_TOKEN (fine-grained, Contents: read and
+  # write on ngvoicu/homebrew-tap) it warns and succeeds: a release never fails on
+  # the tap.
+  tap-publish:
+    needs: [meta, formula]
+    if: ${{ needs.meta.outputs.publish == 'true' }}
+    runs-on: ubuntu-latest
+    env:
+      PROVIMUX_VERSION: ${{ needs.meta.outputs.provimux_version }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: formula
+          path: formula
+      - name: Commit the formula
         env:
           TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
         run: |
           set -euo pipefail
+          if [[ -z "$TAP_TOKEN" ]]; then
+            echo "::warning::Secret TAP_TOKEN is not set, so ngvoicu/homebrew-tap is not updated to $PROVIMUX_VERSION (formula prepared in the artifact 'formula')."
+            exit 0
+          fi
           git clone --depth 1 https://github.com/ngvoicu/homebrew-tap.git tap
           formula=tap/Formula/provimux.rb
           current="$(sed -n 's/^  version "\(.*\)"$/\1/p' "$formula")"
+          if cmp -s formula/provimux.rb "$formula"; then
+            echo "The tap already has this formula ($current); nothing to push."
+            exit 0
+          fi
           newest="$(printf '%s\n%s\n' "$current" "$PROVIMUX_VERSION" | sort -V | tail -n 1)"
-          if [[ "$PUBLISH" == "true" && "$newest" != "$PROVIMUX_VERSION" ]]; then
-            echo "::notice::The tap has $current, newer than $PROVIMUX_VERSION; formula left as it is."
+          if [[ "$newest" != "$PROVIMUX_VERSION" || "$current" == "$PROVIMUX_VERSION" ]]; then
+            echo "::notice::The tap has $current; $PROVIMUX_VERSION is not newer, formula left as it is."
             exit 0
           fi
-          bash .github/provimux/update-formula.sh "$PROVIMUX_VERSION" release/checksums.txt "$formula"
-          if git -C tap diff --quiet; then
-            echo "The formula is already at $PROVIMUX_VERSION; nothing to push."
-            exit 0
-          fi
+          cmp -s formula/base.rb "$formula" || {
+            echo "::error::Formula/provimux.rb changed in the tap since the formula job read it; rerun the formula and tap-publish jobs."
+            exit 1
+          }
+          cp formula/provimux.rb "$formula"
           git -C tap --no-pager diff
-          if [[ "$PUBLISH" != "true" ]]; then
-            echo "Dry run: the diff above is not pushed."
-            exit 0
-          fi
-          if [[ -z "$TAP_TOKEN" ]]; then
-            echo "::warning::Secret TAP_TOKEN is not set, so ngvoicu/homebrew-tap still has provimux $current. The diff above is what would have been pushed."
-            exit 0
-          fi
           git -C tap config user.name "github-actions[bot]"
           git -C tap config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git -C tap commit -qam "provimux ${PROVIMUX_VERSION}"
-          git -C tap push "https://x-access-token:${TAP_TOKEN}@github.com/ngvoicu/homebrew-tap.git" HEAD:main
-          echo "ngvoicu/homebrew-tap: provimux $current -> $PROVIMUX_VERSION"
+          auth="$(printf 'x-access-token:%s' "$TAP_TOKEN" | base64 -w0)"
+          git -C tap -c http.extraheader="AUTHORIZATION: basic $auth" push https://github.com/ngvoicu/homebrew-tap.git HEAD:main
+          echo "ngvoicu/homebrew-tap: provimux $current -> $PROVIMUX_VERSION" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  # Push the images checked by the image job, byte for byte, by digest; then the
+  # multi-arch index prepared by the prepare job; then the version tag (never moved
+  # once set) and :latest (moved only to a newer version). No checkout, no
+  # repository script. One run at a time, so an older run cannot move :latest back.
+  # A dry run does the same against a registry on the runner.
+  image-push:
+    needs: [meta, prepare, publish-release]
+    if: ${{ !cancelled() && needs.prepare.result == 'success' && (needs.meta.outputs.publish != 'true' || needs.publish-release.result == 'success') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    concurrency:
+      group: ${{ needs.meta.outputs.publish == 'true' && 'provimux-image-push' || format('provimux-image-dryrun-{0}', github.run_id) }}
+      cancel-in-progress: false
+    env:
+      PROVIMUX_VERSION: ${{ needs.meta.outputs.provimux_version }}
+      REGISTRY: ${{ needs.meta.outputs.publish == 'true' && 'ghcr.io' || 'localhost:5000' }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: oci
+          pattern: oci-*
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: image-index
+          path: image-index
+      - name: Start a registry for the dry run
+        if: ${{ needs.meta.outputs.publish != 'true' }}
+        run: |
+          docker run -d --name registry -p 5000:5000 registry:2
+          for _ in $(seq 30); do curl -fsS http://localhost:5000/v2/ >/dev/null && exit 0; sleep 1; done
+          exit 1
+      - &image-push-step
+        name: Push by digest, tag the version, move latest
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$*"; exit 1; }
+          name="${GITHUB_REPOSITORY_OWNER,,}/provimux"
+          if [[ "$REGISTRY" == ghcr.io ]]; then
+            token="$(curl -fsS -u "${GITHUB_ACTOR}:${GITHUB_TOKEN}" "https://ghcr.io/token?service=ghcr.io&scope=repository:${name}:pull,push" | jq -r .token)"
+            [[ -n "$token" && "$token" != null ]] || fail "No registry token for $name."
+            auth=(-H "Authorization: Bearer $token")
+            api="https://ghcr.io/v2/$name"
+          else
+            auth=()
+            api="http://$REGISTRY/v2/$name"
+          fi
+          accept='application/vnd.oci.image.index.v1+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.docker.distribution.manifest.v2+json'
+          # Digest a tag or digest resolves to; empty when it does not exist.
+          ref_digest() {
+            local hdr code
+            hdr="$(mktemp)"
+            code="$(curl -sS "${auth[@]}" -I -H "Accept: $accept" -D "$hdr" -o /dev/null -w '%{http_code}' "$api/manifests/$1")"
+            case "$code" in
+              200) awk 'tolower($1) == "docker-content-digest:" { print $2 }' "$hdr" | tr -d '\r' ;;
+              404) ;;
+              *) echo "::error::HEAD $api/manifests/$1: HTTP $code" >&2; return 1 ;;
+            esac
+          }
+          push_blob() { # digest file
+            local loc sep
+            [[ "$(curl -sS "${auth[@]}" -I -o /dev/null -w '%{http_code}' "$api/blobs/$1")" == 200 ]] && return 0
+            loc="$(curl -fsS "${auth[@]}" -X POST --data '' -D - -o /dev/null "$api/blobs/uploads/" | awk 'tolower($1) == "location:" { print $2 }' | tr -d '\r')"
+            [[ -n "$loc" ]] || fail "No upload location for $1."
+            [[ "$loc" == http* ]] || loc="${api%%/v2/*}$loc"
+            [[ "$loc" == *\?* ]] && sep='&' || sep='?'
+            curl -fsS "${auth[@]}" -X PUT -H 'Content-Type: application/octet-stream' -T "$2" -o /dev/null "${loc}${sep}digest=$1"
+          }
+          put_manifest() { # ref file media-type
+            local want got
+            want="sha256:$(sha256sum "$2" | cut -d' ' -f1)"
+            curl -fsS "${auth[@]}" -X PUT -H "Content-Type: $3" --data-binary "@$2" -o /dev/null "$api/manifests/$1"
+            got="$(ref_digest "$1")"
+            [[ "$got" == "$want" ]] || fail "$name:$1 is $got after the push, expected $want."
+          }
+
+          index=image-index/index.json
+          idigest="$(cat image-index/digest)"
+          [[ "sha256:$(sha256sum "$index" | cut -d' ' -f1)" == "$idigest" ]] || fail "The image index does not match its digest."
+          jq -e --arg v "$PROVIMUX_VERSION" '.annotations["org.opencontainers.image.version"] == $v' "$index" >/dev/null ||
+            fail "The image index is not for $PROVIMUX_VERSION."
+
+          # 1. Each architecture's image, exactly as exported, by digest.
+          for arch in amd64 arm64; do
+            dir="$RUNNER_TEMP/oci-$arch"
+            mkdir -p "$dir"
+            tar -xf "oci/oci-$arch.tar" -C "$dir"
+            blob() { echo "$dir/blobs/${1%%:*}/${1#*:}"; }
+            desc="$(jq -c '.manifests[0]' "$dir/index.json")"
+            mdigest="$(jq -r .digest <<<"$desc")"
+            jq -e --arg d "$mdigest" --arg a "$arch" 'any(.manifests[]; .digest == $d and .platform.architecture == $a)' "$index" >/dev/null ||
+              fail "linux/$arch manifest $mdigest is not in the image index."
+            manifest="$(blob "$mdigest")"
+            [[ "sha256:$(sha256sum "$manifest" | cut -d' ' -f1)" == "$mdigest" ]] || fail "Manifest blob does not match $mdigest."
+            for d in $(jq -r '.config.digest, .layers[].digest' "$manifest"); do
+              f="$(blob "$d")"
+              [[ "sha256:$(sha256sum "$f" | cut -d' ' -f1)" == "$d" ]] || fail "Blob $d does not match its digest."
+              push_blob "$d" "$f"
+            done
+            put_manifest "$mdigest" "$manifest" "$(jq -r .mediaType <<<"$desc")"
+            echo "Pushed $REGISTRY/$name@$mdigest (linux/$arch)"
+          done
+
+          # 2. The index, by digest, then the version tag. A version tag is never moved.
+          put_manifest "$idigest" "$index" application/vnd.oci.image.index.v1+json
+          current="$(ref_digest "$PROVIMUX_VERSION")"
+          if [[ -z "$current" ]]; then
+            put_manifest "$PROVIMUX_VERSION" "$index" application/vnd.oci.image.index.v1+json
+            echo "Tagged $REGISTRY/$name:$PROVIMUX_VERSION = $idigest" | tee -a "$GITHUB_STEP_SUMMARY"
+          elif [[ "$current" == "$idigest" ]]; then
+            echo "$REGISTRY/$name:$PROVIMUX_VERSION is already $idigest."
+          else
+            fail "$REGISTRY/$name:$PROVIMUX_VERSION is $current, not this run's $idigest; a version tag is not moved."
+          fi
+
+          # 3. :latest, only forward. The version :latest has: the index annotation,
+          # else the org.opencontainers.image.version label of its first image.
+          latest="$(ref_digest latest)"
+          have=''
+          if [[ -n "$latest" ]]; then
+            m="$(curl -fsSL "${auth[@]}" -H "Accept: $accept" "$api/manifests/$latest")"
+            have="$(jq -r '.annotations["org.opencontainers.image.version"] // empty' <<<"$m")"
+            if [[ -z "$have" ]]; then
+              if jq -e '.manifests' <<<"$m" >/dev/null; then
+                m="$(curl -fsSL "${auth[@]}" -H "Accept: $accept" "$api/manifests/$(jq -r '.manifests[0].digest' <<<"$m")")"
+              fi
+              have="$(curl -fsSL "${auth[@]}" "$api/blobs/$(jq -r .config.digest <<<"$m")" | jq -r '.config.Labels["org.opencontainers.image.version"] // empty')"
+            fi
+            [[ -n "$have" ]] || fail "Cannot tell which version $REGISTRY/$name:latest ($latest) is; :latest left as it is."
+          fi
+          if [[ "$latest" == "$idigest" ]]; then
+            echo "$REGISTRY/$name:latest is already $PROVIMUX_VERSION."
+          elif [[ -z "$latest" || ( "$have" != "$PROVIMUX_VERSION" && "$(printf '%s\n%s\n' "$have" "$PROVIMUX_VERSION" | sort -V | tail -n 1)" == "$PROVIMUX_VERSION" ) ]]; then
+            put_manifest latest "$index" application/vnd.oci.image.index.v1+json
+            echo "Moved $REGISTRY/$name:latest from ${have:-nothing} to $PROVIMUX_VERSION" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::notice::$REGISTRY/$name:latest is $have, not older than $PROVIMUX_VERSION; left as it is."
+          fi
+      - name: "Dry run: point :latest at a newer version"
+        if: ${{ needs.meta.outputs.publish != 'true' }}
+        run: |
+          set -euo pipefail
+          api="http://localhost:5000/v2/${GITHUB_REPOSITORY_OWNER,,}/provimux"
+          jq -c '.annotations["org.opencontainers.image.version"] = "99.0.0-pmx.1"' image-index/index.json > "$RUNNER_TEMP/newer.json"
+          curl -fsS -X PUT -H 'Content-Type: application/vnd.oci.image.index.v1+json' --data-binary "@$RUNNER_TEMP/newer.json" "$api/manifests/latest"
+      # Again: a rerun changes nothing (and on a dry run must leave the newer :latest).
+      - *image-push-step
+      - name: Check the dry-run registry
+        if: ${{ needs.meta.outputs.publish != 'true' }}
+        run: |
+          set -euo pipefail
+          api="http://localhost:5000/v2/${GITHUB_REPOSITORY_OWNER,,}/provimux"
+          digest() { curl -fsSI -H 'Accept: application/vnd.oci.image.index.v1+json' "$api/manifests/$1" | awk 'tolower($1) == "docker-content-digest:" { print $2 }' | tr -d '\r'; }
+          [[ "$(digest "$PROVIMUX_VERSION")" == "$(cat image-index/digest)" ]] || { echo "::error::Version tag is not the prepared index."; exit 1; }
+          [[ "$(digest latest)" == "sha256:$(sha256sum "$RUNNER_TEMP/newer.json" | cut -d' ' -f1)" ]] || { echo "::error:::latest was moved back."; exit 1; }
+          echo "Version tag = $(cat image-index/digest); :latest left on the newer version."
+          ref="localhost:5000/${GITHUB_REPOSITORY_OWNER,,}/provimux:${PROVIMUX_VERSION}"
+          docker pull -q --platform linux/amd64 "$ref"
+          out="$(docker run --rm --platform linux/amd64 "$ref" ./provimux --help 2>&1 || true)"
+          grep -m1 '^Provimux Version:' <<<"$out"
+          docker buildx imagetools inspect "$ref"
