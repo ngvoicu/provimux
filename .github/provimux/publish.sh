@@ -128,7 +128,7 @@ authorize() {
 # hand_tap TAG: tap.sh prepare, then the owner's git push (hooks off, lease as read). A
 # failure goes to the issue "homebrew tap: TAG needs the owner" (tap_issue), then stops.
 hand_tap() {
-  local t=$1 d o action repo lease ref
+  local t=$1 d o s action repo lease ref
   [[ "$t" =~ $PMX_PMX_RE ]] || die "--tap takes v<base>-pmx.<n>"
   d="$(mktemp -d "${TMPDIR:-/tmp}/provimux-tap.XXXXXX")"
   tap_fail() {
@@ -140,6 +140,10 @@ hand_tap() {
   action="$(sed -n 's/^action=//p' <<<"$o")" repo="$(sed -n 's/^repo=//p' <<<"$o")"
   lease="$(sed -n 's/^lease=//p' <<<"$o")" ref="$(sed -n 's/^ref=//p' <<<"$o")"
   if [[ "$action" == push ]]; then
+    # GitHub's latest again, right before the push: a newer release since prepare leaves
+    # the tap alone (the lease below only covers the tap's own main).
+    s="$(GITHUB_OUTPUT='' bash "$here/tap.sh" still "$t")" || tap_fail "GitHub's latest could not be read again before the tap push for $t"
+    if [[ "$s" != "still=yes" ]]; then rm -rf "${d:?}"; echo "Homebrew tap: left as it is"; return 0; fi
     git --git-dir="$repo" -c core.hooksPath=/dev/null push "--force-with-lease=$lease" https://github.com/ngvoicu/homebrew-tap.git "$ref" ||
       tap_fail "the push of $t to ngvoicu/homebrew-tap failed"
     echo "Homebrew tap: provimux $(sed -n 's/^from=//p' <<<"$o") -> ${t#v}"
@@ -209,15 +213,20 @@ wait_release() {
   [[ "$s" == complete ]] || die "the release run succeeded but the release $pmx_tag is $s; the issue stays open"
   echo "Published: https://github.com/$PMX_REPO/releases/tag/$pmx_tag"
 }
+# close_issues: closes the open "sync: v<base>" issues; returns 1 (after saying which)
+# when any could not be listed or closed, so that the caller still updates the tap.
 close_issues() {
-  local url run run_url n
+  local url run run_url n ns rc=0
   url="https://github.com/$PMX_REPO/releases/tag/$pmx_tag"
-  run="$(release_run_id "$pmx_tag" "$candidate")"
+  run="$(release_run_id "$pmx_tag" "$candidate")" || run=''
   run_url="https://github.com/$PMX_REPO/actions/runs/$run"
-  for n in $(sync_issues "$base"); do
-    gh issue close "$n" -R "$PMX_REPO" --comment "Published $url (main ${old_main:0:12} -> ${candidate:0:12}): the release has all its assets and the provimux-release run succeeded (image push included): $run_url. The Homebrew tap is not part of this issue: a failed tap update has its own issue, \"homebrew tap: $pmx_tag needs the owner\"." >/dev/null
+  ns="$(sync_issues "$base")" || { echo "publish: cannot list the sync issues of v$base" >&2; return 1; }
+  for n in $ns; do
+    gh issue close "$n" -R "$PMX_REPO" --comment "Published $url (main ${old_main:0:12} -> ${candidate:0:12}): the release has all its assets and the provimux-release run succeeded (image push included): $run_url. The Homebrew tap is not part of this issue: a failed tap update has its own issue, \"homebrew tap: $pmx_tag needs the owner\"." >/dev/null ||
+      { echo "publish: cannot close issue #$n" >&2; rc=1; continue; }
     echo "Closed issue #$n"
   done
+  return "$rc"
 }
 
 # plan_get FILE KEY PATTERN: the value of KEY in the plan file, checked against PATTERN.
@@ -532,6 +541,11 @@ echo "Pushed."
 # commit on GitHub, so it comes right after the push).
 authorize "$pmx_tag" "$candidate"
 
+# >>> finish
 wait_release
-close_issues
+# The sync issue and the tap are independent: a failed close never skips the tap.
+closed=yes
+close_issues || closed=no
 hand_tap "$pmx_tag"
+[[ "$closed" == yes ]] || die "published and the tap done, but the sync issue of v$base could not be closed (a later check closes it, or close it by hand)"
+# <<< finish
