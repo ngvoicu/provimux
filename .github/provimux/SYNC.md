@@ -25,7 +25,7 @@ It runs every 3 hours and can be started by hand (Actions → provimux-check →
 1. **Release.** It takes the newest *stable* release of `router-for-me/CLIProxyAPI`: published, neither a draft nor a prerelease, with a `vX.Y.Z` tag. An explicit `tag` must be a stable release too. It records the commit the tag points to.
 2. **Old base.** The base of `main` is the newest `vX.Y.Z` tag of upstream, read from upstream's refs (`git ls-remote`), whose commit is an ancestor of `main`; no local tag is needed. If a `vX.Y.Z` tag reachable from `main` here, as new as that base or newer, was withdrawn or moved upstream, the check fails: it never falls back to an older tag. `guard.sh` and `release-meta.sh` use the same rule.
 3. **Already done?**
-   - If `v<base>-pmx.*` exists, the status is `published` when, for every such tag, the GitHub release is public (not a draft, not a prerelease) with all its assets and the newest `provimux-release` run for that tag **at the tag's commit** succeeded; `in-progress` while such a run runs; and `incomplete` otherwise (that case is reported). A run for another commit does not count.
+   - If `v<base>-pmx.*` exists, the **newest** such tag decides (a later `-pmx.<n>` replaces an earlier one: the tap, the image and the GitHub "latest" follow it). The status is `published` when its GitHub release is public (not a draft, not a prerelease) with all its assets and the newest `provimux-release` run for that tag **at the tag's commit** succeeded; `in-progress` while that run runs; and `incomplete` otherwise (that case is reported). A run for another commit does not count. An earlier tag that did not complete (a failed `-pmx.1` replaced by a good `-pmx.2`) is named in the reasons and does not block.
    - If `main` is already on the tag but no `-pmx` tag exists, the status is `unreleased` (reported).
    - If the tag does not descend from the old base, the check fails.
 4. **Rebase.** It runs `git rebase --committer-date-is-author-date <tag commit>` in a temporary worktree, never `--onto`, so the same inputs give the same candidate commit.
@@ -34,9 +34,11 @@ It runs every 3 hours and can be started by hand (Actions → provimux-check →
 7. **Guard.** It runs `guard.sh` on the candidate with `PMX_EXPECT_BASE=<tag>` and `PMX_EXPECT_BASE_COMMIT=<commit>`. The base the guard finds must be exactly that commit.
 8. **Tested tree = released tree.** The test jobs build and test `git archive` of each commit; the release builds a checkout of it. For the candidate and the tag, `archive_matches` (`common.sh`) compares the archive's files with the commit's tree, as NUL-delimited records byte for byte (a file name may hold a newline): names, blob ids (hashed without filters) and modes (regular, executable, symlink; submodules are in neither). Any difference, for example `export-ignore` or `export-subst` in upstream's `.gitattributes`, fails the check, and `logs/archive-<tree>.txt` lists it. `check.sh tree` makes the same comparison on the tree it hands to the tests and stops on a difference.
 
-**Jobs `test (candidate)` and `test (tag)`**, one runner each: the tree (`check.sh tree`, from the upstream tag and the candidate bundle, without `.git`), then `check.sh test`: `go build ./...` (candidate), `go list ./...`, `go test -json ./...`, and on the candidate every package with a failing test again, as a whole package. They keep the raw output and the exit statuses, and decide nothing.
+**Jobs `test (candidate)` and `test (tag)`** (two jobs, not a matrix, so that each hands the verdict its own outputs), one runner each: before any of the tree's code runs, the prepare job's artifact by the id and digest that job output (`check.sh fetch`, `run_artifact` in `common.sh`); the tree (`check.sh tree`, from the upstream tag and the candidate bundle, without `.git`); then `check.sh test <tree> <part>` as separate steps, each exiting with its command's status (`continue-on-error`): `build` (`go build ./...`, candidate), `test` (`go list ./...`, `go test -json ./...`), `rerun` (candidate: every package with a failing test again, as a whole package). Each job outputs its artifact's id and digest and each step's `outcome`, which the runner records (the tree's code cannot write it). They keep the raw output and the exit statuses, and decide nothing.
 
-**Job `verdict`** (`check.sh verdict`) reads that output as data (`testevents.jq`, `testsum.jq`, `testcmp.jq`):
+**How the jobs hand over** (a job that runs upstream's or the candidate's code can upload, delete or re-upload artifacts of any name in the run): every artifact is read by the id and digest its producing job output, checked to be of this run with that name, unexpired, and downloaded byte-identical to that digest (`run_artifact`); a re-upload under the same name gets a new id and is never read, and the original's absence makes the result missing (an error). The state that travels from `prepare` (`state.json`) is JSON read with `jq`, each value checked against its pattern (`load_state` in `check.sh`), never sourced. The report job reads the verdict's artifact the same way.
+
+**Job `verdict`** (`check.sh verdict`, `actions: read`) first requires that each test job concluded `success` (ran to the end; jobs API, this run's attempt) and that each step's outcome agrees with the exit status in the job's artifact (`success` ⇔ 0); any disagreement or missing outcome is an error. Then it reads the output as data (`testevents.jq`, `testsum.jq`, `testcmp.jq`):
 
 - `go build ./...` must succeed on the candidate, and every package must build, on the first run and on the package rerun. A rerun build failure always fails the check, whatever failed upstream.
 - The exit status of each `go test` must match its results. Both trees must have a terminal result (pass, fail or skip) for every package that `go list ./...` lists.
@@ -61,8 +63,12 @@ The verdict job uploads the artifact `provimux-check-<tag>` and binds it to itse
 | failed | The issue gives the step and the details: the commit where the rebase stopped and the conflicting files, the failing tests, the build output, the guard output, or a check job that ended without a result. |
 | release incomplete | A `-pmx` tag exists, no release run is still running, and the release is incomplete or its `provimux-release` run did not succeed. |
 | main on base, not released | `main` is on the base but no `-pmx` tag exists: the state between the two pushes of "New upstream workflow files". |
+| release incomplete (older base), owner needed | An open issue of an older base whose newest `-pmx` release did not complete (sweep, below). |
+| not published; the check now checks v<newer> | An open issue of an older base that was never published (sweep, below). |
 
-An open issue is updated in place. It gets a comment when its state or candidate changes. It is closed only when a check finds every `v<base>-pmx.*` release complete with a successful release run for the tag's commit, or when `publish.sh` has verified both.
+An open issue is updated in place. It gets a comment when its state or candidate changes. It is closed only when a check finds the newest `v<base>-pmx.*` release complete with a successful release run for the tag's commit, or when `publish.sh` has verified both.
+
+**Older bases (sweep).** A check only checks the newest stable release, so `report.sh` also looks at every other open `sync: v<other>` issue on each run: if the newest `v<other>-pmx.*` release is complete it closes the issue; if it did not complete it retitles the issue `release incomplete (older base), owner needed` with the rerun command; if `v<other>` has no `-pmx` tag it says that nothing publishes it automatically any more (the owner closes the issue or publishes by hand). Each state is commented once.
 
 ## Publishing automatically: `provimux-publish.yml`
 
@@ -77,7 +83,8 @@ An open issue is updated in place. It gets a comment when its state or candidate
 5. **Push values** (inline, no token): reads `plan.env` (exactly 10 lines, each value checked against its pattern; tag, old `main`, run, attempt, artifact must be the verified ones, the repository must be `<dir>/work/repo.git`) and writes the push's repository, lease and refs as step outputs.
 6. **`PROVIMUX_TOKEN` is set**: if not, red with that message; nothing is pushed.
 7. **Push**, the only step with the token: it reads only the outputs of step 5 and runs `git` and nothing else (no `sed`, `head` or other parsing): one `git push --atomic --porcelain --force-with-lease=refs/heads/main:<the verified main>` of `main` and the tags from the plan's bare repository, with `core.hooksPath=/dev/null`, no global or system git config, `BASH_ENV` empty, and a credential helper that reads the token from git's environment (never a file, URL, argument or log).
-8. **Wait** (`publish.sh --ci --wait <dir>`, no token): waits for the whole `provimux-release` run of the `-pmx.1` tag at the candidate and the complete release, then closes the issue with the release link, as by hand.
+8. **Record the push** (no token, only after `Push` succeeded): the artifact `pmx-pushed` with one line `<v<base>-pmx.1> <candidate>`, which `provimux-release.yml` requires before it publishes (see "Release provenance").
+9. **Wait** (`publish.sh --ci --wait <dir>`, no token): waits for the whole `provimux-release` run of the `-pmx.1` tag at the candidate and the complete release, then closes the issue with the release link, as by hand.
 
 **Job `notify`** (after a failure or cancellation of `publish`; no environment; `issues: write`): it checks out the *current* `main` (inline `git ls-remote` first, then a `HEAD` check) and runs its `autopublish.sh notify`, with the verifier's or decide's reason, the publish log and plan (artifact `pmx-publish-log`), and whether `PROVIMUX_TOKEN` is set (yes or no only). Before writing any instruction it reads the remote: `main`, `v<base>`, every `v<base>-pmx.*` with its release and its release run for the tag's commit. It never promises that a later check fixes an older release (a scheduled check checks only the newest stable release); where a check is the next step it gives the command for a check of that tag. It retitles `sync: v<base>` and comments what is true there, the reasons, and what to do:
 - a `-pmx` tag exists: `released` (complete: it closes the open issue and opens none), `pushed, release running` (wait; the owner checks the release when it ends), or `pushed, release not complete, owner needed` with the `gh run rerun <id> --failed` command (never "publish again": an automatic retry skips the existing tag and `publish.sh` refuses it). This also covers a push whose acknowledgement was lost: the remote decides, not the run;
@@ -119,6 +126,27 @@ gh api -X POST repos/ngvoicu/provimux/environments/provimux-token/deployment-bra
 The owner stores the token there, once: Settings → Environments → `provimux-token` → Environment secrets → Add secret `PROVIMUX_TOKEN`, or `gh secret set PROVIMUX_TOKEN --env provimux-token -R ngvoicu/provimux` (it asks for the value). Then the repository secret `TAP_TOKEN` can be deleted (`gh secret delete TAP_TOKEN -R ngvoicu/provimux`); a repository secret named `PROVIMUX_TOKEN` must not exist. Then a check of the waiting release publishes it: `gh workflow run provimux-check.yml -R ngvoicu/provimux -f tag=v<base>`.
 
 Without the secret nothing is published: each passing check opens "ready to publish" and the publish run retitles it "publishing waits for PROVIMUX_TOKEN". Do not publish by hand meanwhile: `tap-publish` fails without the token, so such a release has no Homebrew update until the token exists and the job is rerun.
+
+### Release provenance, immutable releases, "latest"
+
+The environment `provimux-token` must admit tags (`v*-pmx.*`) because `tap-publish` runs on the tag push, and a tag's run uses the tag's own workflow file. So who may create a tag is what protects the environment:
+
+- **Tag ruleset** `provimux tags v*` (27670572): on `refs/tags/v*`, creation, update and deletion are blocked for everyone except repository admins (bypass: role admin, always). The owner (and the owner's `PROVIMUX_TOKEN`, which acts as the owner) can still push `v<base>` and `v<base>-pmx.<n>`; `GITHUB_TOKEN` and anyone else cannot.
+- **Job `provenance`** of `provimux-release.yml` (on a tag push; `publish-release` and therefore every later publishing job, and `tap-publish`, need it): the tag must still be this run's commit, and either a `provimux-publish` run of `main` recorded pushing exactly this tag and commit (artifact `pmx-pushed`, written only after its `Push` step succeeded; it waits up to 10 minutes for the record), or the repository variable `PMX_HAND_RELEASES` (only the owner can set it) has the line `<tag> <commit>`. Otherwise nothing is released. `publish.sh` by hand records its `-pmx.1` there before pushing; for a hand `-pmx.2` the owner records it ("Cut `-pmx.2`"). A tag pushed without a record: record it, then rerun the release run.
+- **Immutable releases** are on for the repository (Settings → General → Releases): a published release's assets and tag cannot change. `publish-release` requires the release to read back `immutable: true` after publishing, and every promotion job (`tap-publish`, `image-push`, `image-latest`, `release-latest`) requires it again first.
+- **"latest"**: `publish-release` publishes with `--latest=false` (GitHub would otherwise make every newly published release latest, so an older base's `-pmx.<n>` published later, or a rerun, would move it back). The job `release-latest` marks the highest published `v*-pmx.*` release latest, one job at a time across all runs (`concurrency: provimux-release-latest`), never to an older version, stops when the current latest cannot be read (anything but a 404), and fails when latest does not read back as the version it set. The image `:latest` follows the same rules in `image-latest` (`concurrency: provimux-image-latest`, only forward, stops on an unreadable `:latest`, reads it back).
+
+Set on 2026-11-19 with:
+
+```sh
+gh api -X PUT repos/ngvoicu/provimux/immutable-releases
+gh api -X POST repos/ngvoicu/provimux/rulesets --input - <<'JSON'
+{"name": "provimux tags v*", "target": "tag", "enforcement": "active",
+ "conditions": {"ref_name": {"include": ["refs/tags/v*"], "exclude": []}},
+ "rules": [{"type": "creation"}, {"type": "update"}, {"type": "deletion"}],
+ "bypass_actors": [{"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always"}]}
+JSON
+```
 
 ### What still needs the owner
 
@@ -298,7 +326,14 @@ The check never builds a base that already has a `v<base>-pmx.*` tag, so later r
    ```
 4. Check the release (next section).
 
-The tag starts `provimux-release.yml`. The Homebrew tap moves only forward, so `-pmx.2` replaces `-pmx.1`. From then on the check verifies both releases of that base on every run.
+Before step 3, record the tag (see "Release provenance"; without it the release run publishes nothing):
+
+```sh
+cur="$(gh variable get PMX_HAND_RELEASES -R ngvoicu/provimux 2>/dev/null || true)"
+printf '%s\n%s\n' "$cur" "v<base>-pmx.2 $sha" | sed '/^$/d' | sort -u | gh variable set PMX_HAND_RELEASES -R ngvoicu/provimux
+```
+
+The tag starts `provimux-release.yml`. The Homebrew tap, the image `:latest` and the GitHub "latest" move only forward, so `-pmx.2` replaces `-pmx.1`. From then on the check judges the base by its newest release (`-pmx.2`).
 
 ### Check a release
 
