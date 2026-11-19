@@ -1,16 +1,22 @@
 package cliproxy
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/management"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 )
@@ -259,5 +265,105 @@ func TestProvimuxLiveListFetcherRecordsFailure(t *testing.T) {
 	state := provimuxLiveListSource{}.State(auth)
 	if state.HasList || state.Failure == nil || state.Failure.HTTPStatus != http.StatusUnauthorized || state.Failure.Category != "http_status" {
 		t.Fatalf("state after a 401 = %+v (failure %+v)", state, state.Failure)
+	}
+}
+
+// provimuxStatusExecutor answers the model-list request with a fixed status.
+type provimuxStatusExecutor struct {
+	coreauth.ProviderExecutor
+	status int
+}
+
+func (provimuxStatusExecutor) Identifier() string { return "claude" }
+
+func (e provimuxStatusExecutor) HttpRequest(context.Context, *coreauth.Auth, *http.Request) (*http.Response, error) {
+	return &http.Response{StatusCode: e.status, Body: io.NopCloser(strings.NewReader(`{"data":[{"id":"pmx-listed-model"}],"has_more":false}`))}, nil
+}
+
+// A forced refresh that ends 250 ms after the click reads, on the wire, as later than the click:
+// the console waits for fetched_at or last_failure.at after its click.
+func TestProvimuxLiveListRefreshLaterThanClick(t *testing.T) {
+	for _, status := range []int{http.StatusOK, http.StatusUnauthorized} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			provimuxLiveTestReset(t)
+			click := time.Date(2026, 11, 19, 10, 0, 0, 200_000_000, time.UTC)
+			done := click.Add(250 * time.Millisecond)
+			prevNow := liveModelListNow
+			liveModelListNow = func() time.Time { return done }
+			t.Cleanup(func() { liveModelListNow = prevNow })
+			cfg := &config.Config{}
+			cfg.Models.LiveLists = true
+			svc := &Service{cfg: cfg, coreManager: coreauth.NewManager(nil, nil, nil)}
+			svc.coreManager.RegisterExecutor(provimuxStatusExecutor{status: status})
+			auth, errRegister := svc.coreManager.Register(t.Context(), provimuxLiveLogin("pmx-click", "claude"))
+			if errRegister != nil {
+				t.Fatal(errRegister)
+			}
+			t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
+			svc.refreshLiveModelLists(t.Context(), true)
+			liveModelLists.fetches.Wait()
+
+			gin.SetMode(gin.TestMode)
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			ctx.Request = httptest.NewRequest(http.MethodGet, "/v8/management/provimux/live-lists", nil)
+			management.NewHandlerWithoutConfigFilePath(cfg, svc.coreManager).ProvimuxLiveLists(ctx)
+			var body struct {
+				Logins []struct {
+					Fetching    bool    `json:"fetching"`
+					FetchedAt   *string `json:"fetched_at"`
+					LastFailure *struct {
+						At string `json:"at"`
+					} `json:"last_failure"`
+				} `json:"logins"`
+			}
+			if errDecode := json.Unmarshal(recorder.Body.Bytes(), &body); errDecode != nil || len(body.Logins) != 1 {
+				t.Fatalf("decode %s: %v", recorder.Body.String(), errDecode)
+			}
+			row := body.Logins[0]
+			field := ""
+			switch {
+			case status == http.StatusOK && row.FetchedAt != nil:
+				field = *row.FetchedAt
+			case status != http.StatusOK && row.LastFailure != nil:
+				field = row.LastFailure.At
+			default:
+				t.Fatalf("no completion field in %s", recorder.Body.String())
+			}
+			at, errParse := time.Parse(time.RFC3339Nano, field)
+			if errParse != nil || row.Fetching || !at.After(click) || !at.Equal(done) {
+				t.Fatalf("click=%s done=%s wire=%s fetching=%v: not recognised as later than the click",
+					click.Format(time.RFC3339Nano), done.Format(time.RFC3339Nano), field, row.Fetching)
+			}
+		})
+	}
+}
+
+// The first failure starts the production pruner, which then drops notes of removed logins on its
+// own clock. Fails if the startup in noteLiveModelListFailure is removed.
+func TestProvimuxLiveListPrunerStartsOnFirstFailure(t *testing.T) {
+	provimuxLiveTestReset(t)
+	tick := make(chan time.Time)
+	prevTick := provimuxNotePrunerTick
+	provimuxNotePrunerTick = func() <-chan time.Time { return tick }
+	provimuxNotePrunerOnce = sync.Once{}
+	t.Cleanup(func() {
+		provimuxNotePrunerTick = prevTick
+		close(tick) // ends the test's pruner
+	})
+	now := time.Date(2026, 11, 19, 17, 0, 0, 0, time.UTC)
+	for i := 0; i < 1000; i++ {
+		provimuxFail(provimuxLiveLogin(fmt.Sprintf("pmx-started-%d", i), "claude"), now, errors.New("HTTP 401 from /v1/models"))
+	}
+	liveModelLists.forget(map[string]struct{}{})
+	for i := 0; i < 2; i++ { // the second send returns once the first prune has finished
+		select {
+		case tick <- now:
+		case <-time.After(5 * time.Second):
+			t.Fatal("no pruner was started by the first failure")
+		}
+	}
+	if n := provimuxLiveListNoteCount(); n != 0 {
+		t.Fatalf("notes after the production pruner's tick = %d, want 0", n)
 	}
 }
