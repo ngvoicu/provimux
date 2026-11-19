@@ -8,12 +8,21 @@
 #   check.sh prepare       rebase, bundle, range-diff, workflow paths, guard (git only; runs
 #                          no repository code)
 #   check.sh tree T        T = candidate | tag: export that tree (git only), to $PMX_TREES/T
-#   check.sh test T        go build (candidate), go list and go test -json ./... on tree T,
+#   check.sh test T [P]    go build (candidate), go list and go test -json ./... on tree T,
 #                          then the packages with a failing test again, whole. RUNS THE
 #                          TREE'S CODE. Writes only raw output to $PMX_TEST_OUT/T and
-#                          decides nothing.
+#                          decides nothing. With P (build | test | rerun) only that part,
+#                          and the exit status is that command's: the workflow runs each
+#                          part as its own step and hands the step's outcome (kept by
+#                          the runner, not a file) to the verdict.
+#   check.sh fetch ID NAME DIGEST DIR
+#                          downloads one artifact of this run ($PMX_RUN_ID) by its id,
+#                          checked (run_artifact in common.sh)
 #   check.sh verdict       reads the raw output of both trees as data (testsum.jq,
 #                          testcmp.jq) and writes the status. Runs no repository code.
+#                          In the workflow it also requires each test job to have
+#                          concluded success (jobs API) and each step's outcome
+#                          ($PMX_OUTCOME_*) to agree with the exit status recorded.
 #   check.sh               all of them, in order, in one process (local use only: the
 #                          workflow runs each tree's tests in its own job and the verdict
 #                          in another, so the tests cannot write the verdict).
@@ -23,9 +32,10 @@
 # newest vX.Y.Z tag of upstream (its refs, not local tags) whose commit is an ancestor
 # of main; a newer reachable tag that upstream withdrew or moved is an error (no
 # fallback; upstream_base in common.sh). Then:
-#   - v<base>-pmx.* exists here: "published" when every such release is complete and the
-#     provimux-release run for its tag at the tag's commit succeeded, "in-progress" while
-#     such a run runs, "incomplete" otherwise (releases_status in common.sh);
+#   - v<base>-pmx.* exists here: the newest such tag decides: "published" when its release
+#     is complete and the provimux-release run for it at the tag's commit succeeded,
+#     "in-progress" while that run runs, "incomplete" otherwise (releases_status in
+#     common.sh; an earlier -pmx.<n> that failed is named, not counted);
 #   - main is already on the tag (and no -pmx tag): "unreleased";
 #   - the tag does not descend from main's base: "fail";
 #   - otherwise: "check", and prepare goes on.
@@ -45,7 +55,10 @@
 # Env: PMX_TAG (optional), PMX_MAIN_REF (default HEAD: the main to rebase),
 # PMX_CHECK_OUT (default: a new temp dir), PMX_TEST_OUT (default $PMX_CHECK_OUT/test),
 # PMX_TREES (default $PMX_CHECK_OUT/trees), PMX_RUN_URL (recorded in result.json),
-# PMX_TEST_JOB (the test jobs' result, for the verdict's messages),
+# PMX_TEST_JOB (the test jobs' result, for the verdict's messages), PMX_RUN_ID and
+# PMX_RUN_ATTEMPT (the workflow's run: the verdict reads its test jobs' conclusions),
+# PMX_OUTCOME_BUILD, PMX_OUTCOME_CAND_TEST, PMX_OUTCOME_RERUN, PMX_OUTCOME_TAG_TEST (the
+# test steps' outcomes: success | failure),
 # PMX_UPSTREAM_REPO / PMX_UPSTREAM_URL / PMX_REPO / PMX_REPO_URL (common.sh).
 # Runs with bash 3.2 (macOS); needs git, go, jq, gh. Run from the repository; the
 # rebase happens in a temporary worktree, so the checkout and its branch do not move.
@@ -61,19 +74,41 @@ out="${PMX_CHECK_OUT:-$(mktemp -d "${TMPDIR:-/tmp}/provimux-check.XXXXXX")}"
 mkdir -p "$out/logs"
 test_out="${PMX_TEST_OUT:-$out/test}"
 trees="${PMX_TREES:-$out/trees}"
-state="$out/state.env"
+state="$out/state.json"
 log() { echo "==> $*" >&2; }
 
 # --- state shared by the two steps ------------------------------------------------
 status='' step='' tag='' base='' upstream_commit='' old_main='' old_base_tag='' old_base_commit=''
 candidate='' commits='' build_ok='' guard_ok='' tests_ok=''
 reasons="$out/reasons.txt"
+# The state travels from job to job in an artifact, so it is data: JSON, read back with
+# jq and each value checked against its pattern (load_state), never sourced.
+state_vars="status step tag base upstream_commit old_main old_base_tag old_base_commit candidate commits guard_ok"
 save_state() {
-  {
-    for v in status step tag base upstream_commit old_main old_base_tag old_base_commit candidate commits guard_ok; do
-      printf '%s=%q\n' "$v" "${!v}"
-    done
-  } >"$state"
+  local v
+  for v in $state_vars; do jq -n --arg k "$v" --arg v "${!v}" '{($k): $v}'; done | jq -s 'add' >"$state"
+}
+# load_state: the variables from $state; fails (status 1, the reason on stderr) when it
+# is missing or any value is not of its form.
+load_state() {
+  local v val ok
+  if [[ ! -s "$state" ]] || ! jq -e 'type == "object"' "$state" >/dev/null 2>&1; then echo "no state ($state)" >&2; return 1; fi
+  for v in $state_vars; do
+    val="$(jq -r --arg k "$v" '.[$k] // "" | if type == "string" then . else error("not a string") end' "$state")" ||
+      { echo "state: $v is not a string" >&2; return 1; }
+    ok=0
+    case "$v" in
+      status) [[ "$val" =~ ^(running|check|test|pass|fail|error|published|in-progress|incomplete|unreleased)?$ ]] && ok=1 ;;
+      step) [[ "$val" =~ ^[a-z-]*$ ]] && ok=1 ;;
+      tag | old_base_tag) [[ -z "$val" || "$val" =~ $PMX_STABLE_RE ]] && ok=1 ;;
+      base) [[ "$val" =~ ^([0-9]+\.[0-9]+\.[0-9]+)?$ ]] && ok=1 ;;
+      upstream_commit | old_main | old_base_commit | candidate) [[ -z "$val" || "$val" =~ $PMX_SHA_RE ]] && ok=1 ;;
+      commits) [[ "$val" =~ ^[0-9]*$ ]] && ok=1 ;;
+      guard_ok) [[ "$val" =~ ^(true|false)?$ ]] && ok=1 ;;
+    esac
+    [[ $ok -eq 1 ]] || { echo "state: $v is not valid" >&2; return 1; }
+    printf -v "$v" '%s' "$val"
+  done
 }
 reason() { printf '%s\n' "$*" >>"$reasons"; log "$*"; }
 
@@ -209,8 +244,7 @@ do_select() {
 # --- prepare (git only) ------------------------------------------------------------------
 do_prepare() {
   local wt stopped p op a b subj line
-  # shellcheck disable=SC1090
-  . "$state"
+  load_state || { status=error step=prepare; reason "the select step's state is missing or invalid"; return; }
   [[ "$status" == check ]] || { log "nothing to prepare (status $status)"; return; }
   status=running
 
@@ -310,8 +344,7 @@ do_prepare() {
 # so it needs only the prepare step's out dir.
 do_tree() {
   local which=$1 repo c
-  # shellcheck disable=SC1090
-  . "$state"
+  load_state || { echo "check.sh tree: the prepare job's state is missing or invalid" >&2; exit 1; }
   [[ "$status" == test ]] || { echo "check.sh tree: nothing to test (status $status)" >&2; exit 1; }
   repo="$(mktemp -d "${TMPDIR:-/tmp}/provimux-check-tree.XXXXXX")"
   cleanup_paths+=("$repo")
@@ -380,25 +413,36 @@ sample_resources() {
   done
 }
 
-# do_test candidate|tag: in $test_out/<T>: build.log/build.exit (candidate), pkgs.txt,
-# test.json/test.exit/test.stderr, rerun-pkgs.txt and rerun.json/rerun.exit (when a
-# package had a failing test). Nothing here is trusted by the verdict beyond being data.
+# do_test candidate|tag [build|test|rerun]: in $test_out/<T>: build.log/build.exit
+# (candidate), pkgs.txt, test.json/test.exit/test.stderr, rerun-pkgs.txt and
+# rerun.json/rerun.exit (when a package had a failing test). Nothing here is trusted by
+# the verdict beyond being data. Without a part: all parts, exit status 0. With a part:
+# only that part, and the exit status is its command's (rerun: 0 when nothing reruns).
 do_test() {
-  local which=$1 dir d sampler e
+  local which=$1 part=${2:-} dir d sampler e=0
   dir="$trees/$which" d="$test_out/$which"
   [[ -d "$dir" ]] || { echo "check.sh test: no tree $dir (run check.sh tree $which)" >&2; exit 1; }
-  rm -rf "${d:?}"; mkdir -p "$d"
-  if [[ "$which" == candidate ]]; then
+  case "$part" in
+    '') rm -rf "${d:?}"; mkdir -p "$d" ;;
+    build | test | rerun) mkdir -p "$d" ;;
+    *) echo "usage: $0 test candidate|tag [build|test|rerun]" >&2; exit 2 ;;
+  esac
+  if [[ "$which" == candidate && ( -z "$part" || "$part" == build ) ]]; then
     log "go build ./... ($which)"
     set +e; (cd "$dir" && go build ./...) >"$d/build.log" 2>&1; e=$?; set -e
     echo "$e" >"$d/build.exit"
   fi
-  (cd "$dir" && go list -e -f '{{.ImportPath}}' ./...) >"$d/pkgs.txt" 2>"$d/list.stderr" || true
-  sample_resources "$d/resources.log" &
-  sampler=$!
-  log "go test ./... ($which)"
-  gotest "$dir" "$d/test" ./...
-  if [[ "$which" == candidate ]]; then
+  if [[ -z "$part" || "$part" == test ]]; then
+    (cd "$dir" && go list -e -f '{{.ImportPath}}' ./...) >"$d/pkgs.txt" 2>"$d/list.stderr" || true
+    sample_resources "$d/resources.log" &
+    sampler=$!
+    log "go test ./... ($which)"
+    gotest "$dir" "$d/test" ./...
+    kill "$sampler" 2>/dev/null || true
+    e="$(cat "$d/test.exit")"
+  fi
+  if [[ "$which" == candidate && ( -z "$part" || "$part" == rerun ) ]]; then
+    e=0
     # Rerun every package with a failing test (not those that do not build), whole.
     jq -R -c -f "$here/testevents.jq" "$d/test.json" | jq -s -f "$here/testsum.jq" |
       jq -r '. as $s | [.failed[] | split(" ")[0]] | unique[] | select(. as $p | ($s.build_failed | index($p)) == null)' >"$d/rerun-pkgs.txt"
@@ -406,10 +450,11 @@ do_test() {
       log "rerun: $(paste -sd ' ' "$d/rerun-pkgs.txt")"
       # shellcheck disable=SC2046
       gotest "$dir" "$d/rerun" $(cat "$d/rerun-pkgs.txt")
+      e="$(cat "$d/rerun.exit")"
     fi
   fi
-  kill "$sampler" 2>/dev/null || true
   log "raw output in $d"
+  [[ -z "$part" ]] || return "$e"
 }
 
 # --- verdict (no repository code: the raw output is data) --------------------------------------
@@ -430,9 +475,7 @@ summary() {
 
 do_verdict() {
   local c="$test_out/candidate" t="$test_out/tag" rexit=null w
-  [[ -f "$state" ]] || { status=error step=verdict; reason "no result from the prepare job (job: ${PMX_PREP_JOB:-unknown})"; return; }
-  # shellcheck disable=SC1090
-  . "$state"
+  load_state || { status=error step=verdict; reason "no valid state from the prepare job (job: ${PMX_PREP_JOB:-unknown})"; return; }
   [[ "$status" == test ]] || { log "nothing to decide (status $status): result.json stays"; verdict_skip=1; return; }
   status=running
   step=verdict
@@ -443,6 +486,13 @@ do_verdict() {
     fi
   done
   [[ "$status" == running ]] || return
+  # In the workflow: what the runner and GitHub recorded, not files the tree's code
+  # could write. Each test job concluded success (it ran to the end and uploaded), and
+  # each step's outcome agrees with the exit status in the job's artifact.
+  if [[ -n "${PMX_RUN_ID:-}" ]]; then
+    verdict_jobs
+    [[ "$status" == running ]] || return
+  fi
 
   # Build.
   cp "$c/build.log" "$out/logs/build.log" 2>/dev/null || : >"$out/logs/build.log"
@@ -476,6 +526,32 @@ do_verdict() {
   if [[ -s "$reasons" ]]; then status=fail; else status=pass; fi
 }
 
+# verdict_jobs: the test jobs' conclusions (jobs API, this run's attempt) and the step
+# outcomes; sets status=error with a reason on any disagreement.
+verdict_jobs() {
+  local jobs w c o f e
+  jobs="$(gh api "repos/$PMX_REPO/actions/runs/$PMX_RUN_ID/attempts/${PMX_RUN_ATTEMPT:-1}/jobs?per_page=100")" ||
+    { status=error; reason "cannot read the jobs of run $PMX_RUN_ID"; return; }
+  for w in candidate tag; do
+    c="$(jq -r --arg n "test ($w)" '[.jobs[] | select(.name == $n)] | if length == 1 then .[0].conclusion // "none" else "not one job" end' <<<"$jobs")"
+    [[ "$c" == success ]] || { status=error; reason "the job \"test ($w)\" ended '$c' (jobs API)"; }
+  done
+  # Each "<step> <outcome> <exit file>": the outcome agrees with the recorded exit status.
+  for f in "build ${PMX_OUTCOME_BUILD:-none} $test_out/candidate/build.exit" \
+           "candidate-test ${PMX_OUTCOME_CAND_TEST:-none} $test_out/candidate/test.exit" \
+           "tag-test ${PMX_OUTCOME_TAG_TEST:-none} $test_out/tag/test.exit" \
+           "rerun ${PMX_OUTCOME_RERUN:-none} $test_out/candidate/rerun.exit"; do
+    read -r w o e <<<"$f"
+    [[ "$w" == rerun && ! -f "$e" ]] && e=/dev/null
+    case "$o:$(if [[ "$e" == /dev/null ]]; then echo 0; else exitval "$e"; fi)" in
+      success:0) ;;
+      failure:0 | success:*) status=error; reason "the $w step ended '$o', but the exit status its job recorded is $(exitval "$e")" ;;
+      failure:*) ;;
+      *) status=error; reason "the $w step has no outcome ('$o')" ;;
+    esac
+  done
+}
+
 verdict_skip=0
 case "$mode" in
   select)
@@ -492,7 +568,11 @@ case "$mode" in
     do_tree "${2:-}"
     ;;
   test)
-    do_test "${2:-}"
+    do_test "${2:-}" "${3:-}"
+    ;;
+  fetch)
+    run_artifact "${PMX_RUN_ID:?}" "${2:-}" "${3:-}" "${4:-}" "${5:?}"
+    exit 0
     ;;
   verdict)
     trap 'if [[ $verdict_skip -eq 0 ]]; then write_result; fi' EXIT
@@ -512,7 +592,7 @@ case "$mode" in
       fi
     fi
     ;;
-  *) echo "usage: $0 [select|prepare|tree T|test T|verdict]" >&2; exit 2 ;;
+  *) echo "usage: $0 [select|prepare|tree T|test T [P]|fetch ID NAME DIGEST DIR|verdict]" >&2; exit 2 ;;
 esac
 echo "status=$status" >>"${GITHUB_OUTPUT:-/dev/null}"
 echo "tag=$tag" >>"${GITHUB_OUTPUT:-/dev/null}"
