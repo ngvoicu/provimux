@@ -352,6 +352,7 @@ func (s *Service) fetchAndRegisterLiveModelList(ctx context.Context, snapshot *c
 	}
 	if err != nil {
 		liveModelLists.fail(snapshot.ID, liveModelListNow())
+		noteLiveModelListFailure(snapshot.ID, identity, err)
 		log.Warnf("live model list for %s login %s: %v (keeping the previous list)", snapshot.Provider, snapshot.ID, err)
 		return
 	}
