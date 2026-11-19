@@ -577,6 +577,133 @@ expect "--expect-main not a SHA: refused" "exit 1" "$(ci bash "$P" v1.2.0 --expe
 mkdir -p "$tmp/p2" && printf 'TAG=v1.3.0\n' >"$tmp/p2/plan.env"
 expect "--ci --wait on a plan for another tag: refused" "exit 1" "$(ci bash "$P" v1.2.0 --ci --wait "$tmp/p2")"
 
+# --- check.sh: the state is data; the verdict's inputs are bound -----------------------------------
+echo "# check.sh: state.json is parsed, never sourced"
+# vstate DIR [JQ]: a valid state "test" in DIR/state.json (JQ edits it).
+vstate() {
+  mkdir -p "$1"
+  jq -n --arg s "$pmx_sha" --arg u "$v110" '{status: "test", step: "test", tag: "v1.2.0", base: "1.2.0",
+    upstream_commit: $u, old_main: $s, old_base_tag: "v1.1.0", old_base_commit: $u, candidate: $s,
+    commits: "2", guard_ok: "true"}' | jq "${2:-.}" >"$1/state.json"
+}
+vdir="$tmp/vd"
+# shellcheck disable=SC2016,SC2030,SC2031 # literal text for jq/eval; PATH only for that subshell
+for bad in '.candidate = "$(touch '"$tmp"'/pwned)"' '.tag = "v1.2.0; touch '"$tmp"'/pwned"' '.status = "test\ntouch x"' '.commits = 2' '.guard_ok = "yes"'; do
+  rm -rf "$vdir"; vstate "$vdir" "$bad"
+  printf 'status=test\ntouch %s/pwned\n' "$tmp" >"$vdir/state.env"
+  (cd "$pmx" && PMX_CHECK_OUT="$vdir" bash "$here/check.sh" tree candidate) >"$tmp/tree.log" 2>&1 && r=pass || r=fail
+  expect "state with $bad: check.sh tree refuses" fail "$r"
+  contains "  ... because the state is invalid" "$tmp/tree.log" "state is missing or invalid"
+done
+rm -rf "$vdir"; vstate "$vdir"
+(cd "$pmx" && PMX_CHECK_OUT="$vdir" bash "$here/check.sh" tree candidate) >"$tmp/tree.log" 2>&1 || true
+lacks "a valid state: check.sh tree reads it (goes past the state)" "$tmp/tree.log" "state is missing or invalid"
+if [[ -e "$tmp/pwned" ]]; then bad "  ... and nothing in it ran"; else ok "  ... and nothing in it ran"; fi
+rm -rf "$vdir"
+# shellcheck disable=SC2016 # literal text for jq
+vstate "$vdir" '.candidate = "$(touch '"$tmp"'/pwned)"'
+PMX_CHECK_OUT="$vdir" bash "$here/check.sh" verdict >/dev/null 2>&1 || true
+expect "verdict with an invalid state: error" error "$(jq -r .status "$vdir/result.json" 2>/dev/null)"
+contains "  ... says the state is invalid" "$vdir/result.json" "no valid state"
+
+echo "# check.sh verdict: step outcomes and job conclusions"
+# vtest DIR: raw output of two passing trees (x/a), exit statuses 0.
+vtest() {
+  local w
+  for w in candidate tag; do
+    mkdir -p "$1/test/$w"
+    { ev pass x/a TestA; ev pass x/a; } >"$1/test/$w/test.json"
+    echo 0 >"$1/test/$w/test.exit"; echo x/a >"$1/test/$w/pkgs.txt"
+  done
+  echo 0 >"$1/test/candidate/build.exit"; : >"$1/test/candidate/build.log"
+}
+# vjobs CAND TAG: the conclusions of the jobs "test (candidate)" and "test (tag)" of run 77.
+vjobs() {
+  jq -n --arg c "$1" --arg t "$2" '{jobs: [{name: "prepare", conclusion: "success"}, {name: "test (candidate)", conclusion: $c}, {name: "test (tag)", conclusion: $t}]}' \
+    >"$stub/api/repos_test_provimux_actions_runs_77_attempts_1_jobs_per_page_100.json"
+}
+# verdict ENV...: the status of result.json
+verdict() {
+  rm -rf "$vdir"; vstate "$vdir"; vtest "$vdir"
+  [[ -z "${VPRE:-}" ]] || eval "$VPRE"
+  env PATH="$stub/bin:$PATH" STUB_API="$stub/api" PMX_REPO=test/provimux PMX_CHECK_OUT="$vdir" PMX_RUN_ID=77 PMX_RUN_ATTEMPT=1 \
+    PMX_OUTCOME_BUILD=success PMX_OUTCOME_CAND_TEST=success PMX_OUTCOME_RERUN=success PMX_OUTCOME_TAG_TEST=success "$@" \
+    bash "$here/check.sh" verdict >"$tmp/verdict.log" 2>&1 || true
+  jq -r .status "$vdir/result.json" 2>/dev/null || echo none
+}
+vjobs success success
+expect "outcomes agree with the exit statuses, both jobs succeeded: pass" pass "$(verdict env)"
+expect "test step failed but its job recorded exit 0: error" error "$(verdict PMX_OUTCOME_CAND_TEST=failure)"
+contains "  ... says which step" "$vdir/result.json" "candidate-test step ended 'failure'"
+# shellcheck disable=SC2016,SC2030,SC2031 # literal text for jq/eval; PATH only for that subshell
+expect "build step succeeded but build.exit says 2: error" error "$(VPRE='echo 2 >"$vdir/test/candidate/build.exit"' verdict env)"
+# shellcheck disable=SC2016,SC2030,SC2031 # literal text for jq/eval; PATH only for that subshell
+expect "build failed and build.exit says 2: a failed check, not an error" fail "$(VPRE='echo 2 >"$vdir/test/candidate/build.exit"' verdict PMX_OUTCOME_BUILD=failure)"
+expect "no outcome for the tag's test step: error" error "$(verdict PMX_OUTCOME_TAG_TEST=)"
+expect "rerun step failed with no rerun recorded: error" error "$(verdict PMX_OUTCOME_RERUN=failure)"
+vjobs success failure
+expect "the job test (tag) did not conclude success (jobs API): error" error "$(verdict env)"
+contains "  ... says so" "$vdir/result.json" "test (tag)"
+vjobs success success
+jq '.jobs += [{name: "test (candidate)", conclusion: "success"}]' "$stub/api/repos_test_provimux_actions_runs_77_attempts_1_jobs_per_page_100.json" >"$tmp/j.json"
+mv "$tmp/j.json" "$stub/api/repos_test_provimux_actions_runs_77_attempts_1_jobs_per_page_100.json"
+expect "two jobs named test (candidate): error" error "$(verdict env)"
+vjobs success success
+
+echo "# run_artifact: by id, run, name and digest"
+ra_zip="$tmp/ra"; rm -rf "$ra_zip"; mkdir -p "$ra_zip"; echo '{}' >"$ra_zip/state.json"
+(cd "$ra_zip" && zip -q a.zip state.json)
+ra_d="$(sha256_of "$ra_zip/a.zip")"
+cp "$ra_zip/a.zip" "$stub/api/repos_test_provimux_actions_artifacts_601_zip.json"
+ra_meta() { jq -n --arg d "sha256:$ra_d" '{id: 601, name: "pmx-prepare", expired: false, digest: $d, workflow_run: {id: 77}}' | jq "${1:-.}" >"$stub/api/repos_test_provimux_actions_artifacts_601.json"; }
+# shellcheck disable=SC2016,SC2030,SC2031 # literal text for jq/eval; PATH only for that subshell
+ra() { rm -rf "$tmp/ra.out"; (PATH="$stub/bin:$PATH" STUB_API="$stub/api" PMX_REPO=test/provimux; export PATH STUB_API PMX_REPO; run_artifact "$@" "$tmp/ra.out") >/dev/null 2>&1 && echo ok || echo refused; }
+ra_meta
+expect "the producing job's id and digest: downloaded" ok "$(ra 77 601 pmx-prepare "$ra_d")"
+if [[ -s "$tmp/ra.out/state.json" ]]; then ok "  ... and unpacked"; else bad "  ... and unpacked"; fi
+expect "an artifact of another run: refused" refused "$(ra 78 601 pmx-prepare "$ra_d")"
+expect "another name: refused" refused "$(ra 77 601 pmx-test-tag "$ra_d")"
+expect "another digest than the producing job's: refused" refused "$(ra 77 601 pmx-prepare "$(printf '%064d' 0)")"
+expect "no id (the job uploaded nothing): refused" refused "$(ra 77 '' pmx-prepare "$ra_d")"
+ra_meta '.expired = true'
+expect "expired: refused" refused "$(ra 77 601 pmx-prepare "$ra_d")"
+ra_meta; printf 'other' >"$stub/api/repos_test_provimux_actions_artifacts_601_zip.json"
+expect "the zip downloaded is not that digest (replaced bytes): refused" refused "$(ra 77 601 pmx-prepare "$ra_d")"
+
+# --- releases_status and the reporter: the newest -pmx.<n> decides; older bases ---------------------
+echo "# releases_status: the newest v<base>-pmx.<n> decides"
+git -C "$pmx" tag v1.1.0-pmx.2 "$pmx_sha" && git -C "$pmx" push -q "$remote" refs/tags/v1.1.0-pmx.2
+relfile() { expected_assets "$1" | jq -R -s '{draft: false, prerelease: false, published_at: "2026-11-19T00:00:00Z",
+  assets: (split("\n") | map(select(length > 0) | {name: ., state: "uploaded"}))}' | jq "${2:-.}" >"$stub/api/repos_test_provimux_releases_tags_v$1.json"; }
+relrun() { jq -n --arg sha "$pmx_sha" --arg t "v$1" --arg c "$2" '{workflow_runs: [{id: 8, path: ".github/workflows/provimux-release.yml", event: "push",
+    head_branch: $t, head_sha: $sha, repository: {full_name: "test/provimux"},
+    status: (if $c == "running" then "in_progress" else "completed" end), conclusion: (if $c == "running" then null else $c end), created_at: "2026-11-19T00:00:00Z"}]}' \
+    >"$stub/api/repos_test_provimux_actions_runs_event_push_branch_v$1_per_page_50.json"; }
+# shellcheck disable=SC2016,SC2030,SC2031 # literal text for jq/eval; PATH only for that subshell
+rstat() { : >"$tmp/rs.txt"; (PATH="$stub/bin:$PATH" STUB_API="$stub/api" PMX_REPO=test/provimux PMX_REPO_URL="$remote"; export PATH STUB_API PMX_REPO PMX_REPO_URL; releases_status 1.1.0 "$tmp/rs.json" "$tmp/rs.txt"); }
+relfile 1.1.0-pmx.1 '.draft = true'; relrun 1.1.0-pmx.1 failure
+relfile 1.1.0-pmx.2; relrun 1.1.0-pmx.2 success
+expect "failed -pmx.1, complete -pmx.2: published" published "$(rstat)"
+contains "  ... names -pmx.1 as replaced" "$tmp/rs.txt" "v1.1.0-pmx.2 replaces it"
+relfile 1.1.0-pmx.1; relrun 1.1.0-pmx.1 success; relrun 1.1.0-pmx.2 failure
+expect "complete -pmx.1, failed -pmx.2: incomplete" incomplete "$(rstat)"
+relrun 1.1.0-pmx.2 running
+expect "complete -pmx.1, -pmx.2 running: in-progress" in-progress "$(rstat)"
+
+echo "# report.sh: open issues of older bases (sweep)"
+echo '[{"number": 11, "title": "sync: v1.1.0 — release incomplete"}, {"number": 12, "title": "sync: v1.2.0 — ready to publish"}, {"number": 13, "title": "sync: v1.0.0 — ready to publish"}]' \
+  >"$stub/api/repos_test_provimux_issues_state_open_per_page_100.json"
+jq -n --arg s "$pmx_sha" '{status: "fail", step: "rebase", upstream: {tag: "v1.2.0"}, reasons: ["x"]}' >"$tmp/r12.json"
+relrun 1.1.0-pmx.2 failure
+report "$tmp/r12.json" success >/dev/null
+contains "older base with a failed newest release: release incomplete (older base)" "$tmp/report.out" "sweep: #11 title=sync: v1.1.0 — release incomplete (older base), owner needed"
+contains "  ... with the rerun command" "$tmp/report.out" "gh run rerun 8 --failed -R test/provimux"
+contains "older base never published: says so" "$tmp/report.out" "sweep: #13 title=sync: v1.0.0 — not published; the check now checks v1.2.0"
+lacks "  ... this run's own base is not swept" "$tmp/report.out" "sweep: #12"
+relrun 1.1.0-pmx.2 success
+report "$tmp/r12.json" success >/dev/null
+contains "older base whose newest release is complete: closed" "$tmp/report.out" "sweep: close #11 (v1.1.0)"
+
 echo
 echo "$pass passed, $failed failed"
 [[ $failed -eq 0 ]]
