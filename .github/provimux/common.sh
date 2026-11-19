@@ -67,6 +67,42 @@ PMX_CHECK_RUN_OK='select(.path == ".github/workflows/provimux-check.yml" and .he
    and .repository.full_name == $repo and .head_repository.full_name == $repo
    and (.head_sha | test("^[0-9a-f]{40}$")))'
 
+# check_artifact RUN DIR: the artifact provimux-check-<tag> that the verdict job of RUN's
+# latest attempt uploaded, downloaded and unpacked into DIR; prints "<artifact id> <name>".
+# The binding: the verdict job (it runs no repository code) writes the id, name and digest
+# of its own upload as its only annotation titled "provimux-check-artifact"; the jobs that
+# run upstream's and the candidate's code can upload artifacts of any name in the same
+# run, but cannot annotate the verdict job. The artifact must be that id, of RUN, with
+# that name (and digest when both are known), unexpired. Any other artifact, of any name,
+# is ignored. Fails (status 1, the reason on stderr) otherwise. Used by publish.sh and
+# autopublish.sh alike. Needs gh with actions: read and checks: read, and unzip.
+check_artifact() {
+  local run=$1 dir=$2 attempt job ann id name digest meta
+  attempt="$(gh api "repos/$PMX_REPO/actions/runs/$run" --jq '.run_attempt')" ||
+    { echo "cannot read run $run" >&2; return 1; }
+  [[ "$attempt" =~ ^[0-9]+$ ]] || { echo "run $run: no attempt number" >&2; return 1; }
+  job="$(gh api "repos/$PMX_REPO/actions/runs/$run/attempts/$attempt/jobs?per_page=100" \
+    --jq '[.jobs[] | select(.name == "verdict")] | if length == 1 then .[0].id else "" end')" ||
+    { echo "cannot list the jobs of run $run attempt $attempt" >&2; return 1; }
+  [[ "$job" =~ ^[0-9]+$ ]] || { echo "run $run attempt $attempt has no single job \"verdict\"" >&2; return 1; }
+  ann="$(gh api "repos/$PMX_REPO/check-runs/$job/annotations?per_page=100" \
+    --jq '[.[] | select(.title == "provimux-check-artifact") | .message] | if length == 1 then .[0] else "" end')" ||
+    { echo "cannot read the annotations of the verdict job $job" >&2; return 1; }
+  read -r id name digest _ <<<"$ann" || true
+  [[ "$id" =~ ^[0-9]+$ && "$name" =~ ^provimux-check-(none|v[0-9]+\.[0-9]+\.[0-9]+)$ ]] ||
+    { echo "the verdict job $job of run $run names no artifact (one annotation \"provimux-check-artifact\": <id> <name> [digest])" >&2; return 1; }
+  meta="$(gh api "repos/$PMX_REPO/actions/artifacts/$id")" || { echo "cannot read artifact $id" >&2; return 1; }
+  jq -e --arg run "$run" --arg name "$name" --arg digest "${digest:-}" \
+    '(.workflow_run.id | tostring) == $run and .name == $name and (.expired | not)
+     and ($digest == "" or (.digest // "") == "" or .digest == $digest)' <<<"$meta" >/dev/null ||
+    { echo "artifact $id is not the verdict's $name of run $run (or it expired)" >&2; return 1; }
+  mkdir -p "$dir"
+  gh api "repos/$PMX_REPO/actions/artifacts/$id/zip" >"$dir/.artifact.zip" || { echo "cannot download artifact $id" >&2; return 1; }
+  unzip -q -o "$dir/.artifact.zip" -d "$dir" || { echo "artifact $id is not a zip" >&2; return 1; }
+  rm -f "$dir/.artifact.zip"
+  echo "$id $name"
+}
+
 # runs_json TAG: the newest push runs of TAG in PMX_REPO (actions/runs API). The check
 # job's token has no actions: read, so a refused API call is retried without a token
 # (the repository is public).
