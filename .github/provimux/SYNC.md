@@ -6,6 +6,8 @@
 
 It runs every 3 hours, one run at a time, and can be started by hand (Actions → provimux-sync → Run workflow; inputs: `tag`, `dry_run`, which is ticked by default).
 
+**The workflow ships disabled** (no schedule, no manual runs). Enable it with `gh workflow enable provimux-sync -R ngvoicu/provimux` once the secret `SYNC_TOKEN` exists and a review of the sync has passed.
+
 1. **Release.** It reads the latest release of `router-for-me/CLIProxyAPI`, or uses the `tag` input. It stops quietly when this repository already has a `v<base>-pmx.*` tag for that release, or when the release is not newer than the base of `main`.
 2. **Token.** A real run without the secret `SYNC_TOKEN` fails at this point, before it rebases anything.
 3. **Fetch.** It fetches the upstream tag. It fails if the release adds a workflow file (see [New upstream workflow files](#new-upstream-workflow-files)).
