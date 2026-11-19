@@ -23,11 +23,22 @@
 #   tap.sh prepare <v<base>-pmx.<n>> <dir> [<formula>]
 #       release (above), then a clone of the tap in <dir>/tap; the formula is <formula>,
 #       or, without it, the tap's formula updated by update-formula.sh from the
-#       release's checksums.txt. Only forward: a tap already at this version with this
-#       formula, or at a newer version, is left as it is (action=none). Otherwise verify
-#       (above) and one commit on the tap's main. Prints, and writes to $GITHUB_OUTPUT:
+#       release's checksums.txt. Only forward: a tap already at this version with exactly
+#       this formula, or at a newer version, is left as it is (action=none). A tap at an
+#       older version, or at THIS version with any other bytes (a wrong sha256 or url), is
+#       verified (above) and gets one commit on the tap's main with the verified formula:
+#       the formula comes from the published, immutable release, so at the same version
+#       it is the correct content and repairing the tap is what makes the release
+#       installable; a same-version difference is never "none". Prints, and writes to $GITHUB_OUTPUT:
 #       action=push|none, repo=<git dir>, lease=refs/heads/main:<tap main read>,
 #       ref=<commit>:refs/heads/main, version=, from=.
+#   tap.sh check <v<base>-pmx.<n>> <dir>
+#       Read-only: release (above), then whether the tap serves it: "ok" (the tap's
+#       formula is byte for byte the tap's own formula updated by update-formula.sh from
+#       the release's checksums.txt, i.e. right version, urls and sha256), "newer" (the
+#       tap is at a newer version: this release is superseded there), exit 0; "wrong:
+#       <why>" exit 1; any read failure exit 2. (report.sh, before it closes an issue
+#       that says the tap was not updated.)
 #
 # Env: PMX_REPO (common.sh), PMX_TAP_URL (default https://github.com/ngvoicu/homebrew-tap.git),
 # GH_TOKEN with read access (and actions: read for artifact). Runs with bash 3.2.
@@ -165,9 +176,10 @@ prepare() {
     echo "tap: the tap already has this formula ($cur)" >&2; out action none; return 0
   fi
   newest="$(printf '%s\n%s\n' "$cur" "$v" | sort -V | tail -n 1)"
-  if [[ "$cur" == "$v" || "$newest" != "$v" ]]; then
+  if [[ "$cur" != "$v" && "$newest" != "$v" ]]; then
     echo "tap: the tap has $cur; $v is not newer, left as it is" >&2; out action none; return 0
   fi
+  [[ "$cur" != "$v" ]] || echo "tap: the tap is at $v but its formula differs from the verified one: repairing it" >&2
   verify "$v" "$dir/release/checksums.txt" "$f" "$formula" || die "the formula changes more than the version, url and sha256 lines"
   cp "$formula" "$f"
   t -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
@@ -179,10 +191,32 @@ prepare() {
   out ref "$(t rev-parse HEAD):refs/heads/main"
 }
 
+check() {
+  local tag=$1 dir=$2 v cur newest f
+  v="${tag#v}"
+  ( release "$tag" "$dir/release" ) || exit 2
+  rm -rf "$dir/tap"
+  GIT_TERMINAL_PROMPT=0 git clone -q --depth 1 --no-tags "$PMX_TAP_URL" "$dir/tap" || { echo "tap: cannot clone $PMX_TAP_URL" >&2; exit 2; }
+  f="$dir/tap/Formula/provimux.rb"
+  [[ -s "$f" ]] || { echo "wrong: the tap has no Formula/provimux.rb"; exit 1; }
+  cur="$(sed -n 's/^  version "\(.*\)"$/\1/p' "$f")"
+  if [[ "$cur" != "$v" ]]; then
+    newest="$(printf '%s\n%s\n' "$cur" "$v" | sort -V | tail -n 1)"
+    if [[ -n "$cur" && "$newest" == "$cur" ]]; then echo "newer: the tap is at $cur"; exit 0; fi
+    echo "wrong: the tap is at '$cur', not $v"; exit 1
+  fi
+  cp "$f" "$dir/expected.rb"
+  bash "$here/update-formula.sh" "$v" "$dir/release/checksums.txt" "$dir/expected.rb" >/dev/null 2>&1 ||
+    { echo "wrong: update-formula.sh cannot apply $v to the tap's formula"; exit 1; }
+  if cmp -s "$dir/expected.rb" "$f"; then echo "ok: the tap serves $v with the release's urls and sha256"; exit 0; fi
+  echo "wrong: the tap is at $v but its urls or sha256 are not the release's"; exit 1
+}
+
 case "${1:-}" in
   verify) [[ $# -eq 5 ]] || die "usage: tap.sh verify <version> <checksums> <tap formula> <new formula>"; verify "$2" "$3" "$4" "$5" ;;
   release) release "${2:?}" "${3:?}" ;;
   artifact) artifact "${2:?}" "${3:?}" "${4:?}" ;;
   prepare) prepare "${2:?}" "${3:?}" "${4:-}" ;;
-  *) echo "usage: tap.sh verify|release|artifact|prepare ..." >&2; exit 2 ;;
+  check) check "${2:?}" "${3:?}" ;;
+  *) echo "usage: tap.sh verify|release|artifact|prepare|check ..." >&2; exit 2 ;;
 esac
