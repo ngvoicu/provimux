@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -27,12 +28,19 @@ func TestProvimuxBannerShowsDisplayVersion(t *testing.T) {
 	}
 	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			bin := filepath.Join(t.TempDir(), "provimux")
+			name := "provimux"
+			if runtime.GOOS == "windows" {
+				name += ".exe"
+			}
+			bin := filepath.Join(t.TempDir(), name)
 			build := exec.Command("go", "build", "-ldflags", tc.ldflags, "-o", bin, ".")
 			if out, errBuild := build.CombinedOutput(); errBuild != nil {
 				t.Fatalf("case %d: go build: %v\n%s", i, errBuild, out)
 			}
-			out, _ := exec.Command(bin, "--help").CombinedOutput()
+			out, errRun := exec.Command(bin, "--help").CombinedOutput()
+			if errRun != nil {
+				t.Fatalf("case %d: run %s --help: %v\n%s", i, bin, errRun, out)
+			}
 			first, _ := bufio.NewReader(bytes.NewReader(out)).ReadString('\n')
 			if got := string(bytes.TrimRight([]byte(first), "\n")); got != tc.want {
 				t.Fatalf("banner = %q, want %q", got, tc.want)
