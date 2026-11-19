@@ -1,34 +1,37 @@
 #!/usr/bin/env bash
 # Provimux publish (.github/provimux/SYNC.md): the owner's step after provimux-check said
 # "ready to publish". Runs on the owner's Mac with the owner's own git and gh credentials;
-# it never asks for or stores a token.
+# it never asks for or stores a token, and it runs no code of the candidate or of upstream
+# (only git, gh, jq, and the guard of the owner's current main).
 #
 #   publish.sh <vX.Y.Z> [--dry-run] [--yes] [--run <id>] [--remote <name>]
-#              [--accept-dropped <sha,...>] [--accept-changed <sha,...>] [--accept-workflows <path,...>]
-#              [--main-only | --tags-only] [--timeout <minutes>]
+#              [--accept-dropped <sha,...>] [--accept-changed <sha,...>] [--timeout <minutes>]
 #
-# 1. Downloads the artifact provimux-check-<tag> of the newest successful provimux-check
-#    run on main (or of --run) and verifies it: result.json says pass for this tag; the
-#    bundle's tip is result.json's candidate; the upstream tag still points at the recorded
-#    commit and is still a published, non-draft, non-prerelease release; the remote main
-#    still is the recorded old main; v<base>-pmx.* does not exist yet.
-# 2. Verifies the candidate again here, in a temporary repository (the check job ran
-#    upstream's code, so its claims about structure are not trusted): the new base
-#    descends from the old base, the candidate from the new base, no merge commits;
-#    git range-diff of <old base>..<old main> against <new base>..<candidate>; the new
-#    workflow paths; guard.sh (old main's copy) with the expected base. Dropped or
-#    changed patches and new workflow files are refused unless named exactly with the
-#    --accept-* flags (commits: the old main's commit, 7 or more hex digits).
-# 3. Prints what it will push and asks (--yes skips the question). One atomic push:
-#    main with --force-with-lease=refs/heads/main:<recorded old main> (a literal SHA),
-#    tag v<base> at upstream's commit, tag v<base>-pmx.1 at the candidate.
-# 4. Waits until the provimux-release run for v<base>-pmx.1 has finished successfully
-#    (archives, image push, GitHub release, tap) and the release has every asset, prints
-#    the run's conclusion and jobs, then closes the "sync: v<base>" issue.
+# 1. Picks the check run: a provimux-check run of this repository, on main (event schedule
+#    or workflow_dispatch), completed with conclusion success, whose head_sha is the
+#    remote main now; the newest such run with an artifact provimux-check-<tag> (--run
+#    only picks among such runs). Downloads that artifact and verifies it: result.json
+#    says pass for this tag and its old main is the run's head_sha; the bundle's tip is
+#    result.json's candidate.
+# 2. Rechecks the world: the upstream tag is still a published, non-draft, non-prerelease
+#    release at the recorded commit, the old base tag too; the remote main is the
+#    recorded old main; v<base>-pmx.* does not exist yet.
+# 3. Verifies the candidate again here, in a temporary repository: the new base descends
+#    from the old base, the candidate from the new base, no merge commits; git range-diff
+#    of <old base>..<old main> against <new base>..<candidate>; the new workflow paths;
+#    the guard of the owner's current main (the remote main, = the old main) with the
+#    expected base. Dropped or changed patches are refused unless named exactly with the
+#    --accept-* flags (commits: the old main's commit, 7 or more hex digits). A release
+#    that adds or renames workflow files is refused: SYNC.md, "New upstream workflow files".
+# 4. Prints what it will push and asks (--yes skips the question), rechecks step 2
+#    immediately before pushing, then makes one atomic push: main with
+#    --force-with-lease=refs/heads/main:<recorded old main> (a literal SHA), tag v<base> at
+#    upstream's commit, tag v<base>-pmx.1 at the candidate.
+# 5. Waits until the provimux-release run for v<base>-pmx.1 at the candidate has finished
+#    successfully (archives, image push, GitHub release, tap) and the release has every
+#    asset, prints the run's conclusion and jobs, then closes the "sync: v<base>" issue.
 #
 #   --dry-run    everything except the push (shows git push --dry-run), no wait, no close
-#   --main-only  push only main (new upstream workflow files: SYNC.md); no wait, no close
-#   --tags-only  the remote main must already be the candidate; push the two tags, wait, close
 #
 # Run it from a clone of ngvoicu/provimux (any branch, nothing is checked out or changed:
 # the work happens in a temporary repository that borrows this clone's objects).
@@ -38,12 +41,12 @@ here="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=common.sh
 . "$here/common.sh"
 
-usage() { sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,38p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 die() { echo "publish: $*" >&2; exit 1; }
 log() { echo "==> $*" >&2; }
 
-tag='' dry_run=0 yes=0 run_id='' remote='' accept_dropped='' accept_changed='' accept_workflows=''
-mode=all timeout_min=120
+tag='' dry_run=0 yes=0 run_id='' remote='' accept_dropped='' accept_changed=''
+timeout_min=120
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run) dry_run=1 ;;
@@ -52,9 +55,6 @@ while [[ $# -gt 0 ]]; do
     --remote) remote="${2:?}"; shift ;;
     --accept-dropped) accept_dropped="${2:?}"; shift ;;
     --accept-changed) accept_changed="${2:?}"; shift ;;
-    --accept-workflows) accept_workflows="${2:?}"; shift ;;
-    --main-only) mode=main ;;
-    --tags-only) mode=tags ;;
     --timeout) timeout_min="${2:?}"; shift ;;
     -h | --help) usage ;;
     v*) [[ -z "$tag" ]] || usage; tag="$1" ;;
@@ -63,6 +63,7 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 [[ "$tag" =~ $PMX_STABLE_RE ]] || usage
+[[ -z "$run_id" || "$run_id" =~ ^[0-9]+$ ]] || die "--run takes a run id (digits)"
 base="${tag#v}"
 pmx_tag="v$base-pmx.1"
 
@@ -78,26 +79,46 @@ log "remote $remote ($push_url)"
 work="$(mktemp -d "${TMPDIR:-/tmp}/provimux-publish.XXXXXX")"
 trap 'rm -rf "${work:?}"' EXIT
 
-# --- 1. the check's artifact ------------------------------------------------------------
-if [[ -z "$run_id" ]]; then
-  # Newest unexpired artifact of that name whose run is a successful provimux-check on main.
+remote_main="$(git ls-remote "$push_url" refs/heads/main | awk '{print $1}')"
+[[ "$remote_main" =~ $PMX_SHA_RE ]] || die "cannot read main of $push_url"
+
+# --- 1. the check run and its artifact -------------------------------------------------------
+# check_run_sha ID: the run's head_sha when ID is a successful provimux-check run of
+# PMX_REPO on main (schedule or workflow_dispatch); fails otherwise.
+check_run_sha() {
+  gh api "repos/$PMX_REPO/actions/runs/$1" >"$work/run-$1.json" 2>/dev/null || return 1
+  jq -er --arg repo "$PMX_REPO" '
+    select(.path == ".github/workflows/provimux-check.yml" and .head_branch == "main"
+           and (.event == "schedule" or .event == "workflow_dispatch")
+           and .status == "completed" and .conclusion == "success"
+           and .repository.full_name == $repo and .head_repository.full_name == $repo
+           and (.head_sha | test("^[0-9a-f]{40}$")))
+    | .head_sha' "$work/run-$1.json"
+}
+if [[ -n "$run_id" ]]; then
+  run_sha="$(check_run_sha "$run_id")" ||
+    die "run $run_id is not a successful provimux-check run of $PMX_REPO on main"
+  [[ "$run_sha" == "$remote_main" ]] ||
+    die "run $run_id checked main $run_sha, but the remote main is $remote_main; run the check again"
+else
+  # Newest unexpired artifact of that name whose run qualifies and checked the current main.
   for id in $(gh api "repos/$PMX_REPO/actions/artifacts?name=provimux-check-$tag&per_page=100" \
     --jq '.artifacts | map(select(.expired | not)) | sort_by(.created_at) | reverse | .[].workflow_run.id'); do
-    if [[ "$(gh api "repos/$PMX_REPO/actions/runs/$id" --jq '"\(.path) \(.head_branch) \(.status) \(.conclusion)"')" == \
-      ".github/workflows/provimux-check.yml main completed success" ]]; then
+    if run_sha="$(check_run_sha "$id")" && [[ "$run_sha" == "$remote_main" ]]; then
       run_id="$id"
       break
     fi
   done
-  [[ -n "$run_id" ]] || die "no successful provimux-check run on main has an artifact provimux-check-$tag; run the check first (Actions → provimux-check)"
+  [[ -n "$run_id" ]] || die "no successful provimux-check run on main for the current main ${remote_main:0:12} has an artifact provimux-check-$tag; run the check first (Actions → provimux-check)"
 fi
-log "check run https://github.com/$PMX_REPO/actions/runs/$run_id"
+log "check run https://github.com/$PMX_REPO/actions/runs/$run_id (main $run_sha)"
 gh run download "$run_id" -R "$PMX_REPO" -n "provimux-check-$tag" -D "$work/artifact" >/dev/null ||
   die "cannot download the artifact provimux-check-$tag of run $run_id"
 res="$work/artifact/result.json"
 bundle="$work/artifact/candidate.bundle"
 [[ -s "$res" ]] || die "the artifact has no result.json"
-r() { jq -r "$1 // empty" "$res"; }
+# r PATH: the field as text ("" when null or missing; false stays "false").
+r() { jq -r "$1 | if . == null then \"\" else tostring end" "$res"; }
 [[ "$(r .status)" == pass ]] || die "the check's result is '$(r .status)', not pass: $(jq -r '.reasons | join("; ")' "$res")"
 [[ -s "$bundle" ]] || die "the artifact has no candidate.bundle"
 [[ "$(r .upstream.tag)" == "$tag" ]] || die "the artifact is for '$(r .upstream.tag)', not $tag"
@@ -112,30 +133,32 @@ for v in upstream_commit old_main old_base_commit candidate; do
   [[ "${!v}" =~ $PMX_SHA_RE ]] || die "result.json: $v is not a commit SHA"
 done
 [[ "$old_base_tag" =~ $PMX_STABLE_RE ]] || die "result.json: old base tag '$old_base_tag'"
+[[ "$old_main" == "$run_sha" ]] || die "result.json's old main $old_main is not the check run's head_sha $run_sha"
 
-# --- the world still matches what was checked ---------------------------------------------
-s="$(upstream_release_state "$tag")"
-[[ "$s" == stable ]] || die "$tag is now '$s' in $PMX_UPSTREAM_REPO, not a stable release"
-up_tags="$(git ls-remote --tags "$PMX_UPSTREAM_URL")"
-[[ "$(ls_remote_tag "$up_tags" "$tag")" == "$upstream_commit" ]] ||
-  die "upstream's $tag is now $(ls_remote_tag "$up_tags" "$tag"), the check used $upstream_commit"
-[[ "$(ls_remote_tag "$up_tags" "$old_base_tag")" == "$old_base_commit" ]] ||
-  die "upstream's $old_base_tag is not $old_base_commit"
-remote_refs="$(git ls-remote "$push_url" refs/heads/main "refs/tags/$tag" "refs/tags/$tag^{}" "refs/tags/v$base-pmx.*")"
-remote_main="$(awk '$2 == "refs/heads/main" {print $1}' <<<"$remote_refs")"
-if [[ "$mode" == tags ]]; then
-  [[ "$remote_main" == "$candidate" ]] || die "--tags-only: the remote main is $remote_main, not the candidate $candidate"
-else
-  [[ "$remote_main" == "$old_main" ]] ||
-    die "the remote main is $remote_main, but the check rebased $old_main; run the check again"
-fi
-existing_pmx="$(awk '{print $2}' <<<"$remote_refs" | grep -E "^refs/tags/v$base-pmx\." | sed 's|^refs/tags/||; s/\^{}$//' | sort -u | paste -sd ' ' - || true)"
-[[ -z "$existing_pmx" ]] || die "$existing_pmx already exists on $remote; a -pmx.2 on the same base is cut by hand (SYNC.md)"
-remote_base_tag="$(ls_remote_tag "$remote_refs" "$tag")"
-[[ -z "$remote_base_tag" || "$remote_base_tag" == "$upstream_commit" ]] ||
-  die "$remote already has $tag at $remote_base_tag, upstream's is $upstream_commit"
+# --- 2. the world still matches what was checked (again right before the push) ----------------
+remote_base_tag=''
+recheck() {
+  local s up_tags remote_refs existing_pmx rm
+  s="$(upstream_release_state "$tag")"
+  [[ "$s" == stable ]] || die "$tag is now '$s' in $PMX_UPSTREAM_REPO, not a stable release"
+  up_tags="$(git ls-remote --tags "$PMX_UPSTREAM_URL")" || die "cannot list the tags of $PMX_UPSTREAM_URL"
+  [[ "$(ls_remote_tag "$up_tags" "$tag")" == "$upstream_commit" ]] ||
+    die "upstream's $tag is now '$(ls_remote_tag "$up_tags" "$tag")', the check used $upstream_commit"
+  [[ "$(ls_remote_tag "$up_tags" "$old_base_tag")" == "$old_base_commit" ]] ||
+    die "upstream's $old_base_tag is not $old_base_commit"
+  remote_refs="$(git ls-remote "$push_url" refs/heads/main "refs/tags/$tag" "refs/tags/$tag^{}" "refs/tags/v$base-pmx.*")" ||
+    die "cannot read $push_url"
+  rm="$(awk '$2 == "refs/heads/main" {print $1}' <<<"$remote_refs")"
+  [[ "$rm" == "$old_main" ]] || die "the remote main is $rm, but the check rebased $old_main; run the check again"
+  existing_pmx="$(awk '{print $2}' <<<"$remote_refs" | grep -E "^refs/tags/v$base-pmx\." | sed 's|^refs/tags/||; s/\^{}$//' | sort -u | paste -sd ' ' - || true)"
+  [[ -z "$existing_pmx" ]] || die "$existing_pmx already exists on $remote; a -pmx.2 on the same base is cut by hand (SYNC.md)"
+  remote_base_tag="$(ls_remote_tag "$remote_refs" "$tag")"
+  [[ -z "$remote_base_tag" || "$remote_base_tag" == "$upstream_commit" ]] ||
+    die "$remote already has $tag at $remote_base_tag, upstream's is $upstream_commit"
+}
+recheck
 
-# --- 2. verify the candidate here -----------------------------------------------------------
+# --- 3. verify the candidate here -----------------------------------------------------------
 repo="$work/repo.git"
 git init -q --bare "$repo"
 objects="$(cd "$(git rev-parse --git-common-dir)" && pwd)/objects"
@@ -181,8 +204,10 @@ same "$work/dropped" '.decisions.dropped[].commit' || die "result.json's dropped
 same "$work/changed" '.decisions.changed[].commit' || die "result.json's changed commits differ from this range-diff"
 same "$work/wf-new" '.decisions.new_workflows[]' || die "result.json's new workflow paths differ from this comparison"
 
-# Guard: the old main's copy (the owner's), on the candidate, with the exact base.
-g show "$old_main:.github/provimux/guard.sh" >"$work/guard.sh"
+# Guard: the copy on the owner's current main (the remote main, checked to be the old main
+# and the check run's head_sha), on the candidate, with the exact base. Never the
+# candidate's or the artifact's copy.
+g show "$remote_main:.github/provimux/guard.sh" >"$work/guard.sh"
 g worktree add -q --detach "$work/candidate" "$candidate"
 if ! (cd "$work/candidate" && PMX_UPSTREAM="$PMX_UPSTREAM_URL" PMX_EXPECT_BASE="$tag" PMX_EXPECT_BASE_COMMIT="$upstream_commit" \
   bash "$work/guard.sh") >"$work/guard.log" 2>&1; then
@@ -227,13 +252,12 @@ accepted() {
 }
 accepted "$work/dropped" "$accept_dropped" --accept-dropped commit
 accepted "$work/changed" "$accept_changed" --accept-changed commit
-accepted "$work/wf-new" "$accept_workflows" --accept-workflows path
-if [[ -s "$work/wf-new" && "$mode" == all ]]; then
-  echo "publish: $tag adds workflow files; publish in two steps (--main-only, disable them, --tags-only), see SYNC.md" >&2
+if [[ -s "$work/wf-new" ]]; then
+  echo "publish: $tag adds or renames workflow files (below); publish.sh does not publish such a release: follow \"New upstream workflow files\" in SYNC.md" >&2
   refused=1
 fi
 
-# --- 3. the plan ---------------------------------------------------------------------------------
+# --- 4. the plan ---------------------------------------------------------------------------------
 n_same="$(grep -cE '^ *[0-9]+: +[0-9a-f]+ = ' "$work/range-diff.txt" || true)"
 cat <<EOF
 
@@ -258,23 +282,24 @@ fi
 [[ $refused -eq 0 ]] || die "refused: accept each item above by name (SYNC.md), or fix the stack"
 
 # The upstream tag is pushed only when the remote does not have it yet (same commit checked above).
-clean=()
-[[ "$mode" != tags ]] && clean+=("$candidate:refs/heads/main")
-[[ "$mode" != main && -z "$remote_base_tag" ]] && clean+=("$upstream_commit:refs/tags/$tag")
-[[ "$mode" != main ]] && clean+=("$candidate:refs/tags/$pmx_tag")
-pushargs=(--atomic --porcelain)
-[[ "$mode" != tags ]] && pushargs+=("--force-with-lease=refs/heads/main:$old_main")
+push_refs() {
+  refs=("$candidate:refs/heads/main")
+  [[ -z "$remote_base_tag" ]] && refs+=("$upstream_commit:refs/tags/$tag")
+  refs+=("$candidate:refs/tags/$pmx_tag")
+}
+push_refs
+pushargs=(--atomic --porcelain "--force-with-lease=refs/heads/main:$old_main")
 
 echo
-echo "Push to $push_url:"
-echo "  git push ${pushargs[*]} $push_url ${clean[*]}"
-for x in "${clean[@]}"; do echo "    ${x%%:*} -> ${x#*:}"; done
-[[ "$mode" == main ]] && echo "  (main only: then disable the new workflows and run --tags-only, SYNC.md)"
+echo "Push to $push_url (one atomic push):"
+echo "  git push ${pushargs[*]} $push_url ${refs[*]}"
+for x in "${refs[@]}"; do echo "    ${x%%:*} -> ${x#*:}"; done
 echo
 
 if [[ $dry_run -eq 1 ]]; then
+  recheck
   log "dry run: git push --dry-run"
-  g push --dry-run "${pushargs[@]}" "$push_url" "${clean[@]}" || die "git push --dry-run failed"
+  g push --dry-run "${pushargs[@]}" "$push_url" "${refs[@]}" || die "git push --dry-run failed"
   echo
   echo "Dry run: nothing was pushed."
   exit 0
@@ -285,22 +310,22 @@ if [[ $yes -eq 0 ]]; then
   read -r answer </dev/tty
   [[ "$answer" == "publish $tag" ]] || die "not confirmed; nothing pushed"
 fi
-g push "${pushargs[@]}" "$push_url" "${clean[@]}" || die "the push failed; nothing was changed on $remote (atomic)"
+# The world may have moved while the owner read the plan: check it again, right before the push.
+log "rechecking upstream's $tag and the remote before pushing"
+recheck
+push_refs
+g push "${pushargs[@]}" "$push_url" "${refs[@]}" || die "the push failed; nothing was changed on $remote (atomic)"
 echo "Pushed."
-if [[ "$mode" == main ]]; then
-  echo "Main is $candidate. Now disable the new workflows, then: $0 $tag --tags-only (SYNC.md)."
-  exit 0
-fi
 
-# --- 4. wait for the whole release run, then close the issue ---------------------------------
+# --- 5. wait for the whole release run, then close the issue ---------------------------------
 # Done means: the provimux-release run for the tag finished successfully (every job:
 # archives, image, publish-release, formula, tap-publish, image-push) and the GitHub
-# release is published with all its assets.
+# release is published with all its assets; only a run for the candidate commit counts.
 log "waiting for the provimux-release run of $pmx_tag and its release (up to $timeout_min minutes)"
 deadline=$(( $(date +%s) + timeout_min * 60 ))
 while :; do
   s="$(release_state "$pmx_tag")"
-  run_state="$(release_run_state "$pmx_tag")"
+  run_state="$(release_run_state "$pmx_tag" "$candidate")"
   log "release: $s; release run: $run_state"
   case "$run_state" in
     success) break ;;
@@ -309,7 +334,7 @@ while :; do
   [[ $(date +%s) -lt $deadline ]] || die "timed out waiting for the release run of $pmx_tag (last: run $run_state, release $s); the issue stays open. Check it later (SYNC.md: \"Check a release\")."
   sleep 30
 done
-run="$(release_run_id "$pmx_tag")"
+run="$(release_run_id "$pmx_tag" "$candidate")"
 run_url="https://github.com/$PMX_REPO/actions/runs/$run"
 echo
 echo "provimux-release run $run_url: ${run_state#failure:}"
