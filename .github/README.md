@@ -41,9 +41,9 @@ for five minutes by default. Without this, a client behind the proxy cannot tell
   `accounts`.
 - Each account has `provider`, `kind` (`oauth` or `apikey`) and `priority`. An API key with a base URL also has
   `host`, which names the service even when you gave the entry another name (`openrouter.ai` for an entry called
-  `openrouter`, `my-router` or anything else). No emails, files or keys are listed. Names are not hidden everywhere,
-  though: an OpenAI-compatible entry's `provider` is `openai-compatible-<name>`, so clients that can read the model
-  list see the name you gave that entry.
+  `openrouter`, `my-router` or anything else). A credential's own email, file and key fields are left out. The name
+  you chose for an OpenAI-compatible entry is shown: its `provider` is `openai-compatible-<name>`, so clients that can
+  read the model list see that name, including an email if you named the entry with one.
 - A response served by an account (a completion, for example) carries an `X-CPA-AUTH-KIND` header (`oauth` or
   `apikey`) for the account that answered, next to CLIProxyAPI's `X-CPA-TRACE-ID`. The model list itself has no such
   header. When a request is retried on another account before the answer starts, the header names the one that
@@ -122,9 +122,9 @@ api-keys:
 
 | Part | What Provimux does |
 |---|---|
-| Prompt cache | A request without cache markers gets them on the last system message and on the latest user, tool or assistant message that can carry one (text, file parts and assistant prefills). An OpenAI chat-format request that already has markers is sent as it is, as CLIProxyAPI does. A Claude-format request loses its markers in translation, so it gets Provimux's: a marker your client put on an early user message ends up on the last turn instead, and a 1-hour lifetime asked for anywhere in the request is kept. |
+| Prompt cache | A request without cache markers gets them on the last system message and on the latest user, tool or assistant message that can carry one (text, file parts and assistant prefills). An OpenAI chat-format request that already has markers keeps them where your client put them, as CLIProxyAPI does; Provimux adds none, though for `openai/*` models it may add `mode: "explicit"` to the request's `prompt_cache_options` (next row). A Claude-format request loses its markers in translation, so it gets Provimux's: a marker your client put on an early user message ends up on the last turn instead, and a 1-hour lifetime asked for anywhere in the request is kept. |
 | OpenAI cache lifetime | For `openai/*` models, a client's `prompt_cache_options.ttl` (for example `"12h"`) is sent the way OpenRouter applies it, with `mode: "explicit"`; a `mode` the client sent is kept. |
-| Session | An `X-Session-Id` header, stable for the conversation, so OpenRouter keeps it on one upstream. An `X-Session-Id` set in the entry's `headers` in your config wins, then your client's own `X-Session-Id`, then the one Provimux derives. When the request has no session identity (no client header and no conversation Provimux can follow), no `X-Session-Id` is sent. |
+| Session | An `X-Session-Id` header, stable for the conversation, so OpenRouter keeps it on one upstream. An `X-Session-Id` set in the entry's `headers` in your config wins, then your client's own `X-Session-Id`, then the one Provimux derives. No `X-Session-Id` is sent only when all three are absent: no header in your config, no header from your client, and no session Provimux can derive from the conversation. |
 | Limits | OpenRouter's public model list is fetched in the background and refreshed; each entry gets its context window and output limit from it. `max-context-length` in your config still wins. |
 | Reasoning levels | The model's own levels (for example `low` to `max`), when your config sets no `thinking` for it. |
 | Owner | `owned_by` is the model's vendor (`anthropic` for `anthropic/claude-opus-5.5`), not the entry's name. |
