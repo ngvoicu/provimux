@@ -1034,6 +1034,8 @@ jobs:
     needs: [meta, formula]
     if: ${{ !cancelled() && needs.formula.result == 'success' }}
     runs-on: ubuntu-latest
+    # PROVIMUX_TOKEN is a secret of this environment (branch main, tags v*-pmx.*).
+    environment: provimux-publish
     env:
       PROVIMUX_VERSION: ${{ needs.meta.outputs.provimux_version }}
       PUBLISH: ${{ needs.meta.outputs.publish }}
