@@ -323,7 +323,7 @@ notify() { # notify OUTCOME LOG-TEXT STATE-TEXT: the dry-run issue text in $tmp/
     bash "$here/autopublish.sh" notify >"$tmp/notify.out" 2>&1 || { echo "exit $?"; return; }
   sed -n 's/^title=//p' "$tmp/notify.out"
 }
-expect "no token: the issue says publishing waits for it" "sync: v1.2.0 — ready, publishing waits for PUBLISH_TOKEN" "$(notify no-token '' '')"
+expect "no token: the issue says publishing waits for it" "sync: v1.2.0 — ready, publishing waits for PROVIMUX_TOKEN" "$(notify no-token '' '')"
 contains "  ... names the manual path" "$tmp/notify.out" "publish.sh v1.2.0"
 log1='==> remote origin
 publish: not accepted (--accept-dropped): 0123456789abcdef0123456789abcdef01234567 owner patch
@@ -351,7 +351,7 @@ expect "no valid tag: nothing to do" "" "$(TAG='x; y' PMX_NOTIFY_DRY_RUN=1 bash 
 echo "# publish.sh --ci"
 ci() { (cd "$pmx" && env -u PMX_PUSH_TOKEN "$@" bash "$here/publish.sh" v1.2.0 --ci) >"$tmp/ci.out" 2>&1 && echo "exit 0" || echo "exit $?"; }
 expect "--ci without PMX_PUSH_TOKEN: refused before anything" "exit 1" "$(ci)"
-contains "  ... names the secret" "$tmp/ci.out" "PUBLISH_TOKEN is not set"
+contains "  ... names the secret" "$tmp/ci.out" "PROVIMUX_TOKEN is not set"
 expect "--ci with the token but neither --yes nor --dry-run: refused" "exit 1" "$(ci PMX_PUSH_TOKEN=x)"
 contains "  ... says why" "$tmp/ci.out" "needs --yes or --dry-run"
 

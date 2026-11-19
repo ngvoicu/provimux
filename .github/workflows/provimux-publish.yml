@@ -3,12 +3,12 @@
 # here, with no step by the owner. Started by hand (workflow_dispatch) it publishes one
 # tag, or with dry_run only shows what it would push.
 #
-# The write token PUBLISH_TOKEN is visible to one step only, "Publish", which runs nothing
+# The write token PROVIMUX_TOKEN is visible to one step only, "Publish", which runs nothing
 # but publish.sh of main's own commit (the check run's head_sha, which publish.sh requires
 # to be the remote main): git, gh, jq and the guard of that main. No candidate or upstream
 # code, no go, no make, nothing from the candidate tree. gh uses this run's GITHUB_TOKEN
 # (actions: read for the check's artifact, issues: write for the sync issue); only git push
-# uses PUBLISH_TOKEN, because a push with GITHUB_TOKEN can change no workflow file and its
+# uses PROVIMUX_TOKEN, because a push with GITHUB_TOKEN can change no workflow file and its
 # tag would start no provimux-release run.
 name: provimux-publish
 
@@ -79,16 +79,16 @@ jobs:
           PMX_RUN_INPUT: ${{ inputs.run }}
         run: bash .github/provimux/autopublish.sh decide
 
-      - name: PUBLISH_TOKEN is set
+      - name: PROVIMUX_TOKEN is set
         id: token
         if: ${{ steps.decide.outputs.action == 'publish' }}
         shell: bash
         env:
           # true/false only; the value is not exposed here.
-          HAS_TOKEN: ${{ secrets.PUBLISH_TOKEN != '' }}
+          HAS_TOKEN: ${{ secrets.PROVIMUX_TOKEN != '' }}
         run: |
           if [ "$HAS_TOKEN" != true ]; then
-            echo "::error title=PUBLISH_TOKEN missing::The repository secret PUBLISH_TOKEN is not set: nothing was pushed. Create it as SYNC.md says (\"The token\"), or publish by hand (\"Publishing by hand\")."
+            echo "::error title=PROVIMUX_TOKEN missing::The repository secret PROVIMUX_TOKEN is not set: nothing was pushed. Create it as SYNC.md says (\"The token\"), or publish by hand (\"Publishing by hand\")."
             exit 1
           fi
 
@@ -97,7 +97,7 @@ jobs:
         if: ${{ steps.decide.outputs.action == 'publish' }}
         shell: bash
         env:
-          PMX_PUSH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
+          PMX_PUSH_TOKEN: ${{ secrets.PROVIMUX_TOKEN }}
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.decide.outputs.tag }}
           RUN: ${{ steps.decide.outputs.run }}
