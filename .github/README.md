@@ -16,6 +16,7 @@ What Provimux adds:
 
 - [Which account serves each model, and which one answered](#which-account-serves-each-model-and-which-one-answered)
 - [Live model lists for each login](#live-model-lists-for-each-login)
+- [Model routes and live-list status for the console](#model-routes-and-live-list-status-for-the-console)
 - [OpenRouter built in](#openrouter-built-in)
 - [The right context and output limits for configured models](#the-right-context-and-output-limits-for-configured-models)
 - [Devin: real output limits, and a quota pause per model](#devin-real-output-limits-and-a-quota-pause-per-model)
@@ -95,6 +96,38 @@ models:
   a provider outage never empties a login. A list belongs to the login's account, so a login file replaced by another
   account never keeps the old list.
 - API keys keep the catalog. Changing `live-lists` in a running instance applies at once.
+
+## Model routes and live-list status for the console
+
+**What you get.** Two read-only management endpoints that the Provimux console uses for its own pages: for each
+model, every login and key that registered it with the cooldown recorded on it; and for each Claude, Codex and Meta
+login, the state of its live model list.
+
+**Why it matters.** The model list for clients names no account by design. The operator needs to see which logins
+and keys carry a model, which of them have a cooldown recorded and until when, and whether a login's live list is
+current or failing, without reading the log.
+
+**How to use it.** Nothing to turn on. Both take the management key, like every `/v8/management` route.
+
+- `GET /v8/management/provimux/model-routes`: per model, its routes in priority order, each with `provider`, `kind`
+  (`oauth` or `apikey`), `priority`, the `host` of an API key, the login named as the credentials page names it
+  (`name`, `email`, `label`, only for logins that page lists; otherwise `auth_index` identifies it), its limits and
+  reasoning levels, and a `recorded_cooldown` (for the credential or for one model, until when, and a reason code).
+  `?model=<id>` (repeatable) narrows the list.
+- `GET /v8/management/provimux/live-lists`: per login, `source` (`live` or `catalog`), when the list was fetched, how
+  many models it listed and how many the login serves, and the last failed fetch as a category (`http_status`,
+  `credentials`, `invalid_response`, `network`, `other`) with the provider's HTTP status. The reason in words stays in
+  the log.
+- Both report what Provimux has recorded. They do not predict the router: they don't say which route a request
+  would get, whether a route is selectable right now, which route answered last, or when a list is fetched next.
+- No response carries an API key, a token, an auth ID, a base URL beyond its host, or any provider error text. Stock
+  CLIProxyAPI answers 404 on both paths.
+
+The contract is [`openapi.yaml`](provimux/design/pui13/openapi.yaml), with example responses next to it.
+
+```bash
+curl -s http://127.0.0.1:8317/v8/management/provimux/model-routes -H "Authorization: Bearer $MANAGEMENT_KEY"
+```
 
 ## OpenRouter built in
 

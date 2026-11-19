@@ -1,6 +1,8 @@
 # `GET /v8/management/provimux/model-routes`
 
-Per model, every enabled login or key that can serve it, in the order Provimux tries them. A *route* is one credential serving one model.
+Per model, every enabled login or key that registered it, in priority order, with the cooldown the auth manager has recorded on it. A *route* is one credential that registered one model.
+
+It reports recorded state only. It does not imitate the router: it says nothing about which route a request would get, whether a route is selectable right now, or which route answered last. Those fields (`available`, `last_served_at`) were in the first build and were removed after two critical reviews found cases where they disagreed with the router (T-63, T-67).
 
 It is the management-side sibling of `GET /v1/models?include=accounts` (`sdk/api/handlers/openai/openai_models_accounts.go:58-88`). That endpoint is for clients, needs a proxy key and names no credential by design (`:16-25`). This one is for the operator, needs the management key, and names the login the way the credentials page already does.
 
@@ -20,7 +22,6 @@ It is the management-side sibling of `GET /v1/models?include=accounts` (`sdk/api
 ```json
 {
   "observed_at": "2026-11-19T18:04:11Z",
-  "last_served": { "recording_since": "2026-11-19T07:00:02Z" },
   "models": [
     {
       "id": "claude-opus-5-5",
@@ -37,9 +38,7 @@ It is the management-side sibling of `GET /v1/models?include=accounts` (`sdk/api
           "login": { "name": "claude-ada@example.com.json", "email": "ada@example.com", "label": "ada@example.com" },
           "limits": { "context": 1000000, "output": 64000 },
           "reasoning": { "levels": ["low", "medium", "high", "max"], "budget": { "min": 1024, "max": 64000, "zero_allowed": true, "dynamic_allowed": false } },
-          "available": true,
-          "cooldown": null,
-          "last_served_at": "2026-11-19T17:58:40Z"
+          "recorded_cooldown": null
         },
         {
           "auth_index": "5f0c1d2e3a4b5c6d",
@@ -50,9 +49,7 @@ It is the management-side sibling of `GET /v1/models?include=accounts` (`sdk/api
           "login": { "name": null, "email": null, "label": "claude-apikey" },
           "limits": { "context": 200000, "output": 64000 },
           "reasoning": { "levels": [], "budget": { "min": 1024, "max": 64000, "zero_allowed": true, "dynamic_allowed": false } },
-          "available": false,
-          "cooldown": { "scope": "model", "reason": "quota", "retry_at": "2026-11-19T18:31:00Z", "remaining_seconds": 1609, "http_status": 429, "backoff_level": 2 },
-          "last_served_at": null
+          "recorded_cooldown": { "scope": "model", "model": "claude-opus-5-5", "reason": "quota", "until": "2026-11-19T18:31:00Z", "http_status": 429, "backoff_level": 2 }
         }
       ]
     }
@@ -95,14 +92,12 @@ The published limits are the registry's values before a list handler puts in a d
 | `kind` | `auth.AuthKind()`: `oauth` (subscription login) or `apikey`; `null` when it returns "" | `sdk/cliproxy/auth/classification.go:6-7`, `:30-50` |
 | `priority` | `auth.Priority()` | `sdk/cliproxy/auth/selector.go:802-819` |
 | `host` | host of an API key's `base_url`, lower-case, no port, path, query or user info; `null` for logins and keys without a base URL. Same rule as `baseURLHost` | `openai_models_accounts.go:27-37` |
-| `login.name` | `authFileListName(auth)`, only for a credential the credentials list shows (it has a `path`, or is runtime-only) | `auth_files.go:232-240`; listing rule `:659-666` |
-| `login.email` | `authEmail(auth)`, under the same condition as `name` | `auth_files.go:1060-1078`; returned by the list at `:719-721` |
-| `login.label` | `auth.Label`: for a login what its provider's login stored; for a configured key the entry's name (`openrouter`) or `<provider>-apikey` | `auth_files.go:678`; `internal/watcher/synthesizer/config.go:174`, `:251`, `:341`, `:421`, `:469`, `:542` |
+| `login.name` | `auth.FileName`, only for a file-backed login the credentials list shows (`path` set and `isAuthFileListable`). Never for a runtime credential: AI Studio uses its WebSocket channel ID as ID, label and email (`sdk/cliproxy/service_auth.go:369`), so `auth_index` alone identifies it | `auth_files.go:659-666` |
+| `login.email` | `authEmail(auth)`, under the same condition as `name`; `null` otherwise | `auth_files.go:1060-1078`; returned by the list at `:719-721` |
+| `login.label` | `auth.Label`: for a login, under the same condition as `name` (a login's label is often its email); for a configured key (source `config:`) the OpenAI-compatible entry's name (`openrouter`) or `<provider>-apikey`; `null` for runtime credentials | `auth_files.go:678`; `internal/watcher/synthesizer/config.go:174`, `:251`, `:341`, `:421`, `:469`, `:542` |
 | `limits` | the credential's own `ModelInfo`, reduced as below | `model_registry.go:67-78` |
 | `reasoning` | the credential's own `ModelInfo.Thinking`; `null` when it has none | `model_registry.go:103`; `ThinkingSupport` `:149-164` |
-| `available` | `!registry.IsModelSuspendedForClient(auth.ID, model.ID)` | `model_registry.go:1493-1510`; the scheduler writes this projection per route model at `sdk/cliproxy/auth/conductor_models.go:222-334` |
-| `cooldown` | `coreauth.CooldownSnapshotForAuth(auth, now)` plus the key mapping of section 4 | `sdk/cliproxy/auth/cooldown_view.go:25-88` |
-| `last_served_at` | the last-served recorder | `03-last-served.md` |
+| `recorded_cooldown` | `coreauth.CooldownSnapshotForAuth(auth, now)` (the auth manager's own record, unexpired only) plus the key mapping of section 4; `model` is the key the record is stored under | `sdk/cliproxy/auth/cooldown_view.go:25-88` |
 
 **Limits.** A credential declares its window in one of three fields and its output in one of two, depending on the provider. The reduction is the registry's own (`model_registry_limits.go:86-87`):
 
@@ -114,7 +109,7 @@ For OpenRouter entries these are the values the OpenRouter patches put into the 
 
 **Reasoning.** `levels` is `Thinking.Levels` (an empty array for a budget-only model). `budget` is `{min, max, zero_allowed, dynamic_allowed}` from the same struct, or `null` when all four are zero. The console derives its wording ("levels: low to max", "budget 1,024 to 64,000") from these.
 
-**Availability and cooldown are two facts.** `cooldown` is a timer that will end on its own, with a reason code. `available: false` with `cooldown: null` is a block without a timer: the login needs signing in again, its token expired, or the model is disabled for it. The console then links to the credentials page, which already explains those states (`auth_files.go:501-518`).
+**A recorded cooldown is not an availability verdict.** It is a timer the auth manager wrote, with a reason code. A route without one can still be unusable (an expired token, a login that must sign in again); the credentials page explains those states (`auth_files.go:501-518`).
 
 ### What must never be in the response
 
@@ -127,12 +122,11 @@ For OpenRouter entries these are the values the OpenRouter patches put into the 
 
 ## 4. What is missing
 
-Four things are not there today. None needs an edit to an existing file except the route seam.
+Three things are not there today. None needs an edit to an existing file except the route seam.
 
 | Missing | Why | Hook | Size |
 |---|---|---|---|
 | The route | no handler | one seam line, `04-layer-commits-tests.md` section 1 | 1 line in an upstream file |
-| Last served | nothing stores which credential answered; `X-CPA-AUTH-KIND` is only a response header (`internal/logging/cpa_trace.go:16-18`, `:221`) | a usage plugin in a new file, `03-last-served.md` | new file |
 | Which model a cooldown belongs to | see below | a read-only method in a new file of `sdk/cliproxy/auth` | new file |
 | The host rule | `baseURLHost` is unexported in package `openai` | the 8 lines are copied into the handler's file; a test compares both endpoints | in the new file |
 
@@ -159,13 +153,13 @@ Rule it implements:
 3. A view of scope `model` applies to a route model when `canonicalModelLookupKey(view.ModelKey)` equals `canonicalModelLookupKey(m.selectionModelKeyForAuth(auth, routeModel))`.
 4. When both apply, the one with the later `RetryAt` is returned.
 
-`selectionModelKeyForAuth` only cuts the prefix and reads the alias table (`conductor_models.go:206-220`, `oauth_model_alias.go:145-151`); it changes nothing. It is also the key the scheduler uses when it writes `available` into the registry (`conductor_models.go:231-239`), so `cooldown` and `available` are derived from the same key and cannot disagree about which model is meant.
+`selectionModelKeyForAuth` only cuts the prefix and reads the alias table (`conductor_models.go:206-220`, `oauth_model_alias.go:145-151`); it changes nothing. It is the key the auth manager stores the state under (`conductor_models.go:231-239`).
 
-One case stays coarse, as it is in the registry: an alias of an OpenAI-compatible entry that stands for several upstream models. Each upstream model cools under its own name (`conductor_models.go:345-363`), and the alias has no state of its own for the projection to find (`:231-239`), so the route shows `available: true`, `cooldown: null` whatever its members do [infer from those lines, not run]. The members' timers remain on the credentials page. A test in `04-layer-commits-tests.md` pins this behaviour so a change upstream is noticed.
+One case stays coarse, as it is in the registry: an alias of an OpenAI-compatible entry that stands for several upstream models. Each upstream model cools under its own name (`conductor_models.go:345-363`), and the alias has no state of its own for the projection to find (`:231-239`), so the route shows `recorded_cooldown: null` whatever its members do [infer from those lines, not run]. The members' timers remain on the credentials page. A test in `04-layer-commits-tests.md` pins this behaviour so a change upstream is noticed.
 
-The view becomes the `cooldown` object unchanged in meaning: `scope`, `reason`, `retry_at`, `remaining_seconds`, `http_status`, `backoff_level` (`cooldown_view.go:11-19`). `model_key` is left out: the route already says which model. Reason codes are the closed set of `cooldown_view.go:134-184`: `quota`, `credential_quota`, `transient_rate_limit`, `transient_error`, `unauthorized`, `payment_required`, `not_found`, `model_not_supported`, `invalid_grant`, `cloudflare_challenge`, `unknown`. Devin's per-model cooling (patch `8f11f26b`) shows here as scope `model`, reason `quota`; with the option off, as scope `credential`.
+The view becomes the `recorded_cooldown` object unchanged in meaning: `scope`, `model` (the view's `model_key`, null for scope `credential`), `reason`, `until` (the view's `retry_at`), `http_status`, `backoff_level` (`cooldown_view.go:11-19`). `remaining_seconds` is left out: it is `until` minus `observed_at`. Reason codes are the closed set of `cooldown_view.go:134-184`: `quota`, `credential_quota`, `transient_rate_limit`, `transient_error`, `unauthorized`, `payment_required`, `not_found`, `model_not_supported`, `invalid_grant`, `cloudflare_challenge`, `unknown`. Devin's per-model cooling (patch `8f11f26b`) shows here as scope `model`, reason `quota`; with the option off, as scope `credential`.
 
-**If the owner declines the new file in `sdk/cliproxy/auth`** (open question 2): the handler matches by name instead, comparing the view's key with the route model after cutting `auth.Prefix + "/"` and the thinking suffix. Models behind an `oauth-model-alias` then show `cooldown: null`; `available` stays right, since the scheduler computes it. The contract does not change.
+**If the owner declines the new file in `sdk/cliproxy/auth`** (open question 2): the handler matches by name instead, comparing the view's key with the route model after cutting `auth.Prefix + "/"` and the thinking suffix. Models behind an `oauth-model-alias` then show `recorded_cooldown: null`. The contract does not change.
 
 ## 5. Errors
 
@@ -179,5 +173,5 @@ With no auth manager the handler answers `200` with `"models": []`.
 
 ## 6. Size and cost
 
-- One `List()` (clones every credential), one `GetModelsForClient` per credential (clones its models, as `include=accounts` does), one `IsModelSuspendedForClient` per route and one `GetModelInfo` per model, each a short read lock. For 20 credentials and 150 models that is a few thousand lock acquisitions and well under a megabyte of JSON. Nothing is cached; the console asks when the page is open (`05-console-contract.md`).
+- One `List()` (clones every credential), one `GetModelsForClient` per credential (clones its models, as `include=accounts` does), one cooldown snapshot per credential and one `GetModelInfo` per model, each a short read lock. For 20 credentials and 150 models that is a few thousand lock acquisitions and well under a megabyte of JSON. Nothing is cached; the console asks when the page is open (`05-console-contract.md`).
 - No state is written, no provider is contacted, no round-robin position moves.
