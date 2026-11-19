@@ -84,7 +84,7 @@ decide() {
 
 notify() {
   local tag="${TAG:-}" base='' outcome="${OUTCOME:-failed}" log="${LOG:-}" expect="${EXPECT_MAIN:-}" cand=''
-  local tmp refs main_now='' base_now='' rs='' title marker numbers number rid ptag
+  local tmp refs main_now='' base_now='' rs='' title marker numbers number rid ptag p
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/provimux-notify.XXXXXX")"
   # shellcheck disable=SC2064 # expand now
   trap "rm -rf '${tmp:?}'" EXIT
@@ -139,8 +139,12 @@ notify() {
   # A failed tap step: its own issue, whatever the sync issue becomes. The tag is the
   # plan's -pmx tag (the run's release), else <tag>-pmx.1.
   if [[ "$outcome" == tap-failed && -n "$tag" ]]; then
-    ptag="$(sed -n 's/^PMX_TAG=//p' "${PLAN:-/dev/null}" 2>/dev/null | head -n 1)"
-    [[ "$ptag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-pmx\.[0-9]+$ ]] || ptag="$tag-pmx.1"
+    # The fallback first: the plan artifact is optional (a missing file must not stop this).
+    ptag="$tag-pmx.1"
+    if [[ -n "${PLAN:-}" && -s "${PLAN:-}" ]]; then
+      p="$(sed -n 's/^PMX_TAG=//p' "$PLAN" | head -n 1)" || p=''
+      [[ ! "$p" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-pmx\.[0-9]+$ ]] || ptag="$p"
+    fi
     # A failed write still lets the sync issue be told; the job then fails (exit below).
     tap_issue "$ptag" "$(cat "$tmp/why.txt")" "${RUN_URL:-}" || { tap_err=1; echo "autopublish: could not write the tap issue for $ptag" >&2; }
   fi

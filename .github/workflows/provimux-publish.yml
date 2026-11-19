@@ -66,7 +66,7 @@ jobs:
       why: ${{ steps.verify.outputs.why || steps.decide.outputs.why }}
       has_token: ${{ steps.has.outputs.token }}
       no_token: ${{ steps.token.outcome == 'failure' }}
-      tap_failed: ${{ steps.tap.outcome == 'failure' || steps.tappush.outcome == 'failure' }}
+      tap_failed: ${{ steps.tap.outcome == 'failure' || steps.tapstill.outcome == 'failure' || steps.tappush.outcome == 'failure' }}
     steps:
       # true/false only; the value is not exposed here.
       - name: Is PROVIMUX_TOKEN set (yes or no only)
@@ -305,11 +305,25 @@ jobs:
             bash .github/provimux/tap.sh prepare "$PMX_TAG" "$RUNNER_TEMP/tap" "$RUNNER_TEMP/tap-formula/provimux.rb"
           } 2>&1 | tee -a "$LOG" || { echo "publish: the Homebrew tap update was refused (see the log)" >>"$LOG"; exit 1; }
 
+      # Right before the push, without the token: GitHub's latest read again (tap.sh
+      # still). A newer release since "Tap" leaves the tap alone (still=no, no push);
+      # an unreadable answer fails (the tap issue).
+      - name: Tap re-check latest (no token)
+        id: tapstill
+        if: ${{ steps.decide.outputs.action == 'publish' && steps.tap.outputs.action == 'push' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PMX_TAG: ${{ steps.values.outputs.pmx_tag }}
+        run: |
+          set -euo pipefail
+          bash .github/provimux/tap.sh still "$PMX_TAG" 2>&1 | tee -a "$LOG" || { echo "publish: GitHub's latest could not be read again before the tap push" >>"$LOG"; exit 1; }
+
       # The last step with the token: one git push of the tap commit prepared above, with
       # the lease on the tap's main as it was read, hooks off, no global or system config.
       - name: Tap push (token)
         id: tappush
-        if: ${{ steps.decide.outputs.action == 'publish' && steps.tap.outputs.action == 'push' }}
+        if: ${{ steps.decide.outputs.action == 'publish' && steps.tap.outputs.action == 'push' && steps.tapstill.outputs.still == 'yes' }}
         shell: bash
         env:
           PMX_PUSH_TOKEN: ${{ secrets.PROVIMUX_TOKEN }}
