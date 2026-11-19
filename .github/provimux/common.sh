@@ -57,70 +57,93 @@ expected_assets() {
     "${p}_windows_aarch64.zip" "${p}_windows_amd64.zip"
 }
 
-# A provimux-check run (actions/runs/<id> JSON, --arg repo PMX_REPO) that publish.sh and
-# autopublish.sh accept: of this repository, on main, event schedule or workflow_dispatch,
+# A provimux-check run (actions/runs/<id>[/attempts/<n>] JSON, --arg repo PMX_REPO) that
+# publish.sh accepts: of this repository, on main, event schedule or workflow_dispatch,
 # completed with conclusion success, with a commit SHA.
-# shellcheck disable=SC2034,SC2016 # used by publish.sh and autopublish.sh; jq, not shell
+# shellcheck disable=SC2034,SC2016 # used by publish.sh; jq, not shell
 PMX_CHECK_RUN_OK='select(.path == ".github/workflows/provimux-check.yml" and .head_branch == "main"
    and (.event == "schedule" or .event == "workflow_dispatch")
    and .status == "completed" and .conclusion == "success"
    and .repository.full_name == $repo and .head_repository.full_name == $repo
    and (.head_sha | test("^[0-9a-f]{40}$")))'
 
-# tree_files GIT_DIR COMMIT: COMMIT's files as "<mode> <blob> <path>", sorted: what a
-# checkout of COMMIT holds (the release builds from a checkout). Submodules (mode 160000)
-# are left out: neither a checkout without submodules nor git archive has their files.
+# Paths are NUL-delimited throughout (a file name may hold a newline): each record is
+# "<mode> <blob> <path>" ended by a NUL byte.
+#
+# tree_files GIT_DIR COMMIT: COMMIT's files as such records, sorted: what a checkout of
+# COMMIT holds (the release builds from a checkout). Submodules (mode 160000) are left out:
+# neither a checkout without submodules nor git archive has their files.
 tree_files() {
   git --git-dir="$1" ls-tree -r -z --full-tree "$2" |
     while IFS= read -r -d '' e; do
       local meta="${e%%$'\t'*}" path="${e#*$'\t'}" mode type oid
       read -r mode type oid <<<"$meta"
       [[ "$type" == blob ]] || continue
-      printf '%s %s %s\n' "$mode" "$oid" "$path"
-    done | LC_ALL=C sort
+      printf '%s %s %s\0' "$mode" "$oid" "$path"
+    done | LC_ALL=C sort -z
 }
 
-# dir_files DIR: the files under DIR (an extracted git archive) in the same form, the blob
-# ids hashed as git would store them (no filters): 120000 for a symlink, 100755 for an
-# executable file, 100644 otherwise.
+# dir_files DIR: the files under DIR (an extracted git archive) as the same records, the
+# blob ids hashed as git would store them (no filters): 120000 for a symlink, 100755 for
+# an executable file, 100644 otherwise.
 dir_files() {
-  local dir=$1 lst p
+  local dir=$1 lst p h t
   lst="$(mktemp "${TMPDIR:-/tmp}/provimux-files.XXXXXX")"
   (
     cd "$dir" || exit 1
-    find . -type f -print | sed 's|^\./||' | LC_ALL=C sort >"$lst"
+    find . -type f -print0 >"$lst"
     if [[ -s "$lst" ]]; then
-      paste -d ' ' \
-        <(while IFS= read -r p; do if [[ -x "$p" ]]; then echo 100755; else echo 100644; fi; done <"$lst") \
-        <(git hash-object --no-filters --stdin-paths <"$lst") \
-        "$lst"
+      # git hash-object prints one id per file argument, in order.
+      while IFS= read -r -d '' p <&3 && IFS= read -r h <&4; do
+        p="${p#./}"
+        if [[ -x "$p" ]]; then printf '100755 %s %s\0' "$h" "$p"; else printf '100644 %s %s\0' "$h" "$p"; fi
+      done 3<"$lst" 4< <(xargs -0 git hash-object --no-filters -- <"$lst")
     fi
-    find . -type l -print | sed 's|^\./||' | while IFS= read -r p; do
-      printf '120000 %s %s\n' "$(printf '%s' "$(readlink "$p")" | git hash-object --no-filters --stdin)" "$p"
+    find . -type l -print0 | while IFS= read -r -d '' p; do
+      # The target exactly (command substitution would drop trailing newlines).
+      t="$(readlink "$p"; echo x)"; t="${t%x}"; t="${t%$'\n'}"
+      printf '120000 %s %s\0' "$(printf '%s' "$t" | git hash-object --no-filters --stdin)" "${p#./}"
     done
-  ) | LC_ALL=C sort
+  ) | LC_ALL=C sort -z
   rm -f "$lst"
 }
 
+# nul_lines: NUL-ended records as one line each, for a report only: "\" is written "\\"
+# and a newline "\n", so every record stays one line and two records never look alike.
+nul_lines() {
+  local r
+  while IFS= read -r -d '' r; do
+    r="${r//\\/\\\\}"; printf '%s\n' "${r//$'\n'/\\n}"
+  done
+}
+
 # archive_matches GIT_DIR COMMIT DIR REPORT: DIR, extracted from `git archive COMMIT`, has
-# exactly COMMIT's files (names, blob ids, modes). An upstream .gitattributes with
-# export-ignore or export-subst would make the tested tree differ from the checkout the
-# release builds; then it fails (status 1) and REPORT lists the differences
-# ("- " only in the commit, "+ " only in the archive).
+# exactly COMMIT's files (names, blob ids, modes); the records are compared byte for byte.
+# An upstream .gitattributes with export-ignore or export-subst would make the tested tree
+# differ from the checkout the release builds; then it fails (status 1) and REPORT lists
+# the differences ("- " only in the commit, "+ " only in the archive; paths escaped as in
+# nul_lines).
 archive_matches() {
   local gd=$1 c=$2 dir=$3 report=$4
   tree_files "$gd" "$c" >"$report.want"
   dir_files "$dir" >"$report.got"
-  if diff "$report.want" "$report.got" >/dev/null; then
+  if command cmp -s "$report.want" "$report.got"; then
     rm -f "$report.want" "$report.got"; : >"$report"; return 0
   fi
-  { diff "$report.want" "$report.got" | sed -n 's/^< /- /p; s/^> /+ /p' | head -n 100; } >"$report"
-  rm -f "$report.want" "$report.got"
+  nul_lines <"$report.want" >"$report.want.txt"
+  nul_lines <"$report.got" >"$report.got.txt"
+  { diff "$report.want.txt" "$report.got.txt" | sed -n 's/^< /- /p; s/^> /+ /p' | head -n 100; } >"$report"
+  # Same lines but different bytes cannot happen (the escaping is one-to-one); say so if it does.
+  [[ -s "$report" ]] || echo "the file lists differ (no line differs after escaping)" >"$report"
+  rm -f "$report.want" "$report.got" "$report.want.txt" "$report.got.txt"
   return 1
 }
 
-# check_artifact RUN DIR: the artifact provimux-check-<tag> that the verdict job of RUN's
-# latest attempt uploaded, downloaded and unpacked into DIR; prints "<artifact id> <name>".
+# check_artifact RUN ATTEMPT DIR: the artifact provimux-check-<tag> that the verdict job of
+# attempt ATTEMPT of RUN uploaded, downloaded and unpacked into DIR; prints "<artifact id>
+# <name>". The attempt is given, never looked up here: the caller read it, in the same
+# read as the run's success (publish.sh), or took it from the event and verified it
+# (provimux-publish.yml).
 # The binding: the verdict job (it runs no repository code) writes the id, name and digest
 # of its own upload as its only annotation titled "provimux-check-artifact"; the jobs that
 # run upstream's and the candidate's code can upload artifacts of any name in the same
@@ -129,10 +152,8 @@ archive_matches() {
 # is ignored. Fails (status 1, the reason on stderr) otherwise. Used by publish.sh and
 # autopublish.sh alike. Needs gh with actions: read and checks: read, and unzip.
 check_artifact() {
-  local run=$1 dir=$2 attempt job ann id name digest meta
-  attempt="$(gh api "repos/$PMX_REPO/actions/runs/$run" --jq '.run_attempt')" ||
-    { echo "cannot read run $run" >&2; return 1; }
-  [[ "$attempt" =~ ^[0-9]+$ ]] || { echo "run $run: no attempt number" >&2; return 1; }
+  local run=$1 attempt=$2 dir=$3 job ann id name digest meta
+  [[ "$run" =~ ^[0-9]+$ && "$attempt" =~ ^[0-9]+$ ]] || { echo "check_artifact: run '$run' attempt '$attempt'" >&2; return 1; }
   job="$(gh api "repos/$PMX_REPO/actions/runs/$run/attempts/$attempt/jobs?per_page=100" \
     --jq '[.jobs[] | select(.name == "verdict")] | if length == 1 then .[0].id else "" end')" ||
     { echo "cannot list the jobs of run $run attempt $attempt" >&2; return 1; }
@@ -142,7 +163,7 @@ check_artifact() {
     { echo "cannot read the annotations of the verdict job $job" >&2; return 1; }
   read -r id name digest _ <<<"$ann" || true
   [[ "$id" =~ ^[0-9]+$ && "$name" =~ ^provimux-check-(none|v[0-9]+\.[0-9]+\.[0-9]+)$ ]] ||
-    { echo "the verdict job $job of run $run names no artifact (one annotation \"provimux-check-artifact\": <id> <name> [digest])" >&2; return 1; }
+    { echo "the verdict job $job of run $run attempt $attempt names no artifact (one annotation \"provimux-check-artifact\": <id> <name> [digest])" >&2; return 1; }
   meta="$(gh api "repos/$PMX_REPO/actions/artifacts/$id")" || { echo "cannot read artifact $id" >&2; return 1; }
   jq -e --arg run "$run" --arg name "$name" --arg digest "${digest:-}" \
     '(.workflow_run.id | tostring) == $run and .name == $name and (.expired | not)
