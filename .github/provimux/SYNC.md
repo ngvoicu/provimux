@@ -88,7 +88,7 @@ cd - && git worktree remove ../pmx-publish
    - the tag `v<base>`, at upstream's commit;
    - the tag `v<base>-pmx.1`, at the candidate.
 
-   The `-pmx` tag starts `provimux-release.yml` and `provimux-docker.yml`.
+   The `-pmx` tag starts `provimux-release.yml` (archives, image, GitHub release, Homebrew tap).
 6. **Wait and close.** It polls until the GitHub release `v<base>-pmx.1` is published with all 11 assets (10 archives and `checksums.txt`), then closes the issue. If the release run fails or `--timeout` (120 minutes by default) runs out, it stops and the issue stays open.
 
 The owner's credentials do what no workflow token could: they bypass ruleset 27584853 (required check `provimux-guard`, admins only), they may push commits that change `.github/workflows/*` (gh's `workflow` scope), and their tag push starts the release workflows.
@@ -196,7 +196,7 @@ The check never builds a base that already has a `v<base>-pmx.*` tag, so later r
    ```
 4. Check the release (next section).
 
-The tag starts `provimux-release.yml` and `provimux-docker.yml`. The Homebrew tap moves only forward, so `-pmx.2` replaces `-pmx.1`. From then on the check verifies both releases of that base on every run.
+The tag starts `provimux-release.yml`. The Homebrew tap moves only forward, so `-pmx.2` replaces `-pmx.1`. From then on the check verifies both releases of that base on every run.
 
 ### Check a release
 
