@@ -13,13 +13,14 @@
 #     attempt from the event concluded success, and that attempt's verdict job carries
 #     exactly one artifact annotation. The plan uses exactly that run, attempt and
 #     artifact id, and refuses if anything differs.
-#   - PROVIMUX_TOKEN is a secret of the environment provimux-token (branch main, tags
-#     v*-pmx.*), which only this job and tap-publish in provimux-release.yml (on a tag
-#     push) declare. No earlier revision of any workflow names that environment, so an old
-#     revision (a rerun of an old run) gets no token. In this job only the step "Push"
-#     has it: one fixed git push whose every value an earlier step without the token
-#     checked; it runs git and nothing else (no hooks, no global or system config).
-#     publish.sh never sees it. gh uses this run's GITHUB_TOKEN.
+#   - PROVIMUX_TOKEN is a secret of the environment provimux-token, which admits only the
+#     branch main (no tags) and which only this job declares; provimux-release.yml has no
+#     environment and no secret, so a tag's run of any revision gets nothing. In this job
+#     only three steps have it, each with values an earlier step without the token
+#     prepared: "Push" (git only, no hooks, no global or system config), "Authorize the
+#     release" (curl only: the commit status provimux-release/<tag>, created as the
+#     owner) and "Tap push" (git only, the tap commit tap.sh prepared). publish.sh and
+#     tap.sh never see it. gh uses this run's GITHUB_TOKEN.
 #   - A push with GITHUB_TOKEN could change no workflow file and its tag would start no
 #     provimux-release run; that is why the push needs the owner's token.
 name: provimux-publish
@@ -65,6 +66,7 @@ jobs:
       why: ${{ steps.verify.outputs.why || steps.decide.outputs.why }}
       has_token: ${{ steps.has.outputs.token }}
       no_token: ${{ steps.token.outcome == 'failure' }}
+      tap_failed: ${{ steps.tap.outcome == 'failure' || steps.tappush.outcome == 'failure' }}
     steps:
       # true/false only; the value is not exposed here.
       - name: Is PROVIMUX_TOKEN set (yes or no only)
@@ -203,6 +205,9 @@ jobs:
             echo "ref_pmx=$cand:refs/tags/$TAG-pmx.1"
             echo "pmx_tag=$TAG-pmx.1"
             echo "candidate=$cand"
+            # The durable authorization provimux-release.yml requires (job provenance).
+            echo "status=$(jq -cn --arg ctx "provimux-release/$TAG-pmx.1" --arg url "$RUN_URL" \
+              '{state: "success", context: $ctx, description: "authorized by provimux-publish", target_url: $url}')"
           } >>"$GITHUB_OUTPUT"
           echo "git push --atomic --porcelain --force-with-lease=refs/heads/main:$SHA https://github.com/$PMX_REPO.git $cand:refs/heads/main$([[ "$base_tag" == 1 ]] && echo " $up:refs/tags/$TAG") $cand:refs/tags/$TAG-pmx.1"
 
@@ -249,33 +254,82 @@ jobs:
             exit 1
           }
 
-      # Only after the push succeeded: the record provimux-release.yml requires before it
-      # publishes anything for the tag (job "provenance"; SYNC.md, "Release provenance").
-      - name: Record the push (no token)
+      # Right after the push (a commit status needs the commit on GitHub): the durable
+      # authorization for exactly this tag at this commit, created as the owner (the
+      # token's user), which provimux-release.yml requires before it publishes (job
+      # provenance; SYNC.md, "Release provenance"). It runs curl and nothing else; the
+      # token goes to curl on its standard input, never as an argument.
+      - name: Authorize the release (token)
         if: ${{ steps.decide.outputs.action == 'publish' }}
         shell: bash
         env:
-          PMX_TAG: ${{ steps.values.outputs.pmx_tag }}
+          PMX_PUSH_TOKEN: ${{ secrets.PROVIMUX_TOKEN }}
+          BASH_ENV: ''
           CANDIDATE: ${{ steps.values.outputs.candidate }}
+          STATUS: ${{ steps.values.outputs.status }}
         run: |
-          mkdir -p "$RUNNER_TEMP/pushed"
-          printf '%s %s\n' "$PMX_TAG" "$CANDIDATE" >"$RUNNER_TEMP/pushed/pushed.txt"
-          cat "$RUNNER_TEMP/pushed/pushed.txt"
-      - name: Keep the push record
-        if: ${{ steps.decide.outputs.action == 'publish' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: pmx-pushed
-          path: ${{ runner.temp }}/pushed/pushed.txt
-          if-no-files-found: error
+          printf 'Authorization: Bearer %s\n' "$PMX_PUSH_TOKEN" |
+            curl -fsS -o /dev/null -X POST -H @- -H 'Accept: application/vnd.github+json' \
+              --data "$STATUS" "https://api.github.com/repos/$PMX_REPO/statuses/$CANDIDATE" || {
+            echo "publish: the authorization (commit status) for the release could not be set" >>"$LOG"
+            exit 1
+          }
 
-      - name: Wait for the release, close the issue (no token)
+      - name: Wait for the release (no token)
         if: ${{ steps.decide.outputs.action == 'publish' }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.decide.outputs.tag }}
         run: bash .github/provimux/publish.sh "$TAG" --ci --wait "$PLAN_DIR" 2>&1 | tee -a "$LOG"
+
+      # The Homebrew tap, after the release run succeeded: main's tap.sh, without the
+      # token, verifies the published release (immutable, every asset, digests =
+      # checksums.txt), takes the formula the release run's tap-check bound to itself
+      # (by id and digest), checks it against the tap and commits it in a local clone.
+      - name: Tap (verify the release, prepare the commit; no token)
+        id: tap
+        if: ${{ steps.decide.outputs.action == 'publish' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PMX_TAG: ${{ steps.values.outputs.pmx_tag }}
+          CANDIDATE: ${{ steps.values.outputs.candidate }}
+        run: |
+          set -euo pipefail
+          {
+            bash .github/provimux/tap.sh artifact "$PMX_TAG" "$CANDIDATE" "$RUNNER_TEMP/tap-formula"
+            bash .github/provimux/tap.sh prepare "$PMX_TAG" "$RUNNER_TEMP/tap" "$RUNNER_TEMP/tap-formula/provimux.rb"
+          } 2>&1 | tee -a "$LOG" || { echo "publish: the Homebrew tap update was refused (see the log)" >>"$LOG"; exit 1; }
+
+      # The last step with the token: one git push of the tap commit prepared above, with
+      # the lease on the tap's main as it was read, hooks off, no global or system config.
+      - name: Tap push (token)
+        id: tappush
+        if: ${{ steps.decide.outputs.action == 'publish' && steps.tap.outputs.action == 'push' }}
+        shell: bash
+        env:
+          PMX_PUSH_TOKEN: ${{ secrets.PROVIMUX_TOKEN }}
+          BASH_ENV: ''
+          REPO_DIR: ${{ steps.tap.outputs.repo }}
+          LEASE: ${{ steps.tap.outputs.lease }}
+          REF: ${{ steps.tap.outputs.ref }}
+        run: |
+          [[ "$REPO_DIR" == "$RUNNER_TEMP/tap/tap/.git" && "$LEASE" =~ ^refs/heads/main:[0-9a-f]{40}$ && "$REF" =~ ^[0-9a-f]{40}:refs/heads/main$ ]] ||
+            { echo "publish: tap values are not of their form" >>"$LOG"; exit 1; }
+          # shellcheck disable=SC2016 # expanded by the credential helper's shell
+          GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 git --git-dir="$REPO_DIR"             -c core.hooksPath=/dev/null -c credential.helper=             -c 'credential.https://github.com.helper=!f() { test "$1" = get || exit 0; echo username=x-access-token; echo "password=$PMX_PUSH_TOKEN"; }; f'             push --porcelain "--force-with-lease=$LEASE" https://github.com/ngvoicu/homebrew-tap.git "$REF" || {
+            echo "publish: git push of the Homebrew tap reported a failure" >>"$LOG"
+            exit 1
+          }
+
+      - name: Close the sync issue (no token)
+        if: ${{ steps.decide.outputs.action == 'publish' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.decide.outputs.tag }}
+        run: bash .github/provimux/publish.sh "$TAG" --ci --close "$PLAN_DIR" 2>&1 | tee -a "$LOG"
 
       # For the notify job: this job's log and plan (written only by main's own scripts).
       - name: Keep the log and the plan
@@ -352,7 +406,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.publish.outputs.tag }}
-          OUTCOME: ${{ needs.publish.outputs.no_token == 'true' && 'no-token' || 'failed' }}
+          OUTCOME: ${{ needs.publish.outputs.no_token == 'true' && 'no-token' || needs.publish.outputs.tap_failed == 'true' && 'tap-failed' || 'failed' }}
           HAS_TOKEN: ${{ needs.publish.outputs.has_token }}
           WHY: ${{ needs.publish.outputs.why }}
           EXPECT_MAIN: ${{ needs.publish.outputs.sha }}

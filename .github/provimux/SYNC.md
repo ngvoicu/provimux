@@ -2,7 +2,7 @@
 
 `main` is a CLIProxyAPI release tag, then the owner's patch commits, then the Provimux layer (commits with the trailer `Provimux-Layer: branding`). When CLIProxyAPI publishes a release, Provimux moves that whole stack onto it.
 
-**Check and publish automatically; the owner only for what needs a decision.** A workflow checks each new release and reports in an issue. When the check passes, a second workflow, started only by that check run's completion, publishes the release with the owner's token `PROVIMUX_TOKEN`, a secret of the environment `provimux-token` that only one fixed `git push` step sees. When it refuses or fails, it pushes nothing and says why in the issue; the owner decides, and publishes by hand from their own Mac with their own credentials when that is the fix. "Publish now" is a fresh check run (Actions → provimux-check), never a hand-started publish run.
+**Check and publish automatically; the owner only for what needs a decision.** A workflow checks each new release and reports in an issue. When the check passes, a second workflow, started only by that check run's completion, publishes the release with the owner's token `PROVIMUX_TOKEN`, a secret of the environment `provimux-token` (branch `main` only) that only three fixed steps of that one job see: the push, the release's authorization, and the Homebrew tap push. No other workflow, and no tag's run, ever gets it. When it refuses or fails, it pushes nothing and says why in the issue; the owner decides, and publishes by hand from their own Mac with their own credentials when that is the fix. "Publish now" is a fresh check run (Actions → provimux-check), never a hand-started publish run.
 
 | Piece | Where it runs | What it may do |
 |---|---|---|
@@ -12,9 +12,10 @@
 | `provimux-check.yml`, job `report` (`report.sh`) | GitHub Actions | `issues: write`. Runs only the run's own scripts, never candidate code or `go`. |
 | `provimux-publish.yml`, job `publish`, step `Verify` (inline, before any checkout) | GitHub Actions, environment `provimux-token` | `contents`, `actions`, `checks: read`, no secret. Proves this workflow revision is the live `main`, the check run's exact attempt passed on it, and that attempt's verdict binds one artifact. |
 | `provimux-publish.yml`, job `publish`, steps `Decide`, `Plan`, `Push values`, `Wait` (`autopublish.sh decide`, `publish.sh --ci`) | GitHub Actions, environment `provimux-token` | `GITHUB_TOKEN` with `issues: write`. `main`'s own scripts: git, gh, jq and the guard of the current `main` on git objects; never candidate or upstream code, `go` or `make`. Never see `PROVIMUX_TOKEN` (`publish.sh --ci` refuses to run with it). |
-| `provimux-publish.yml`, job `publish`, step `Push` | GitHub Actions, environment `provimux-token` | The only step with `PROVIMUX_TOKEN`: one inline `git push` of values an earlier step checked, from a bare repository, hooks off, no global or system config; it runs `git` and nothing else. |
+| `provimux-publish.yml`, job `publish`, steps `Push`, `Authorize the release`, `Tap push` | GitHub Actions, environment `provimux-token` (branch `main` only) | The only steps with `PROVIMUX_TOKEN`: one inline `git push` of values an earlier step checked (hooks off, no global or system config; only `git`), one `curl` that sets the commit status `provimux-release/<tag>` (the token on curl's standard input), and one inline `git push` of the tap commit `tap.sh` prepared without the token. |
 | `provimux-publish.yml`, job `notify` (`autopublish.sh notify`) | GitHub Actions | `issues: write`, no environment, no secret. The current `main`'s script tells the sync issue after a failure. |
-| `.github/provimux/publish.sh` by hand | the owner's Mac | Pushes `main` and the tags with the owner's `git` and `gh` credentials, when the automatic publish refused. |
+| `provimux-release.yml` (a tag push, or a dry run) | GitHub Actions, no environment | `GITHUB_TOKEN` only. Builds, publishes the GitHub release and the image, checks the formula (`tap-check`); publishes nothing without the owner's authorization (`provenance`). |
+| `.github/provimux/publish.sh` by hand | the owner's Mac | Pushes `main` and the tags, authorizes the release, updates the Homebrew tap, with the owner's `git` and `gh` credentials, when the automatic publish refused or waits for its token. |
 
 ## The check
 
@@ -83,58 +84,60 @@ An open issue is updated in place. It gets a comment when its state or candidate
 5. **Push values** (inline, no token): reads `plan.env` (exactly 10 lines, each value checked against its pattern; tag, old `main`, run, attempt, artifact must be the verified ones, the repository must be `<dir>/work/repo.git`) and writes the push's repository, lease and refs as step outputs.
 6. **`PROVIMUX_TOKEN` is set**: if not, red with that message; nothing is pushed.
 7. **Push**, the only step with the token: it reads only the outputs of step 5 and runs `git` and nothing else (no `sed`, `head` or other parsing): one `git push --atomic --porcelain --force-with-lease=refs/heads/main:<the verified main>` of `main` and the tags from the plan's bare repository, with `core.hooksPath=/dev/null`, no global or system git config, `BASH_ENV` empty, and a credential helper that reads the token from git's environment (never a file, URL, argument or log).
-8. **Record the push** (no token, only after `Push` succeeded): the artifact `pmx-pushed` with one line `<v<base>-pmx.1> <candidate>`, which `provimux-release.yml` requires before it publishes (see "Release provenance").
-9. **Wait** (`publish.sh --ci --wait <dir>`, no token): waits for the whole `provimux-release` run of the `-pmx.1` tag at the candidate and the complete release, then closes the issue with the release link, as by hand.
+8. **Authorize the release** (token, right after the push: a commit status needs the commit on GitHub): one `curl` that sets the commit status `provimux-release/<v<base>-pmx.1>` = `success` on the candidate, created as the owner (the token's user). The body was prepared by step 5; the token goes to curl on its standard input. `provimux-release.yml` publishes nothing without it (see "Release provenance").
+9. **Wait** (`publish.sh --ci --wait <dir>`, no token): waits for the whole `provimux-release` run of the `-pmx.1` tag at the candidate (every job, `tap-check` included) and the complete release.
+10. **Tap** (`tap.sh artifact`, `tap.sh prepare`, no token; see "The Homebrew tap"): verifies the published release (immutable, every asset, digests = `checksums.txt`), takes the formula the release run's `tap-check` bound to itself (by id and digest), checks it against the tap and commits it in a local clone.
+11. **Tap push** (token, the last step that has it; only when step 10 has a commit): one `git push --force-with-lease=refs/heads/main:<the tap's main as read>` to `ngvoicu/homebrew-tap`, same pattern as `Push`.
+12. **Close** (`publish.sh --ci --close <dir>`, no token): closes the issue with the release link.
 
 **Job `notify`** (after a failure or cancellation of `publish`; no environment; `issues: write`): it checks out the *current* `main` (inline `git ls-remote` first, then a `HEAD` check) and runs its `autopublish.sh notify`, with the verifier's or decide's reason, the publish log and plan (artifact `pmx-publish-log`), and whether `PROVIMUX_TOKEN` is set (yes or no only). Before writing any instruction it reads the remote: `main`, `v<base>`, every `v<base>-pmx.*` with its release and its release run for the tag's commit. It never promises that a later check fixes an older release (a scheduled check checks only the newest stable release); where a check is the next step it gives the command for a check of that tag. It retitles `sync: v<base>` and comments what is true there, the reasons, and what to do:
-- a `-pmx` tag exists: `released` (complete: it closes the open issue and opens none), `pushed, release running` (wait; the owner checks the release when it ends), or `pushed, release not complete, owner needed` with the `gh run rerun <id> --failed` command (never "publish again": an automatic retry skips the existing tag and `publish.sh` refuses it). This also covers a push whose acknowledgement was lost: the remote decides, not the run;
-- no `-pmx` tag and `main` is the checked commit (or the run stopped before its push): `ready, publishing waits for PROVIMUX_TOKEN` (the secret is missing: set it, then start a check of the tag; **no** hand publish is offered, because the release's `tap-publish` needs the same token and a hand publish would go out without the Homebrew update) or `publish refused, owner needed` (dropped or changed patches, new workflow files, upstream release withdrawn or moved, a verification mismatch, a failed push), with the commands to publish by hand;
+- a `-pmx` tag exists: `released` (complete: it closes the open issue and opens none), `released, Homebrew tap not updated, owner needed` (steps 10 or 11 failed: the owner runs `publish.sh --tap <tag>`), `pushed, release running` (wait; the owner checks the release when it ends), or `pushed, release not complete, owner needed` with the `gh run rerun <id> --failed` command (never "publish again": an automatic retry skips the existing tag and `publish.sh` refuses it). This also covers a push whose acknowledgement was lost: the remote decides, not the run;
+- no `-pmx` tag and `main` is the checked commit (or the run stopped before its push): `ready, publishing waits for PROVIMUX_TOKEN` (the secret is missing: set it, then start a check of the tag; or publish by hand, which authorizes the release and updates the tap with the owner's own credentials) or `publish refused, owner needed` (dropped or changed patches, new workflow files, upstream release withdrawn or moved, a verification mismatch, a failed push), with the commands to publish by hand;
 - no `-pmx` tag and `main` is this run's candidate: `main pushed without its tags, owner needed`, with the tag push;
 - no `-pmx` tag and `main` is another commit: `main moved, nothing published`, with the command for a check of the tag on the new `main`;
 - the remote cannot be read: `publish failed, state unknown, owner needed` (look before acting);
 - the run failed before it knew the tag (the verifier refused): a comment on the one open `sync: v*` issue, or the issue `provimux-publish: failed`.
 
-While the token is missing, every text that leads to a release (by hand or by a rerun) adds that it would go out without the Homebrew tap update. The run stays red. Each distinct state and reason is commented once, so a check that passes again every 3 hours and meets the same refusal only resets the title.
+The run stays red. Each distinct state and reason is commented once, so a check that passes again every 3 hours and meets the same refusal only resets the title.
 
 Why a token of the owner and not `GITHUB_TOKEN`: events caused by `GITHUB_TOKEN` start no workflow runs (except `workflow_dispatch` and `repository_dispatch`), so its tag push would start no `provimux-release` run; and `GITHUB_TOKEN` has no `workflows` permission, which pushing commits that change `.github/workflows/` needs (a rebase onto a new upstream release usually does). The owner's token also bypasses ruleset 27584853 as the owner's own pushes do (bypass: repository admins).
 
 ### The token
 
-One fine-grained token of the owner serves both Provimux writes outside `GITHUB_TOKEN`: the `Push` step of `provimux-publish.yml` (to `ngvoicu/provimux`) and the job `tap-publish` of `provimux-release.yml` (to `ngvoicu/homebrew-tap`; no checkout, no repository script). It is a secret of the **environment `provimux-token`** only, never a repository secret. The environment may deploy only from the branch `main` and the tags `v*-pmx.*`; only the job `publish` and the job `tap-publish` (on a tag push only: a branch dry run of the release requests no environment and checks the formula without the token) declare it. No earlier revision of any workflow names `provimux-token` (earlier revisions named `provimux-publish`, which was deleted), so a rerun of an old run, or an old revision, gets no token.
+One fine-grained token of the owner, `PROVIMUX_TOKEN`, used only by the job `publish` of `provimux-publish.yml`, which runs only on `main`: its `Push` (to `ngvoicu/provimux`), `Authorize the release` (a commit status on `ngvoicu/provimux`) and `Tap push` (to `ngvoicu/homebrew-tap`). It is a secret of the **environment `provimux-token`** only, never a repository secret. The environment may deploy only from the branch `main` (no tag policy): `provimux-release.yml` declares no environment and holds no secret, so a tag's run, of any revision, gets nothing. No earlier revision of any workflow names `provimux-token` on `main` except the publish job (earlier revisions named `provimux-publish`, which was deleted, and `tap-publish` of revisions up to `2bdb6173` named `provimux-token`, but only for a tag push, which the environment no longer admits).
 
 The token:
 
 - **Fine-grained personal access token** (Settings → Developer settings → Fine-grained tokens), resource owner **ngvoicu**;
 - **Repository access:** only `ngvoicu/provimux`, `ngvoicu/homebrew-tap`, `ngvoicu/provimux-ui`;
 - **Repository permissions** (a fine-grained token has one set for all its repositories):
-  - **Contents: Read and write**: the tap's formula commit; `main` and the tags of `provimux`;
+  - **Contents: Read and write**: `main` and the tags of `provimux`; the tap's formula commit;
   - **Workflows: Read and write**: the pushed `provimux` commits change `.github/workflows/` files (each rebase onto a new upstream release can);
+  - **Commit statuses: Read and write**: the release authorization `provimux-release/<tag>`;
   - **Metadata: Read**: required, added automatically.
 
-  Nothing else for these two: gh in both workflows uses the run's `GITHUB_TOKEN`. Whatever `provimux-ui` needs is added when its workflow is written;
-- **Expiration:** *No expiration* (GitHub allows it for a token of a personal account; an organization's policy could block it). With a date, set a reminder: when it expires, publishing fails at the push and the issue says so, and `tap-publish` fails.
+  Nothing else: gh in the workflows uses the run's `GITHUB_TOKEN`. Whatever `provimux-ui` needs is added when its workflow is written;
+- **Expiration:** *No expiration* (GitHub allows it for a token of a personal account; an organization's policy could block it). With a date, set a reminder: when it expires, publishing fails at the push and the issue says so.
 
-The environment exists (created 2026-11-19 with these calls; no reviewers, no wait timer):
+The environment exists (created 2026-11-19; no reviewers, no wait timer; the tag policy `v*-pmx.*` it first had was removed on 2026-11-19):
 
 ```sh
 echo '{"deployment_branch_policy": {"protected_branches": false, "custom_branch_policies": true}}' |
   gh api -X PUT repos/ngvoicu/provimux/environments/provimux-token --input -
 gh api -X POST repos/ngvoicu/provimux/environments/provimux-token/deployment-branch-policies -f name=main -f type=branch
-gh api -X POST repos/ngvoicu/provimux/environments/provimux-token/deployment-branch-policies -f name='v*-pmx.*' -f type=tag
 ```
 
 The owner stores the token there, once: Settings → Environments → `provimux-token` → Environment secrets → Add secret `PROVIMUX_TOKEN`, or `gh secret set PROVIMUX_TOKEN --env provimux-token -R ngvoicu/provimux` (it asks for the value). Then the repository secret `TAP_TOKEN` can be deleted (`gh secret delete TAP_TOKEN -R ngvoicu/provimux`); a repository secret named `PROVIMUX_TOKEN` must not exist. Then a check of the waiting release publishes it: `gh workflow run provimux-check.yml -R ngvoicu/provimux -f tag=v<base>`.
 
-Without the secret nothing is published: each passing check opens "ready to publish" and the publish run retitles it "publishing waits for PROVIMUX_TOKEN". Do not publish by hand meanwhile: `tap-publish` fails without the token, so such a release has no Homebrew update until the token exists and the job is rerun.
+Without the secret nothing is published automatically: each passing check opens "ready to publish" and the publish run retitles it "publishing waits for PROVIMUX_TOKEN". The owner may publish by hand meanwhile (`publish.sh` authorizes the release and updates the tap with the owner's own credentials).
 
 ### Release provenance, immutable releases, "latest"
 
-The environment `provimux-token` must admit tags (`v*-pmx.*`) because `tap-publish` runs on the tag push, and a tag's run uses the tag's own workflow file. So who may create a tag is what protects the environment:
-
-- **Tag ruleset** `provimux tags v*` (27670572): on `refs/tags/v*`, creation, update and deletion are blocked for everyone except repository admins (bypass: role admin, always). The owner (and the owner's `PROVIMUX_TOKEN`, which acts as the owner) can still push `v<base>` and `v<base>-pmx.<n>`; `GITHUB_TOKEN` and anyone else cannot.
-- **Job `provenance`** of `provimux-release.yml` (on a tag push; `publish-release` and therefore every later publishing job, and `tap-publish`, need it): the tag must still be this run's commit, and either a `provimux-publish` run of `main` recorded pushing exactly this tag and commit (artifact `pmx-pushed`, written only after its `Push` step succeeded; it waits up to 10 minutes for the record), or the repository variable `PMX_HAND_RELEASES` (only the owner can set it) has the line `<tag> <commit>`. Otherwise nothing is released. `publish.sh` by hand records its `-pmx.1` there before pushing; for a hand `-pmx.2` the owner records it ("Cut `-pmx.2`"). A tag pushed without a record: record it, then rerun the release run.
-- **Immutable releases** are on for the repository (Settings → General → Releases): a published release's assets and tag cannot change. `publish-release` requires the release to read back `immutable: true` after publishing, and every promotion job (`tap-publish`, `image-push`, `image-latest`, `release-latest`) requires it again first.
-- **"latest"**: `publish-release` publishes with `--latest=false` (GitHub would otherwise make every newly published release latest, so an older base's `-pmx.<n>` published later, or a rerun, would move it back). The job `release-latest` marks the highest published `v*-pmx.*` release latest, one job at a time across all runs (`concurrency: provimux-release-latest`), never to an older version, stops when the current latest cannot be read (anything but a 404), and fails when latest does not read back as the version it set. The image `:latest` follows the same rules in `image-latest` (`concurrency: provimux-image-latest`, only forward, stops on an unreadable `:latest`, reads it back).
+- **Tag ruleset** `provimux tags v*` (27670572): on `refs/tags/v*`, creation, update and deletion are blocked for everyone except repository admins (bypass: role admin, always). The owner (and `PROVIMUX_TOKEN`, which acts as the owner) can still push `v<base>` and `v<base>-pmx.<n>`; `GITHUB_TOKEN` and anyone else cannot.
+- **Job `provenance`** of `provimux-release.yml` (on a tag push; `publish-release` and therefore every later publishing job need it): the tag must still be this run's commit, and the commit must carry the **commit status `provimux-release/<tag>`** with state `success`, whose newest instance was **created by the repository owner** (a `User`; a status created with any workflow's `GITHUB_TOKEN` is `github-actions[bot]` and does not count). It is set by the publish job right after its push (`Authorize the release`) or by `publish.sh` (by hand, or `publish.sh --authorize <tag> <commit>`). It is durable and individually addressable per tag and commit: a full rerun of the release at any later time finds it. The job waits up to 10 minutes for a missing status (it is set seconds after the push that starts the run) and stops at once, with its own message, when the statuses cannot be read.
+- **Immutable releases** are on for the repository (Settings → General → Releases): a published release's assets and tag cannot change. `publish-release` requires the release to read back `immutable: true` after publishing, and every promotion job (`tap-check`, `image-push`, `image-latest`) requires it again first; `release-latest` requires it of its own release.
+- **"latest"**: `publish-release` publishes with `--latest=false` (GitHub would otherwise make every newly published release latest, so an older base's `-pmx.<n>` published later, or a rerun, would move it back) and outputs the id of the release it published and verified. The job `release-latest` promotes **only that release id**, never another release it finds: one job at a time across all runs (`concurrency: provimux-release-latest`, `queue: max`); inside it, it reads that release (its tag, published, immutable) and the current latest, stops when either cannot be read (anything but a 404 for "no latest", or a 200 without a tag name), leaves a latest that is not older, and fails when latest does not read back as its release. The image `:latest` follows the same rules in `image-latest` (`concurrency: provimux-image-latest`, only forward, its own index, read back); a registry `HEAD` that answers 200 without a valid `Docker-Content-Digest` stops (it is not "absent").
+- **A failed release run reports itself** (job `report`, after any failed or cancelled job of a tag push): it opens or updates `sync: v<base>` (`release <tag> failed, owner needed`) with the failed jobs and the rerun command, once per run attempt. It does not rely on a check or a sweep finding the base again.
 
 Set on 2026-11-19 with:
 
@@ -146,7 +149,31 @@ gh api -X POST repos/ngvoicu/provimux/rulesets --input - <<'JSON'
  "rules": [{"type": "creation"}, {"type": "update"}, {"type": "deletion"}],
  "bypass_actors": [{"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always"}]}
 JSON
+gh api -X DELETE repos/ngvoicu/provimux/environments/provimux-token/deployment-branch-policies/67435709   # the tag policy v*-pmx.*
 ```
+
+### The Homebrew tap
+
+`ngvoicu/homebrew-tap` (`Formula/provimux.rb`) moves only forward, and only in its version, url and sha256 lines. `provimux-release.yml` prepares the formula (job `formula`, `update-formula.sh`) and checks it against the tap without committing (job `tap-check`, `tap.sh verify`), then binds the formula artifact to `tap-check` (one annotation `provimux-formula-artifact: <id> formula sha256:<digest>`). The publish job updates the tap after the release run succeeded (steps 10 and 11 above). `tap.sh` holds no token:
+
+- `tap.sh release <tag> <dir>`: the release is published, not a prerelease, immutable, with every expected asset uploaded and a digest; `checksums.txt`'s digest is its bytes; every archive's digest is `checksums.txt`'s;
+- `tap.sh artifact <tag> <commit> <dir>`: the newest `provimux-release` run for that tag push at that commit, `completed`/`success` (its attempt from the same read), its job `tap-check` of that attempt, exactly one binding annotation; the artifact must be that id, of that run, named `formula`, unexpired, with that digest, and the zip downloaded has it;
+- `tap.sh prepare <tag> <dir> [<formula>]`: `release`, a clone of the tap, the formula given (or the tap's own updated by `update-formula.sh` from the release's `checksums.txt`), only forward (a tap at this version with this formula, or newer, is left as it is), `verify`, one local commit; it prints the repository, the lease on the tap's `main` as read, and the ref to push;
+- `tap.sh verify <version> <checksums> <tap formula> <new formula>`: only the version, url and sha256 lines differ, the URLs are that version's archives, each sha256 is `checksums.txt`'s.
+
+**By hand** (a hand `-pmx.<n>`, or when the publish job's tap steps failed; the owner's own git credentials; only forward, so running it again is safe):
+
+```sh
+bash .github/provimux/publish.sh --tap v<base>-pmx.<n>
+```
+
+### Accepted risks
+
+The owner accepted these on 2026-11-19 (review T-77); they are not fixed:
+
+- **A mistaken `v*` tag** pushed by someone with write access. Only the owner has write access, and the tag ruleset 27670572 lets only admins create, move or delete `v*` tags. Such a tag's release run still publishes nothing without the owner's authorization (`provenance`) and never gets the token.
+- **Test outcomes the code under test could fake.** The test jobs run the candidate's and upstream's code; that code could write a passing `go test` output, exit status and step outcome for itself. The check is a regression gate, not a sandbox against the code it tests: that same code ships to users in the release anyway, so faking its own tests gains nothing it could not do directly.
+- **The existing release `v8.0.78-pmx.1` is mutable** (published before immutable releases were turned on; GitHub does not make existing releases immutable). Every later release is immutable, and `release-latest` no longer looks at other releases, so it does not block later releases.
 
 ### What still needs the owner
 
@@ -183,8 +210,8 @@ cd - && git worktree remove ../pmx-publish
    - the tag `v<base>`, at upstream's commit;
    - the tag `v<base>-pmx.1`, at the candidate.
 
-   The `-pmx` tag starts `provimux-release.yml` (archives, image, GitHub release, Homebrew tap).
-6. **Wait and close.** It polls until the whole `provimux-release` run for `v<base>-pmx.1` at the candidate commit has finished, including the image push and `tap-publish`, then prints the run's conclusion and each job's result. It closes the issue only when that run succeeded and the GitHub release is published with all 11 assets (10 archives and `checksums.txt`). If the run fails or `--timeout` (120 minutes by default) runs out, it stops and the issue stays open.
+   It checks first that `gh` is logged in as the repository owner. Right after the push it authorizes the release (`--authorize`: the commit status `provimux-release/v<base>-pmx.1` on the candidate, as the owner). The `-pmx` tag starts `provimux-release.yml` (archives, image, GitHub release, formula check).
+6. **Wait, tap, close.** It polls until the whole `provimux-release` run for `v<base>-pmx.1` at the candidate commit has finished, including the image push and `tap-check`, then prints the run's conclusion and each job's result; it stops if that run did not succeed or the GitHub release lacks any of its 11 assets (10 archives and `checksums.txt`), or when `--timeout` (120 minutes by default) runs out, and the issue stays open. Then it updates the Homebrew tap (`--tap`, "The Homebrew tap") with the owner's git credentials, and closes the issue.
 
 The owner's credentials (or `PROVIMUX_TOKEN`, above) do what `GITHUB_TOKEN` could not: they bypass ruleset 27584853 (required check `provimux-guard`, admins only), they may push commits that change `.github/workflows/*` (gh's `workflow` scope), and their tag push starts the release workflows.
 
@@ -324,14 +351,16 @@ The check never builds a base that already has a `v<base>-pmx.*` tag, so later r
    sha=<the main commit that passed>
    [ "$(git ls-remote provimux refs/heads/main | cut -f1)" = "$sha" ] && git push provimux "$sha:refs/tags/v<base>-pmx.2"
    ```
-4. Check the release (next section).
+4. Authorize it (the release run waits up to 10 minutes for this; later, rerun the release run):
 
-Before step 3, record the tag (see "Release provenance"; without it the release run publishes nothing):
+   ```sh
+   bash .github/provimux/publish.sh --authorize v<base>-pmx.2 "$sha"
+   ```
+5. When the release run has succeeded, check the release (next section) and update the Homebrew tap:
 
-```sh
-cur="$(gh variable get PMX_HAND_RELEASES -R ngvoicu/provimux 2>/dev/null || true)"
-printf '%s\n%s\n' "$cur" "v<base>-pmx.2 $sha" | sed '/^$/d' | sort -u | gh variable set PMX_HAND_RELEASES -R ngvoicu/provimux
-```
+   ```sh
+   bash .github/provimux/publish.sh --tap v<base>-pmx.2
+   ```
 
 The tag starts `provimux-release.yml`. The Homebrew tap, the image `:latest` and the GitHub "latest" move only forward, so `-pmx.2` replaces `-pmx.1`. From then on the check judges the base by its newest release (`-pmx.2`).
 
