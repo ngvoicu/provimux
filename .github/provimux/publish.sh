@@ -4,15 +4,18 @@
 # it never asks for or stores a token, and it runs no code of the candidate or of upstream
 # (only git, gh, jq, and the guard of the owner's current main).
 #
-#   publish.sh <vX.Y.Z> [--dry-run] [--yes] [--ci] [--run <id>] [--remote <name>]
+#   publish.sh <vX.Y.Z> [--dry-run] [--yes] [--run <id>] [--expect-main <sha>] [--remote <name>]
 #              [--accept-dropped <sha,...>] [--accept-changed <sha,...>] [--timeout <minutes>]
+#   publish.sh <vX.Y.Z> --ci --plan <dir> --run <id> --expect-main <sha>   (provimux-publish.yml)
+#   publish.sh <vX.Y.Z> --ci --wait <dir>                                   (provimux-publish.yml)
 #
 # 1. Picks the check run: a provimux-check run of this repository, on main (event schedule
 #    or workflow_dispatch), completed with conclusion success, whose head_sha is the
-#    remote main now; the newest such run with an artifact provimux-check-<tag> (--run
-#    only picks among such runs). Downloads that artifact and verifies it: result.json
-#    says pass for this tag and its old main is the run's head_sha; the bundle's tip is
-#    result.json's candidate.
+#    remote main now (and --expect-main, when given); the newest such run whose verdict
+#    artifact is provimux-check-<tag> (--run only picks among such runs). The artifact is
+#    the one the run's verdict job bound to itself (check_artifact in common.sh), never
+#    one found by name. Verifies it: result.json says pass for this tag and its old main
+#    is the run's head_sha; the bundle's tip is result.json's candidate.
 # 2. Rechecks the world: the upstream tag is still a published, non-draft, non-prerelease
 #    release at the recorded commit, the old base tag too; the remote main is the
 #    recorded old main; v<base>-pmx.* does not exist yet.
@@ -32,14 +35,17 @@
 #    asset, prints the run's conclusion and jobs, then closes the "sync: v<base>" issue.
 #
 #   --dry-run    everything except the push (shows git push --dry-run), no wait, no close
-#   --ci         for provimux-publish.yml (SYNC.md, "Publishing automatically"): no
-#                terminal (needs --yes or --dry-run), and git authenticates to github.com
-#                with the token in the environment variable PMX_PUSH_TOKEN, through a
-#                credential helper given in the environment (GIT_CONFIG_*): the token is
-#                never written to disk, to a URL or to the log. It is removed from the
-#                environment right after the push. With PMX_PUBLISH_STATE=<file>, writes
-#                "pushed" to that file once the push succeeded. Without --ci nothing
-#                changes: the owner's own git and gh credentials, as before.
+#   --expect-main <sha>  refuse unless the remote main, the check run's head_sha and the
+#                push lease are all exactly this commit
+#   --ci         for provimux-publish.yml (SYNC.md, "Publishing automatically"). It never
+#                sees the push token: it refuses to run when PROVIMUX_TOKEN or
+#                PMX_PUSH_TOKEN is in its environment. Two halves around the workflow's
+#                own push step:
+#                --plan <dir>  steps 1 to 4 without the question and without the push
+#                              (needs --run and --expect-main): leaves <dir>/plan.env and
+#                              the verified repository <dir>/work/repo.git for the push
+#                --wait <dir>  step 5 for the plan in <dir>, after the workflow pushed it
+#                Without --ci nothing changes: the owner's own git and gh credentials.
 #
 # Run it from a clone of ngvoicu/provimux (any branch, nothing is checked out or changed:
 # the work happens in a temporary repository that borrows this clone's objects).
@@ -49,17 +55,20 @@ here="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=common.sh
 . "$here/common.sh"
 
-usage() { sed -n '2,46p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,52p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 die() { echo "publish: $*" >&2; exit 1; }
 log() { echo "==> $*" >&2; }
 
-tag='' dry_run=0 yes=0 ci=0 run_id='' remote='' accept_dropped='' accept_changed=''
+tag='' dry_run=0 yes=0 ci=0 plan_dir='' wait_dir='' expect_main='' run_id='' remote='' accept_dropped='' accept_changed=''
 timeout_min=120
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run) dry_run=1 ;;
     --yes) yes=1 ;;
     --ci) ci=1 ;;
+    --plan) plan_dir="${2:?}"; shift ;;
+    --wait) wait_dir="${2:?}"; shift ;;
+    --expect-main) expect_main="${2:?}"; shift ;;
     --run) run_id="${2:?}"; shift ;;
     --remote) remote="${2:?}"; shift ;;
     --accept-dropped) accept_dropped="${2:?}"; shift ;;
@@ -76,21 +85,77 @@ done
 base="${tag#v}"
 pmx_tag="v$base-pmx.1"
 
-# --- CI: the push credential, from the environment only -------------------------------
+[[ -z "$expect_main" || "$expect_main" =~ $PMX_SHA_RE ]] || die "--expect-main takes a full commit SHA"
+
+# --- CI: never the token; plan or wait -------------------------------------------------
 if [[ $ci -eq 1 ]]; then
-  [[ -n "${PMX_PUSH_TOKEN:-}" ]] || die "--ci: no token in PMX_PUSH_TOKEN (the repository secret PROVIMUX_TOKEN is not set; SYNC.md, \"The token\"); nothing pushed"
-  [[ $yes -eq 1 || $dry_run -eq 1 ]] || die "--ci needs --yes or --dry-run (there is no terminal to confirm on)"
-  export GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never
-  # The helper is a shell function in the config value; it prints the token from the
-  # environment when git asks for github.com credentials. The empty credential.helper
-  # first drops any other helper.
-  # shellcheck disable=SC2016 # expanded by the helper's shell, not here
-  export GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=credential.helper GIT_CONFIG_VALUE_0='' \
-    GIT_CONFIG_KEY_1=credential.https://github.com.helper \
-    GIT_CONFIG_VALUE_1='!f() { test "$1" = get || exit 0; echo username=x-access-token; echo "password=$PMX_PUSH_TOKEN"; }; f'
+  [[ -z "${PROVIMUX_TOKEN:-}" && -z "${PMX_PUSH_TOKEN:-}" ]] ||
+    die "--ci: a push token is in the environment; publish.sh must never see it (only the workflow's push step has it)"
+  [[ -n "$plan_dir" || -n "$wait_dir" ]] && [[ -z "$plan_dir" || -z "$wait_dir" ]] ||
+    die "--ci needs exactly one of --plan <dir> or --wait <dir>"
+  if [[ -n "$plan_dir" ]]; then
+    [[ -n "$run_id" && -n "$expect_main" ]] || die "--ci --plan needs --run and --expect-main"
+  fi
+  export GIT_TERMINAL_PROMPT=0
+elif [[ -n "$plan_dir$wait_dir" ]]; then
+  die "--plan and --wait are for --ci"
 fi
-# drop_push_token: after the push, nothing else needs the token.
-drop_push_token() { unset PMX_PUSH_TOKEN GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_CONFIG_KEY_1 GIT_CONFIG_VALUE_1; }
+
+# --- 5. wait for the whole release run, then close the issue ---------------------------------
+# Done means: the provimux-release run for the tag finished successfully (every job:
+# archives, image, publish-release, formula, tap-publish, image-push, image-latest) and the GitHub
+# release is published with all its assets; only a run for the candidate commit counts.
+wait_and_close() {
+  local deadline s run_state run run_url url n
+  log "waiting for the provimux-release run of $pmx_tag and its release (up to $timeout_min minutes)"
+  deadline=$(( $(date +%s) + timeout_min * 60 ))
+  while :; do
+    s="$(release_state "$pmx_tag")"
+    run_state="$(release_run_state "$pmx_tag" "$candidate")"
+    log "release: $s; release run: $run_state"
+    case "$run_state" in
+      success) break ;;
+      failure:*) break ;;
+    esac
+    [[ $(date +%s) -lt $deadline ]] || die "timed out waiting for the release run of $pmx_tag (last: run $run_state, release $s); the issue stays open. Check it later (SYNC.md: \"Check a release\")."
+    sleep 30
+  done
+  run="$(release_run_id "$pmx_tag" "$candidate")"
+  run_url="https://github.com/$PMX_REPO/actions/runs/$run"
+  echo
+  echo "provimux-release run $run_url: ${run_state#failure:}"
+  [[ -n "$run" ]] && gh api "repos/$PMX_REPO/actions/runs/$run/jobs?per_page=100" \
+    --jq '.jobs[] | "  \(.conclusion // .status)\t\(.name)"' || true
+  if [[ "$run_state" != success ]]; then
+    die "the provimux-release run for $pmx_tag ended ${run_state#failure:}; the issue stays open (SYNC.md: \"Check a release\")"
+  fi
+  s="$(release_state "$pmx_tag")"
+  [[ "$s" == complete ]] || die "the release run succeeded but the release $pmx_tag is $s; the issue stays open"
+  url="https://github.com/$PMX_REPO/releases/tag/$pmx_tag"
+  echo "Published: $url"
+  for n in $(sync_issues "$base"); do
+    gh issue close "$n" -R "$PMX_REPO" --comment "Published $url (main ${old_main:0:12} -> ${candidate:0:12}): the release has all its assets and the provimux-release run succeeded (image push and tap included): $run_url" >/dev/null
+    echo "Closed issue #$n"
+  done
+}
+
+# plan_get FILE KEY PATTERN: the value of KEY in the plan file, checked against PATTERN.
+plan_get() {
+  local v
+  v="$(sed -n "s/^$2=//p" "$1" | head -n 1)"
+  [[ "$v" =~ $3 ]] || die "plan: $2 is '$v'"
+  echo "$v"
+}
+if [[ -n "$wait_dir" ]]; then
+  plan="$wait_dir/plan.env"
+  [[ -s "$plan" ]] || die "no plan in $wait_dir"
+  [[ "$(plan_get "$plan" TAG "$PMX_STABLE_RE")" == "$tag" ]] || die "the plan is for another tag"
+  pmx_tag="$(plan_get "$plan" PMX_TAG '^v[0-9]+\.[0-9]+\.[0-9]+-pmx\.1$')"
+  candidate="$(plan_get "$plan" CANDIDATE "$PMX_SHA_RE")"
+  old_main="$(plan_get "$plan" OLD_MAIN "$PMX_SHA_RE")"
+  wait_and_close
+  exit 0
+fi
 
 # --- where to push --------------------------------------------------------------------
 git rev-parse --git-dir >/dev/null 2>&1 || die "run it inside a clone of $PMX_REPO"
@@ -101,11 +166,20 @@ fi
 push_url="$(git remote get-url --push "$remote")"
 log "remote $remote ($push_url)"
 
-work="$(mktemp -d "${TMPDIR:-/tmp}/provimux-publish.XXXXXX")"
-trap 'rm -rf "${work:?}"' EXIT
+if [[ -n "$plan_dir" ]]; then
+  # Kept for the workflow's push step: the verified repository and the plan.
+  [[ ! -e "$plan_dir" ]] || die "--plan: $plan_dir exists already"
+  mkdir -p "$plan_dir/work"
+  work="$(cd "$plan_dir/work" && pwd)"
+else
+  work="$(mktemp -d "${TMPDIR:-/tmp}/provimux-publish.XXXXXX")"
+  trap 'rm -rf "${work:?}"' EXIT
+fi
 
 remote_main="$(git ls-remote "$push_url" refs/heads/main | awk '{print $1}')"
 [[ "$remote_main" =~ $PMX_SHA_RE ]] || die "cannot read main of $push_url"
+[[ -z "$expect_main" || "$remote_main" == "$expect_main" ]] ||
+  die "the remote main is $remote_main, not the expected $expect_main"
 
 # --- 1. the check run and its artifact -------------------------------------------------------
 # check_run_sha ID: the run's head_sha when ID is a successful provimux-check run of
@@ -119,20 +193,21 @@ if [[ -n "$run_id" ]]; then
     die "run $run_id is not a successful provimux-check run of $PMX_REPO on main"
   [[ "$run_sha" == "$remote_main" ]] ||
     die "run $run_id checked main $run_sha, but the remote main is $remote_main; run the check again"
+  bound="$(check_artifact "$run_id" "$work/artifact" 2>"$work/artifact.err")" ||
+    die "run $run_id: $(cat "$work/artifact.err")"
 else
-  # Newest unexpired artifact of that name whose run qualifies and checked the current main.
-  for id in $(gh api "repos/$PMX_REPO/actions/artifacts?name=provimux-check-$tag&per_page=100" \
-    --jq '.artifacts | map(select(.expired | not)) | sort_by(.created_at) | reverse | .[].workflow_run.id'); do
-    if run_sha="$(check_run_sha "$id")" && [[ "$run_sha" == "$remote_main" ]]; then
-      run_id="$id"
-      break
-    fi
+  # The newest qualifying run on the current main whose verdict artifact is for this tag.
+  for id in $(gh api "repos/$PMX_REPO/actions/workflows/provimux-check.yml/runs?branch=main&head_sha=$remote_main&status=success&per_page=50" \
+    --jq '.workflow_runs | sort_by(.created_at) | reverse | .[].id'); do
+    run_sha="$(check_run_sha "$id")" && [[ "$run_sha" == "$remote_main" ]] || continue
+    rm -rf "$work/artifact"
+    bound="$(check_artifact "$id" "$work/artifact" 2>/dev/null)" || continue
+    if [[ "${bound#* }" == "provimux-check-$tag" ]]; then run_id="$id"; break; fi
   done
-  [[ -n "$run_id" ]] || die "no successful provimux-check run on main for the current main ${remote_main:0:12} has an artifact provimux-check-$tag; run the check first (Actions → provimux-check)"
+  [[ -n "$run_id" ]] || die "no successful provimux-check run on main for the current main ${remote_main:0:12} has a verdict artifact provimux-check-$tag; run the check first (Actions → provimux-check)"
 fi
-log "check run https://github.com/$PMX_REPO/actions/runs/$run_id (main $run_sha)"
-gh run download "$run_id" -R "$PMX_REPO" -n "provimux-check-$tag" -D "$work/artifact" >/dev/null ||
-  die "cannot download the artifact provimux-check-$tag of run $run_id"
+[[ "${bound#* }" == "provimux-check-$tag" ]] || die "run $run_id's verdict artifact is ${bound#* }, not provimux-check-$tag"
+log "check run https://github.com/$PMX_REPO/actions/runs/$run_id (main $run_sha), verdict artifact ${bound%% *}"
 res="$work/artifact/result.json"
 bundle="$work/artifact/candidate.bundle"
 [[ -s "$res" ]] || die "the artifact has no result.json"
@@ -226,9 +301,14 @@ same "$work/wf-new" '.decisions.new_workflows[]' || die "result.json's new workf
 # Guard: the copy on the owner's current main (the remote main, checked to be the old main
 # and the check run's head_sha), on the candidate, with the exact base. Never the
 # candidate's or the artifact's copy.
+# On git objects only: nothing of the candidate is checked out (no checkout filters, no
+# hooks); the guard runs against a bare repository whose HEAD is the candidate.
 g show "$remote_main:.github/provimux/guard.sh" >"$work/guard.sh"
-g worktree add -q --detach "$work/candidate" "$candidate"
-if ! (cd "$work/candidate" && PMX_UPSTREAM="$PMX_UPSTREAM_URL" PMX_EXPECT_BASE="$tag" PMX_EXPECT_BASE_COMMIT="$upstream_commit" \
+gr="$work/guard.git"
+git init -q --bare "$gr"
+(cd "$repo/objects" && pwd) >"$gr/objects/info/alternates"
+git --git-dir="$gr" update-ref --no-deref HEAD "$candidate"
+if ! (cd "$work" && GIT_DIR="$gr" PMX_UPSTREAM="$PMX_UPSTREAM_URL" PMX_EXPECT_BASE="$tag" PMX_EXPECT_BASE_COMMIT="$upstream_commit" \
   bash "$work/guard.sh") >"$work/guard.log" 2>&1; then
   cat "$work/guard.log" >&2
   die "the guard rejects the candidate"
@@ -315,12 +395,28 @@ echo "  git push ${pushargs[*]} $push_url ${refs[*]}"
 for x in "${refs[@]}"; do echo "    ${x%%:*} -> ${x#*:}"; done
 echo
 
+if [[ -n "$plan_dir" ]]; then
+  # The workflow pushes exactly this, in its own step, with the lease on the expected main.
+  recheck
+  [[ "$old_main" == "$expect_main" ]] || die "the lease would be $old_main, not the expected main $expect_main"
+  {
+    echo "TAG=$tag"
+    echo "PMX_TAG=$pmx_tag"
+    echo "OLD_MAIN=$old_main"
+    echo "CANDIDATE=$candidate"
+    echo "UPSTREAM_COMMIT=$upstream_commit"
+    echo "PUSH_BASE_TAG=$([[ -z "$remote_base_tag" ]] && echo 1 || echo 0)"
+    echo "REPO=$repo"
+  } >"$plan_dir/plan.env"
+  echo "Plan written: $plan_dir/plan.env (nothing pushed)."
+  exit 0
+fi
+
 if [[ $dry_run -eq 1 ]]; then
   recheck
   log "dry run: git push --dry-run"
   g push --dry-run "${pushargs[@]}" "$push_url" "${refs[@]}" || die "git push --dry-run failed"
   echo
-  drop_push_token
   echo "Dry run: nothing was pushed."
   exit 0
 fi
@@ -335,41 +431,6 @@ log "rechecking upstream's $tag and the remote before pushing"
 recheck
 push_refs
 g push "${pushargs[@]}" "$push_url" "${refs[@]}" || die "the push failed; nothing was changed on $remote (atomic)"
-drop_push_token
-[[ -z "${PMX_PUBLISH_STATE:-}" ]] || echo pushed >"$PMX_PUBLISH_STATE"
 echo "Pushed."
 
-# --- 5. wait for the whole release run, then close the issue ---------------------------------
-# Done means: the provimux-release run for the tag finished successfully (every job:
-# archives, image, publish-release, formula, tap-publish, image-push, image-latest) and the GitHub
-# release is published with all its assets; only a run for the candidate commit counts.
-log "waiting for the provimux-release run of $pmx_tag and its release (up to $timeout_min minutes)"
-deadline=$(( $(date +%s) + timeout_min * 60 ))
-while :; do
-  s="$(release_state "$pmx_tag")"
-  run_state="$(release_run_state "$pmx_tag" "$candidate")"
-  log "release: $s; release run: $run_state"
-  case "$run_state" in
-    success) break ;;
-    failure:*) break ;;
-  esac
-  [[ $(date +%s) -lt $deadline ]] || die "timed out waiting for the release run of $pmx_tag (last: run $run_state, release $s); the issue stays open. Check it later (SYNC.md: \"Check a release\")."
-  sleep 30
-done
-run="$(release_run_id "$pmx_tag" "$candidate")"
-run_url="https://github.com/$PMX_REPO/actions/runs/$run"
-echo
-echo "provimux-release run $run_url: ${run_state#failure:}"
-[[ -n "$run" ]] && gh api "repos/$PMX_REPO/actions/runs/$run/jobs?per_page=100" \
-  --jq '.jobs[] | "  \(.conclusion // .status)\t\(.name)"' || true
-if [[ "$run_state" != success ]]; then
-  die "the provimux-release run for $pmx_tag ended ${run_state#failure:}; the issue stays open (SYNC.md: \"Check a release\")"
-fi
-s="$(release_state "$pmx_tag")"
-[[ "$s" == complete ]] || die "the release run succeeded but the release $pmx_tag is $s; the issue stays open"
-url="https://github.com/$PMX_REPO/releases/tag/$pmx_tag"
-echo "Published: $url"
-for n in $(sync_issues "$base"); do
-  gh issue close "$n" -R "$PMX_REPO" --comment "Published $url (main ${old_main:0:12} -> ${candidate:0:12}): the release has all its assets and the provimux-release run succeeded (image push and tap included): $run_url" >/dev/null
-  echo "Closed issue #$n"
-done
+wait_and_close
