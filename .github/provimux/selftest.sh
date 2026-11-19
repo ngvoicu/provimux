@@ -19,13 +19,18 @@
 #                 SHA (published), a failed check job (not published); a failure result
 #                 (every detail shown)
 #   guard.sh      on git objects only (a bare repository, HEAD = the candidate)
+#   archive       git archive = the commit's files (names, blobs, modes): plain (with an
+#                 executable and a symlink) passes; export-ignore and export-subst fail
 #   autopublish   decide (check_artifact): only the artifact the verdict job of the run's
 #                 latest attempt bound by its one annotation counts (a planted artifact of
 #                 the same run is ignored; another run's, a second annotation, a name or
 #                 digest mismatch, an expired artifact, a missing verdict job fail); the
 #                 run must be on the expected main; a typed tag only confirms the result.
-#                 notify: no token, refused (reasons shown, one marker per reason),
-#                 pushed but release incomplete
+#                 A typed tag that already has a -pmx tag is refused.
+#                 notify reads the remote first: no token; refused (nothing on the remote);
+#                 main moved; main = candidate without tags; -pmx tag with an incomplete
+#                 release (rerun command, never "publish again"); a lost push
+#                 acknowledgement with a complete release; remote unreadable; no tag
 #   publish.sh    --ci: refuses a push token in its environment, and bad mode flags
 # Needs bash 3.2+, git, jq.
 set -euo pipefail
@@ -177,6 +182,34 @@ expect "reachable base tag moved upstream: fails" fail "$(guard env)"
 contains "  ... says moved" "$tmp/guard.out" "moved"
 git -C "$up" tag -d v1.1.0 >/dev/null && git -C "$up" tag -a -m v1.1.0 v1.1.0 "$v110"
 
+echo "# archive_matches (tested tree = released tree)"
+ar="$tmp/ar"
+git init -q -b main "$ar"
+(
+  cd "$ar"
+  mkdir -p pkg
+  echo 'package pkg' >pkg/a.go; echo 'package pkg' >pkg/b.go
+  printf '#!/bin/sh\n' >run.sh && chmod +x run.sh
+  ln -s pkg/a.go link.go
+  git add -A && git commit -q -m one
+)
+# archive_case COMMIT: pass | fail, the differences in $tmp/ar.rep
+archive_case() {
+  rm -rf "$tmp/ar.x" && mkdir -p "$tmp/ar.x"
+  git -C "$ar" archive --format=tar "$1" | tar -x -C "$tmp/ar.x"
+  # shellcheck source=common.sh
+  (. "$here/common.sh" && archive_matches "$ar/.git" "$1" "$tmp/ar.x" "$tmp/ar.rep") && echo pass || echo fail
+}
+expect "plain tree with an executable and a symlink: archive matches" pass "$(archive_case "$(git -C "$ar" rev-parse HEAD)")"
+(cd "$ar" && echo 'pkg/b.go export-ignore' >.gitattributes && git add -A && git commit -q -m ignore)
+expect "export-ignore on a Go file: mismatch" fail "$(archive_case "$(git -C "$ar" rev-parse HEAD)")"
+contains "  ... names the file left out" "$tmp/ar.rep" "- 100644"
+contains "  ... pkg/b.go" "$tmp/ar.rep" "pkg/b.go"
+# shellcheck disable=SC2016 # a literal export-subst placeholder
+(cd "$ar" && printf '// $Format:%%H$\npackage pkg\n' >pkg/b.go && echo 'pkg/b.go export-subst' >.gitattributes && git add -A && git commit -q -m subst)
+expect "export-subst on a Go file: mismatch" fail "$(archive_case "$(git -C "$ar" rev-parse HEAD)")"
+contains "  ... the changed blob shown" "$tmp/ar.rep" "+ 100644"
+
 echo "# release-meta.sh"
 git -C "$pmx" tag -d v1.1.0 >/dev/null
 git -C "$pmx" tag v1.1.0-pmx.1 HEAD
@@ -327,7 +360,7 @@ checkrun 42
 # A test job (it runs the candidate's code) uploads a passing artifact for another tag;
 # the verdict bound its own, which failed.
 artifact 501 42 provimux-check-v1.2.0 fail v1.2.0; artifact 502 42 provimux-check-v1.3.0 pass v1.3.0
-expect "planted passing artifact, bound verdict says fail: skip (the plant is ignored)" "skip   " "$(decide env)"
+expect "planted passing artifact, bound verdict says fail: skip (the plant is ignored)" "skip v1.2.0  " "$(decide env)"
 expect "  ... and a typed v1.3.0 cannot pick the plant: error" "exit 1" "$(decide PMX_TAG_INPUT=v1.3.0)"
 artifact 501 42 provimux-check-v1.2.0 pass v1.2.0
 expect "planted artifact, bound verdict says pass: publish the bound one" "publish v1.2.0 42 501" "$(decide env)"
@@ -360,41 +393,74 @@ checkrun 42
 artifact 503 42 provimux-check-none published ''; bind '503 provimux-check-none'
 expect "the check selected no release (no digest given): skip" "skip   " "$(decide env)"
 artifact 504 42 provimux-check-v1.1.0 pass v1.1.0; bind '504 provimux-check-v1.1.0 sha256:aa'
-expect "v1.1.0-pmx.1 exists already (second run, re-run): skip" "skip   " "$(decide env)"
+expect "v1.1.0-pmx.1 exists already (second run, re-run): skip" "skip v1.1.0  " "$(decide env)"
 contains "  ... says already exists" "$tmp/decide.log" "already exists"
 expect "no check run id: error" "exit 1" "$(decide PMX_CHECK_RUN=)"
 
-echo "# autopublish.sh notify"
-notify() { # notify OUTCOME LOG-TEXT STATE-TEXT: the dry-run issue text in $tmp/notify.out, the title printed
-  printf '%s' "$2" >"$tmp/publish.log"; printf '%s' "$3" >"$tmp/publish.state"
-  PMX_NOTIFY_DRY_RUN=1 TAG=v1.2.0 OUTCOME="$1" LOG="$tmp/publish.log" STATE="$tmp/publish.state" RUN_URL=https://example.invalid/run \
-    bash "$here/autopublish.sh" notify >"$tmp/notify.out" 2>&1 || { echo "exit $?"; return; }
+echo "# autopublish.sh notify (reads the remote first)"
+# notify TAG OUTCOME LOG-TEXT [ENV...]: the dry-run issue text in $tmp/notify.out, the title printed.
+notify() {
+  local t=$1 o=$2 l=$3; shift 3
+  printf '%s' "$l" >"$tmp/publish.log"
+  env PATH="$stub/bin:$PATH" STUB_API="$stub/api" PMX_REPO=test/provimux PMX_REPO_URL="$remote" \
+    PMX_NOTIFY_DRY_RUN=1 TAG="$t" OUTCOME="$o" LOG="$tmp/publish.log" EXPECT_MAIN="$pmx_sha" RUN_URL=https://example.invalid/run \
+    "$@" bash "$here/autopublish.sh" notify >"$tmp/notify.out" 2>&1 || { echo "exit $?"; return; }
   sed -n 's/^title=//p' "$tmp/notify.out"
 }
-expect "no token: the issue says publishing waits for it" "sync: v1.2.0 — ready, publishing waits for PROVIMUX_TOKEN" "$(notify no-token '' '')"
+expect "no token, nothing on the remote: waits for the token" "sync: v1.2.0 — ready, publishing waits for PROVIMUX_TOKEN" "$(notify v1.2.0 no-token '')"
 contains "  ... names the manual path" "$tmp/notify.out" "publish.sh v1.2.0"
+contains "  ... shows main unchanged" "$tmp/notify.out" "(the checked main: unchanged)"
 log1='==> remote origin
 publish: not accepted (--accept-dropped): 0123456789abcdef0123456789abcdef01234567 owner patch
 publish: refused: accept each item above by name (SYNC.md), or fix the stack
 '
-expect "dropped patch: refused, owner needed" "sync: v1.2.0 — publish refused, owner needed" "$(notify failed "$log1" '')"
+expect "dropped patch, nothing on the remote: refused, owner needed" "sync: v1.2.0 — publish refused, owner needed" "$(notify v1.2.0 failed "$log1")"
 contains "  ... the reason is shown" "$tmp/notify.out" "not accepted (--accept-dropped): 0123456789ab"
 lacks "  ... progress lines are not" "$tmp/notify.out" "remote origin"
 contains "  ... says nothing was pushed" "$tmp/notify.out" "nothing was pushed"
+# shellcheck disable=SC2016 # a literal Markdown table row
+contains "  ... and that no -pmx tag exists" "$tmp/notify.out" '| `v1.2.0-pmx.*` | absent |'
 m1="$(sed -n 2p "$tmp/notify.out")"
-notify failed "publish: the range-diff is empty or has commits not in the old main: see /tmp/x/provimux-publish.AbC123/range-diff.txt" '' >/dev/null
+notify v1.2.0 failed "publish: the range-diff is empty or has commits not in the old main: see /tmp/x/provimux-publish.AbC123/range-diff.txt" >/dev/null
 m2="$(sed -n 2p "$tmp/notify.out")"
-notify failed "publish: the range-diff is empty or has commits not in the old main: see /var/y/provimux-publish.Zz9/range-diff.txt" '' >/dev/null
+notify v1.2.0 failed "publish: the range-diff is empty or has commits not in the old main: see /var/y/provimux-publish.Zz9/range-diff.txt" >/dev/null
 expect "same reason, another temp dir: same marker (one comment)" "$m2" "$(sed -n 2p "$tmp/notify.out")"
 if [[ "$m1" != "$m2" ]]; then ok "  ... another reason: another marker"; else bad "  ... another reason: another marker ($m1)"; fi
-expect "remote main moved: refused" "sync: v1.2.0 — publish refused, owner needed" \
-  "$(notify failed 'publish: the remote main is aaaa, but the check rebased bbbb; run the check again' '')"
-expect "publish.sh broke without a reason: refused" "sync: v1.2.0 — publish refused, owner needed" "$(notify failed 'boom' '')"
+expect "publish.sh broke without a reason, select stage (no checked main): refused" "sync: v1.2.0 — publish refused, owner needed" \
+  "$(notify v1.2.0 failed 'boom' EXPECT_MAIN=)"
 contains "  ... says so" "$tmp/notify.out" "ended without a reason"
-expect "pushed, release run failed: pushed, release not complete" "sync: v1.2.0 — pushed, release not complete" \
-  "$(notify failed 'publish: the provimux-release run for v1.2.0-pmx.1 ended failure; the issue stays open' pushed)"
-lacks "  ... no publish command after a push" "$tmp/notify.out" "publish.sh v1.2.0 --dry-run"
-expect "no valid tag: nothing to do" "" "$(TAG='x; y' PMX_NOTIFY_DRY_RUN=1 bash "$here/autopublish.sh" notify 2>/dev/null | sed -n 's/^title=//p')"
+contains "  ... and that it stopped before its push" "$tmp/notify.out" "stopped before its push step"
+other=0123456789012345678901234567890123456789
+expect "main is another commit than the checked one: main moved, waits for the next check" "sync: v1.2.0 — main moved, waits for the next check" \
+  "$(notify v1.2.0 failed 'publish: main is now x' EXPECT_MAIN="$other")"
+lacks "  ... no publish command" "$tmp/notify.out" "publish.sh v1.2.0"
+printf 'CANDIDATE=%s\nUPSTREAM_COMMIT=%s\n' "$pmx_sha" "$v110" >"$tmp/plan.env"
+expect "main is the candidate, no -pmx tag: main pushed without its tags" "sync: v1.2.0 — main pushed without its tags, owner needed" \
+  "$(notify v1.2.0 failed 'publish: git push of v1.2.0 reported a failure' EXPECT_MAIN="$other" PLAN="$tmp/plan.env")"
+contains "  ... gives the tag push" "$tmp/notify.out" "$pmx_sha:refs/tags/v1.2.0-pmx.1"
+# v1.1.0-pmx.1 exists on the remote; its release is a draft (above), its release run (id 7) succeeded.
+expect "-pmx tag exists, release a draft: pushed, release not complete" "sync: v1.1.0 — pushed, release not complete, owner needed" \
+  "$(notify v1.1.0 failed 'publish: the provimux-release run for v1.1.0-pmx.1 ended failure; the issue stays open')"
+contains "  ... says how to rerun the release run" "$tmp/notify.out" "gh run rerun 7 --failed -R test/provimux"
+lacks "  ... never says to publish again" "$tmp/notify.out" "publish.sh v1.1.0"
+lacks "  ... nor that nothing was pushed" "$tmp/notify.out" "nothing was pushed"
+jq '.draft = false' "$stub/api/repos_test_provimux_releases_tags_v1.1.0-pmx.1.json" >"$tmp/d.json"
+mv "$tmp/d.json" "$stub/api/repos_test_provimux_releases_tags_v1.1.0-pmx.1.json"
+expect "push reported a failure but the remote has the complete release (lost acknowledgement): released" "sync: v1.1.0 — released" \
+  "$(notify v1.1.0 failed 'publish: git push of v1.1.0 reported a failure')"
+lacks "  ... not 'nothing was pushed'" "$tmp/notify.out" "nothing was pushed"
+expect "remote unreadable: state unknown" "sync: v1.2.0 — publish failed, state unknown, owner needed" \
+  "$(notify v1.2.0 failed 'publish: x' PMX_REPO_URL="$tmp/no-such-remote.git")"
+contains "  ... says to look before acting" "$tmp/notify.out" "Do not publish or rerun anything before checking"
+expect "no valid tag (select failed early): provimux-publish: failed" "provimux-publish: failed" \
+  "$(notify 'x; y' failed '' WHY='cannot download the artifact')"
+contains "  ... the select job's reason is shown" "$tmp/notify.out" "cannot download the artifact"
+
+echo "# autopublish.sh decide: a typed tag that is already released"
+expect "dispatch of v1.1.0, which has v1.1.0-pmx.1: refused (red), before any run is read" "exit 1" \
+  "$(decide PMX_TAG_INPUT=v1.1.0 PMX_CHECK_RUN=999)"
+contains "  ... names the existing tag" "$tmp/decide.log" "already has v1.1.0-pmx.1"
+expect "  ... and outputs the tag for the notification" "v1.1.0" "$(sed -n 's/^tag=//p' "$tmp/decide.out")"
 
 echo "# publish.sh --ci"
 ci() { (cd "$pmx" && env -u PMX_PUSH_TOKEN -u PROVIMUX_TOKEN "$@") >"$tmp/ci.out" 2>&1 && echo "exit 0" || echo "exit $?"; }
