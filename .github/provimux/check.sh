@@ -215,15 +215,44 @@ do_select() {
 
 # --- run ------------------------------------------------------------------------------
 # gotest DIR OUTPREFIX ARGS...: go test -json, keeping the exit status in OUTPREFIX.exit.
+# go test runs in its own process group under a wall-clock limit ($PMX_TEST_LIMIT seconds,
+# default 2400): a hang (a stopped or starved test binary is not caught by -timeout) kills
+# the group, the exit status is then 124 and the packages without a result fail the check.
+# -p $PMX_TEST_P (default 2) packages at a time.
 gotest() {
-  local dir=$1 prefix=$2 e
+  local dir=$1 prefix=$2 e pid waited=0 limit="${PMX_TEST_LIMIT:-2400}"
   shift 2
   set +e
-  (cd "$dir" && go test -json -count=1 -timeout 20m "$@") >"$prefix.json" 2>"$prefix.stderr"
+  set -m
+  (cd "$dir" && exec go test -json -count=1 -p "${PMX_TEST_P:-2}" -timeout 15m "$@" >"$prefix.json" 2>"$prefix.stderr") &
+  pid=$!
+  set +m
+  while kill -0 "$pid" 2>/dev/null; do
+    if [[ $waited -ge $limit ]]; then
+      reason "go test ($(basename "$prefix")) ran longer than ${limit}s and was killed"
+      kill -TERM -- "-$pid" 2>/dev/null
+      sleep 10
+      kill -KILL -- "-$pid" 2>/dev/null
+      break
+    fi
+    sleep 5
+    waited=$((waited + 5))
+  done
+  wait "$pid"
   e=$?
+  [[ $waited -ge $limit ]] && e=124
   set -e
   echo "$e" >"$prefix.exit"
   jq -R -s -f "$here/testsum.jq" "$prefix.json" >"$prefix.sum.json"
+}
+
+# sample_resources FILE: memory, load and the largest processes every 60s (Linux), until killed.
+sample_resources() {
+  command -v free >/dev/null 2>&1 || return 0
+  while :; do
+    { date -u +%FT%TZ; uptime; free -m; ps -eo pid,etime,stat,rss,args --sort=-rss | head -n 12 | cut -c1-200; echo; } >>"$1" 2>&1
+    sleep 60
+  done
 }
 
 # export_tree COMMIT DIR: the commit's files without .git (tests cannot reach the repository).
@@ -233,7 +262,7 @@ export_tree() {
 }
 
 do_run() {
-  local wt stopped p e op a b subj line tc tt
+  local wt stopped p e op a b subj line tc tt sampler
   # shellcheck disable=SC1090
   . "$state"
   [[ "$status" == check ]] || { log "nothing to run (status $status)"; return; }
@@ -333,6 +362,8 @@ do_run() {
   (cd "$tt" && go list -e -f '{{.ImportPath}}' ./...) 2>"$out/logs/list-tag.stderr" | jq -R -s 'split("\n") | map(select(length > 0))' >"$out/pkgs-tag.json"
   [[ "$(jq length "$out/pkgs-candidate.json")" -gt 0 ]] || reason "go list ./... finds no package on the candidate"
   [[ "$(jq length "$out/pkgs-tag.json")" -gt 0 ]] || reason "go list ./... finds no package on $tag"
+  sample_resources "$out/logs/resources.log" &
+  sampler=$!
   log "go test ./... (candidate)"
   gotest "$tc" "$out/logs/test-candidate" ./...
   log "go test ./... ($tag)"
@@ -347,6 +378,7 @@ do_run() {
     gotest "$tc" "$out/logs/test-rerun" $(cat "$out/rerun-pkgs.txt")
     cp "$out/logs/test-rerun.sum.json" "$out/logs/rerun.sum.json"
   fi
+  kill "$sampler" 2>/dev/null || true
   jq -n --slurpfile cand "$out/logs/test-candidate.sum.json" --slurpfile pris "$out/logs/test-tag.sum.json" \
     --slurpfile rerun "$out/logs/rerun.sum.json" \
     --slurpfile cpkgs "$out/pkgs-candidate.json" --slurpfile ppkgs "$out/pkgs-tag.json" \
