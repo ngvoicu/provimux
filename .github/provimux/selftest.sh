@@ -18,11 +18,15 @@
 #   report.sh     a successful release run for the wrong SHA (not published), the right
 #                 SHA (published), a failed check job (not published); a failure result
 #                 (every detail shown)
-#   autopublish   decide: only a passing check run on main whose artifact says pass for
-#                 its tag and whose v<base>-pmx.* does not exist yet publishes; malformed
-#                 artifacts fail; dispatch inputs are checked. notify: no token, refused
-#                 (reasons shown, one marker per reason), pushed but release incomplete
-#   publish.sh    --ci without the token, or without --yes/--dry-run: refused
+#   guard.sh      on git objects only (a bare repository, HEAD = the candidate)
+#   autopublish   decide (check_artifact): only the artifact the verdict job of the run's
+#                 latest attempt bound by its one annotation counts (a planted artifact of
+#                 the same run is ignored; another run's, a second annotation, a name or
+#                 digest mismatch, an expired artifact, a missing verdict job fail); the
+#                 run must be on the expected main; a typed tag only confirms the result.
+#                 notify: no token, refused (reasons shown, one marker per reason),
+#                 pushed but release incomplete
+#   publish.sh    --ci: refuses a push token in its environment, and bad mode flags
 # Needs bash 3.2+, git, jq.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -155,6 +159,14 @@ expect "base tag only upstream (no local tag): passes" pass "$(guard env)"
 contains "  ... on base v1.1.0" "$tmp/guard.out" "Base: v1.1.0"
 expect "expected base v1.1.0 at its commit: passes" pass "$(guard env PMX_EXPECT_BASE=v1.1.0 PMX_EXPECT_BASE_COMMIT="$v110")"
 expect "expected base v1.0.0 (older than the base): fails" fail "$(guard env PMX_EXPECT_BASE=v1.0.0)"
+# As publish.sh runs it: a bare repository whose HEAD is the candidate, nothing checked out.
+bare="$tmp/guard-bare.git"
+git init -q --bare "$bare"
+(cd "$pmx/.git/objects" && pwd) >"$bare/objects/info/alternates"
+git --git-dir="$bare" update-ref --no-deref HEAD "$(git -C "$pmx" rev-parse HEAD)"
+if (cd "$tmp" && GIT_DIR="$bare" PMX_UPSTREAM="$up" PMX_EXPECT_BASE=v1.1.0 PMX_EXPECT_BASE_COMMIT="$v110" bash "$here/guard.sh") >"$tmp/guard.out" 2>&1; then
+  ok "guard on git objects only (bare repository, HEAD = candidate): passes"
+else bad "guard on git objects only (bare repository, HEAD = candidate): passes ($(tail -n 1 "$tmp/guard.out"))"; fi
 git -C "$pmx" tag v1.1.0 "$v110"
 git -C "$up" tag -d v1.1.0 >/dev/null
 expect "reachable base tag withdrawn upstream: fails" fail "$(guard env)"
@@ -263,58 +275,94 @@ expect "rebase failure: reported as failed" fail "$(report "$tmp/fail2.json" suc
 contains "  ... rebase stop shown" "$tmp/report.out" "The rebase stopped at"
 
 # --- autopublish.sh and publish.sh --ci ---------------------------------------------------------------
-echo "# autopublish.sh decide"
-# checkrun ID [JQ]: a provimux-check run of test/provimux on main that passed (JQ edits it).
+echo "# autopublish.sh decide (check_artifact)"
+# checkrun ID [JQ]: a provimux-check run of test/provimux on main that passed, attempt 1 (JQ edits it).
 checkrun() {
-  jq -n --arg sha "$pmx_sha" '{id: 42, path: ".github/workflows/provimux-check.yml", head_branch: "main",
+  jq -n --arg sha "$pmx_sha" --argjson id "$1" '{id: $id, run_attempt: 1, path: ".github/workflows/provimux-check.yml", head_branch: "main",
     event: "schedule", status: "completed", conclusion: "success", head_sha: $sha,
     repository: {full_name: "test/provimux"}, head_repository: {full_name: "test/provimux"}}' |
     jq "${2:-.}" >"$stub/api/repos_test_provimux_actions_runs_$1.json"
 }
-# artifacts ID NAME...: the run's artifacts.
-artifacts() {
-  local id=$1; shift
-  printf '%s\n' "$@" | jq -R -s '{artifacts: (split("\n") | map(select(length > 0) | {name: ., expired: false}))}' \
-    >"$stub/api/repos_test_provimux_actions_runs_${id}_artifacts_per_page_100.json"
+# jobs RUN ATTEMPT NAME...: the jobs of that attempt (the job "verdict" gets id 900).
+jobs() {
+  local run=$1 att=$2; shift 2
+  printf '%s\n' "$@" | jq -R -s 'split("\n") | map(select(length > 0)) | to_entries
+    | {jobs: map({name: .value, id: (if .value == "verdict" then 900 else 800 + .key end)})}' \
+    >"$stub/api/repos_test_provimux_actions_runs_${run}_attempts_${att}_jobs_per_page_100.json"
 }
-# result NAME STATUS TAG: artifact NAME's result.json.
-result() { mkdir -p "$stub/api/artifact-$1"; jq -n --arg s "$2" --arg t "$3" '{status: $s, upstream: {tag: $t}}' >"$stub/api/artifact-$1/result.json"; }
-decide() { # decide ENV...: "<action> <tag> <run>" (or "exit N")
+# bind MESSAGE...: the verdict job's annotations titled provimux-check-artifact (plus an unrelated one).
+bind() {
+  { printf '%s\n' "$@" | jq -R -s 'split("\n") | map(select(length > 0) | {title: "provimux-check-artifact", message: .})'
+    echo '[{"title": "other", "message": "1 provimux-check-v9.9.9"}]'; } | jq -s 'add' \
+    >"$stub/api/repos_test_provimux_check-runs_900_annotations_per_page_100.json"
+}
+# artifact ID RUN NAME STATUS TAG [JQ]: an artifact of RUN with a result.json (JQ edits its metadata).
+artifact() {
+  local d="$tmp/art-$1"
+  rm -rf "$d"; mkdir -p "$d"
+  jq -n --arg s "$4" --arg t "$5" '{status: $s, upstream: {tag: $t}}' >"$d/result.json"
+  (cd "$d" && zip -q a.zip result.json) && mv "$d/a.zip" "$stub/api/repos_test_provimux_actions_artifacts_$1_zip.json"
+  jq -n --argjson id "$1" --argjson run "$2" --arg n "$3" '{id: $id, name: $n, expired: false, digest: "sha256:aa", workflow_run: {id: $run}}' |
+    jq "${6:-.}" >"$stub/api/repos_test_provimux_actions_artifacts_$1.json"
+}
+decide() { # decide ENV...: "<action> <tag> <run> <artifact>" (or "exit N")
   : >"$tmp/decide.out"
   env PATH="$stub/bin:$PATH" STUB_API="$stub/api" PMX_REPO=test/provimux PMX_REPO_URL="$remote" \
-    GITHUB_OUTPUT="$tmp/decide.out" "$@" bash "$here/autopublish.sh" decide >"$tmp/decide.log" 2>&1 || { echo "exit $?"; return; }
-  echo "$(sed -n 's/^action=//p' "$tmp/decide.out") $(sed -n 's/^tag=//p' "$tmp/decide.out") $(sed -n 's/^run=//p' "$tmp/decide.out")"
+    GITHUB_OUTPUT="$tmp/decide.out" PMX_CHECK_RUN=42 PMX_EXPECT_MAIN="$pmx_sha" "$@" \
+    bash "$here/autopublish.sh" decide >"$tmp/decide.log" 2>&1 || { echo "exit $?"; return; }
+  echo "$(sed -n 's/^action=//p' "$tmp/decide.out") $(sed -n 's/^tag=//p' "$tmp/decide.out") $(sed -n 's/^run=//p' "$tmp/decide.out") $(sed -n 's/^artifact=//p' "$tmp/decide.out")"
 }
-wr() { decide PMX_EVENT=workflow_run PMX_CHECK_RUN=42; }
-checkrun 42 '.conclusion = "failure"'; artifacts 42 provimux-check-v1.2.0; result provimux-check-v1.2.0 pass v1.2.0
-expect "check run failed: skip" "skip  " "$(wr)"
+checkrun 42; jobs 42 1 prepare 'test (candidate)' 'test (tag)' verdict report
+artifact 501 42 provimux-check-v1.2.0 pass v1.2.0; bind '501 provimux-check-v1.2.0 sha256:aa'
+expect "bound verdict artifact says pass: publish v1.2.0 from run 42, artifact 501" "publish v1.2.0 42 501" "$(decide env)"
+checkrun 42 '.conclusion = "failure"'
+expect "check run failed: skip" "skip   " "$(decide env)"
 checkrun 42 '.head_branch = "feature"'
-expect "check run not on main: skip" "skip  " "$(wr)"
+expect "check run not on main: skip" "skip   " "$(decide env)"
 checkrun 42 '.event = "push"'
-expect "check run started by a push: skip" "skip  " "$(wr)"
-checkrun 42; artifacts 42 provimux-check-none
-expect "check selected no release: skip" "skip  " "$(wr)"
-artifacts 42 provimux-check-v1.2.0; result provimux-check-v1.2.0 published v1.2.0
-expect "status published: skip" "skip  " "$(wr)"
-result provimux-check-v1.2.0 fail v1.2.0
-expect "status fail (a green check run): skip" "skip  " "$(wr)"
-result provimux-check-v1.2.0 pass v1.2.0
-expect "status pass, no -pmx tag yet: publish v1.2.0 from run 42" "publish v1.2.0 42" "$(wr)"
-result provimux-check-v1.2.0 pass v1.3.0
-expect "result.json for another tag than the artifact: error" "exit 1" "$(wr)"
-artifacts 42 provimux-check-v1.1.0; result provimux-check-v1.1.0 pass v1.1.0
-expect "v1.1.0-pmx.1 exists already (second run, re-run): skip" "skip  " "$(wr)"
+expect "check run started by a push: skip" "skip   " "$(decide env)"
+checkrun 42 '.head_sha = "0123456789012345678901234567890123456789"'
+expect "check run of an older main: error" "exit 1" "$(decide env)"
+checkrun 42
+# A test job (it runs the candidate's code) uploads a passing artifact for another tag;
+# the verdict bound its own, which failed.
+artifact 501 42 provimux-check-v1.2.0 fail v1.2.0; artifact 502 42 provimux-check-v1.3.0 pass v1.3.0
+expect "planted passing artifact, bound verdict says fail: skip (the plant is ignored)" "skip   " "$(decide env)"
+expect "  ... and a typed v1.3.0 cannot pick the plant: error" "exit 1" "$(decide PMX_TAG_INPUT=v1.3.0)"
+artifact 501 42 provimux-check-v1.2.0 pass v1.2.0
+expect "planted artifact, bound verdict says pass: publish the bound one" "publish v1.2.0 42 501" "$(decide env)"
+expect "typed tag = the bound result's: publish" "publish v1.2.0 42 501" "$(decide PMX_TAG_INPUT=v1.2.0)"
+expect "typed tag differs from the bound result's: error" "exit 1" "$(decide PMX_TAG_INPUT=v1.3.0)"
+expect "typed tag not vX.Y.Z: error" "exit 1" "$(decide 'PMX_TAG_INPUT=v1.2.0; true')"
+bind '502 provimux-check-v1.3.0 sha256:aa'
+artifact 502 43 provimux-check-v1.3.0 pass v1.3.0
+expect "annotation names an artifact of another run: error" "exit 1" "$(decide env)"
+artifact 502 42 provimux-check-v1.3.0 pass v1.3.0
+bind '501 provimux-check-v1.2.0 sha256:aa' '502 provimux-check-v1.3.0 sha256:aa'
+expect "two binding annotations: error" "exit 1" "$(decide env)"
+bind
+expect "no binding annotation: error" "exit 1" "$(decide env)"
+bind '501 provimux-check-v1.3.0 sha256:aa'
+expect "annotation's name is not the artifact's: error" "exit 1" "$(decide env)"
+bind '501 provimux-check-v1.2.0 sha256:bb'
+expect "digest differs: error" "exit 1" "$(decide env)"
+bind '501 provimux-check-v1.2.0 sha256:aa'
+artifact 501 42 provimux-check-v1.2.0 pass v1.2.0 '.expired = true'
+expect "bound artifact expired: error" "exit 1" "$(decide env)"
+artifact 501 42 provimux-check-v1.2.0 pass v1.3.0
+expect "result.json for another tag than its artifact: error" "exit 1" "$(decide env)"
+artifact 501 42 provimux-check-v1.2.0 pass v1.2.0
+checkrun 42 '.run_attempt = 2'; jobs 42 2 prepare report
+expect "re-run attempt 2 without a verdict job: error (attempt 1's is not used)" "exit 1" "$(decide env)"
+jobs 42 2 prepare verdict verdict
+expect "two verdict jobs: error" "exit 1" "$(decide env)"
+checkrun 42
+artifact 503 42 provimux-check-none published ''; bind '503 provimux-check-none'
+expect "the check selected no release (no digest given): skip" "skip   " "$(decide env)"
+artifact 504 42 provimux-check-v1.1.0 pass v1.1.0; bind '504 provimux-check-v1.1.0 sha256:aa'
+expect "v1.1.0-pmx.1 exists already (second run, re-run): skip" "skip   " "$(decide env)"
 contains "  ... says already exists" "$tmp/decide.log" "already exists"
-artifacts 42 provimux-check-v1.2.0 provimux-check-v1.3.0
-expect "two check artifacts: error" "exit 1" "$(wr)"
-artifacts 42 'provimux-check-v1.2.0;x'
-expect "artifact name not a tag: error" "exit 1" "$(wr)"
-artifacts 42
-expect "no check artifact: error" "exit 1" "$(wr)"
-expect "dispatch v1.2.0: publish, publish.sh picks the run" "publish v1.2.0 " "$(decide PMX_EVENT=workflow_dispatch PMX_TAG_INPUT=v1.2.0)"
-expect "dispatch with run 7: publish from run 7" "publish v1.2.0 7" "$(decide PMX_EVENT=workflow_dispatch PMX_TAG_INPUT=v1.2.0 PMX_RUN_INPUT=7)"
-expect "dispatch, tag not vX.Y.Z: error" "exit 1" "$(decide PMX_EVENT=workflow_dispatch 'PMX_TAG_INPUT=v1.2.0; true')"
-expect "dispatch, run not digits: error" "exit 1" "$(decide PMX_EVENT=workflow_dispatch PMX_TAG_INPUT=v1.2.0 PMX_RUN_INPUT=7x)"
+expect "no check run id: error" "exit 1" "$(decide PMX_CHECK_RUN=)"
 
 echo "# autopublish.sh notify"
 notify() { # notify OUTCOME LOG-TEXT STATE-TEXT: the dry-run issue text in $tmp/notify.out, the title printed
@@ -349,11 +397,18 @@ lacks "  ... no publish command after a push" "$tmp/notify.out" "publish.sh v1.2
 expect "no valid tag: nothing to do" "" "$(TAG='x; y' PMX_NOTIFY_DRY_RUN=1 bash "$here/autopublish.sh" notify 2>/dev/null | sed -n 's/^title=//p')"
 
 echo "# publish.sh --ci"
-ci() { (cd "$pmx" && env -u PMX_PUSH_TOKEN "$@" bash "$here/publish.sh" v1.2.0 --ci) >"$tmp/ci.out" 2>&1 && echo "exit 0" || echo "exit $?"; }
-expect "--ci without PMX_PUSH_TOKEN: refused before anything" "exit 1" "$(ci)"
-contains "  ... names the secret" "$tmp/ci.out" "PROVIMUX_TOKEN is not set"
-expect "--ci with the token but neither --yes nor --dry-run: refused" "exit 1" "$(ci PMX_PUSH_TOKEN=x)"
-contains "  ... says why" "$tmp/ci.out" "needs --yes or --dry-run"
+ci() { (cd "$pmx" && env -u PMX_PUSH_TOKEN -u PROVIMUX_TOKEN "$@") >"$tmp/ci.out" 2>&1 && echo "exit 0" || echo "exit $?"; }
+P="$here/publish.sh"
+expect "--ci with PROVIMUX_TOKEN in the environment: refused" "exit 1" "$(ci PROVIMUX_TOKEN=x bash "$P" v1.2.0 --ci --plan "$tmp/p1" --run 42 --expect-main "$pmx_sha")"
+contains "  ... says publish.sh must never see it" "$tmp/ci.out" "must never see it"
+expect "--ci with PMX_PUSH_TOKEN in the environment: refused" "exit 1" "$(ci PMX_PUSH_TOKEN=x bash "$P" v1.2.0 --ci --wait "$tmp/p1")"
+expect "--ci without --plan or --wait: refused" "exit 1" "$(ci bash "$P" v1.2.0 --ci)"
+expect "--ci with both --plan and --wait: refused" "exit 1" "$(ci bash "$P" v1.2.0 --ci --plan "$tmp/p1" --wait "$tmp/p1")"
+expect "--ci --plan without --run/--expect-main: refused" "exit 1" "$(ci bash "$P" v1.2.0 --ci --plan "$tmp/p1")"
+expect "--plan without --ci: refused" "exit 1" "$(ci bash "$P" v1.2.0 --plan "$tmp/p1")"
+expect "--expect-main not a SHA: refused" "exit 1" "$(ci bash "$P" v1.2.0 --expect-main abc)"
+mkdir -p "$tmp/p2" && printf 'TAG=v1.3.0\n' >"$tmp/p2/plan.env"
+expect "--ci --wait on a plan for another tag: refused" "exit 1" "$(ci bash "$P" v1.2.0 --ci --wait "$tmp/p2")"
 
 echo
 echo "$pass passed, $failed failed"
