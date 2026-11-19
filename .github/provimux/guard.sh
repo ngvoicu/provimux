@@ -6,8 +6,11 @@
 # Provimux layer (commits with the trailer "Provimux-Layer: branding").
 #
 # Checks HEAD:
-#   1. the base is the newest vX.Y.Z tag reachable from HEAD that exists in
-#      upstream CPA at the same commit, and it is not HEAD itself;
+#   1. the base is the newest vX.Y.Z tag reachable from HEAD, it exists in upstream
+#      CPA at the same commit (a tag that differs from upstream's is an error, never a
+#      reason to fall back to an older base), and it is not HEAD itself. With
+#      PMX_EXPECT_BASE (and PMX_EXPECT_BASE_COMMIT) the base must be exactly that
+#      upstream tag at that commit, an ancestor of HEAD; no local tag is needed;
 #   2. base..HEAD has at least one layer commit, and once one appears every later
 #      commit carries the trailer too;
 #   3. no layer commit changes a protected path, against any of its parents;
@@ -16,7 +19,8 @@
 #      the merged tree differs from the target in no protected path. Patch changes reach main only as a
 #      rebased stack pushed by the owner or the sync, never through a PR.
 #
-# Env: PMX_TARGET (optional, pull requests), PMX_UPSTREAM (default: upstream CPA).
+# Env: PMX_TARGET (optional, pull requests), PMX_UPSTREAM (default: upstream CPA),
+# PMX_EXPECT_BASE / PMX_EXPECT_BASE_COMMIT (optional: the sync check and publish.sh).
 set -euo pipefail
 
 upstream=${PMX_UPSTREAM:-https://github.com/router-for-me/CLIProxyAPI}
@@ -45,22 +49,52 @@ upstream_commit() { # commit an upstream tag points to (peeled when annotated)
   echo "${peeled:-$plain}"
 }
 base=''
-for t in $(git tag --merged HEAD --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -rV); do
-  local_commit=$(git rev-parse "$t^{commit}")
-  up=$(upstream_commit "$t")
+base_commit=''
+if [ -n "${PMX_EXPECT_BASE:-}" ]; then
+  # The sync: the base is given; it must be upstream's tag, at the given commit.
+  up=$(upstream_commit "$PMX_EXPECT_BASE")
   if [ -z "$up" ]; then
-    echo "Skipping tag $t: not a tag in $upstream."
-  elif [ "$up" != "$local_commit" ]; then
-    echo "Skipping tag $t: here it is $(short "$local_commit"), upstream it is ${up:0:8}."
-  else
-    base=$t; break
+    echo "::error::Expected base $PMX_EXPECT_BASE is not a tag in $upstream."
+    exit 1
   fi
-done
-if [ -z "$base" ]; then
-  echo "::error::No vX.Y.Z tag reachable from HEAD matches a release tag of $upstream; cannot find the base."
-  exit 1
+  if [ -n "${PMX_EXPECT_BASE_COMMIT:-}" ] && [ "$up" != "$PMX_EXPECT_BASE_COMMIT" ]; then
+    echo "::error::Expected base $PMX_EXPECT_BASE at ${PMX_EXPECT_BASE_COMMIT:0:8}, but upstream's tag is ${up:0:8}."
+    exit 1
+  fi
+  if ! git merge-base --is-ancestor "$up" HEAD 2>/dev/null; then
+    echo "::error::Expected base $PMX_EXPECT_BASE (${up:0:8}) is not an ancestor of HEAD."
+    exit 1
+  fi
+  # No newer vX.Y.Z tag may be reachable (HEAD would then be on another base).
+  for t in $(git tag --merged HEAD --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -rV); do
+    if [ "$(printf '%s\n%s\n' "$t" "$PMX_EXPECT_BASE" | sort -V | tail -n 1)" != "$PMX_EXPECT_BASE" ]; then
+      echo "::error::Tag $t, newer than the expected base $PMX_EXPECT_BASE, is reachable from HEAD."
+      exit 1
+    fi
+    break
+  done
+  base=$PMX_EXPECT_BASE
+  base_commit=$up
+else
+  for t in $(git tag --merged HEAD --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -rV); do
+    local_commit=$(git rev-parse "$t^{commit}")
+    up=$(upstream_commit "$t")
+    if [ -z "$up" ]; then
+      echo "Skipping tag $t: not a tag in $upstream."
+    elif [ "$up" != "$local_commit" ]; then
+      echo "::error::Tag $t is $(short "$local_commit") here but ${up:0:8} in $upstream; refusing to fall back to an older base. Fix the tag."
+      exit 1
+    else
+      base=$t
+      base_commit=$local_commit
+      break
+    fi
+  done
+  if [ -z "$base" ]; then
+    echo "::error::No vX.Y.Z tag reachable from HEAD matches a release tag of $upstream; cannot find the base."
+    exit 1
+  fi
 fi
-base_commit=$(git rev-parse "$base^{commit}")
 echo "Base: $base ($(short "$base_commit")), head: $(short "$head")"
 if [ "$base_commit" = "$head" ]; then
   echo "::error::HEAD is the upstream release $base itself; there are no Provimux commits to check."
@@ -70,7 +104,7 @@ fi
 # --- 2 and 3. Layer order and protected paths, per commit --------------------------
 in_layer=0
 first_layer=''
-for c in $(git rev-list --reverse --topo-order "$base..HEAD"); do
+for c in $(git rev-list --reverse --topo-order "$base_commit..HEAD"); do
   if git log -1 --format='%(trailers:key=Provimux-Layer,valueonly)' "$c" | sed 's/[[:space:]]*$//' | grep -qx 'branding'; then
     if [ "$in_layer" -eq 0 ]; then in_layer=1; first_layer=$(short "$c"); fi
     # Against every parent (-m): a layer merge must not bring protected changes from either side.
@@ -118,4 +152,4 @@ if [ -n "${PMX_TARGET:-}" ]; then
 fi
 
 if [ "$fail" -ne 0 ]; then exit 1; fi
-echo "OK: $(git rev-list --count "$base..HEAD") commits since $base; layer starts at $first_layer; no protected path changed."
+echo "OK: $(git rev-list --count "$base_commit..HEAD") commits since $base ($(short "$base_commit")); layer starts at $first_layer; no protected path changed."
