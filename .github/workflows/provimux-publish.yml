@@ -287,6 +287,9 @@ jobs:
       # token, verifies the published release (immutable, every asset, digests =
       # checksums.txt), takes the formula the release run's tap-check bound to itself
       # (by id and digest), checks it against the tap and commits it in a local clone.
+      # The tap only moves to GitHub's latest release: for an older tag tap.sh leaves it
+      # alone (action none). A failure here or in "Tap push" goes, through the notify job,
+      # to its own issue "homebrew tap: <tag> needs the owner", which no automation closes.
       - name: Tap (verify the release, prepare the commit; no token)
         id: tap
         if: ${{ steps.decide.outputs.action == 'publish' }}
