@@ -12,3 +12,9 @@ Provimux carries CLIProxyAPI's `.github/workflows/` files unchanged, so that reb
 | `pr-test-build.yml` | `pull_request` | disabled in ngvoicu/provimux | Upstream's PR build check; Provimux will get its own CI. |
 
 Provimux's own workflows will live in separately named files.
+
+| Provimux workflow | Trigger | What it does |
+|---|---|---|
+| `provimux-guard.yml` | `push` to `main`, `pull_request` | Required check: Provimux-layer commits change no protected path. |
+| `provimux-release.yml` | `push` of tags `v*-pmx.*`; manual (dry run) | Builds the 10 archives of `release.yaml` as `provimux_<base>-pmx.<n>_*` and publishes the release; a manual run only keeps them as workflow artifacts. |
+| `provimux-docker.yml` | `push` of tags `v*-pmx.*`; manual (dry run) | Builds `.github/provimux/Dockerfile` for linux/amd64 and linux/arm64 and pushes `ghcr.io/ngvoicu/provimux`; a manual run pushes nothing. |
