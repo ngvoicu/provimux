@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Homebrew formula update (PMX-13), run by the homebrew-tap job of
+# Homebrew formula update (PMX-13), run by the formula job of
 # .github/workflows/provimux-release.yml after a release is published.
 #
 # Usage: update-formula.sh <provimux-version> <checksums.txt> <Formula/provimux.rb>
