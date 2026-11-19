@@ -63,7 +63,7 @@ The console replaces itself within 3 hours of a release, whatever the server's v
 For `src/provimux/api/` (new files; the console's guard keeps layer commits out of the quota clients in `src/services/api/`, not out of new files elsewhere).
 
 ```ts
-/** RFC 3339, UTC. */
+/** RFC 3339, UTC, with fractional seconds when recorded. Compare with Date.parse, not as strings. */
 type Timestamp = string;
 
 interface ProvimuxLogin {

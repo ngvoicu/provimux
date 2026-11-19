@@ -49,10 +49,7 @@ func noteLiveModelListFailure(authID, identity string, err error) {
 		return
 	}
 	category, status := provimuxLiveListFailureOf(err)
-	provimuxNotePrunerOnce.Do(func() {
-		ticker := time.NewTicker(liveModelListScanInterval)
-		go provimuxRunNotePruner(ticker.C)
-	})
+	provimuxNotePrunerOnce.Do(func() { go provimuxRunNotePruner(provimuxNotePrunerTick()) })
 	liveModelLists.mu.Lock()
 	defer liveModelLists.mu.Unlock()
 	provimuxLiveListNotes.mu.Lock()
@@ -83,6 +80,11 @@ func provimuxPruneLiveListNotes() {
 }
 
 var provimuxNotePrunerOnce sync.Once
+
+// provimuxNotePrunerTick is the pruner's clock: a tick every scan interval. Tests replace it.
+var provimuxNotePrunerTick = func() <-chan time.Time {
+	return time.NewTicker(liveModelListScanInterval).C
+}
 
 // provimuxRunNotePruner drops stale notes on every tick, so notes of removed logins go within one
 // scan interval whether or not anyone reads the endpoint. Started once, by the first failure.
