@@ -42,14 +42,20 @@
 #                 noted); main moved; main = candidate without tags; -pmx tag with an
 #                 incomplete release (rerun command, never "publish again"); a lost push
 #                 acknowledgement with a complete release (closes an open issue, opens
-#                 none, promises no check); remote unreadable; no tag
+#                 none, promises no check); remote unreadable; no tag; a failed tap step
+#                 (its own issue "homebrew tap: <tag> needs the owner", opened or
+#                 commented on, never retitled or closed; the sync issue is closed)
 #   publish.sh    --ci: refuses a push token in its environment, and bad mode flags
 #   check.sh      state.json parsed, never sourced; verdict step outcomes and job
 #                 conclusions; run_artifact by id, run, name, digest and bytes
-#   releases_status / report.sh  the newest -pmx.<n> decides; the sweep of older bases
+#   releases_status / report.sh  the newest -pmx.<n> decides; the sweep of older bases;
+#                 a transient error, a publish and the sweep never touch the tap issue
 #   tap.sh        release (immutable, assets, digests), verify (only version, url,
-#                 sha256 lines), prepare (only forward, local commit, lease as read,
-#                 nothing pushed), artifact (bound by tap-check of a successful run)
+#                 sha256 lines), prepare (only GitHub's latest, read strictly: a
+#                 superseded tag on both paths leaves the tap alone; a higher tap version
+#                 is refused; a same-version repair; local commit, lease as read, nothing
+#                 pushed), check (ok only for the latest, byte-identical), artifact (bound
+#                 by tap-check of a successful run)
 #   provenance    the release workflow's inline check (run from the workflow): only the
 #                 owner's newest success status for exactly this tag counts; a bot's,
 #                 another tag's, a moved tag, an unreadable list (told apart) refuse
@@ -555,23 +561,40 @@ expect "push reported a failure but the remote has the complete release (lost ac
 lacks "  ... not 'nothing was pushed'" "$tmp/notify.out" "nothing was pushed"
 lacks "  ... promises no next check" "$tmp/notify.out" "next check"
 printf 'PMX_TAG=v1.1.0-pmx.1\nCANDIDATE=%s\n' "$pmx_sha" >"$tmp/plan-tap.env"
-expect "complete release, the tap update failed: released, tap not updated, owner needed" "sync: v1.1.0 — released, Homebrew tap not updated, owner needed" \
+expect "complete release, the tap update failed: the sync issue says released (it is about the release only)" "sync: v1.1.0 — released" \
   "$(notify v1.1.0 tap-failed 'publish: the Homebrew tap update was refused (see the log)' PLAN="$tmp/plan-tap.env")"
-contains "  ... gives the owner's tap command" "$tmp/notify.out" "publish.sh --tap v1.1.0-pmx.1"
-lacks "  ... does not close the issue" "$tmp/notify.out" "this closes the issue"
+contains "  ... the tap failure has its own issue" "$tmp/notify.out" "tap_title=homebrew tap: v1.1.0-pmx.1 needs the owner"
+contains "  ... which gives the owner's tap command" "$tmp/notify.out" "publish.sh --tap v1.1.0-pmx.1"
+contains "  ... and the read-only check" "$tmp/notify.out" "tap.sh check v1.1.0-pmx.1"
+contains "  ... and says no automation closes it" "$tmp/notify.out" "No automation closes or retitles this issue"
+lacks "  ... no sync title carries the tap state" "$tmp/notify.out" "Homebrew tap not updated"
 # The same for real (stub gh records issue commands): no open issue -> none is opened;
 # an open "sync: v1.1.0 ..." issue -> it is closed.
-notify_real() {
+notify_real() { # [ENV...]: the first 14 characters of the gh issue commands; all of them in $stub/issue.log
   : >"$stub/issue.log"
   env PATH="$stub/bin:$PATH" STUB_API="$stub/api" PMX_REPO=test/provimux PMX_REPO_URL="$remote" \
     TAG=v1.1.0 OUTCOME=failed LOG="$tmp/publish.log" EXPECT_MAIN="$pmx_sha" RUN_URL=https://example.invalid/run \
-    bash "$here/autopublish.sh" notify >"$tmp/notify.out" 2>&1 || { echo "exit $?"; return; }
+    "$@" bash "$here/autopublish.sh" notify >"$tmp/notify.out" 2>&1 || { echo "exit $?"; return; }
   tr '\n' ' ' <"$stub/issue.log" | cut -c1-14
 }
 echo '[]' >"$stub/api/repos_test_provimux_issues_state_open_per_page_100.json"
 expect "released, no open issue: opens none" "" "$(notify_real)"
 echo '[{"number": 5, "title": "sync: v1.1.0 — ready, publishing waits for PROVIMUX_TOKEN"}]' >"$stub/api/repos_test_provimux_issues_state_open_per_page_100.json"
 expect "released, the open issue: closes it" "issue close 5 " "$(notify_real)"
+# The tap failure (T-86): its own issue, opened or commented on; never retitled or closed.
+echo '[{"number": 5, "title": "sync: v1.1.0 — ready, publishing waits for PROVIMUX_TOKEN"}]' >"$stub/api/repos_test_provimux_issues_state_open_per_page_100.json"
+notify_real OUTCOME=tap-failed PLAN="$tmp/plan-tap.env" >/dev/null
+contains "tap step failed, no tap issue yet: opens \"homebrew tap: <tag> needs the owner\"" "$stub/issue.log" "issue create -R test/provimux --title homebrew tap: v1.1.0-pmx.1 needs the owner"
+contains "  ... and closes the sync issue (the release is complete)" "$stub/issue.log" "issue close 5 "
+lacks "  ... never retitles the sync issue to a tap state" "$stub/issue.log" "issue edit"
+echo '[{"number": 5, "title": "sync: v1.1.0 — ready, publishing waits for PROVIMUX_TOKEN"}, {"number": 9, "title": "homebrew tap: v1.1.0-pmx.1 needs the owner"}]' \
+  >"$stub/api/repos_test_provimux_issues_state_open_per_page_100.json"
+expect "tap step failed again, the tap issue open: one comment on it, nothing else of it" "issue comment 9 -R test/provimux" "$(notify_real OUTCOME=tap-failed PLAN="$tmp/plan-tap.env" >/dev/null; grep -F ' 9 ' "$stub/issue.log" | cut -c1-32)"
+lacks "  ... not closed" "$stub/issue.log" "issue close 9"
+lacks "  ... not retitled" "$stub/issue.log" "issue edit 9"
+notify_real >/dev/null
+contains "a later failure of the release, released: closes the sync issue" "$stub/issue.log" "issue close 5 "
+lacks "  ... never the tap issue (the notifier case)" "$stub/issue.log" " 9 "
 expect "remote unreadable: state unknown" "sync: v1.2.0 — publish failed, state unknown, owner needed" \
   "$(notify v1.2.0 failed 'publish: x' PMX_REPO_URL="$tmp/no-such-remote.git")"
 contains "  ... says to look before acting" "$tmp/notify.out" "Do not publish or rerun anything before checking"
@@ -726,7 +749,7 @@ report "$tmp/r12.json" success >/dev/null
 contains "older base whose newest release is complete: closed" "$tmp/report.out" "sweep: close #11 (v1.1.0)"
 
 # --- tap.sh: the Homebrew tap, prepared without a token ------------------------------------------
-echo "# tap.sh: release, verify, prepare (only forward), artifact"
+echo "# tap.sh: release, verify, prepare (only to the latest release), artifact"
 tapd="$tmp/tapfx"; rm -rf "$tapd"; mkdir -p "$tapd/assets"
 # The release v1.3.0-pmx.1: every expected asset, checksums.txt, digests in the API.
 TV=1.3.0-pmx.1
@@ -774,6 +797,9 @@ expect "an asset missing: refused" refused "$(tapsh bash "$here/tap.sh" release 
 tap_release '.assets[0].digest = null'
 expect "an asset without a digest: refused" refused "$(tapsh bash "$here/tap.sh" release "v$TV" "$tmp/tr")"
 tap_release
+# tlatest JSON|none: GitHub's "latest" release answer. v$TV is the newest release.
+tlatest() { if [[ "$1" == none ]]; then rm -f "$stub/api/repos_test_provimux_releases_latest.json"; else printf '%s\n' "$1" >"$stub/api/repos_test_provimux_releases_latest.json"; fi; }
+tlatest '{"tag_name": "v'"$TV"'"}'
 rm -rf "$tmp/tp"
 expect "prepare 1.2.0 -> $TV (formula from update-formula.sh): ok" ok "$(tapsh bash "$here/tap.sh" prepare "v$TV" "$tmp/tp")"
 contains "  ... action push" "$tmp/tap.out" "action=push"
@@ -790,10 +816,22 @@ expect "verify: a sha256 not checksums.txt's: refused" refused "$(tapsh bash "$h
 sed "s/version \"$TV\"/version \"9.9.9-pmx.1\"/" "$tmp/new.rb" >"$tmp/bad.rb"
 expect "verify: another version: refused" refused "$(tapsh bash "$here/tap.sh" verify "$TV" "$tmp/tp/release/checksums.txt" "$tmp/tapw/Formula/provimux.rb" "$tmp/bad.rb")"
 expect "prepare with a given formula that changes another line: refused" refused "$(tapsh bash "$here/tap.sh" prepare "v$TV" "$tmp/tp" "$tmp/bad.rb")"
-# Only forward: the tap at a newer version is left as it is.
+# The tap moves only to GitHub's latest release, read strictly.
+tlatest 'HTTP 503'
+expect "latest unreadable (503): prepare stops" refused "$(tapsh bash "$here/tap.sh" prepare "v$TV" "$tmp/tp")"
+tlatest none
+expect "no latest (404): prepare stops" refused "$(tapsh bash "$here/tap.sh" prepare "v$TV" "$tmp/tp")"
+tlatest '{"tag_name": "v1.3.0"}'
+expect "latest is not a -pmx tag: prepare stops" refused "$(tapsh bash "$here/tap.sh" prepare "v$TV" "$tmp/tp")"
+tlatest '{"tag_name": "v1.2.0-pmx.1"}'
+expect "the tag is newer than latest (latest not moved yet): prepare stops" refused "$(tapsh bash "$here/tap.sh" prepare "v$TV" "$tmp/tp")"
+tlatest '{"tag_name": "v'"$TV"'"}'
+# A tap at a higher version than the newest release: reported, never "ok" or "none".
 (cd "$tmp/tapw" && sed -i.bak 's/version "1.2.0-pmx.1"/version "1.9.0-pmx.1"/' Formula/provimux.rb && rm -f Formula/provimux.rb.bak && git commit -qam newer && git push -q "$tapr" HEAD:main)
-expect "the tap is newer: ok, nothing to do" ok "$(tapsh bash "$here/tap.sh" prepare "v$TV" "$tmp/tp")"
-contains "  ... action none" "$tmp/tap.out" "action=none"
+expect "the tap is at a higher version than the newest release: prepare refuses" refused "$(tapsh bash "$here/tap.sh" prepare "v$TV" "$tmp/tp")"
+contains "  ... says so" "$tmp/tap.err" "higher than the newest release $TV"
+expect "  ... tap.sh check: wrong, not ok" refused "$(tapsh bash "$here/tap.sh" check "v$TV" "$tmp/tc")"
+contains "  ... says so" "$tmp/tap.out" "wrong: the tap is at '1.9.0-pmx.1', not the newest release $TV"
 # artifact: the formula the release run's tap-check bound to itself.
 (cd "$tmp/tp" && mkdir -p af && cp tap/Formula/provimux.rb af/provimux.rb && cd af && zip -q f.zip provimux.rb)
 fd="$(sha256_of "$tmp/tp/af/f.zip")"
@@ -851,28 +889,55 @@ contains "  ... action none" "$tmp/tap.out" "action=none"
 expect "tap.sh check: the tap serves $TV: ok" ok "$(tapsh bash "$here/tap.sh" check "v$TV" "$tmp/tc")"
 settap 1.2.0-pmx.1
 expect "tap.sh check: the tap at an older version: wrong" refused "$(tapsh bash "$here/tap.sh" check "v$TV" "$tmp/tc")"
+settap 1.9.0-pmx.1 "$wrong"
+expect "tap.sh check: a higher version with a wrong sha256: wrong, never ok" refused "$(tapsh bash "$here/tap.sh" check "v$TV" "$tmp/tc")"
+lacks "  ... not ok" "$tmp/tap.out" "ok:"
 
-echo "# report.sh: an issue that says the tap was not updated stays open until the tap serves the release"
+echo "# tap.sh: a superseded release (-pmx.1 after -pmx.2 became latest) never moves the tap"
+settap "$TV" "$wrong"
+tlatest '{"tag_name": "v1.3.0-pmx.2"}'
+rm -rf "$tmp/tp3"
+expect "the owner's path (publish.sh --tap v$TV): ok, nothing to do" ok "$(tapsh bash "$here/tap.sh" prepare "v$TV" "$tmp/tp3")"
+contains "  ... action none" "$tmp/tap.out" "action=none"
+lacks "  ... no push" "$tmp/tap.out" "action=push"
+contains "  ... says superseded, tap left alone" "$tmp/tap.err" "v$TV is superseded by v1.3.0-pmx.2; tap left alone"
+if [[ -e "$tmp/tp3/tap" ]]; then bad "  ... nothing cloned or committed"; else ok "  ... nothing cloned or committed"; fi
+expect "the publish job's path (verified formula given): ok, nothing to do" ok "$(tapsh bash "$here/tap.sh" prepare "v$TV" "$tmp/tp3" "$tmp/verified.rb")"
+contains "  ... action none" "$tmp/tap.out" "action=none"
+lacks "  ... no push" "$tmp/tap.out" "action=push"
+settap "$TV"
+expect "tap.sh check of the superseded tag, even with the tap byte-identical to it: wrong" refused "$(tapsh bash "$here/tap.sh" check "v$TV" "$tmp/tc")"
+contains "  ... names the newest" "$tmp/tap.out" "is not the newest release (v1.3.0-pmx.2)"
+tlatest '{"tag_name": "v'"$TV"'"}'
+
+echo "# report.sh and its sweep never read, retitle or close the tap's issue"
 git -C "$pmx" tag v1.3.0-pmx.1 "$pmx_sha" && git -C "$pmx" push -q "$remote" refs/tags/v1.3.0-pmx.1
-export PMX_TAP_URL="$tapr"
+# report_real RESULT CHECK_JOB: report.sh writing issues (the stub gh logs them in $stub/issue.log).
+report_real() {
+  : >"$stub/issue.log"
+  PATH="$stub/bin:$PATH" STUB_API="$stub/api" PMX_REPO=test/provimux PMX_REPO_URL="$remote" \
+    RESULT="$1" CHECK_JOB="$2" RUN_URL=https://example.invalid/run bash "$here/report.sh" >"$tmp/report.out" 2>&1 || echo "exit $?"
+}
+echo '{"body": "<!-- provimux-sync status=pass candidate=none -->"}' >"$stub/api/repos_test_provimux_issues_22.json"
+echo '[{"number": 21, "title": "homebrew tap: v1.3.0-pmx.1 needs the owner"}, {"number": 22, "title": "sync: v1.3.0 — ready to publish"}]' \
+  >"$stub/api/repos_test_provimux_issues_state_open_per_page_100.json"
+settap "$TV" "$wrong"
+jq -n '{status: "error", step: "upstream", upstream: {tag: "v1.3.0"}, reasons: ["gh: Service Unavailable (HTTP 503)"]}' >"$tmp/r13e.json"
+expect "a transient check error: report.sh runs" "" "$(report_real "$tmp/r13e.json" failure)"
+contains "  ... retitles the sync issue" "$stub/issue.log" "issue edit 22"
+lacks "  ... never the tap issue" "$stub/issue.log" " 21 "
 echo '{"status": "published", "upstream": {"tag": "v1.3.0"}, "reasons": []}' >"$tmp/r13.json"
-echo '[{"number": 21, "title": "sync: v1.3.0 — released, Homebrew tap not updated, owner needed"}]' >"$stub/api/repos_test_provimux_issues_state_open_per_page_100.json"
-settap "$TV" "$wrong"
-expect "this base published, its tap wrong: reported published" published "$(report "$tmp/r13.json" success)"
-contains "  ... the tap issue is kept open" "$tmp/report.out" "keep #21 (v1.3.0): wrong: the tap is at $TV"
-lacks "  ... and not closed" "$tmp/report.out" "close #21"
-settap "$TV"
-report "$tmp/r13.json" success >/dev/null
-contains "this base published, its tap now right: closed" "$tmp/report.out" "close #21 (v1.3.0)"
-# The same issue seen by the sweep from a newer base.
+expect "then published, the tap still wrong: report.sh runs" "" "$(report_real "$tmp/r13.json" success)"
+contains "  ... closes the sync issue (the release is complete)" "$stub/issue.log" "issue close 22"
+lacks "  ... never the tap issue" "$stub/issue.log" " 21 "
+# The sweep from a newer base, the tap at a higher version with a wrong sha256.
+settap 1.9.0-pmx.1 "$wrong"
 jq -n '{status: "fail", step: "rebase", upstream: {tag: "v1.4.0"}, reasons: ["x"]}' >"$tmp/r14.json"
-settap "$TV" "$wrong"
-report "$tmp/r14.json" success >/dev/null
-contains "older base published, its tap wrong: the sweep keeps the issue open" "$tmp/report.out" "sweep: keep #21 (v1.3.0)"
-settap "$TV"
-report "$tmp/r14.json" success >/dev/null
-contains "older base published, its tap now right: the sweep closes it" "$tmp/report.out" "sweep: close #21 (v1.3.0)"
-unset PMX_TAP_URL
+report_real "$tmp/r14.json" success >/dev/null
+contains "older base published: the sweep closes its sync issue" "$stub/issue.log" "issue close 22"
+lacks "  ... never the tap issue, whatever version the tap is at" "$stub/issue.log" " 21 "
+lacks "  ... and runs no tap check" "$tmp/report.out" "tap"
+echo '[]' >"$stub/api/repos_test_provimux_issues_state_open_per_page_100.json"
 
 # --- provimux-release.yml: provenance (the owner's commit status) and release-latest ----------------
 rwf="$here/../workflows/provimux-release.yml"
