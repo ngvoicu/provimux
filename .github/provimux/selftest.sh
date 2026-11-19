@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2030,SC2031 # PATH is set for the subshells that run the stubs only
 # Fixture tests for the Provimux sync scripts (.github/provimux/SYNC.md, "Testing the
 # scripts"). Offline: local git repositories stand in for upstream and for Provimux, and
 # a stub gh answers the GitHub API from files. Runs no repository code but these scripts.
@@ -43,6 +44,18 @@
 #                 acknowledgement with a complete release (closes an open issue, opens
 #                 none, promises no check); remote unreadable; no tag
 #   publish.sh    --ci: refuses a push token in its environment, and bad mode flags
+#   check.sh      state.json parsed, never sourced; verdict step outcomes and job
+#                 conclusions; run_artifact by id, run, name, digest and bytes
+#   releases_status / report.sh  the newest -pmx.<n> decides; the sweep of older bases
+#   tap.sh        release (immutable, assets, digests), verify (only version, url,
+#                 sha256 lines), prepare (only forward, local commit, lease as read,
+#                 nothing pushed), artifact (bound by tap-check of a successful run)
+#   provenance    the release workflow's inline check (run from the workflow): only the
+#                 owner's newest success status for exactly this tag counts; a bot's,
+#                 another tag's, a moved tag, an unreadable list (told apart) refuse
+#   latest        release-latest (run from the workflow): only its own release id,
+#                 never backward, stops on an unreadable or tagless latest, fails a
+#                 wrong readback
 # Needs bash 3.2+, git, jq.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -264,13 +277,20 @@ fi
 if [ "$1" = issue ]; then echo "$*" >>"$STUB_API/../issue.log"; exit 0; fi
 [ "$1" = api ] || { echo "stub gh: $*" >&2; exit 1; }
 shift
-p='' q=''
+p='' q='' m=GET
 while [ $# -gt 0 ]; do
-  case "$1" in --jq) q=$2; shift ;; -*) ;; *) [ -n "$p" ] || p=$1 ;; esac
+  case "$1" in --jq) q=$2; shift ;; -X) m=$2; shift ;; -H | -f | -F) shift ;; -*) ;; *) [ -n "$p" ] || p=$1 ;; esac
   shift
 done
 f="$STUB_API/$(printf %s "$p" | tr '/?&=' '____').json"
+# A write is recorded in $STUB_API/../calls.log; PATCH of a release makes it the latest one.
+if [ "$m" != GET ]; then
+  echo "$m $p" >>"$STUB_API/../calls.log"
+  case "$p" in */releases/[0-9]*) cp "$f" "$(dirname "$f")/$(printf %s "${p%/releases/*}/releases/latest" | tr '/?&=' '____').json" ;; esac
+  exit 0
+fi
 [ -f "$f" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
+if [ "$(head -c 8 "$f")" = "HTTP 503" ]; then echo "gh: Service Unavailable (HTTP 503)" >&2; exit 1; fi
 if [ -n "$q" ]; then jq -r "$q" "$f"; else cat "$f"; fi
 EOF
 printf '#!/bin/sh\nexit 22\n' >"$stub/bin/curl"
@@ -487,8 +507,8 @@ notify() {
   sed -n 's/^title=//p' "$tmp/notify.out"
 }
 expect "no token, nothing on the remote: waits for the token" "sync: v1.2.0 — ready, publishing waits for PROVIMUX_TOKEN" "$(notify v1.2.0 no-token '' HAS_TOKEN=false)"
-lacks "  ... offers no hand publish" "$tmp/notify.out" "publish.sh v1.2.0"
-contains "  ... says a hand publish would miss the tap" "$tmp/notify.out" "without the Homebrew tap update"
+contains "  ... offers the hand publish (it updates the tap too)" "$tmp/notify.out" "publish.sh v1.2.0"
+contains "  ... says publish.sh updates the tap" "$tmp/notify.out" "updates the Homebrew tap itself"
 contains "  ... names the environment" "$tmp/notify.out" "environment \`provimux-token\`"
 contains "  ... gives the check of this tag" "$tmp/notify.out" "gh workflow run provimux-check.yml -R test/provimux -f tag=v1.2.0"
 contains "  ... shows main unchanged" "$tmp/notify.out" "(the checked main: unchanged)"
@@ -501,12 +521,9 @@ contains "  ... the reason is shown" "$tmp/notify.out" "not accepted (--accept-d
 lacks "  ... progress lines are not" "$tmp/notify.out" "remote origin"
 contains "  ... says nothing was pushed" "$tmp/notify.out" "nothing was pushed"
 contains "  ... names the manual path" "$tmp/notify.out" "publish.sh v1.2.0"
-lacks "  ... no token note when it is set" "$tmp/notify.out" "is not set"
 # shellcheck disable=SC2016 # a literal Markdown table row
 contains "  ... and that no -pmx tag exists" "$tmp/notify.out" '| `v1.2.0-pmx.*` | absent |'
 m1="$(sed -n 2p "$tmp/notify.out")"
-notify v1.2.0 failed "$log1" HAS_TOKEN=false >/dev/null
-contains "refused while the token is missing: says a release now misses the tap" "$tmp/notify.out" "is not set"
 notify v1.2.0 failed "publish: the range-diff is empty or has commits not in the old main: see /tmp/x/provimux-publish.AbC123/range-diff.txt" >/dev/null
 m2="$(sed -n 2p "$tmp/notify.out")"
 notify v1.2.0 failed "publish: the range-diff is empty or has commits not in the old main: see /var/y/provimux-publish.Zz9/range-diff.txt" >/dev/null
@@ -537,7 +554,11 @@ expect "push reported a failure but the remote has the complete release (lost ac
   "$(notify v1.1.0 failed 'publish: git push reported a failure' HAS_TOKEN=false)"
 lacks "  ... not 'nothing was pushed'" "$tmp/notify.out" "nothing was pushed"
 lacks "  ... promises no next check" "$tmp/notify.out" "next check"
-lacks "  ... no token note for a complete release" "$tmp/notify.out" "is not set"
+printf 'PMX_TAG=v1.1.0-pmx.1\nCANDIDATE=%s\n' "$pmx_sha" >"$tmp/plan-tap.env"
+expect "complete release, the tap update failed: released, tap not updated, owner needed" "sync: v1.1.0 — released, Homebrew tap not updated, owner needed" \
+  "$(notify v1.1.0 tap-failed 'publish: the Homebrew tap update was refused (see the log)' PLAN="$tmp/plan-tap.env")"
+contains "  ... gives the owner's tap command" "$tmp/notify.out" "publish.sh --tap v1.1.0-pmx.1"
+lacks "  ... does not close the issue" "$tmp/notify.out" "this closes the issue"
 # The same for real (stub gh records issue commands): no open issue -> none is opened;
 # an open "sync: v1.1.0 ..." issue -> it is closed.
 notify_real() {
@@ -703,6 +724,170 @@ lacks "  ... this run's own base is not swept" "$tmp/report.out" "sweep: #12"
 relrun 1.1.0-pmx.2 success
 report "$tmp/r12.json" success >/dev/null
 contains "older base whose newest release is complete: closed" "$tmp/report.out" "sweep: close #11 (v1.1.0)"
+
+# --- tap.sh: the Homebrew tap, prepared without a token ------------------------------------------
+echo "# tap.sh: release, verify, prepare (only forward), artifact"
+tapd="$tmp/tapfx"; rm -rf "$tapd"; mkdir -p "$tapd/assets"
+# The release v1.3.0-pmx.1: every expected asset, checksums.txt, digests in the API.
+TV=1.3.0-pmx.1
+: >"$tapd/checksums.txt"
+for f in $(expected_assets "$TV"); do
+  [[ "$f" == checksums.txt ]] && continue
+  echo "archive $f" >"$tapd/assets/$f"
+  printf '%s  %s\n' "$(sha256_of "$tapd/assets/$f")" "$f" >>"$tapd/checksums.txt"
+done
+cp "$tapd/checksums.txt" "$stub/api/repos_test_provimux_releases_assets_900001.json"
+tap_release() { # [JQ]: the release JSON of v$TV (JQ edits it)
+  { for f in $(expected_assets "$TV"); do
+      if [[ "$f" == checksums.txt ]]; then jq -n --arg d "sha256:$(sha256_of "$tapd/checksums.txt")" '{id: 900001, name: "checksums.txt", state: "uploaded", digest: $d}'
+      else jq -n --arg n "$f" --arg d "sha256:$(sha256_of "$tapd/assets/$f")" '{id: 900002, name: $n, state: "uploaded", digest: $d}'; fi
+    done; } | jq -s '{id: 77001, tag_name: "v'"$TV"'", draft: false, prerelease: false, immutable: true, assets: .}' | jq "${1:-.}" \
+    >"$stub/api/repos_test_provimux_releases_tags_v$TV.json"
+}
+# The tap: a formula at 1.2.0-pmx.1 with two archive URLs.
+tapr="$tmp/tap.git"; rm -rf "$tapr" "$tmp/tapw"; git init -q --bare -b main "$tapr"; git init -q -b main "$tmp/tapw"
+mkdir -p "$tmp/tapw/Formula"
+cat >"$tmp/tapw/Formula/provimux.rb" <<'RB'
+class Provimux < Formula
+  desc "test"
+  version "1.2.0-pmx.1"
+  on_macos do
+    url "https://github.com/ngvoicu/provimux/releases/download/v1.2.0-pmx.1/provimux_1.2.0-pmx.1_darwin_aarch64.tar.gz"
+    sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  end
+  on_linux do
+    url "https://github.com/ngvoicu/provimux/releases/download/v1.2.0-pmx.1/provimux_1.2.0-pmx.1_linux_amd64.tar.gz"
+    sha256 "1111111111111111111111111111111111111111111111111111111111111111"
+  end
+end
+RB
+(cd "$tmp/tapw" && git add -A && git commit -q -m tap && git push -q "$tapr" HEAD:main)
+tapsh() { (cd "$tmp" && env PATH="$stub/bin:$PATH" STUB_API="$stub/api" PMX_REPO=test/provimux PMX_TAP_URL="$tapr" GITHUB_OUTPUT= "$@") >"$tmp/tap.out" 2>"$tmp/tap.err" && echo ok || echo refused; }
+tap_release
+expect "release published, immutable, digests = checksums.txt: ok" ok "$(tapsh bash "$here/tap.sh" release "v$TV" "$tmp/tr")"
+tap_release '.immutable = false'
+expect "release not immutable: refused" refused "$(tapsh bash "$here/tap.sh" release "v$TV" "$tmp/tr")"
+tap_release '.assets[1].digest = "sha256:'"$(printf '%064d' 0)"'"'
+expect "an archive's digest is not checksums.txt's: refused" refused "$(tapsh bash "$here/tap.sh" release "v$TV" "$tmp/tr")"
+tap_release 'del(.assets[2])'
+expect "an asset missing: refused" refused "$(tapsh bash "$here/tap.sh" release "v$TV" "$tmp/tr")"
+tap_release '.assets[0].digest = null'
+expect "an asset without a digest: refused" refused "$(tapsh bash "$here/tap.sh" release "v$TV" "$tmp/tr")"
+tap_release
+rm -rf "$tmp/tp"
+expect "prepare 1.2.0 -> $TV (formula from update-formula.sh): ok" ok "$(tapsh bash "$here/tap.sh" prepare "v$TV" "$tmp/tp")"
+contains "  ... action push" "$tmp/tap.out" "action=push"
+contains "  ... the lease is the tap's main as read" "$tmp/tap.out" "lease=refs/heads/main:$(git --git-dir="$tapr" rev-parse main)"
+if git --git-dir="$tmp/tp/tap/.git" show HEAD:Formula/provimux.rb | grep -qF "version \"$TV\""; then ok "  ... committed the new version locally"; else bad "  ... committed the new version locally"; fi
+expect "  ... and pushed nothing" "$(cd "$tmp/tapw" && git rev-parse HEAD)" "$(git --git-dir="$tapr" rev-parse main)"
+# verify on its own
+sed -n 's/^.*$/&/p' "$tmp/tp/tap/Formula/provimux.rb" >"$tmp/new.rb"
+expect "verify: the prepared formula: ok" ok "$(tapsh bash "$here/tap.sh" verify "$TV" "$tmp/tp/release/checksums.txt" "$tmp/tapw/Formula/provimux.rb" "$tmp/new.rb")"
+sed 's/desc "test"/desc "other"/' "$tmp/new.rb" >"$tmp/bad.rb"
+expect "verify: another line changed: refused" refused "$(tapsh bash "$here/tap.sh" verify "$TV" "$tmp/tp/release/checksums.txt" "$tmp/tapw/Formula/provimux.rb" "$tmp/bad.rb")"
+awk '/sha256/ && !d {sub(/"[0-9a-f]*"/, "\"'"$(printf '%064d' 7)"'\""); d = 1} {print}' "$tmp/new.rb" >"$tmp/bad.rb"
+expect "verify: a sha256 not checksums.txt's: refused" refused "$(tapsh bash "$here/tap.sh" verify "$TV" "$tmp/tp/release/checksums.txt" "$tmp/tapw/Formula/provimux.rb" "$tmp/bad.rb")"
+sed "s/version \"$TV\"/version \"9.9.9-pmx.1\"/" "$tmp/new.rb" >"$tmp/bad.rb"
+expect "verify: another version: refused" refused "$(tapsh bash "$here/tap.sh" verify "$TV" "$tmp/tp/release/checksums.txt" "$tmp/tapw/Formula/provimux.rb" "$tmp/bad.rb")"
+expect "prepare with a given formula that changes another line: refused" refused "$(tapsh bash "$here/tap.sh" prepare "v$TV" "$tmp/tp" "$tmp/bad.rb")"
+# Only forward: the tap at a newer version is left as it is.
+(cd "$tmp/tapw" && sed -i.bak 's/version "1.2.0-pmx.1"/version "1.9.0-pmx.1"/' Formula/provimux.rb && rm -f Formula/provimux.rb.bak && git commit -qam newer && git push -q "$tapr" HEAD:main)
+expect "the tap is newer: ok, nothing to do" ok "$(tapsh bash "$here/tap.sh" prepare "v$TV" "$tmp/tp")"
+contains "  ... action none" "$tmp/tap.out" "action=none"
+# artifact: the formula the release run's tap-check bound to itself.
+(cd "$tmp/tp" && mkdir -p af && cp tap/Formula/provimux.rb af/provimux.rb && cd af && zip -q f.zip provimux.rb)
+fd="$(sha256_of "$tmp/tp/af/f.zip")"
+cp "$tmp/tp/af/f.zip" "$stub/api/repos_test_provimux_actions_artifacts_700_zip.json"
+jq -n --arg d "sha256:$fd" '{id: 700, name: "formula", expired: false, digest: $d, workflow_run: {id: 55}}' >"$stub/api/repos_test_provimux_actions_artifacts_700.json"
+jq -n --arg sha "$pmx_sha" '{workflow_runs: [{id: 55, path: ".github/workflows/provimux-release.yml", event: "push", head_branch: "v1.3.0-pmx.1",
+  head_sha: $sha, repository: {full_name: "test/provimux"}, status: "completed", conclusion: "success", created_at: "2026-11-19T00:00:00Z"}]}' \
+  >"$stub/api/repos_test_provimux_actions_runs_event_push_branch_v1.3.0-pmx.1_per_page_50.json"
+echo '{"id": 55, "status": "completed", "conclusion": "success", "run_attempt": 2}' >"$stub/api/repos_test_provimux_actions_runs_55.json"
+echo '{"jobs": [{"name": "formula", "id": 61}, {"name": "tap-check", "id": 62}]}' >"$stub/api/repos_test_provimux_actions_runs_55_attempts_2_jobs_per_page_100.json"
+tapann() { printf '%s\n' "$@" | jq -R -s 'split("\n") | map(select(length > 0) | {title: "provimux-formula-artifact", message: .})' >"$stub/api/repos_test_provimux_check-runs_62_annotations_per_page_100.json"; }
+tapann "700 formula sha256:$fd"
+expect "artifact: the formula tap-check bound, of the successful run's attempt: ok" ok "$(tapsh bash "$here/tap.sh" artifact "v$TV" "$pmx_sha" "$tmp/ta")"
+if command cmp -s "$tmp/ta/provimux.rb" "$tmp/tp/af/provimux.rb"; then ok "  ... unpacked"; else bad "  ... unpacked"; fi
+tapann "700 formula sha256:$(printf '%064d' 0)"
+expect "artifact: another digest than the annotation's: refused" refused "$(tapsh bash "$here/tap.sh" artifact "v$TV" "$pmx_sha" "$tmp/ta")"
+tapann "700 formula sha256:$fd" "701 formula sha256:$fd"
+expect "artifact: two binding annotations: refused" refused "$(tapsh bash "$here/tap.sh" artifact "v$TV" "$pmx_sha" "$tmp/ta")"
+tapann "700 formula sha256:$fd"
+echo '{"id": 55, "status": "completed", "conclusion": "failure", "run_attempt": 2}' >"$stub/api/repos_test_provimux_actions_runs_55.json"
+expect "artifact: the release run did not succeed: refused" refused "$(tapsh bash "$here/tap.sh" artifact "v$TV" "$pmx_sha" "$tmp/ta")"
+echo '{"id": 55, "status": "completed", "conclusion": "success", "run_attempt": 2}' >"$stub/api/repos_test_provimux_actions_runs_55.json"
+expect "artifact: a run for another commit: refused" refused "$(tapsh bash "$here/tap.sh" artifact "v$TV" "$other_sha" "$tmp/ta")"
+
+# --- provimux-release.yml: provenance (the owner's commit status) and release-latest ----------------
+rwf="$here/../workflows/provimux-release.yml"
+# inline NAME: the lines of the release workflow between "# >>> NAME" and "# <<< NAME".
+inline() { sed -n "/^ *# >>> $1\$/,/^ *# <<< $1\$/p" "$rwf" | sed 's/^          //' >"$tmp/$1.sh"; [[ "$(grep -c '' "$tmp/$1.sh")" -gt 10 ]]; }
+echo "# provimux-release.yml: provenance (commit status by the owner)"
+if inline provenance; then ok "provenance lines found in the workflow"; else bad "provenance lines found in the workflow"; fi
+mkdir -p "$stub/gitbin2"
+cat >"$stub/gitbin2/git" <<'EOF'
+#!/usr/bin/env bash
+[ "$1" = ls-remote ] || exit 1
+printf '%s\trefs/tags/%s\n' "$STUB_TAGSHA" "$TAG"
+EOF
+chmod +x "$stub/gitbin2/git"
+# statuses JSON...: the commit statuses of $pmx_sha.
+statuses() { jq -s '.' <<<"$*" >"$stub/api/repos_test_provimux_commits_${pmx_sha}_statuses_per_page_100.json"; }
+st() { jq -nc --arg c "$1" --arg s "$2" --arg l "$3" --arg t "$4" --argjson id "$5" '{id: $id, context: $c, state: $s, creator: {login: $l, type: $t}}'; }
+prov() {
+  env PATH="$stub/gitbin2:$stub/bin:$PATH" STUB_API="$stub/api" GH_REPO=test/provimux OWNER=ngvoicu TAG=v1.3.0-pmx.1 SHA="$pmx_sha" \
+    STUB_TAGSHA="$pmx_sha" GITHUB_REF=refs/tags/v1.3.0-pmx.1 GITHUB_STEP_SUMMARY=/dev/null PMX_NO_WAIT=1 "$@" \
+    bash "$tmp/provenance.sh" >"$tmp/prov.out" 2>&1 && echo pass || echo refused
+}
+statuses "$(st provimux-release/v1.3.0-pmx.1 success ngvoicu User 1)"
+expect "the owner's success status for this tag: released" pass "$(prov env)"
+statuses "$(st provimux-release/v1.3.0-pmx.1 success github-actions[bot] Bot 1)"
+expect "the same status by github-actions[bot] (GITHUB_TOKEN of any workflow): refused" refused "$(prov env)"
+statuses "$(st provimux-release/v1.3.0-pmx.1 success ngvoicu User 1)" "$(st provimux-release/v1.3.0-pmx.1 failure ngvoicu User 2)"
+expect "the owner's newest status is failure: refused" refused "$(prov env)"
+statuses "$(st provimux-release/v1.3.0-pmx.2 success ngvoicu User 1)"
+expect "a status for another tag only: refused" refused "$(prov env)"
+contains "  ... says there is none" "$tmp/prov.out" "has no commit status provimux-release/v1.3.0-pmx.1"
+statuses "$(st provimux-release/v1.3.0-pmx.1 success ngvoicu User 1)"
+expect "the tag on the remote is another commit: refused" refused "$(prov STUB_TAGSHA="$other_sha")"
+echo 'HTTP 503' >"$stub/api/repos_test_provimux_commits_${pmx_sha}_statuses_per_page_100.json"
+expect "the statuses cannot be read: refused, as a read error" refused "$(prov env)"
+contains "  ... says it cannot read them (not 'none')" "$tmp/prov.out" "cannot read the commit statuses"
+
+echo "# provimux-release.yml: release-latest promotes only its own release"
+if inline latest; then ok "latest lines found in the workflow"; else bad "latest lines found in the workflow"; fi
+rel() { jq -n --argjson id "$1" --arg t "$2" '{id: $id, tag_name: $t, draft: false, prerelease: false, immutable: true}' | jq "${3:-.}" >"$stub/api/repos_test_provimux_releases_$1.json"; }
+latest() { if [[ "$1" == none ]]; then rm -f "$stub/api/repos_test_provimux_releases_latest.json"; else printf '%s\n' "$1" >"$stub/api/repos_test_provimux_releases_latest.json"; fi; }
+lrun() {
+  : >"$stub/calls.log"
+  env PATH="$stub/bin:$PATH" STUB_API="$stub/api" GH_REPO=test/provimux "$@" bash "$tmp/latest.sh" >"$tmp/latest.out" 2>&1 && echo pass || echo refused
+}
+rel 301 v1.3.0-pmx.1; rel 299 v1.2.0-pmx.1
+latest '{"tag_name": "v1.2.0-pmx.1"}'
+expect "latest is older: this run's release 301 is promoted" pass "$(lrun TAG=v1.3.0-pmx.1 ID=301)"
+contains "  ... by its own id" "$stub/calls.log" "PATCH repos/test/provimux/releases/301"
+latest '{"tag_name": "v1.3.0-pmx.1"}'
+expect "an older run (v1.2.0-pmx.1) while latest is newer: left as it is" pass "$(lrun TAG=v1.2.0-pmx.1 ID=299)"
+if [[ -s "$stub/calls.log" ]]; then bad "  ... and nothing written"; else ok "  ... and nothing written"; fi
+latest none
+expect "no latest yet (404): promoted" pass "$(lrun TAG=v1.2.0-pmx.1 ID=299)"
+latest 'HTTP 503'
+expect "latest unreadable (503): stops" refused "$(lrun TAG=v1.3.0-pmx.1 ID=301)"
+if [[ -s "$stub/calls.log" ]]; then bad "  ... and nothing written"; else ok "  ... and nothing written"; fi
+latest '{}'
+expect "latest answers 200 without a tag: stops" refused "$(lrun TAG=v1.3.0-pmx.1 ID=301)"
+latest '{"tag_name": "v1.2.0-pmx.1"}'
+expect "the id is another tag's release: refused (never another release)" refused "$(lrun TAG=v1.3.0-pmx.1 ID=299)"
+rel 301 v1.3.0-pmx.1 '.immutable = false'
+expect "this run's release is not immutable: refused" refused "$(lrun TAG=v1.3.0-pmx.1 ID=301)"
+rel 301 v1.3.0-pmx.1
+cp "$stub/api/repos_test_provimux_releases_299.json" "$tmp/r299"; rel 301 v1.3.0-pmx.1
+# A readback that is not this release (GitHub kept another one latest).
+# shellcheck disable=SC2016 # literal text for sed
+sed -i.bak 's|cp "\$f" "\$(dirname|true "$(dirname|' "$stub/bin/gh" && rm -f "$stub/bin/gh.bak"
+latest '{"tag_name": "v1.2.0-pmx.1"}'
+expect "latest reads back as another release after the change: fails" refused "$(lrun TAG=v1.3.0-pmx.1 ID=301)"
+contains "  ... says so" "$tmp/latest.out" "reads back as"
 
 echo
 echo "$pass passed, $failed failed"
