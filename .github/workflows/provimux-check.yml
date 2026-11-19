@@ -4,10 +4,12 @@
 # with the pristine release, runs the guard, lists new upstream workflow files and the
 # range-diff of the owner's patches, and reports in the issue "sync: v<base>".
 #
-# It publishes nothing and holds no token of the owner. The check job, which runs
-# upstream's and the candidate's code, has contents: read and no other permission; the
-# report job runs only the default branch's scripts, never candidate code or go, and
-# alone may write issues. The owner publishes with .github/provimux/publish.sh.
+# It publishes nothing and holds no token of the owner. Every job checks out the run's
+# own commit (github.sha, the head_sha publish.sh binds the artifact to) and runs that
+# commit's scripts. Only the "test" jobs run upstream's or the candidate's code, one tree
+# per job, and they only write raw go output; the "verdict" job turns that output (data)
+# into the result and runs no repository code, nor does "prepare" (git only) or "report",
+# which alone may write issues.
 name: provimux-check
 
 on:
@@ -27,35 +29,29 @@ concurrency:
 permissions: {}
 
 jobs:
-  check:
+  prepare:
     runs-on: ubuntu-latest
-    timeout-minutes: 150
+    timeout-minutes: 20
     permissions:
       contents: read
     outputs:
       tag: ${{ steps.select.outputs.tag }}
-      status: ${{ steps.run.outputs.status || steps.select.outputs.status }}
+      status: ${{ steps.prepare.outputs.status || steps.select.outputs.status }}
     env:
       PMX_REPO: ${{ github.repository }}
       PMX_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-      # The release may need a newer Go than main's go.mod.
-      GOTOOLCHAIN: auto
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ github.event.repository.default_branch }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
           fetch-tags: true
           persist-credentials: false
-      # The scripts as they are on main, outside the tree the check rebases and tests.
+      # The check scripts, outside the tree the check rebases.
       - name: Copy the check scripts
         run: |
           cp -R .github/provimux "$RUNNER_TEMP/pmx"
           echo "PMX_CHECK_OUT=$RUNNER_TEMP/check" >> "$GITHUB_ENV"
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: false
       - name: Select the release
         id: select
         env:
@@ -63,22 +59,116 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PMX_TAG: ${{ inputs.tag }}
         run: bash "$RUNNER_TEMP/pmx/check.sh" select
-      - name: Rebase, range-diff, guard, build, test
-        id: run
+      - name: Rebase, range-diff, workflow paths, guard (git only)
+        id: prepare
         if: ${{ steps.select.outputs.status == 'check' }}
         run: |
           git config --global --add safe.directory "$PWD"
-          bash "$RUNNER_TEMP/pmx/check.sh" run
+          bash "$RUNNER_TEMP/pmx/check.sh" prepare
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: pmx-prepare
+          path: ${{ runner.temp }}/check/
+          if-no-files-found: warn
+
+  # One job per tree: upstream's and the candidate's code run here, and only raw
+  # go output leaves the job.
+  test:
+    needs: prepare
+    if: ${{ needs.prepare.outputs.status == 'test' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        tree: [candidate, tag]
+    env:
+      # The release may need a newer Go than the one its go.mod names.
+      GOTOOLCHAIN: auto
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          sparse-checkout: .github/provimux
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: pmx-prepare
+          path: ${{ runner.temp }}/check
+      - name: Export the ${{ matrix.tree }} tree (git only)
+        run: |
+          echo "PMX_CHECK_OUT=$RUNNER_TEMP/check" >> "$GITHUB_ENV"
+          export PMX_CHECK_OUT="$RUNNER_TEMP/check"
+          bash .github/provimux/check.sh tree ${{ matrix.tree }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: ${{ runner.temp }}/check/trees/${{ matrix.tree }}/go.mod
+          cache: false
+      - name: go build, go list, go test -json (runs the tree's code; raw output only)
+        run: bash .github/provimux/check.sh test ${{ matrix.tree }}
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: pmx-test-${{ matrix.tree }}
+          path: ${{ runner.temp }}/check/test/${{ matrix.tree }}/
+          if-no-files-found: warn
+
+  # Turns the raw output into the result. Runs no repository code.
+  verdict:
+    needs: [prepare, test]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      PMX_REPO: ${{ github.repository }}
+      PMX_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      PMX_PREP_JOB: ${{ needs.prepare.result }}
+      PMX_TEST_JOB: ${{ needs.test.result }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          sparse-checkout: .github/provimux
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: pmx-prepare
+          path: ${{ runner.temp }}/check
+      - uses: actions/download-artifact@v4
+        if: ${{ needs.prepare.outputs.status == 'test' }}
+        continue-on-error: true
+        with:
+          name: pmx-test-candidate
+          path: ${{ runner.temp }}/check/test/candidate
+      - uses: actions/download-artifact@v4
+        if: ${{ needs.prepare.outputs.status == 'test' }}
+        continue-on-error: true
+        with:
+          name: pmx-test-tag
+          path: ${{ runner.temp }}/check/test/tag
+      - name: Verdict
+        run: |
+          echo "PMX_CHECK_OUT=$RUNNER_TEMP/check" >> "$GITHUB_ENV"
+          export PMX_CHECK_OUT="$RUNNER_TEMP/check"
+          bash .github/provimux/check.sh verdict
       - name: Summary
         if: ${{ always() }}
         run: |
           if [ -f "$PMX_CHECK_OUT/result.json" ]; then
             jq -r '"### provimux-check: \(.status) \(.upstream.tag // "")", "", (.reasons[]? | "- " + .)' "$PMX_CHECK_OUT/result.json" | tr -d '`' >> "$GITHUB_STEP_SUMMARY"
           fi
+      # The artifact publish.sh reads. The run succeeds only if this upload does, and an
+      # artifact name is unique in a run, so a run that succeeded has this job's copy.
       - uses: actions/upload-artifact@v4
         if: ${{ always() }}
         with:
-          name: provimux-check-${{ steps.select.outputs.tag || 'none' }}
+          name: provimux-check-${{ needs.prepare.outputs.tag || 'none' }}
           path: |
             ${{ runner.temp }}/check/result.json
             ${{ runner.temp }}/check/candidate.bundle
@@ -86,7 +176,7 @@ jobs:
           if-no-files-found: warn
 
   report:
-    needs: check
+    needs: [prepare, test, verdict]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -96,20 +186,21 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ github.event.repository.default_branch }}
+          ref: ${{ github.sha }}
           sparse-checkout: .github/provimux
           persist-credentials: false
       - uses: actions/download-artifact@v4
         continue-on-error: true
         with:
-          name: provimux-check-${{ needs.check.outputs.tag || 'none' }}
+          name: provimux-check-${{ needs.prepare.outputs.tag || 'none' }}
           path: ${{ runner.temp }}/artifact
       - name: Open, update or close the sync issue
         env:
           GH_TOKEN: ${{ github.token }}
           PMX_REPO: ${{ github.repository }}
           RESULT: ${{ runner.temp }}/artifact/result.json
-          CHECK_JOB: ${{ needs.check.result }}
-          TAG_HINT: ${{ needs.check.outputs.tag }}
+          # success only when every job of the check did (the test jobs may be skipped).
+          CHECK_JOB: ${{ (needs.prepare.result == 'success' && needs.verdict.result == 'success' && (needs.test.result == 'success' || needs.test.result == 'skipped')) && 'success' || format('prepare {0}, test {1}, verdict {2}', needs.prepare.result, needs.test.result, needs.verdict.result) }}
+          TAG_HINT: ${{ needs.prepare.outputs.tag }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: bash .github/provimux/report.sh
