@@ -6,7 +6,9 @@
 #                           artifact's result.json (data) with gh; writes action=
 #                           publish|skip, tag=, why= to $GITHUB_OUTPUT.
 #   autopublish.sh notify   after a refusal or failure: sets the title of the issue
-#                           "sync: v<base>" and comments why (once per distinct reason).
+#                           "sync: v<base>" and comments why (once per distinct reason);
+#                           a failed Homebrew tap step goes to its own issue (tap_issue in
+#                           common.sh), which notify never retitles or closes.
 #
 # Runs only git, gh and jq: no code of the candidate or of upstream.
 #
@@ -29,8 +31,9 @@
 #   It writes no recovery instruction from what the run believes: it reads the remote
 #   first (main, v<base>, v<base>-pmx.* with each release and its release run) and says
 #   what is true there and what to do about that:
-#     a -pmx tag exists      released (closes the open issue; opens none) / released
-#                            but the tap update failed (owner: publish.sh --tap) / release
+#     a -pmx tag exists      released (closes the open sync issue; opens none; a failed
+#                            tap step also opens or comments on "homebrew tap: <tag>
+#                            needs the owner") / release
 #                            running / pushed, release not complete (rerun the release
 #                            run; never publish again)
 #     no -pmx tag, main is the checked main (or unknown)
@@ -81,7 +84,7 @@ decide() {
 
 notify() {
   local tag="${TAG:-}" base='' outcome="${OUTCOME:-failed}" log="${LOG:-}" expect="${EXPECT_MAIN:-}" cand=''
-  local tmp refs main_now='' base_now='' rs='' title marker numbers number rid
+  local tmp refs main_now='' base_now='' rs='' title marker numbers number rid ptag
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/provimux-notify.XXXXXX")"
   # shellcheck disable=SC2064 # expand now
   trap "rm -rf '${tmp:?}'" EXIT
@@ -133,6 +136,15 @@ notify() {
     } >"$tmp/facts.md"
   fi
 
+  # A failed tap step: its own issue, whatever the sync issue becomes. The tag is the
+  # plan's -pmx tag (the run's release), else <tag>-pmx.1.
+  if [[ "$outcome" == tap-failed && -n "$tag" ]]; then
+    ptag="$(sed -n 's/^PMX_TAG=//p' "${PLAN:-/dev/null}" 2>/dev/null | head -n 1)"
+    [[ "$ptag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-pmx\.[0-9]+$ ]] || ptag="$tag-pmx.1"
+    # A failed write still lets the sync issue be told; the job then fails (exit below).
+    tap_issue "$ptag" "$(cat "$tmp/why.txt")" "${RUN_URL:-}" || { tap_err=1; echo "autopublish: could not write the tap issue for $ptag" >&2; }
+  fi
+
   # --- title and what to do, from those facts ---
   local recheck="gh workflow run provimux-check.yml -R $PMX_REPO -f tag=$tag"
   if [[ -z "$tag" ]]; then
@@ -143,14 +155,9 @@ notify() {
     { echo "**provimux-publish failed and the remote could not be read.** Do not publish or rerun anything before checking:"
       echo; echo '```sh'; echo "git ls-remote $PMX_REPO_URL refs/heads/main 'refs/tags/$tag*'"; echo '```'
       echo "then follow SYNC.md, \"Check a release\" (a \`$tag-pmx.*\` tag exists) or \"Publishing by hand\" (none does)."; } >"$tmp/head.md"
-  elif [[ "$rs" == published && "$outcome" == tap-failed ]]; then
-    title="sync: $tag — released, Homebrew tap not updated, owner needed"
-    { echo "**The release is complete, but the Homebrew tap update failed** (reasons below). The tap stays on its old version until the owner updates it, with their own credentials (SYNC.md, \"The Homebrew tap\"; only forward, so running it again is safe):"
-      echo; echo '```sh'; echo "bash .github/provimux/publish.sh --tap $(sed -n 's/^PMX_TAG=//p' "${PLAN:-/dev/null}" 2>/dev/null | head -n 1 | grep -E '^v[0-9.]+-pmx\.[0-9]+$' || echo "$tag-pmx.1")"; echo '```'
-      echo "Then close this issue."; } >"$tmp/head.md"
   elif [[ "$rs" == published ]]; then
     title="sync: $tag — released"
-    echo "**The release is complete** (every \`$tag-pmx.*\` release is public with all its assets and its release run succeeded); this run failed after that, or was a second run for it. Nothing to publish; this closes the issue." >"$tmp/head.md"
+    echo "**The release is complete** (every \`$tag-pmx.*\` release is public with all its assets and its release run succeeded); this run failed after that, or was a second run for it. Nothing to publish; this closes the issue.$([[ "$outcome" == tap-failed ]] && echo " The Homebrew tap step failed: that is in its own issue, \"homebrew tap: ${ptag:-?} needs the owner\".")" >"$tmp/head.md"
   elif [[ "$rs" == in-progress ]]; then
     title="sync: $tag — pushed, release running"
     echo "**\`main\` and the tags are pushed; the release run is still running.** Do not publish again. When it has finished, the owner checks it (SYNC.md, \"Check a release\") and closes this issue; a scheduled check does that only while \`$tag\` is the newest stable release." >"$tmp/head.md"
@@ -215,7 +222,7 @@ notify() {
         --jq '.[] | select(.pull_request == null) | select(.title == "provimux-publish: failed") | .number' | sort -n)"
   fi
   number="$(head -n 1 <<<"$numbers")"
-  if [[ "$rs" == published && "$outcome" != tap-failed ]]; then
+  if [[ "$rs" == published ]]; then
     # Complete: nothing is left to do, so no issue is opened; an open one is closed.
     for number in $numbers; do
       gh issue close "$number" -R "$PMX_REPO" --comment "$(cat "$tmp/main.md")" >/dev/null
@@ -238,6 +245,6 @@ notify() {
 
 case "${1:-}" in
   decide) decide ;;
-  notify) notify ;;
+  notify) tap_err=0; notify; exit "$tap_err" ;;
   *) echo "usage: $0 decide|notify" >&2; exit 2 ;;
 esac
