@@ -17,7 +17,7 @@ It is the management-side sibling of `GET /v1/models?include=accounts` (`sdk/api
 
 ## 2. Response
 
-`200`, `application/json`. Every key shown is always present; a value that is not known is `null`. Times are RFC 3339 in UTC. Full example: `examples/model-routes.json`; schema: `openapi.yaml`.
+`200`, `application/json`. Every key shown is always present; a value that is not known is `null`. Times are RFC 3339 in UTC, with the fraction of a second that was recorded. Full example: `examples/model-routes.json`; schema: `openapi.yaml`.
 
 ```json
 {
