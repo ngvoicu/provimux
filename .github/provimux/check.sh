@@ -218,13 +218,13 @@ do_select() {
 # go test runs in its own process group under a wall-clock limit ($PMX_TEST_LIMIT seconds,
 # default 2400): a hang (a stopped or starved test binary is not caught by -timeout) kills
 # the group, the exit status is then 124 and the packages without a result fail the check.
-# -p $PMX_TEST_P (default 2) packages at a time.
+# $PMX_TEST_P sets -p (default: go's own, the number of CPUs).
 gotest() {
   local dir=$1 prefix=$2 e pid waited=0 limit="${PMX_TEST_LIMIT:-2400}"
   shift 2
   set +e
   set -m
-  (cd "$dir" && exec go test -json -count=1 -p "${PMX_TEST_P:-2}" -timeout 15m "$@" >"$prefix.json" 2>"$prefix.stderr") &
+  (cd "$dir" && exec go test -json -count=1 ${PMX_TEST_P:+-p "$PMX_TEST_P"} -timeout 15m "$@" >"$prefix.json" 2>"$prefix.stderr") &
   pid=$!
   set +m
   while kill -0 "$pid" 2>/dev/null; do
