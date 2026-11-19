@@ -201,6 +201,8 @@ jobs:
             echo "ref_main=$cand:refs/heads/main"
             if [[ "$base_tag" == 1 ]]; then echo "ref_base=$up:refs/tags/$TAG"; else echo "ref_base="; fi
             echo "ref_pmx=$cand:refs/tags/$TAG-pmx.1"
+            echo "pmx_tag=$TAG-pmx.1"
+            echo "candidate=$cand"
           } >>"$GITHUB_OUTPUT"
           echo "git push --atomic --porcelain --force-with-lease=refs/heads/main:$SHA https://github.com/$PMX_REPO.git $cand:refs/heads/main$([[ "$base_tag" == 1 ]] && echo " $up:refs/tags/$TAG") $cand:refs/tags/$TAG-pmx.1"
 
@@ -246,6 +248,26 @@ jobs:
             echo "publish: git push reported a failure" >>"$LOG"
             exit 1
           }
+
+      # Only after the push succeeded: the record provimux-release.yml requires before it
+      # publishes anything for the tag (job "provenance"; SYNC.md, "Release provenance").
+      - name: Record the push (no token)
+        if: ${{ steps.decide.outputs.action == 'publish' }}
+        shell: bash
+        env:
+          PMX_TAG: ${{ steps.values.outputs.pmx_tag }}
+          CANDIDATE: ${{ steps.values.outputs.candidate }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/pushed"
+          printf '%s %s\n' "$PMX_TAG" "$CANDIDATE" >"$RUNNER_TEMP/pushed/pushed.txt"
+          cat "$RUNNER_TEMP/pushed/pushed.txt"
+      - name: Keep the push record
+        if: ${{ steps.decide.outputs.action == 'publish' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: pmx-pushed
+          path: ${{ runner.temp }}/pushed/pushed.txt
+          if-no-files-found: error
 
       - name: Wait for the release, close the issue (no token)
         if: ${{ steps.decide.outputs.action == 'publish' }}
