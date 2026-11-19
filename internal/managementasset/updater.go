@@ -27,9 +27,16 @@ import (
 )
 
 const (
-	defaultManagementReleaseURL  = "https://api.github.com/repos/router-for-me/Cli-Proxy-API-Management-Center/releases/latest"
-	defaultManagementFallbackURL = "https://cpamc.router-for.me/"
+	defaultManagementReleaseURL = "https://api.github.com/repos/ngvoicu/provimux-ui/releases/latest"
+	// defaultManagementFallbackBaseURL serves the latest provimux-ui release assets without
+	// the GitHub API. It is used only for the default repository when the API lookup fails
+	// and no console file exists yet; management.html must match checksums.txt.
+	defaultManagementFallbackBaseURL = "https://github.com/ngvoicu/provimux-ui/releases/latest/download/"
+	// originalManagementReleaseURL is the upstream Management Center. Configs copied from
+	// CLIProxyAPI's config.example.yaml name it; Provimux treats it as the default.
+	originalManagementRepository = "api.github.com/repos/router-for-me/Cli-Proxy-API-Management-Center"
 	managementAssetName          = "management.html"
+	managementChecksumsName      = "checksums.txt"
 	httpUserAgent                = "CLIProxyAPI-management-updater"
 	managementSyncMinInterval    = 30 * time.Second
 	updateCheckInterval          = 3 * time.Hour
@@ -245,10 +252,8 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 		asset, remoteHash, err := fetchLatestAsset(ctx, client, releaseURL)
 		if err != nil {
 			if localFileMissing {
-				log.WithError(err).Warn("failed to fetch latest management release information, trying fallback page")
-				if ensureFallbackManagementHTML(ctx, client, localPath) {
-					return nil, nil
-				}
+				log.WithError(err).Warn("failed to fetch latest management release information, trying verified fallback")
+				ensureFallbackManagementHTML(ctx, client, localPath, releaseURL)
 				return nil, nil
 			}
 			log.WithError(err).Warn("failed to fetch latest management release information")
@@ -263,10 +268,8 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 		data, downloadedHash, err := downloadAsset(ctx, client, asset.BrowserDownloadURL)
 		if err != nil {
 			if localFileMissing {
-				log.WithError(err).Warn("failed to download management asset, trying fallback page")
-				if ensureFallbackManagementHTML(ctx, client, localPath) {
-					return nil, nil
-				}
+				log.WithError(err).Warn("failed to download management asset, trying verified fallback")
+				ensureFallbackManagementHTML(ctx, client, localPath, releaseURL)
 				return nil, nil
 			}
 			log.WithError(err).Warn("failed to download management asset")
@@ -291,26 +294,79 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 	return err == nil
 }
 
-func ensureFallbackManagementHTML(ctx context.Context, client *http.Client, localPath string) bool {
-	data, downloadedHash, err := downloadAsset(ctx, client, defaultManagementFallbackURL)
+func ensureFallbackManagementHTML(ctx context.Context, client *http.Client, localPath string, releaseURL string) bool {
+	if releaseURL != defaultManagementReleaseURL {
+		log.Warn("no fallback for a custom panel-github-repository; management control panel page not installed")
+		return false
+	}
+
+	sums, _, err := downloadAsset(ctx, client, defaultManagementFallbackBaseURL+managementChecksumsName)
+	if err != nil {
+		log.WithError(err).Warn("failed to download fallback management checksums")
+		return false
+	}
+	expectedHash := checksumFor(sums, managementAssetName)
+	if expectedHash == "" {
+		log.Warnf("fallback %s has no sha256 for %s", managementChecksumsName, managementAssetName)
+		return false
+	}
+
+	data, downloadedHash, err := downloadAsset(ctx, client, defaultManagementFallbackBaseURL+managementAssetName)
 	if err != nil {
 		log.WithError(err).Warn("failed to download fallback management control panel page")
 		return false
 	}
-
-	log.Warnf("management asset downloaded from fallback URL without digest verification (hash=%s) — "+
-		"enable verified GitHub updates by keeping disable-auto-update-panel set to false", downloadedHash)
+	if !strings.EqualFold(expectedHash, downloadedHash) {
+		log.Errorf("fallback management asset checksum mismatch: expected %s got %s — not installing it", expectedHash, downloadedHash)
+		return false
+	}
 
 	if err = atomicWriteFile(localPath, data); err != nil {
 		log.WithError(err).Warn("failed to persist fallback management control panel page")
 		return false
 	}
 
-	log.Infof("management asset updated from fallback page successfully (hash=%s)", downloadedHash)
+	log.Infof("management asset installed from fallback release download (hash=%s)", downloadedHash)
 	return true
 }
 
+// checksumFor returns the lowercase sha256 for name from a sha256sum-style listing.
+func checksumFor(sums []byte, name string) string {
+	for _, line := range strings.Split(string(sums), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 || strings.TrimPrefix(fields[1], "*") != name {
+			continue
+		}
+		sum := strings.ToLower(fields[0])
+		if _, err := hex.DecodeString(sum); err != nil || len(sum) != sha256.Size*2 {
+			return ""
+		}
+		return sum
+	}
+	return ""
+}
+
+// resolveReleaseURL maps panel-github-repository to a releases API URL. The original
+// Management Center (any spelling) maps to the default, provimux-ui.
 func resolveReleaseURL(repo string) string {
+	releaseURL := resolveRepositoryReleaseURL(repo)
+	if isOriginalManagementReleaseURL(releaseURL) {
+		return defaultManagementReleaseURL
+	}
+	return releaseURL
+}
+
+func isOriginalManagementReleaseURL(releaseURL string) bool {
+	parsed, err := url.Parse(releaseURL)
+	if err != nil {
+		return false
+	}
+	path := strings.TrimSuffix(strings.TrimSuffix(parsed.Path, "/releases/latest"), "/")
+	path = strings.TrimSuffix(path, ".git")
+	return strings.EqualFold(parsed.Hostname()+path, originalManagementRepository)
+}
+
+func resolveRepositoryReleaseURL(repo string) string {
 	repo = strings.TrimSpace(repo)
 	if repo == "" {
 		return defaultManagementReleaseURL
