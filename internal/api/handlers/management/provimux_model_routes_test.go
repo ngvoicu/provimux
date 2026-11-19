@@ -434,3 +434,47 @@ func TestProvimuxModelRoutesNamesOnlyListedCredentials(t *testing.T) {
 		}
 	}
 }
+
+// provimuxWireTime parses a time from the response.
+func provimuxWireTime(t *testing.T, value string) time.Time {
+	t.Helper()
+	parsed, errParse := time.Parse(time.RFC3339Nano, value)
+	if errParse != nil {
+		t.Fatalf("time %q: %v", value, errParse)
+	}
+	return parsed
+}
+
+// A cooldown in its last second still ends after observed_at on the wire.
+func TestProvimuxModelRoutesCooldownLastSecond(t *testing.T) {
+	prevNow := provimuxNow
+	now := time.Date(2026, 11, 19, 17, 27, 4, 100_000_000, time.UTC)
+	provimuxNow = func() time.Time { return now }
+	t.Cleanup(func() { provimuxNow = prevNow })
+	key := provimuxTestKey("pmx-lastsec-key", "claude", "k", "", "0")
+	key.ModelStates = map[string]*coreauth.ModelState{"pmx-lastsec": provimuxQuotaModelState(now.Add(775*time.Millisecond), 429)}
+	manager := provimuxTestManager(t, provimuxTestCredential{key, []*registry.ModelInfo{{ID: "pmx-lastsec"}}})
+	body, _ := provimuxGetModelRoutes(t, &Handler{cfg: &config.Config{}, authManager: manager}, "/x")
+	cooldown := provimuxFindModel(t, body, "pmx-lastsec").Routes[0].RecordedCooldown
+	if cooldown == nil {
+		t.Fatal("no recorded cooldown")
+	}
+	observed, until := provimuxWireTime(t, body.ObservedAt), provimuxWireTime(t, cooldown.Until)
+	if left := until.Sub(observed); left != 775*time.Millisecond {
+		t.Fatalf("observed_at=%s until=%s: %s left on the wire, want 775ms", body.ObservedAt, cooldown.Until, left)
+	}
+}
+
+// The wire carries the recorded cooldown's end exactly, fraction of a second included.
+func TestProvimuxModelRoutesCooldownKeepsFraction(t *testing.T) {
+	provimuxTestClock(t)
+	stored := provimuxTestNow.Add(10*time.Minute + 875*time.Millisecond)
+	key := provimuxTestKey("pmx-fraction-key", "claude", "k", "", "0")
+	key.Quota = coreauth.QuotaState{Exceeded: true, Reason: "credential_quota", NextRecoverAt: stored}
+	manager := provimuxTestManager(t, provimuxTestCredential{key, []*registry.ModelInfo{{ID: "pmx-fraction"}}})
+	body, _ := provimuxGetModelRoutes(t, &Handler{cfg: &config.Config{}, authManager: manager}, "/x")
+	cooldown := provimuxFindModel(t, body, "pmx-fraction").Routes[0].RecordedCooldown
+	if cooldown == nil || !provimuxWireTime(t, cooldown.Until).Equal(stored) {
+		t.Fatalf("until on the wire = %+v, stored %s", cooldown, stored.Format(time.RFC3339Nano))
+	}
+}
