@@ -35,9 +35,9 @@ It runs every 3 hours and can be started by hand (Actions → provimux-check →
 
 - `go build ./...` must succeed on the candidate, and every package must build.
 - The exit status of each `go test` must match its results. Both trees must have a terminal result (pass, fail or skip) for every package that `go list ./...` lists.
-- Every failure on the candidate (a test, or a package that failed without a failing test) fails the check, unless one of two waivers holds, and nothing else waives it:
-  - **baseline:** the *same* test (package and name) failed on the pristine tag. An unrelated failure upstream, or a package that failed there as a whole, waives nothing;
-  - **flaky:** the whole-package rerun has an *explicit pass* for it: the rerun exited with a valid status, its package has a result and built, and the test passed (for a package failure: the package passed). A rerun that did not build, was killed, or has no result for the test waives nothing.
+- The candidate's failures are those of the first run **and of the rerun**: a test the first run never reached (an earlier test stopped the package) that fails on the rerun is a failure. Every failure (a test, or a package that failed without a failing test) fails the check, unless one of two waivers holds, and nothing else waives it:
+  - **baseline:** the *same named* test (package and test name) failed on the pristine tag. An unrelated failure upstream waives nothing, and a **package-level** failure (build, setup, `TestMain`, a panic outside a test) is never waived by the tag, even if the tag's package failed too;
+  - **flaky:** the whole-package rerun has an *explicit pass* for it: the rerun exited with a valid status, its package has a result and built, and the test passed (for a package-level failure: the whole package passed). A rerun that did not build, was killed, has no result for the test, or failed it, waives nothing.
 - A test that the tag does not have counts against the candidate, because it is the owner's test.
 
 The gate is "no worse than upstream", because upstream does not gate its releases on tests. Upstream always has failing tests of its own, so the waivers are exercised on every run; the issue lists them.
