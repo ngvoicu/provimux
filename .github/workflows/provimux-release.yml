@@ -654,7 +654,7 @@ jobs:
       - name: Check banner and image layout
         run: |
           set -euo pipefail
-          expected="Provimux Version: ${PROVIMUX_VERSION} (based on CLIProxyAPI ${VERSION})"
+          expected="Provimux Version: ${PROVIMUX_VERSION} (based on CLIProxyAPI ${VERSION}) by providers.dev"
           for cmd in ./provimux ./CLIProxyAPI; do
             out="$(docker run --rm provimux:check "$cmd" --help 2>&1 || true)"
             banner="$(printf '%s\n' "$out" | grep -m1 '^Provimux Version:' || true)"
@@ -814,10 +814,10 @@ jobs:
           readme="https://github.com/${GH_REPO}/blob/${ref/HEAD/$GITHUB_SHA}/.github/README.md"
           owner="${GITHUB_REPOSITORY_OWNER,,}"
           {
-            echo "Provimux ${PROVIMUX_VERSION}, built on CLIProxyAPI ${BASE}."
+            echo "Provimux ${PROVIMUX_VERSION} by [providers.dev](https://providers.dev), built on CLIProxyAPI ${BASE}."
             echo
             echo "- CLIProxyAPI ${BASE}: https://github.com/router-for-me/CLIProxyAPI/releases/tag/v${BASE}"
-            echo "- What Provimux adds: ${readme}#provimux"
+            echo "- What Provimux adds: ${readme}"
             echo "- Model catalogs: router-for-me/models at [\`${MODELS_COMMIT:0:12}\`](https://github.com/router-for-me/models/tree/${MODELS_COMMIT}) (SHA256SUMS \`${CATALOGS_SHA256}\`)"
             echo "- Docker image: \`ghcr.io/${owner}/provimux:${PROVIMUX_VERSION}\` (index \`$(cat image-index/digest)\`)"
             echo
