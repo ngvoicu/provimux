@@ -44,7 +44,7 @@ The client keeps the status on the error (`client.ts:181`), and the console alre
 
 | Page | When to ask |
 |---|---|
-| Model routes | on open, on the refresh button, and every 30 s while the page is visible. Count cooldowns down in the browser from `retry_at`; `observed_at` gives the server's clock for the offset |
+| Model routes | on open, on the refresh button, and every 30 s while the page is visible. Count recorded cooldowns down in the browser from `until`; `observed_at` gives the server's clock for the offset |
 | Live lists | on open and on the refresh button. After `POST /v8/management/models/refresh` (the existing button), every 2 s until each login has `fetching: false` and either a `fetched_at` or a `last_failure.at` later than the click, for at most 60 s. The POST returns before the lists arrive |
 
 Neither endpoint is cached by the server. Neither should be polled while the tab is hidden.
@@ -55,7 +55,7 @@ The console replaces itself within 3 hours of a release, whatever the server's v
 
 - The server only **adds** fields. It never removes one, changes a type or changes a meaning. A different meaning gets a new field or a new path.
 - The console **ignores fields it does not know** and treats a field that is missing as `null`. A newer console against an older Provimux then shows "unknown" where a later field would be.
-- The console treats an **enum value it does not know** as unknown, not as an error: `kind`, `cooldown.scope`, `cooldown.reason`, `source`, `reason`.
+- The console treats an **enum value it does not know** as unknown, not as an error: `kind`, `recorded_cooldown.scope`, `recorded_cooldown.reason`, `source`, `last_failure.category`.
 - There is no version number in the response; presence of a field is the signal.
 
 ## 5. Types
@@ -67,11 +67,13 @@ For `src/provimux/api/` (new files; the console's guard keeps layer commits out 
 type Timestamp = string;
 
 interface ProvimuxLogin {
-  /** Auth file name, as the credentials page shows it. Null for a configured API key. */
+  /** Auth file name, only for a login the credentials page lists under a file. Null for a configured
+   *  API key, a runtime credential and a login the credentials page hides: use auth_index then. */
   name: string | null;
-  /** Account email, as the credentials page shows it. Null when there is none, and for API keys. */
+  /** Account email, under the same condition as name. */
   email: string | null;
-  /** For a configured key: the entry's name, e.g. "openrouter", or "<provider>-apikey". */
+  /** For a login, under the same condition as name. For a configured key: the OpenAI-compatible
+   *  entry's name, e.g. "openrouter", or "<provider>-apikey". */
   label: string | null;
 }
 
@@ -88,16 +90,17 @@ interface ProvimuxReasoning {
   budget: { min: number; max: number; zero_allowed: boolean; dynamic_allowed: boolean } | null;
 }
 
-interface ProvimuxCooldown {
+/** A cooldown as the auth manager recorded it; not an availability verdict. */
+interface ProvimuxRecordedCooldown {
   scope: 'credential' | 'model' | (string & {});
+  /** The model the cooldown is recorded under (scope 'model'); null for 'credential'. */
+  model: string | null;
   /** A code, never a provider's text. */
   reason:
     | 'quota' | 'credential_quota' | 'transient_rate_limit' | 'transient_error' | 'unauthorized'
     | 'payment_required' | 'not_found' | 'model_not_supported' | 'invalid_grant' | 'cloudflare_challenge'
     | 'unknown' | (string & {});
-  retry_at: Timestamp;
-  /** At observed_at. */
-  remaining_seconds: number;
+  until: Timestamp;
   http_status: number | null;
   backoff_level: number | null;
 }
@@ -114,11 +117,7 @@ interface ProvimuxModelRoute {
   login: ProvimuxLogin;
   limits: ProvimuxLimits;
   reasoning: ProvimuxReasoning | null;
-  /** False with cooldown null: blocked without a timer (sign in again, token expired, model disabled). */
-  available: boolean;
-  cooldown: ProvimuxCooldown | null;
-  /** Null: not since last_served.recording_since. */
-  last_served_at: Timestamp | null;
+  recorded_cooldown: ProvimuxRecordedCooldown | null;
 }
 
 interface ProvimuxModel {
@@ -127,13 +126,12 @@ interface ProvimuxModel {
   owned_by: string | null;
   /** What all routes agree on; null where they do not or none declares it. */
   limits: ProvimuxLimits;
-  /** In the order Provimux tries them: highest priority first. Never empty. */
+  /** Highest priority first. Never empty. Not a prediction of which route a request gets. */
   routes: ProvimuxModelRoute[];
 }
 
 interface ProvimuxModelRoutesResponse {
   observed_at: Timestamp;
-  last_served: { recording_since: Timestamp };
   models: ProvimuxModel[];
 }
 
@@ -143,17 +141,14 @@ interface ProvimuxLiveListLogin {
   login: ProvimuxLogin;
   disabled: boolean;
   source: 'live' | 'catalog' | (string & {});
-  /** Why catalog; null when live. */
-  reason: 'option_off' | 'login_disabled' | 'failed' | 'pending' | (string & {}) | null;
   fetching: boolean;
   fetched_at: Timestamp | null;
   /** Model ids the provider returned. */
   listed_models: number | null;
   /** Models the login serves now. */
   registered_models: number;
-  last_failure: { at: Timestamp; http_status: number | null; message: string | null } | null;
-  next_retry_at: Timestamp | null;
-  refresh_due_at: Timestamp | null;
+  /** Codes only: category is http_status, credentials, invalid_response, network or other. */
+  last_failure: { at: Timestamp; category: string; http_status: number | null } | null;
 }
 
 interface ProvimuxLiveListsResponse {
@@ -161,7 +156,6 @@ interface ProvimuxLiveListsResponse {
   /** models.live-lists */
   enabled: boolean;
   providers: string[];
-  timing: { refresh_seconds: number; retry_seconds: number; scan_seconds: number };
   logins: ProvimuxLiveListLogin[];
 }
 ```
@@ -174,11 +168,10 @@ interface ProvimuxLiveListsResponse {
 | which login | `routes[].login`; a link to the credentials page by `auth_index` |
 | model limits per route | `routes[].limits`, with the model's `limits` as "what clients are told" |
 | reasoning levels | `routes[].reasoning` |
-| Devin per-model cooling: state | `routes[].cooldown` with `scope: "model"` on Devin routes |
+| Devin per-model cooling: state | `routes[].recorded_cooldown` with `scope: "model"` on Devin routes |
 | Devin per-model cooling: switch | still `PUT /v8/management/config/oauth/providers/devin/model-level-cooling` |
 | OpenRouter entries with their limits | routes with `host: "openrouter.ai"`; the entries themselves still from `GET /v8/management/config` |
-| last served | `routes[].last_served_at`, `last_served.recording_since` |
 | live lists: per-login status | `live-lists` |
 | live lists: switch, refresh | still `PUT /v8/management/config/models/live-lists` and `POST /v8/management/models/refresh` |
 
-Not in either endpoint, on purpose: the upstream model behind an alias (resolving it changes routing state for pooled aliases, `01-model-routes.md` section 4), request counts and token counts (that is usage statistics), and the model IDs of a live list (`GET /v8/management/credentials/models?name=`).
+Not in either endpoint, on purpose: the upstream model behind an alias (resolving it changes routing state for pooled aliases, `01-model-routes.md` section 4), request counts and token counts (that is usage statistics), the model IDs of a live list (`GET /v8/management/credentials/models?name=`), and anything that predicts the router or the fetcher: whether a route is selectable now, which route answered last, when a list is fetched or retried next. Those were in the first build and were removed after two reviews found them wrong in ordinary cases; the console shows recorded state and does not guess.
