@@ -25,6 +25,13 @@ RUN CGO_ENABLED=1 GOOS=linux go build -buildvcs=false -ldflags="-s -w -X 'main.V
 
 FROM debian:bookworm
 
+LABEL org.opencontainers.image.title="Provimux" \
+      org.opencontainers.image.description="Provimux by providers.dev: one local endpoint for your AI subscriptions and API keys. A distribution of CLIProxyAPI." \
+      org.opencontainers.image.vendor="providers.dev" \
+      org.opencontainers.image.url="https://providers.dev" \
+      org.opencontainers.image.source="https://github.com/ngvoicu/provimux" \
+      org.opencontainers.image.licenses="MIT"
+
 RUN apt-get update && apt-get install -y --no-install-recommends tzdata ca-certificates && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir /CLIProxyAPI
