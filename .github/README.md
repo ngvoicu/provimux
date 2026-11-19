@@ -1,9 +1,14 @@
-# Provimux
+<h1>
+  <a href="https://providers.dev"><picture>
+    <source media="(prefers-color-scheme: dark)" srcset="provimux/media/brand/lockup-dark.svg">
+    <img alt="Provimux by providers.dev" src="provimux/media/brand/lockup-light.svg" width="224" height="56">
+  </picture></a>
+</h1>
 
-Provimux is one local endpoint for your AI subscriptions and API keys. Sign in with your Claude and Codex
-subscriptions, add your API keys and an OpenRouter key, and point your tools at `http://127.0.0.1:8317`. Provimux is a
-distribution of [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI): everything CLIProxyAPI does, plus the
-features below.
+Provimux, by [providers.dev](https://providers.dev), is one local endpoint for your AI subscriptions and API keys. Sign
+in with your Claude and Codex subscriptions, add your API keys and an OpenRouter key, and point your tools at
+`http://127.0.0.1:8317`. Provimux is a distribution of [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI):
+everything CLIProxyAPI does, plus the features below.
 
 ![A diagram. On the left, "Your tools": pi, Codex CLI, Claude Code, and any OpenAI-, Claude- or Gemini-format client. They point at the middle box, "Provimux, http://127.0.0.1:8317", which lists: which account serves each model, and which one answered; each login's own model list; OpenRouter caching, sessions and limits; the right context and output limits. Provimux points at "Your accounts" on the right: Claude subscription (oauth), Claude API key (apikey), Codex subscription (oauth), and OpenRouter key (apikey, openrouter.ai).](provimux/media/overview.png)
 
