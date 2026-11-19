@@ -10,15 +10,29 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/management"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 // provimuxManagementPaths are Provimux's own management endpoints.
 var provimuxManagementPaths = []string{
 	"/v8/management/provimux/model-routes",
+	"/v8/management/provimux/live-lists",
+}
+
+// provimuxTestLiveSource stands in for sdk/cliproxy, which registers the real one and which this
+// test binary does not link.
+type provimuxTestLiveSource struct{}
+
+func (provimuxTestLiveSource) Providers() []string { return []string{"claude"} }
+
+func (provimuxTestLiveSource) State(*coreauth.Auth) management.ProvimuxLiveListState {
+	return management.ProvimuxLiveListState{}
 }
 
 func provimuxTestServer(t *testing.T, enabled, home bool) *Server {
 	t.Helper()
+	management.SetProvimuxLiveListSource(provimuxTestLiveSource{})
+	t.Cleanup(func() { management.SetProvimuxLiveListSource(nil) })
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte("port: 8317\nremote-management: {secret-key: test-password}\n"), 0600); err != nil {
 		t.Fatal(err)
