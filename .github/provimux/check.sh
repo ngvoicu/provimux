@@ -13,7 +13,8 @@
 # draft, not a prerelease); an explicit tag must be one too. The base of main is the
 # newest vX.Y.Z tag reachable from main, which must be upstream's tag at the same commit
 # (no fallback to an older one). Then:
-#   - v<base>-pmx.* exists here: "published" when every such release is complete,
+#   - v<base>-pmx.* exists here: "published" when every such release is complete and
+#     its provimux-release run succeeded,
 #     "in-progress" while its release run runs, "incomplete" otherwise;
 #   - main is already on the tag (and no -pmx tag): "unreleased";
 #   - the tag does not descend from main's base: "fail";
@@ -182,15 +183,15 @@ do_select() {
     status=published
     for t in $existing; do
       s="$(release_state "$t")"
-      run_state=''
-      [[ "$s" == complete ]] || run_state="$(release_run_state "$t")"
+      run_state="$(release_run_state "$t")"
       states="$states{\"tag\":\"$t\",\"release\":\"$s\",\"run\":\"$run_state\"}"
-      if [[ "$s" != complete ]]; then
+      # Published = the release has every asset and its whole release run succeeded.
+      if [[ "$s" != complete || "$run_state" != success ]]; then
         if [[ "$run_state" == running ]]; then
           [[ "$status" == incomplete ]] || status=in-progress
         else
           status=incomplete
-          reason "tag $t exists but its release is $s (release run: $run_state)"
+          reason "tag $t exists but its release is $s and its release run is $run_state"
         fi
       fi
     done
