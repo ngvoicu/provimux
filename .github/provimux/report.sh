@@ -32,6 +32,9 @@
 # success, failure, cancelled, ...), TAG_HINT (the tag the check selected, if any),
 # RUN_URL, GH_TOKEN with issues: write on PMX_REPO, PMX_REPORT_DRY_RUN=1 to print only
 # (the release state is still read from GitHub).
+#
+# Only issues titled "sync: v..." are read or written. The Homebrew tap's issue
+# ("homebrew tap: <tag> needs the owner") is the owner's to close: never touched here.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=common.sh
@@ -205,33 +208,14 @@ esac
   fi
 } >"$body"
 
-# close_released N TITLE LABEL RELJSON MESSAGE: closes issue N of a base whose newest
-# release is complete. An issue that says the Homebrew tap was not updated stays open
-# until tap.sh check finds the tap serving the newest release (or a newer version); then
-# it is closed with that verification. Prints what it does; with PMX_REPORT_DRY_RUN only
-# prints.
+# close_released N LABEL MESSAGE: closes issue N of a base whose newest release is
+# complete. A sync issue is about the release only: the Homebrew tap has its own issue
+# ("homebrew tap: <tag> needs the owner", common.sh tap_issue), which this script never
+# reads, edits or closes. Prints what it does; with PMX_REPORT_DRY_RUN only prints.
 close_released() {
-  local n=$1 t=$2 lb=$3 rel=$4 m=$5 nt v mk
-  if [[ "$t" == *"Homebrew tap not updated"* ]]; then
-    nt="$(jq -r '.[] | select(.newest) | .tag' "$rel" | head -n 1)"
-    rm -rf "$tmp/tapchk"
-    if v="$(bash "$here/tap.sh" check "$nt" "$tmp/tapchk" 2>"$tmp/tapchk.err")"; then
-      m="$m Homebrew tap verified for \`$nt\`: $v."
-    else
-      [[ -n "$v" ]] || v="the tap could not be verified ($(tail -n 1 "$tmp/tapchk.err" | cut -c1-200))"
-      if [[ -n "${PMX_REPORT_DRY_RUN:-}" ]]; then echo "keep #$n ($lb): $v"; return 0; fi
-      mk="<!-- provimux-tap $(printf '%s %s' "$nt" "$v" | git hash-object --stdin) -->"
-      if ! gh api --paginate "repos/$PMX_REPO/issues/$n/comments?per_page=100" --jq '.[].body' | grep -qF -- "$mk"; then
-        gh issue comment "$n" -R "$PMX_REPO" --body "$mk
-The release is complete, but this issue stays open: $v. The owner runs \`bash .github/provimux/publish.sh --tap $nt\` (SYNC.md, \"The Homebrew tap\"); a later check closes this issue once the tap serves the release. $run_url" >/dev/null
-      fi
-      echo "Kept #$n ($lb) open: $v"
-      return 0
-    fi
-  fi
-  if [[ -n "${PMX_REPORT_DRY_RUN:-}" ]]; then echo "close #$n ($lb)"; return 0; fi
-  gh issue close "$n" -R "$PMX_REPO" --comment "$m" >/dev/null
-  echo "Closed #$n ($lb)"
+  if [[ -n "${PMX_REPORT_DRY_RUN:-}" ]]; then echo "close #$1 ($2)"; return 0; fi
+  gh issue close "$1" -R "$PMX_REPO" --comment "$3" >/dev/null
+  echo "Closed #$1 ($2)"
 }
 
 # sweep: the open sync issues of other bases (see the header). Prints what it does; with
@@ -250,7 +234,7 @@ sweep() {
     case "$rs" in
       published)
         m="Verified: the newest \`$ob-pmx.*\` release is public with all its assets and its provimux-release run for the tag's commit succeeded. $run_url"
-        echo "sweep: $(close_released "$n" "$t" "$ob" "$tmp/o-rel.json" "$m")"
+        echo "sweep: $(close_released "$n" "$ob" "$m")"
         continue ;;
       incomplete)
         t2="sync: $ob — release incomplete (older base), owner needed"
@@ -284,14 +268,12 @@ sweep() {
 
 # published: this base's open issues, each through close_released.
 close_base() {
-  local n t any=''
-  while IFS=$'\t' read -r n t; do
-    [[ "$n" =~ ^[0-9]+$ ]] || continue
+  local n any=''
+  for n in $(sync_issues "$base"); do
     any=1
-    close_released "$n" "$t" "$label" "$tmp/releases.json" \
+    close_released "$n" "$label" \
       "Verified: the newest \`v$base-pmx.*\` release is public with all its assets, and its provimux-release run for the tag's commit succeeded. $run_url"
-  done < <(gh api --paginate "repos/$PMX_REPO/issues?state=open&per_page=100" \
-    --jq ".[] | select(.pull_request == null) | select(.title == \"sync: v$base\" or (.title | startswith(\"sync: v$base \"))) | \"\\(.number)\\t\\(.title)\"")
+  done
   [[ -n "$any" ]] || echo "Published; no open issue for $label."
 }
 

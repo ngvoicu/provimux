@@ -239,6 +239,49 @@ sync_issues() {
     sort -n
 }
 
+# tap_issue TAG WHY [RUN_URL]: a Homebrew tap failure (prepare, verify or push) for the
+# release TAG, in its own issue "homebrew tap: TAG needs the owner": opened, or commented
+# on once per distinct WHY. Separate from "sync: v<base>": no reporter, sweep or notifier
+# edits its title or closes it; the owner closes it after publish.sh --tap and tap.sh check
+# pass (SYNC.md, "The Homebrew tap"). With PMX_NOTIFY_DRY_RUN it prints instead.
+tap_issue() {
+  local t=$1 why=$2 run=${3:-} title n body mk seen
+  [[ "$t" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-pmx\.[0-9]+$ ]] || { echo "tap_issue: '$t' is not v<base>-pmx.<n>" >&2; return 1; }
+  title="homebrew tap: $t needs the owner"
+  mk="<!-- provimux-tap-issue $(printf '%s\n%s\n' "$t" "$why" | git hash-object --stdin) -->"
+  body="$mk
+**The Homebrew tap was not updated to \`$t\`.** No automation closes or retitles this issue. The tap only ever moves to the newest release; if a newer \`-pmx\` release exists by now, use that tag below instead (\`publish.sh --tap\` of an older tag leaves the tap alone). The owner, with their own credentials (SYNC.md, \"The Homebrew tap\"):
+
+\`\`\`sh
+bash .github/provimux/publish.sh --tap $t
+bash .github/provimux/tap.sh check $t \"\$(mktemp -d)\"
+\`\`\`
+
+and closes this issue once \`tap.sh check\` prints \`ok\`.
+
+Why:
+~~~~text
+$(printf '%s\n' "$why" | sed 's/~~~/~ ~ ~/g' | cut -c1-400 | tail -n 40)
+~~~~
+${run:+
+Run: $run}"
+  if [[ -n "${PMX_NOTIFY_DRY_RUN:-}" ]]; then printf 'tap_title=%s\n%s\n' "$title" "$body"; return 0; fi
+  n="$(gh api --paginate "repos/$PMX_REPO/issues?state=open&per_page=100" \
+    --jq ".[] | select(.pull_request == null) | select(.title == \"$title\") | .number" | sort -n | head -n 1)" || return 1
+  if [[ -z "$n" ]]; then
+    gh issue create -R "$PMX_REPO" --title "$title" --body "$body" >/dev/null || return 1
+    echo "Opened \"$title\""
+    return 0
+  fi
+  seen="$({ gh api "repos/$PMX_REPO/issues/$n" --jq '.body'; gh api --paginate "repos/$PMX_REPO/issues/$n/comments?per_page=100" --jq '.[].body'; } 2>/dev/null || true)"
+  if grep -qF -- "$mk" <<<"$seen"; then
+    echo "#$n already says this"
+  else
+    gh issue comment "$n" -R "$PMX_REPO" --body "$body" >/dev/null || return 1
+    echo "Commented on #$n ($title)"
+  fi
+}
+
 # releases_status BASE JSON REASONS: whether v<BASE> is released. Prints none | published
 # | in-progress | incomplete | error; writes the per-tag states to the file JSON ([{tag,
 # sha, release, run, newest}]) and appends reasons to the file REASONS. The NEWEST

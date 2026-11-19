@@ -38,20 +38,23 @@
 #    Right after the push it authorizes the release (--authorize, below).
 # 5. Waits until the provimux-release run for v<base>-pmx.1 at the candidate has finished
 #    successfully (archives, image push, GitHub release, formula check) and the release
-#    has every asset, prints the run's conclusion and jobs, updates the Homebrew tap
-#    (--tap, below), then closes the "sync: v<base>" issue.
+#    has every asset, prints the run's conclusion and jobs, closes the "sync: v<base>"
+#    issue, then updates the Homebrew tap (--tap, below).
 #
 #   --authorize <tag> <commit>  sets the commit status provimux-release/<tag> (state
 #                success) on <commit> with the owner's gh: the durable authorization
 #                provimux-release.yml requires before it publishes anything for <tag>
 #                (SYNC.md, "Release provenance"). Refuses unless gh is logged in as the
 #                repository owner (the release workflow counts only the owner's status).
-#   --tap <tag>  tap.sh prepare for the published release <tag> (immutable, every asset,
-#                digests = checksums.txt), the formula from the tap's own by
+#   --tap <tag>  tap.sh prepare for the published release <tag>: only when <tag> is the
+#                newest release (GitHub's latest), else "superseded by <newest>; tap left
+#                alone" and nothing is pushed. The release verified (immutable, every
+#                asset, digests = checksums.txt), the formula from the tap's own by
 #                update-formula.sh, checked, committed; then one git push to
 #                ngvoicu/homebrew-tap with the owner's git credentials and the lease on
-#                the tap's main as read. Only forward. For a hand -pmx.<n>, or when the
-#                automatic tap update failed.
+#                the tap's main as read. For a hand -pmx.<n>, or the issue "homebrew tap:
+#                <tag> needs the owner". A failure opens or comments on that issue
+#                (tap_issue in common.sh); the owner closes it after tap.sh check says ok.
 #
 #   --dry-run    everything except the push (shows git push --dry-run), no wait, no close
 #   --expect-main <sha>  refuse unless the remote main, the check run's head_sha and the
@@ -79,7 +82,7 @@ here="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=common.sh
 . "$here/common.sh"
 
-usage() { sed -n '2,77p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,79p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 die() { echo "publish: $*" >&2; exit 1; }
 log() { echo "==> $*" >&2; }
 
@@ -122,20 +125,26 @@ authorize() {
     -f "description=authorized by the owner (publish.sh)" >/dev/null || die "cannot set the commit status provimux-release/$t on $c"
   log "authorized $t at $c (commit status provimux-release/$t)"
 }
-# hand_tap TAG: tap.sh prepare, then the owner's git push (hooks off, lease as read).
+# hand_tap TAG: tap.sh prepare, then the owner's git push (hooks off, lease as read). A
+# failure goes to the issue "homebrew tap: TAG needs the owner" (tap_issue), then stops.
 hand_tap() {
   local t=$1 d o action repo lease ref
   [[ "$t" =~ $PMX_PMX_RE ]] || die "--tap takes v<base>-pmx.<n>"
   d="$(mktemp -d "${TMPDIR:-/tmp}/provimux-tap.XXXXXX")"
-  o="$(GITHUB_OUTPUT='' bash "$here/tap.sh" prepare "$t" "$d")" || { rm -rf "${d:?}"; die "the tap update for $t was refused"; }
+  tap_fail() {
+    rm -rf "${d:?}"
+    tap_issue "$t" "publish: $1" || echo "publish: could not write the issue \"homebrew tap: $t needs the owner\"" >&2
+    die "$1"
+  }
+  o="$(GITHUB_OUTPUT='' bash "$here/tap.sh" prepare "$t" "$d")" || tap_fail "the tap update for $t was refused (tap.sh prepare; see above)"
   action="$(sed -n 's/^action=//p' <<<"$o")" repo="$(sed -n 's/^repo=//p' <<<"$o")"
   lease="$(sed -n 's/^lease=//p' <<<"$o")" ref="$(sed -n 's/^ref=//p' <<<"$o")"
   if [[ "$action" == push ]]; then
     git --git-dir="$repo" -c core.hooksPath=/dev/null push "--force-with-lease=$lease" https://github.com/ngvoicu/homebrew-tap.git "$ref" ||
-      { rm -rf "${d:?}"; die "the push to ngvoicu/homebrew-tap failed"; }
+      tap_fail "the push of $t to ngvoicu/homebrew-tap failed"
     echo "Homebrew tap: provimux $(sed -n 's/^from=//p' <<<"$o") -> ${t#v}"
   else
-    echo "Homebrew tap: left as it is ($(sed -n 's/^from=//p' <<<"$o"))"
+    echo "Homebrew tap: left as it is"
   fi
   rm -rf "${d:?}"
 }
@@ -167,7 +176,7 @@ elif [[ -n "$plan_dir$wait_dir$close_dir" ]]; then
   die "--plan, --wait and --close are for --ci"
 fi
 
-# --- 5. wait for the whole release run; then the tap; then close the issue -----------------------
+# --- 5. wait for the whole release run; then close the issue; then the tap -----------------------
 # Done means: the provimux-release run for the tag finished successfully (every job:
 # archives, image, publish-release, formula, tap-check, release-latest, image-push,
 # image-latest) and the GitHub release is published with all its assets; only a run for
@@ -206,7 +215,7 @@ close_issues() {
   run="$(release_run_id "$pmx_tag" "$candidate")"
   run_url="https://github.com/$PMX_REPO/actions/runs/$run"
   for n in $(sync_issues "$base"); do
-    gh issue close "$n" -R "$PMX_REPO" --comment "Published $url (main ${old_main:0:12} -> ${candidate:0:12}): the release has all its assets, the provimux-release run succeeded (image push included) and the Homebrew tap is updated: $run_url" >/dev/null
+    gh issue close "$n" -R "$PMX_REPO" --comment "Published $url (main ${old_main:0:12} -> ${candidate:0:12}): the release has all its assets and the provimux-release run succeeded (image push included): $run_url. The Homebrew tap is not part of this issue: a failed tap update has its own issue, \"homebrew tap: $pmx_tag needs the owner\"." >/dev/null
     echo "Closed issue #$n"
   done
 }
@@ -524,5 +533,5 @@ echo "Pushed."
 authorize "$pmx_tag" "$candidate"
 
 wait_release
-hand_tap "$pmx_tag"
 close_issues
+hand_tap "$pmx_tag"
