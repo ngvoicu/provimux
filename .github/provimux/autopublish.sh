@@ -80,10 +80,10 @@ notify() {
   why() { if [[ -n "$log" && -s "$log" ]]; then grep -E '^publish: ' "$log" | tail -n 40 |
     sed -E 's|[^ ]*/provimux-publish\.[A-Za-z0-9]+|<tmp>|g' || true; fi; }
   if [[ "$outcome" == no-token ]]; then
-    title="sync: $tag — ready, publishing waits for PUBLISH_TOKEN"
+    title="sync: $tag — ready, publishing waits for PROVIMUX_TOKEN"
     key="no-token"
     {
-      echo "**Automatic publishing waits for the token.** The check passed, but the repository secret \`PUBLISH_TOKEN\` is not set, so \`provimux-publish\` pushed nothing."
+      echo "**Automatic publishing waits for the token.** The check passed, but the repository secret \`PROVIMUX_TOKEN\` is not set, so \`provimux-publish\` pushed nothing."
       echo
       echo "The owner either creates the token (SYNC.md, \"The token\"; the next passing check publishes), or publishes by hand (SYNC.md, \"Publishing by hand\"):"
     } >"$tmp/main.md"
