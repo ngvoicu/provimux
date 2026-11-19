@@ -22,8 +22,9 @@
 # 3. Prints what it will push and asks (--yes skips the question). One atomic push:
 #    main with --force-with-lease=refs/heads/main:<recorded old main> (a literal SHA),
 #    tag v<base> at upstream's commit, tag v<base>-pmx.1 at the candidate.
-# 4. Waits until the GitHub release v<base>-pmx.1 is published with every asset (the
-#    release workflow does the rest), then closes the "sync: v<base>" issue.
+# 4. Waits until the provimux-release run for v<base>-pmx.1 has finished successfully
+#    (archives, image push, GitHub release, tap) and the release has every asset, prints
+#    the run's conclusion and jobs, then closes the "sync: v<base>" issue.
 #
 #   --dry-run    everything except the push (shows git push --dry-run), no wait, no close
 #   --main-only  push only main (new upstream workflow files: SYNC.md); no wait, no close
@@ -291,24 +292,37 @@ if [[ "$mode" == main ]]; then
   exit 0
 fi
 
-# --- 4. wait for the release, then close the issue ----------------------------------------------
-log "waiting for the release $pmx_tag (up to $timeout_min minutes)"
+# --- 4. wait for the whole release run, then close the issue ---------------------------------
+# Done means: the provimux-release run for the tag finished successfully (every job:
+# archives, image, publish-release, formula, tap-publish, image-push) and the GitHub
+# release is published with all its assets.
+log "waiting for the provimux-release run of $pmx_tag and its release (up to $timeout_min minutes)"
 deadline=$(( $(date +%s) + timeout_min * 60 ))
 while :; do
   s="$(release_state "$pmx_tag")"
   run_state="$(release_run_state "$pmx_tag")"
   log "release: $s; release run: $run_state"
-  [[ "$s" == complete ]] && break
   case "$run_state" in
-    failure:*) die "the provimux-release run for $pmx_tag ended ${run_state#failure:}; the issue stays open (SYNC.md: \"Check a release\")" ;;
-    success) [[ "$s" == complete ]] || die "the release run succeeded but the release is $s; the issue stays open" ;;
+    success) break ;;
+    failure:*) break ;;
   esac
-  [[ $(date +%s) -lt $deadline ]] || die "timed out waiting for $pmx_tag; the issue stays open. Check it later (SYNC.md)."
+  [[ $(date +%s) -lt $deadline ]] || die "timed out waiting for the release run of $pmx_tag (last: run $run_state, release $s); the issue stays open. Check it later (SYNC.md: \"Check a release\")."
   sleep 30
 done
+run="$(release_run_id "$pmx_tag")"
+run_url="https://github.com/$PMX_REPO/actions/runs/$run"
+echo
+echo "provimux-release run $run_url: ${run_state#failure:}"
+[[ -n "$run" ]] && gh api "repos/$PMX_REPO/actions/runs/$run/jobs?per_page=100" \
+  --jq '.jobs[] | "  \(.conclusion // .status)\t\(.name)"' || true
+if [[ "$run_state" != success ]]; then
+  die "the provimux-release run for $pmx_tag ended ${run_state#failure:}; the issue stays open (SYNC.md: \"Check a release\")"
+fi
+s="$(release_state "$pmx_tag")"
+[[ "$s" == complete ]] || die "the release run succeeded but the release $pmx_tag is $s; the issue stays open"
 url="https://github.com/$PMX_REPO/releases/tag/$pmx_tag"
 echo "Published: $url"
 for n in $(sync_issues "$base"); do
-  gh issue close "$n" -R "$PMX_REPO" --comment "Published $url (main ${old_main:0:12} -> ${candidate:0:12}); the release has all its assets." >/dev/null
+  gh issue close "$n" -R "$PMX_REPO" --comment "Published $url (main ${old_main:0:12} -> ${candidate:0:12}): the release has all its assets and the provimux-release run succeeded (image push and tap included): $run_url" >/dev/null
   echo "Closed issue #$n"
 done
