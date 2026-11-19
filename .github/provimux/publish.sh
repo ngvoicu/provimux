@@ -319,7 +319,7 @@ echo "Pushed."
 
 # --- 5. wait for the whole release run, then close the issue ---------------------------------
 # Done means: the provimux-release run for the tag finished successfully (every job:
-# archives, image, publish-release, formula, tap-publish, image-push) and the GitHub
+# archives, image, publish-release, formula, tap-publish, image-push, image-latest) and the GitHub
 # release is published with all its assets; only a run for the candidate commit counts.
 log "waiting for the provimux-release run of $pmx_tag and its release (up to $timeout_min minutes)"
 deadline=$(( $(date +%s) + timeout_min * 60 ))
