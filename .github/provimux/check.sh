@@ -286,6 +286,20 @@ do_prepare() {
   else
     guard_ok=false; reason "the guard rejects the candidate"
   fi
+  # 5. The tested trees are the released trees: git archive (what the test jobs build and
+  # test) must give exactly the commit's files (what the release's checkout builds), for
+  # the candidate and the tag. export-ignore or export-subst in upstream's .gitattributes
+  # would otherwise test one tree and release another.
+  step=archive
+  for p in candidate:"$candidate" tag:"$upstream_commit"; do
+    a="$(mktemp -d "${TMPDIR:-/tmp}/provimux-check-archive.XXXXXX")"
+    cleanup_paths+=("$a")
+    git archive --format=tar "${p#*:}" | tar -x -C "$a"
+    if ! archive_matches "$(git rev-parse --git-common-dir)" "${p#*:}" "$a" "$out/logs/archive-${p%%:*}.txt"; then
+      reason "git archive of the ${p%%:*} (${p#*:}) differs from its tree, so the tests would not see the files the release builds (export-ignore or export-subst in .gitattributes): see logs/archive-${p%%:*}.txt"
+    fi
+  done
+
   step="test"
   status="test"
 }
@@ -295,7 +309,7 @@ do_prepare() {
 # from the upstream tag (and the bundle), to $trees/<T>. Works in its own bare repository,
 # so it needs only the prepare step's out dir.
 do_tree() {
-  local which=$1 repo
+  local which=$1 repo c
   # shellcheck disable=SC1090
   . "$state"
   [[ "$status" == test ]] || { echo "check.sh tree: nothing to test (status $status)" >&2; exit 1; }
@@ -309,15 +323,19 @@ do_tree() {
   rm -rf "${trees:?}/$which"
   mkdir -p "$trees/$which"
   case "$which" in
-    tag) tg archive --format=tar "$upstream_commit" | tar -x -C "$trees/tag" ;;
+    tag) c="$upstream_commit" ;;
     candidate)
       tg fetch -q "$out/candidate.bundle" "+refs/pmx-check/candidate:refs/pmx/candidate"
       [[ "$(tg rev-parse refs/pmx/candidate)" == "$candidate" ]] ||
         { echo "check.sh tree: the bundle is not the candidate $candidate" >&2; exit 1; }
-      tg archive --format=tar "$candidate" | tar -x -C "$trees/candidate"
+      c="$candidate"
       ;;
     *) echo "usage: $0 tree candidate|tag" >&2; exit 2 ;;
   esac
+  tg archive --format=tar "$c" | tar -x -C "$trees/$which"
+  # The tree tested must be the commit's files exactly (prepare checked the same).
+  archive_matches "$repo" "$c" "$trees/$which" "$repo/archive.txt" ||
+    { echo "check.sh tree: git archive of $which ($c) differs from its tree:" >&2; cat "$repo/archive.txt" >&2; exit 1; }
   log "tree $which in $trees/$which"
 }
 

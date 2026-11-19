@@ -67,6 +67,58 @@ PMX_CHECK_RUN_OK='select(.path == ".github/workflows/provimux-check.yml" and .he
    and .repository.full_name == $repo and .head_repository.full_name == $repo
    and (.head_sha | test("^[0-9a-f]{40}$")))'
 
+# tree_files GIT_DIR COMMIT: COMMIT's files as "<mode> <blob> <path>", sorted: what a
+# checkout of COMMIT holds (the release builds from a checkout). Submodules (mode 160000)
+# are left out: neither a checkout without submodules nor git archive has their files.
+tree_files() {
+  git --git-dir="$1" ls-tree -r -z --full-tree "$2" |
+    while IFS= read -r -d '' e; do
+      local meta="${e%%$'\t'*}" path="${e#*$'\t'}" mode type oid
+      read -r mode type oid <<<"$meta"
+      [[ "$type" == blob ]] || continue
+      printf '%s %s %s\n' "$mode" "$oid" "$path"
+    done | LC_ALL=C sort
+}
+
+# dir_files DIR: the files under DIR (an extracted git archive) in the same form, the blob
+# ids hashed as git would store them (no filters): 120000 for a symlink, 100755 for an
+# executable file, 100644 otherwise.
+dir_files() {
+  local dir=$1 lst p
+  lst="$(mktemp "${TMPDIR:-/tmp}/provimux-files.XXXXXX")"
+  (
+    cd "$dir" || exit 1
+    find . -type f -print | sed 's|^\./||' | LC_ALL=C sort >"$lst"
+    if [[ -s "$lst" ]]; then
+      paste -d ' ' \
+        <(while IFS= read -r p; do if [[ -x "$p" ]]; then echo 100755; else echo 100644; fi; done <"$lst") \
+        <(git hash-object --no-filters --stdin-paths <"$lst") \
+        "$lst"
+    fi
+    find . -type l -print | sed 's|^\./||' | while IFS= read -r p; do
+      printf '120000 %s %s\n' "$(printf '%s' "$(readlink "$p")" | git hash-object --no-filters --stdin)" "$p"
+    done
+  ) | LC_ALL=C sort
+  rm -f "$lst"
+}
+
+# archive_matches GIT_DIR COMMIT DIR REPORT: DIR, extracted from `git archive COMMIT`, has
+# exactly COMMIT's files (names, blob ids, modes). An upstream .gitattributes with
+# export-ignore or export-subst would make the tested tree differ from the checkout the
+# release builds; then it fails (status 1) and REPORT lists the differences
+# ("- " only in the commit, "+ " only in the archive).
+archive_matches() {
+  local gd=$1 c=$2 dir=$3 report=$4
+  tree_files "$gd" "$c" >"$report.want"
+  dir_files "$dir" >"$report.got"
+  if diff "$report.want" "$report.got" >/dev/null; then
+    rm -f "$report.want" "$report.got"; : >"$report"; return 0
+  fi
+  { diff "$report.want" "$report.got" | sed -n 's/^< /- /p; s/^> /+ /p' | head -n 100; } >"$report"
+  rm -f "$report.want" "$report.got"
+  return 1
+}
+
 # check_artifact RUN DIR: the artifact provimux-check-<tag> that the verdict job of RUN's
 # latest attempt uploaded, downloaded and unpacked into DIR; prints "<artifact id> <name>".
 # The binding: the verdict job (it runs no repository code) writes the id, name and digest
