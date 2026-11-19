@@ -140,7 +140,7 @@ esac
         if [[ "$nw" != 0 ]]; then echo "**New workflow files** in \`$tag\`: \`publish.sh\` refuses this release; follow \"New upstream workflow files\" in SYNC.md:"; list '.decisions.new_workflows[]'; fi
       fi
       echo
-      echo "**Publish by hand** (only if the automatic publish refused or waits for its token; on the owner's Mac, in a worktree of \`provimux/main\`; see \`.github/provimux/SYNC.md\`):"
+      echo "**Publish by hand** only if the automatic publish refused (it says so here) **and** \`PROVIMUX_TOKEN\` is set: while it is missing, the release's \`tap-publish\` fails and a hand publish goes out without the Homebrew tap update. On the owner's Mac, in a worktree of \`provimux/main\`; see \`.github/provimux/SYNC.md\`:"
       echo
       echo '```sh'
       echo "bash .github/provimux/publish.sh $tag --dry-run"
