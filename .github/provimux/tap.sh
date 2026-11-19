@@ -21,24 +21,24 @@
 #       that id, of that run, named formula, unexpired, with that digest, and the zip
 #       downloaded must have it. Leaves <dir>/provimux.rb.
 #   tap.sh prepare <v<base>-pmx.<n>> <dir> [<formula>]
-#       release (above), then a clone of the tap in <dir>/tap; the formula is <formula>,
-#       or, without it, the tap's formula updated by update-formula.sh from the
-#       release's checksums.txt. Only forward: a tap already at this version with exactly
-#       this formula, or at a newer version, is left as it is (action=none). A tap at an
-#       older version, or at THIS version with any other bytes (a wrong sha256 or url), is
-#       verified (above) and gets one commit on the tap's main with the verified formula:
-#       the formula comes from the published, immutable release, so at the same version
-#       it is the correct content and repairing the tap is what makes the release
-#       installable; a same-version difference is never "none". Prints, and writes to $GITHUB_OUTPUT:
-#       action=push|none, repo=<git dir>, lease=refs/heads/main:<tap main read>,
-#       ref=<commit>:refs/heads/main, version=, from=.
+#       The tap only ever moves to the newest release. First the repository's newest
+#       release, GitHub's "latest" read strictly (an unreadable answer, or one that is not
+#       a v<base>-pmx.<n> tag, stops: exit 1). For any other tag it touches nothing:
+#       "superseded by <newest>; tap left alone", action=none, exit 0 (a tag newer than
+#       "latest" is an error). At the newest tag: release (above), a clone of the tap in
+#       <dir>/tap; the formula is <formula>, or, without it, the tap's formula updated by
+#       update-formula.sh from the release's checksums.txt. Byte for byte the tap's:
+#       action=none. A tap at a higher version than the newest release: exit 1 (reported,
+#       never "ok"). Otherwise (older version, or this version with other bytes: a repair)
+#       verify (above) and one commit on the tap's main with the verified formula.
+#       Prints, and writes to $GITHUB_OUTPUT: action=push|none, repo=<git dir>,
+#       lease=refs/heads/main:<tap main read>, ref=<commit>:refs/heads/main, version=, from=.
 #   tap.sh check <v<base>-pmx.<n>> <dir>
-#       Read-only: release (above), then whether the tap serves it: "ok" (the tap's
-#       formula is byte for byte the tap's own formula updated by update-formula.sh from
-#       the release's checksums.txt, i.e. right version, urls and sha256), "newer" (the
-#       tap is at a newer version: this release is superseded there), exit 0; "wrong:
-#       <why>" exit 1; any read failure exit 2. (report.sh, before it closes an issue
-#       that says the tap was not updated.)
+#       Read-only, for the owner (the issue "homebrew tap: <tag> needs the owner" names
+#       it): "ok" (exit 0) only when <tag> is the newest release and the tap's formula is
+#       byte for byte the tap's own formula updated by update-formula.sh from the
+#       release's checksums.txt; "wrong: <why>" exit 1 (an older tag, a tap at another
+#       version, higher included, other urls or sha256); any read failure exit 2.
 #
 # Env: PMX_REPO (common.sh), PMX_TAP_URL (default https://github.com/ngvoicu/homebrew-tap.git),
 # GH_TOKEN with read access (and actions: read for artifact). Runs with bash 3.2.
@@ -154,9 +154,33 @@ artifact() {
   echo "tap: formula of release run $run attempt $att (artifact $id)" >&2
 }
 
+# newest: GitHub's "latest" release of PMX_REPO, which must be a v<base>-pmx.<n> tag
+# (release-latest in provimux-release.yml moves it only forward). Fails otherwise.
+newest() {
+  local t
+  t="$(gh api "repos/$PMX_REPO/releases/latest" --jq '.tag_name // ""')" || return 1
+  [[ "$t" =~ $PMX_PMX_RE ]] || return 1
+  echo "$t"
+}
+# version_cmp A B: "lt", "eq" or "gt" (sort -V).
+version_cmp() {
+  if [[ "$1" == "$2" ]]; then echo eq
+  elif [[ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n 1)" == "$2" ]]; then echo lt
+  else echo gt; fi
+}
+
 prepare() {
-  local tag=$1 dir=$2 formula=${3:-} v cur base newest
+  local tag=$1 dir=$2 formula=${3:-} v cur base n
+  [[ "$tag" =~ $PMX_PMX_RE ]] || die "'$tag' is not v<base>-pmx.<n>"
   v="${tag#v}"
+  n="$(newest)" || die "cannot read the newest release of $PMX_REPO (GitHub's latest, a v<base>-pmx.<n> tag); the tap is left alone"
+  out version "$v"
+  if [[ "$n" != "$tag" ]]; then
+    [[ "$(version_cmp "$v" "${n#v}")" == lt ]] || die "$tag is not GitHub's latest release ($n): the tap moves only to the newest release"
+    echo "tap: $tag is superseded by $n; tap left alone" >&2
+    out action none
+    return 0
+  fi
   release "$tag" "$dir/release"
   rm -rf "$dir/tap"
   GIT_TERMINAL_PROMPT=0 git clone -q --depth 1 --no-tags "$PMX_TAP_URL" "$dir/tap" || die "cannot clone $PMX_TAP_URL"
@@ -171,14 +195,11 @@ prepare() {
     bash "$here/update-formula.sh" "$v" "$dir/release/checksums.txt" "$formula" >&2 || die "update-formula.sh failed"
   fi
   cur="$(sed -n 's/^  version "\(.*\)"$/\1/p' "$f")"
-  out version "$v"; out from "$cur"
+  out from "$cur"
   if cmp -s "$formula" "$f"; then
     echo "tap: the tap already has this formula ($cur)" >&2; out action none; return 0
   fi
-  newest="$(printf '%s\n%s\n' "$cur" "$v" | sort -V | tail -n 1)"
-  if [[ "$cur" != "$v" && "$newest" != "$v" ]]; then
-    echo "tap: the tap has $cur; $v is not newer, left as it is" >&2; out action none; return 0
-  fi
+  [[ "$(version_cmp "$cur" "$v")" != gt ]] || die "the tap is at $cur, higher than the newest release $v"
   [[ "$cur" != "$v" ]] || echo "tap: the tap is at $v but its formula differs from the verified one: repairing it" >&2
   verify "$v" "$dir/release/checksums.txt" "$f" "$formula" || die "the formula changes more than the version, url and sha256 lines"
   cp "$formula" "$f"
@@ -192,19 +213,18 @@ prepare() {
 }
 
 check() {
-  local tag=$1 dir=$2 v cur newest f
+  local tag=$1 dir=$2 v cur n f
+  [[ "$tag" =~ $PMX_PMX_RE ]] || { echo "tap: '$tag' is not v<base>-pmx.<n>" >&2; exit 2; }
   v="${tag#v}"
+  n="$(newest)" || { echo "tap: cannot read the newest release of $PMX_REPO" >&2; exit 2; }
+  [[ "$n" == "$tag" ]] || { echo "wrong: $tag is not the newest release ($n); the tap follows $n"; exit 1; }
   ( release "$tag" "$dir/release" ) || exit 2
   rm -rf "$dir/tap"
   GIT_TERMINAL_PROMPT=0 git clone -q --depth 1 --no-tags "$PMX_TAP_URL" "$dir/tap" || { echo "tap: cannot clone $PMX_TAP_URL" >&2; exit 2; }
   f="$dir/tap/Formula/provimux.rb"
   [[ -s "$f" ]] || { echo "wrong: the tap has no Formula/provimux.rb"; exit 1; }
   cur="$(sed -n 's/^  version "\(.*\)"$/\1/p' "$f")"
-  if [[ "$cur" != "$v" ]]; then
-    newest="$(printf '%s\n%s\n' "$cur" "$v" | sort -V | tail -n 1)"
-    if [[ -n "$cur" && "$newest" == "$cur" ]]; then echo "newer: the tap is at $cur"; exit 0; fi
-    echo "wrong: the tap is at '$cur', not $v"; exit 1
-  fi
+  [[ "$cur" == "$v" ]] || { echo "wrong: the tap is at '$cur', not the newest release $v"; exit 1; }
   cp "$f" "$dir/expected.rb"
   bash "$here/update-formula.sh" "$v" "$dir/release/checksums.txt" "$dir/expected.rb" >/dev/null 2>&1 ||
     { echo "wrong: update-formula.sh cannot apply $v to the tap's formula"; exit 1; }
