@@ -1,0 +1,114 @@
+# Provimux sync check: check automatically, publish on the owner's command
+# (.github/provimux/SYNC.md). Every 3 hours (or by hand, optionally for one tag) it
+# rebases main onto CLIProxyAPI's newest stable release, builds, compares go test ./...
+# with the pristine release, runs the guard, lists new upstream workflow files and the
+# range-diff of the owner's patches, and reports in the issue "sync: v<base>".
+#
+# It publishes nothing and holds no token of the owner. The check job, which runs
+# upstream's and the candidate's code, has contents: read and no other permission; the
+# report job runs only the default branch's scripts, never candidate code or go, and
+# alone may write issues. The owner publishes with .github/provimux/publish.sh.
+name: provimux-check
+
+on:
+  schedule:
+    - cron: '23 */3 * * *'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Upstream release to check (vX.Y.Z, a stable release); empty = the newest stable CLIProxyAPI release'
+        required: false
+        default: ''
+
+concurrency:
+  group: provimux-check
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.select.outputs.tag }}
+      status: ${{ steps.run.outputs.status || steps.select.outputs.status }}
+    env:
+      PMX_CHECK_OUT: ${{ runner.temp }}/check
+      PMX_REPO: ${{ github.repository }}
+      PMX_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      # The release may need a newer Go than main's go.mod.
+      GOTOOLCHAIN: auto
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      # The scripts as they are on main, outside the tree the check rebases and tests.
+      - name: Copy the check scripts
+        run: cp -R .github/provimux "$RUNNER_TEMP/pmx"
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Select the release
+        id: select
+        env:
+          # Read-only API access (the job has contents: read); only this step has it.
+          GH_TOKEN: ${{ github.token }}
+          PMX_TAG: ${{ inputs.tag }}
+        run: bash "$RUNNER_TEMP/pmx/check.sh" select
+      - name: Rebase, range-diff, guard, build, test
+        id: run
+        if: ${{ steps.select.outputs.status == 'check' }}
+        run: |
+          git config --global --add safe.directory "$PWD"
+          bash "$RUNNER_TEMP/pmx/check.sh" run
+      - name: Summary
+        if: ${{ always() }}
+        run: |
+          if [ -f "$PMX_CHECK_OUT/result.json" ]; then
+            jq -r '"### provimux-check: \(.status) \(.upstream.tag // "")", "", (.reasons[]? | "- " + .)' "$PMX_CHECK_OUT/result.json" | tr -d '`' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: provimux-check-${{ steps.select.outputs.tag || 'none' }}
+          path: |
+            ${{ runner.temp }}/check/result.json
+            ${{ runner.temp }}/check/candidate.bundle
+            ${{ runner.temp }}/check/logs/
+          if-no-files-found: warn
+
+  report:
+    needs: check
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          sparse-checkout: .github/provimux
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: provimux-check-${{ needs.check.outputs.tag || 'none' }}
+          path: ${{ runner.temp }}/artifact
+      - name: Open, update or close the sync issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PMX_REPO: ${{ github.repository }}
+          RESULT: ${{ runner.temp }}/artifact/result.json
+          CHECK_JOB: ${{ needs.check.result }}
+          TAG_HINT: ${{ needs.check.outputs.tag }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: bash .github/provimux/report.sh
