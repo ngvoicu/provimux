@@ -57,6 +57,16 @@ expected_assets() {
     "${p}_windows_aarch64.zip" "${p}_windows_amd64.zip"
 }
 
+# A provimux-check run (actions/runs/<id> JSON, --arg repo PMX_REPO) that publish.sh and
+# autopublish.sh accept: of this repository, on main, event schedule or workflow_dispatch,
+# completed with conclusion success, with a commit SHA.
+# shellcheck disable=SC2034,SC2016 # used by publish.sh and autopublish.sh; jq, not shell
+PMX_CHECK_RUN_OK='select(.path == ".github/workflows/provimux-check.yml" and .head_branch == "main"
+   and (.event == "schedule" or .event == "workflow_dispatch")
+   and .status == "completed" and .conclusion == "success"
+   and .repository.full_name == $repo and .head_repository.full_name == $repo
+   and (.head_sha | test("^[0-9a-f]{40}$")))'
+
 # runs_json TAG: the newest push runs of TAG in PMX_REPO (actions/runs API). The check
 # job's token has no actions: read, so a refused API call is retried without a token
 # (the repository is public).
