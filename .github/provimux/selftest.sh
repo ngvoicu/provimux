@@ -18,6 +18,11 @@
 #   report.sh     a successful release run for the wrong SHA (not published), the right
 #                 SHA (published), a failed check job (not published); a failure result
 #                 (every detail shown)
+#   autopublish   decide: only a passing check run on main whose artifact says pass for
+#                 its tag and whose v<base>-pmx.* does not exist yet publishes; malformed
+#                 artifacts fail; dispatch inputs are checked. notify: no token, refused
+#                 (reasons shown, one marker per reason), pushed but release incomplete
+#   publish.sh    --ci without the token, or without --yes/--dry-run: refused
 # Needs bash 3.2+, git, jq.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -182,13 +187,25 @@ stub="$tmp/stub"
 mkdir -p "$stub/bin" "$stub/api"
 cat >"$stub/bin/gh" <<'EOF'
 #!/usr/bin/env bash
-# Stub gh: "gh api PATH" prints $STUB_API/<PATH with / ? & = as _>.json, else a 404.
+# Stub gh: "gh api PATH [--jq EXPR]" prints $STUB_API/<PATH with / ? & = as _>.json (through
+# jq -r EXPR), else a 404. "gh run download ID -n NAME -D DIR" copies $STUB_API/artifact-NAME/.
+if [ "$1 $2" = "run download" ]; then
+  n='' d=''
+  while [ $# -gt 0 ]; do case "$1" in -n) n=$2; shift ;; -D) d=$2; shift ;; esac; shift; done
+  [ -d "$STUB_API/artifact-$n" ] || { echo "stub gh: no artifact $n" >&2; exit 1; }
+  mkdir -p "$d" && cp -R "$STUB_API/artifact-$n/." "$d/"
+  exit 0
+fi
 [ "$1" = api ] || { echo "stub gh: $*" >&2; exit 1; }
 shift
-p=''
-for a in "$@"; do case "$a" in -*) ;; *) [ -n "$p" ] || p=$a ;; esac; done
+p='' q=''
+while [ $# -gt 0 ]; do
+  case "$1" in --jq) q=$2; shift ;; -*) ;; *) [ -n "$p" ] || p=$1 ;; esac
+  shift
+done
 f="$STUB_API/$(printf %s "$p" | tr '/?&=' '____').json"
-if [ -f "$f" ]; then cat "$f"; else echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi
+[ -f "$f" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
+if [ -n "$q" ]; then jq -r "$q" "$f"; else cat "$f"; fi
 EOF
 printf '#!/bin/sh\nexit 22\n' >"$stub/bin/curl"
 chmod +x "$stub/bin/gh" "$stub/bin/curl"
@@ -244,6 +261,99 @@ jq '.rebase = {ok: false, stopped_at: "0123456789abcdef0123456789abcdef01234567"
   "$tmp/fail.json" >"$tmp/fail2.json"
 expect "rebase failure: reported as failed" fail "$(report "$tmp/fail2.json" success)"
 contains "  ... rebase stop shown" "$tmp/report.out" "The rebase stopped at"
+
+# --- autopublish.sh and publish.sh --ci ---------------------------------------------------------------
+echo "# autopublish.sh decide"
+# checkrun ID [JQ]: a provimux-check run of test/provimux on main that passed (JQ edits it).
+checkrun() {
+  jq -n --arg sha "$pmx_sha" '{id: 42, path: ".github/workflows/provimux-check.yml", head_branch: "main",
+    event: "schedule", status: "completed", conclusion: "success", head_sha: $sha,
+    repository: {full_name: "test/provimux"}, head_repository: {full_name: "test/provimux"}}' |
+    jq "${2:-.}" >"$stub/api/repos_test_provimux_actions_runs_$1.json"
+}
+# artifacts ID NAME...: the run's artifacts.
+artifacts() {
+  local id=$1; shift
+  printf '%s\n' "$@" | jq -R -s '{artifacts: (split("\n") | map(select(length > 0) | {name: ., expired: false}))}' \
+    >"$stub/api/repos_test_provimux_actions_runs_${id}_artifacts_per_page_100.json"
+}
+# result NAME STATUS TAG: artifact NAME's result.json.
+result() { mkdir -p "$stub/api/artifact-$1"; jq -n --arg s "$2" --arg t "$3" '{status: $s, upstream: {tag: $t}}' >"$stub/api/artifact-$1/result.json"; }
+decide() { # decide ENV...: "<action> <tag> <run>" (or "exit N")
+  : >"$tmp/decide.out"
+  env PATH="$stub/bin:$PATH" STUB_API="$stub/api" PMX_REPO=test/provimux PMX_REPO_URL="$remote" \
+    GITHUB_OUTPUT="$tmp/decide.out" "$@" bash "$here/autopublish.sh" decide >"$tmp/decide.log" 2>&1 || { echo "exit $?"; return; }
+  echo "$(sed -n 's/^action=//p' "$tmp/decide.out") $(sed -n 's/^tag=//p' "$tmp/decide.out") $(sed -n 's/^run=//p' "$tmp/decide.out")"
+}
+wr() { decide PMX_EVENT=workflow_run PMX_CHECK_RUN=42; }
+checkrun 42 '.conclusion = "failure"'; artifacts 42 provimux-check-v1.2.0; result provimux-check-v1.2.0 pass v1.2.0
+expect "check run failed: skip" "skip  " "$(wr)"
+checkrun 42 '.head_branch = "feature"'
+expect "check run not on main: skip" "skip  " "$(wr)"
+checkrun 42 '.event = "push"'
+expect "check run started by a push: skip" "skip  " "$(wr)"
+checkrun 42; artifacts 42 provimux-check-none
+expect "check selected no release: skip" "skip  " "$(wr)"
+artifacts 42 provimux-check-v1.2.0; result provimux-check-v1.2.0 published v1.2.0
+expect "status published: skip" "skip  " "$(wr)"
+result provimux-check-v1.2.0 fail v1.2.0
+expect "status fail (a green check run): skip" "skip  " "$(wr)"
+result provimux-check-v1.2.0 pass v1.2.0
+expect "status pass, no -pmx tag yet: publish v1.2.0 from run 42" "publish v1.2.0 42" "$(wr)"
+result provimux-check-v1.2.0 pass v1.3.0
+expect "result.json for another tag than the artifact: error" "exit 1" "$(wr)"
+artifacts 42 provimux-check-v1.1.0; result provimux-check-v1.1.0 pass v1.1.0
+expect "v1.1.0-pmx.1 exists already (second run, re-run): skip" "skip  " "$(wr)"
+contains "  ... says already exists" "$tmp/decide.log" "already exists"
+artifacts 42 provimux-check-v1.2.0 provimux-check-v1.3.0
+expect "two check artifacts: error" "exit 1" "$(wr)"
+artifacts 42 'provimux-check-v1.2.0;x'
+expect "artifact name not a tag: error" "exit 1" "$(wr)"
+artifacts 42
+expect "no check artifact: error" "exit 1" "$(wr)"
+expect "dispatch v1.2.0: publish, publish.sh picks the run" "publish v1.2.0 " "$(decide PMX_EVENT=workflow_dispatch PMX_TAG_INPUT=v1.2.0)"
+expect "dispatch with run 7: publish from run 7" "publish v1.2.0 7" "$(decide PMX_EVENT=workflow_dispatch PMX_TAG_INPUT=v1.2.0 PMX_RUN_INPUT=7)"
+expect "dispatch, tag not vX.Y.Z: error" "exit 1" "$(decide PMX_EVENT=workflow_dispatch 'PMX_TAG_INPUT=v1.2.0; true')"
+expect "dispatch, run not digits: error" "exit 1" "$(decide PMX_EVENT=workflow_dispatch PMX_TAG_INPUT=v1.2.0 PMX_RUN_INPUT=7x)"
+
+echo "# autopublish.sh notify"
+notify() { # notify OUTCOME LOG-TEXT STATE-TEXT: the dry-run issue text in $tmp/notify.out, the title printed
+  printf '%s' "$2" >"$tmp/publish.log"; printf '%s' "$3" >"$tmp/publish.state"
+  PMX_NOTIFY_DRY_RUN=1 TAG=v1.2.0 OUTCOME="$1" LOG="$tmp/publish.log" STATE="$tmp/publish.state" RUN_URL=https://example.invalid/run \
+    bash "$here/autopublish.sh" notify >"$tmp/notify.out" 2>&1 || { echo "exit $?"; return; }
+  sed -n 's/^title=//p' "$tmp/notify.out"
+}
+expect "no token: the issue says publishing waits for it" "sync: v1.2.0 — ready, publishing waits for PUBLISH_TOKEN" "$(notify no-token '' '')"
+contains "  ... names the manual path" "$tmp/notify.out" "publish.sh v1.2.0"
+log1='==> remote origin
+publish: not accepted (--accept-dropped): 0123456789abcdef0123456789abcdef01234567 owner patch
+publish: refused: accept each item above by name (SYNC.md), or fix the stack
+'
+expect "dropped patch: refused, owner needed" "sync: v1.2.0 — publish refused, owner needed" "$(notify failed "$log1" '')"
+contains "  ... the reason is shown" "$tmp/notify.out" "not accepted (--accept-dropped): 0123456789ab"
+lacks "  ... progress lines are not" "$tmp/notify.out" "remote origin"
+contains "  ... says nothing was pushed" "$tmp/notify.out" "nothing was pushed"
+m1="$(sed -n 2p "$tmp/notify.out")"
+notify failed "publish: the range-diff is empty or has commits not in the old main: see /tmp/x/provimux-publish.AbC123/range-diff.txt" '' >/dev/null
+m2="$(sed -n 2p "$tmp/notify.out")"
+notify failed "publish: the range-diff is empty or has commits not in the old main: see /var/y/provimux-publish.Zz9/range-diff.txt" '' >/dev/null
+expect "same reason, another temp dir: same marker (one comment)" "$m2" "$(sed -n 2p "$tmp/notify.out")"
+if [[ "$m1" != "$m2" ]]; then ok "  ... another reason: another marker"; else bad "  ... another reason: another marker ($m1)"; fi
+expect "remote main moved: refused" "sync: v1.2.0 — publish refused, owner needed" \
+  "$(notify failed 'publish: the remote main is aaaa, but the check rebased bbbb; run the check again' '')"
+expect "publish.sh broke without a reason: refused" "sync: v1.2.0 — publish refused, owner needed" "$(notify failed 'boom' '')"
+contains "  ... says so" "$tmp/notify.out" "ended without a reason"
+expect "pushed, release run failed: pushed, release not complete" "sync: v1.2.0 — pushed, release not complete" \
+  "$(notify failed 'publish: the provimux-release run for v1.2.0-pmx.1 ended failure; the issue stays open' pushed)"
+lacks "  ... no publish command after a push" "$tmp/notify.out" "publish.sh v1.2.0 --dry-run"
+expect "no valid tag: nothing to do" "" "$(TAG='x; y' PMX_NOTIFY_DRY_RUN=1 bash "$here/autopublish.sh" notify 2>/dev/null | sed -n 's/^title=//p')"
+
+echo "# publish.sh --ci"
+ci() { (cd "$pmx" && env -u PMX_PUSH_TOKEN "$@" bash "$here/publish.sh" v1.2.0 --ci) >"$tmp/ci.out" 2>&1 && echo "exit 0" || echo "exit $?"; }
+expect "--ci without PMX_PUSH_TOKEN: refused before anything" "exit 1" "$(ci)"
+contains "  ... names the secret" "$tmp/ci.out" "PUBLISH_TOKEN is not set"
+expect "--ci with the token but neither --yes nor --dry-run: refused" "exit 1" "$(ci PMX_PUSH_TOKEN=x)"
+contains "  ... says why" "$tmp/ci.out" "needs --yes or --dry-run"
 
 echo
 echo "$pass passed, $failed failed"

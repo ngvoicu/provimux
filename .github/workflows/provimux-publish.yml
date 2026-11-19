@@ -1,0 +1,135 @@
+# Provimux automatic publish (.github/provimux/SYNC.md, "Publishing automatically"): after
+# every provimux-check run on main that passed for a release, publish.sh publishes it,
+# here, with no step by the owner. Started by hand (workflow_dispatch) it publishes one
+# tag, or with dry_run only shows what it would push.
+#
+# The write token PUBLISH_TOKEN is visible to one step only, "Publish", which runs nothing
+# but publish.sh of main's own commit (the check run's head_sha, which publish.sh requires
+# to be the remote main): git, gh, jq and the guard of that main. No candidate or upstream
+# code, no go, no make, nothing from the candidate tree. gh uses this run's GITHUB_TOKEN
+# (actions: read for the check's artifact, issues: write for the sync issue); only git push
+# uses PUBLISH_TOKEN, because a push with GITHUB_TOKEN can change no workflow file and its
+# tag would start no provimux-release run.
+name: provimux-publish
+
+on:
+  workflow_run:
+    workflows: [provimux-check]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Upstream release to publish (vX.Y.Z) whose provimux-check run on the current main passed'
+        required: true
+      run:
+        description: 'provimux-check run id to publish from; empty = the newest that qualifies'
+        required: false
+        default: ''
+      dry_run:
+        description: 'Dry run: everything except the push (no wait, no issue change)'
+        type: boolean
+        default: true
+
+# One publish at a time, never cancelled midway. A second run for the same tag finds
+# v<base>-pmx.* and skips; publish.sh refuses it too.
+concurrency:
+  group: provimux-publish
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  publish:
+    # Only a check run of this repository on main (as publish.sh requires), or a dispatch on main.
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       (github.event.workflow_run.event == 'schedule' || github.event.workflow_run.event == 'workflow_dispatch') &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    env:
+      PMX_REPO: ${{ github.repository }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && '1' || '' }}
+    steps:
+      # main's own commit: the check run's head_sha (or the dispatched main). publish.sh
+      # checks it is the remote main before it uses anything else.
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Decide (which tag; read-only)
+        id: decide
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PMX_EVENT: ${{ github.event_name }}
+          PMX_CHECK_RUN: ${{ github.event.workflow_run.id }}
+          PMX_TAG_INPUT: ${{ inputs.tag }}
+          PMX_RUN_INPUT: ${{ inputs.run }}
+        run: bash .github/provimux/autopublish.sh decide
+
+      - name: PUBLISH_TOKEN is set
+        id: token
+        if: ${{ steps.decide.outputs.action == 'publish' }}
+        shell: bash
+        env:
+          # true/false only; the value is not exposed here.
+          HAS_TOKEN: ${{ secrets.PUBLISH_TOKEN != '' }}
+        run: |
+          if [ "$HAS_TOKEN" != true ]; then
+            echo "::error title=PUBLISH_TOKEN missing::The repository secret PUBLISH_TOKEN is not set: nothing was pushed. Create it as SYNC.md says (\"The token\"), or publish by hand (\"Publishing by hand\")."
+            exit 1
+          fi
+
+      # The only step with the write token, and it runs only publish.sh.
+      - name: Publish
+        if: ${{ steps.decide.outputs.action == 'publish' }}
+        shell: bash
+        env:
+          PMX_PUSH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.decide.outputs.tag }}
+          RUN: ${{ steps.decide.outputs.run }}
+          PMX_PUBLISH_STATE: ${{ runner.temp }}/publish.state
+        run: |
+          args=("$TAG" --ci --yes)
+          [ -z "$RUN" ] || args+=(--run "$RUN")
+          [ -z "$DRY_RUN" ] || args+=(--dry-run)
+          bash .github/provimux/publish.sh "${args[@]}" 2>&1 | tee "$RUNNER_TEMP/publish.log"
+
+      - name: Tell the sync issue (refused or failed)
+        if: ${{ failure() && steps.decide.outputs.action == 'publish' && env.DRY_RUN == '' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.decide.outputs.tag }}
+          OUTCOME: ${{ steps.token.outcome == 'failure' && 'no-token' || 'failed' }}
+          LOG: ${{ runner.temp }}/publish.log
+          STATE: ${{ runner.temp }}/publish.state
+        run: bash .github/provimux/autopublish.sh notify
+
+      - name: Summary
+        if: ${{ always() }}
+        shell: bash
+        env:
+          ACTION: ${{ steps.decide.outputs.action }}
+          WHY: ${{ steps.decide.outputs.why }}
+          TAG: ${{ steps.decide.outputs.tag }}
+        run: |
+          {
+            echo "### provimux-publish: ${ACTION:-not decided} ${TAG}${DRY_RUN:+ (dry run)}"
+            echo
+            echo "- $WHY" | tr -d '`'
+            if [ -s "$RUNNER_TEMP/publish.log" ]; then grep -E '^(publish: |Published|Pushed|Dry run)' "$RUNNER_TEMP/publish.log" | tr -d '`' | sed 's/^/- /' || true; fi
+          } >> "$GITHUB_STEP_SUMMARY"

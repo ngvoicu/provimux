@@ -1,10 +1,11 @@
-# Provimux sync check: check automatically, publish on the owner's command
+# Provimux sync check: check automatically; provimux-publish.yml publishes a pass
 # (.github/provimux/SYNC.md). Every 3 hours (or by hand, optionally for one tag) it
 # rebases main onto CLIProxyAPI's newest stable release, builds, compares go test ./...
 # with the pristine release, runs the guard, lists new upstream workflow files and the
 # range-diff of the owner's patches, and reports in the issue "sync: v<base>".
 #
-# It publishes nothing and holds no token of the owner. Every job checks out the run's
+# It publishes nothing and holds no token of the owner (provimux-publish.yml, started
+# by this run's completion, does). Every job checks out the run's
 # own commit (github.sha, the head_sha publish.sh binds the artifact to) and runs that
 # commit's scripts. Only the "test" jobs run upstream's or the candidate's code, one tree
 # per job, and they only write raw go output; the "verdict" job turns that output (data)
