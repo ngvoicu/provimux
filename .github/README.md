@@ -23,9 +23,9 @@ Then: [Install](#install) · [Versions](#versions) · [Requests to providers](#r
 
 ## Which account serves each model, and which one answered
 
-**What you get.** The model list can tell you, for each model, which of your accounts serve it: the provider, whether
-it is a subscription login (`oauth`) or an API key (`apikey`), its priority, and for an API key the host it calls.
-Every response then says which kind of account answered it.
+**What you get.** The OpenAI-format model list can tell you, for each model, which of your accounts serve it: the
+provider, whether it is a subscription login (`oauth`) or an API key (`apikey`), its priority, and for an API key the
+host it calls. Every response served by an account then says which kind of account answered it.
 
 **Why it matters.** The same model can be reached through a subscription and through a paid API key, and the two
 differ in limits, prompt-cache lifetime and price. A Claude login keeps the prompt cache for an hour, a Claude API key
@@ -36,14 +36,18 @@ for five minutes by default. Without this, a client behind the proxy cannot tell
 **How to use it.** Nothing to turn on.
 
 - `GET /v1/models?include=accounts` adds an `accounts` array to every model, highest priority first, so the first
-  entries are the ones Provimux tries first. Without the parameter the list is unchanged.
+  entries are the ones Provimux tries first. Without the parameter the list is unchanged. Only this plain
+  OpenAI-format list has it: the Codex-format list (`/v1/models?client_version=…`) and the Claude-format list carry no
+  `accounts`.
 - Each account has `provider`, `kind` (`oauth` or `apikey`) and `priority`. An API key with a base URL also has
   `host`, which names the service even when you gave the entry another name (`openrouter.ai` for an entry called
-  `openrouter`, `my-router` or anything else). Nothing that identifies an account is listed: no names, emails, files
-  or keys.
-- Every response carries an `X-CPA-AUTH-KIND` header (`oauth` or `apikey`) for the account that answered, next to
-  CLIProxyAPI's `X-CPA-TRACE-ID`. When a request is retried on another account before the answer starts, the header
-  names the one that answered. Browsers can read it, like the trace ID.
+  `openrouter`, `my-router` or anything else). No emails, files or keys are listed. Names are not hidden everywhere,
+  though: an OpenAI-compatible entry's `provider` is `openai-compatible-<name>`, so clients that can read the model
+  list see the name you gave that entry.
+- A response served by an account (a completion, for example) carries an `X-CPA-AUTH-KIND` header (`oauth` or
+  `apikey`) for the account that answered, next to CLIProxyAPI's `X-CPA-TRACE-ID`. The model list itself has no such
+  header. When a request is retried on another account before the answer starts, the header names the one that
+  answered. Browsers can read it, like the trace ID.
 - On the Codex WebSocket (`/v1/responses`), which has response headers only once per connection, each turn's
   `response.created` event carries `"cpa_auth_kind": "oauth"` or `"apikey"`.
 
@@ -75,9 +79,11 @@ models:
 
 - Provimux fetches each login's list in the background: at startup, every 3 hours, and on
   `POST /v8/management/models/refresh`. Requests never wait for it.
-- A login registers only the catalog models its list contains. Claude and Codex models the catalog doesn't have yet
-  are added from the provider's own description (context window, output limit, reasoning levels). Meta lists only
-  model ids, so Meta logins are only filtered.
+- A login registers only the catalog models its list contains. Models the catalog doesn't have yet are added from
+  the provider's own description. For Claude that is the context window, output limit, reasoning levels and image
+  input. For Codex it is the context window, reasoning levels and input types, but no output limit: Codex's list does
+  not give one, so a new Codex model has none until the catalog lists it. Meta lists only model ids, so Meta logins
+  are only filtered.
 - For models the catalog already has, the catalog's values are kept. Hidden Codex entries are never added, and
   CLIProxyAPI's Codex image models stay.
 - Until a list arrives, or while fetches fail (retried every 10 minutes), the catalog or the last good list is used:
@@ -91,9 +97,11 @@ models:
 asked (Claude among them), one conversation kept on one upstream so its cache keeps being read, and each model's real
 context window, output limit and reasoning levels.
 
-**Why it matters.** Through a plain OpenAI-compatible entry, a Claude model on OpenRouter is never cached: the
-markers that ask for caching are lost on the way, so every request pays for the whole prompt. Every model also gets
-the same generic limits and the levels low, medium and high, with `max` lowered to `high`.
+**Why it matters.** Through a plain OpenAI-compatible entry, a Claude model on OpenRouter is cached only when the
+client itself sends OpenAI chat-format requests with `cache_control` markers: CLIProxyAPI forwards those as they are.
+A Claude-format client's markers are lost when its request is translated, and a client that sends no markers gets
+none, so every such request pays for the whole prompt. Every model also gets the same generic limits and the levels
+low, medium and high, with `max` lowered to `high`.
 
 ![A diagram titled "An openai-compatibility entry whose base URL is openrouter.ai". On the left, "Your client sends": POST /v1/chat/completions with model anthropic/claude-opus-5.5 and four messages, system "You are a coding agent…", user "Read main.go", assistant "…" and user "Now add a test", with plain string contents. On the right, "OpenRouter receives": a header "X-Session-Id: 00000000-0000-4000-8000-000000000001", same for the whole conversation, and the same messages, where the system message and the last user message now have text parts with "cache_control": {"type": "ephemeral"}, highlighted. Below: Limits and levels, from OpenRouter's model list: context 1,000,000, output 128,000, reasoning low, medium, high, xhigh, max.](provimux/media/openrouter.png)
 
@@ -114,9 +122,9 @@ api-keys:
 
 | Part | What Provimux does |
 |---|---|
-| Prompt cache | A request without cache markers gets them on the last system message and on the latest user, tool or assistant message that can carry one (text, file parts and assistant prefills). A Claude-format client asking for the 1-hour cache keeps it. Markers your client sent are left as they are. |
+| Prompt cache | A request without cache markers gets them on the last system message and on the latest user, tool or assistant message that can carry one (text, file parts and assistant prefills). An OpenAI chat-format request that already has markers is sent as it is, as CLIProxyAPI does. A Claude-format request loses its markers in translation, so it gets Provimux's: a marker your client put on an early user message ends up on the last turn instead, and a 1-hour lifetime asked for anywhere in the request is kept. |
 | OpenAI cache lifetime | For `openai/*` models, a client's `prompt_cache_options.ttl` (for example `"12h"`) is sent the way OpenRouter applies it, with `mode: "explicit"`; a `mode` the client sent is kept. |
-| Session | An `X-Session-Id` header, stable for the conversation, so OpenRouter keeps it on one upstream. Your client's own `X-Session-Id` wins. |
+| Session | An `X-Session-Id` header, stable for the conversation, so OpenRouter keeps it on one upstream. An `X-Session-Id` set in the entry's `headers` in your config wins, then your client's own `X-Session-Id`, then the one Provimux derives. When the request has no session identity (no client header and no conversation Provimux can follow), no `X-Session-Id` is sent. |
 | Limits | OpenRouter's public model list is fetched in the background and refreshed; each entry gets its context window and output limit from it. `max-context-length` in your config still wins. |
 | Reasoning levels | The model's own levels (for example `low` to `max`), when your config sets no `thinking` for it. |
 | Owner | `owned_by` is the model's vendor (`anthropic` for `anthropic/claude-opus-5.5`), not the entry's name. |
@@ -157,9 +165,10 @@ api-keys:
 ## Devin: real output limits, and a quota pause per model
 
 **Real output limits.** CLIProxyAPI lists every Devin model with a 64,000-token output limit and enforces it.
-Provimux's Devin list carries each model's own limit, read from Devin's model configuration: 128,000 for Claude, GPT,
-GLM and SWE-2, 131,072 for Kimi and Muse, 384,000 for DeepSeek V4.1 Flash, 1,000,000 for Gemini 4 Argon. A model with
-several variants takes the smallest of them.
+Provimux's Devin list carries each model's own limit, read from Devin's model configuration. For example:
+`claude-opus-5-5` and `swe-2` 128,000, `kimi-k2-6` 8,192, `kimi-k2-7` 16,000, `kimi-k3` 131,072,
+`deepseek-v4-1-flash-1017` 384,000, `gemini-4-argon` 1,000,000. A model with several variants takes the smallest of
+them.
 
 The list ships inside the binary. By default Provimux, like CLIProxyAPI, replaces it with CLIProxyAPI's published
 list, which still says 64,000. To use the real limits, start with `--local-model`, or generate a list and point the
@@ -254,8 +263,17 @@ brew install ngvoicu/tap/provimux
 brew services start provimux
 ```
 
-**Release archives:** download `provimux_<version>_<os>_<arch>.tar.gz` from
-[Releases](https://github.com/ngvoicu/provimux/releases); it contains the `provimux` binary.
+**Release archives:** download the archive for your system from
+[Releases](https://github.com/ngvoicu/provimux/releases):
+
+| System | Archive | Binary |
+|---|---|---|
+| Windows | `provimux_<version>_windows_<arch>.zip` | `provimux.exe` |
+| macOS | `provimux_<version>_darwin_<arch>.tar.gz` | `provimux` |
+| Linux | `provimux_<version>_linux_<arch>.tar.gz` | `provimux` |
+| Linux, portable | `provimux_<version>_linux_<arch>_no-plugin.tar.gz` | `provimux` |
+
+The `_no-plugin` Linux build runs on musl-based or older systems but does not support plugins.
 
 **Docker:**
 
@@ -271,8 +289,12 @@ The image is used like CLIProxyAPI's: mount your `config.yaml` and auth folder.
 git clone https://github.com/ngvoicu/provimux
 cd provimux
 go build -o provimux ./cmd/server
-./provimux --config config.yaml
+./provimux --config /path/to/your/config.yaml
 ```
+
+A fresh checkout has no `config.yaml`, only `config.example.yaml`. Pass your existing CLIProxyAPI config with
+`--config`, or copy the example (`cp config.example.yaml config.yaml`), edit it, and start with
+`--config config.yaml`.
 
 For logins, the configuration reference and the console, CLIProxyAPI's
 [documentation](https://github.com/router-for-me/CLIProxyAPI#readme) applies; `config.example.yaml` in this
