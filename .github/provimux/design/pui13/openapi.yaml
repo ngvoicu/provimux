@@ -1,0 +1,409 @@
+openapi: 3.1.0
+info:
+  title: Provimux management endpoints for the console
+  version: "1"
+  description: |
+    Two read-only endpoints that exist only in Provimux (github.com/ngvoicu/provimux), under
+    /v8/management/provimux/. Stock CLIProxyAPI answers 404 on both paths; the console (provimux-ui)
+    hides the matching page then.
+
+    Rules of the contract:
+    - Every property listed as required is always present. A value that is not known is null.
+    - Times are RFC 3339 in UTC.
+    - The server only adds properties. It never removes one or changes a type or a meaning.
+      Clients ignore properties and enum values they do not know.
+    - No response carries an API key, a token, an auth ID, a base URL beyond its host, or a
+      provider's error text other than the live-list failure message described below.
+servers:
+  - url: http://127.0.0.1:8317/v8/management
+security:
+  - managementKey: []
+  - managementKeyHeader: []
+paths:
+  /provimux/model-routes:
+    get:
+      operationId: provimuxModelRoutes
+      summary: Per model, every enabled login or key that can serve it
+      parameters:
+        - name: model
+          in: query
+          required: false
+          description: |
+            Return only models whose id equals one of the values (exact, case-sensitive). Repeatable.
+            An empty value returns an empty list without reading any state: the console's presence probe.
+          schema:
+            type: array
+            items:
+              type: string
+          style: form
+          explode: true
+      responses:
+        "200":
+          description: The models and their routes.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModelRoutesResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/Absent"
+  /provimux/live-lists:
+    get:
+      operationId: provimuxLiveLists
+      summary: Per Claude, Codex and Meta login, whether its model list is live or the catalog
+      responses:
+        "200":
+          description: The state of the live model lists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LiveListsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/Absent"
+        "503":
+          description: The live-list fetcher's state is not available in this binary. Not a sign of absence.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+components:
+  securitySchemes:
+    managementKey:
+      type: http
+      scheme: bearer
+      description: The management key, as for every /v8/management route.
+    managementKeyHeader:
+      type: apiKey
+      in: header
+      name: X-Management-Key
+  responses:
+    Unauthorized:
+      description: The management key is missing or wrong.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: Remote management is off for this client, no key is configured, or the address is banned after 5 failures.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Absent:
+      description: |
+        Empty body. Either management is not enabled (or home mode is on), or this server has no such
+        route: stock CLIProxyAPI, or a Provimux older than this endpoint. The console hides the page.
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+    Timestamp:
+      type: string
+      format: date-time
+      description: RFC 3339, UTC.
+    Login:
+      type: object
+      description: How the credentials page names this credential. Never a secret.
+      required: [name, email, label]
+      properties:
+        name:
+          type: [string, "null"]
+          description: Auth file name, as GET /credentials returns it. Null for a configured API key.
+        email:
+          type: [string, "null"]
+          description: Account email, as GET /credentials returns it. Null when there is none, and for API keys.
+        label:
+          type: [string, "null"]
+          description: The credential's label. For a configured key the entry's name, or "<provider>-apikey".
+    Limits:
+      type: object
+      required: [context, output]
+      properties:
+        context:
+          type: [integer, "null"]
+          description: Context window in tokens. Null when not known.
+        output:
+          type: [integer, "null"]
+          description: Largest output in tokens. Null when not known.
+    ReasoningBudget:
+      type: object
+      required: [min, max, zero_allowed, dynamic_allowed]
+      properties:
+        min:
+          type: integer
+        max:
+          type: integer
+        zero_allowed:
+          type: boolean
+          description: A budget of 0 (reasoning off) is accepted.
+        dynamic_allowed:
+          type: boolean
+          description: A dynamic budget (-1) is accepted.
+    Reasoning:
+      type: object
+      required: [levels, budget]
+      properties:
+        levels:
+          type: array
+          description: Discrete effort levels. Empty for a budget-only model.
+          items:
+            type: string
+        budget:
+          oneOf:
+            - $ref: "#/components/schemas/ReasoningBudget"
+            - type: "null"
+    Cooldown:
+      type: object
+      description: An unexpired retry restriction that ends on its own.
+      required: [scope, reason, retry_at, remaining_seconds, http_status, backoff_level]
+      properties:
+        scope:
+          type: string
+          description: |
+            "credential": the whole credential is paused. "model": only this model on this credential.
+            Clients treat other values as unknown.
+          example: model
+        reason:
+          type: string
+          description: |
+            A code, never a provider's text. Known values: quota, credential_quota, transient_rate_limit,
+            transient_error, unauthorized, payment_required, not_found, model_not_supported, invalid_grant,
+            cloudflare_challenge, unknown. Clients treat other values as unknown.
+          example: quota
+        retry_at:
+          $ref: "#/components/schemas/Timestamp"
+        remaining_seconds:
+          type: integer
+          description: Seconds from observed_at to retry_at, rounded up.
+        http_status:
+          type: [integer, "null"]
+          description: The provider's status behind the cooldown, when it is known and matches the reason.
+        backoff_level:
+          type: [integer, "null"]
+    ModelRoute:
+      type: object
+      description: One credential serving one model.
+      required:
+        - auth_index
+        - provider
+        - kind
+        - priority
+        - host
+        - login
+        - limits
+        - reasoning
+        - available
+        - cooldown
+        - last_served_at
+      properties:
+        auth_index:
+          type: [string, "null"]
+          description: The credential's stable index, the same value as auth_index in GET /credentials and auth-index in GET /config.
+        provider:
+          type: string
+          example: claude
+        kind:
+          type: [string, "null"]
+          description: |
+            "oauth" for a subscription login, "apikey" for an API key; null when the credential tells neither.
+            Clients treat other values as unknown.
+          example: oauth
+        priority:
+          type: integer
+          description: Higher is tried first.
+        host:
+          type: [string, "null"]
+          description: Lower-case host of an API key's base URL. No port, path, query or user info. Null for logins and for keys without a base URL.
+        login:
+          $ref: "#/components/schemas/Login"
+        limits:
+          $ref: "#/components/schemas/Limits"
+          description: What this credential declares for the model.
+        reasoning:
+          oneOf:
+            - $ref: "#/components/schemas/Reasoning"
+            - type: "null"
+          description: Null when the credential declares no reasoning support for the model.
+        available:
+          type: boolean
+          description: |
+            Whether the scheduler may pick this route now. False with cooldown null is a block without a
+            timer: the login must sign in again, its token expired, or the model is disabled for it.
+        cooldown:
+          oneOf:
+            - $ref: "#/components/schemas/Cooldown"
+            - type: "null"
+        last_served_at:
+          oneOf:
+            - $ref: "#/components/schemas/Timestamp"
+            - type: "null"
+          description: |
+            When this credential last completed an upstream generation attempt for this model without
+            failing. Kept in memory since last_served.recording_since, whatever usage-statistics-enabled says.
+            Null: not since then.
+    Model:
+      type: object
+      required: [id, display_name, owned_by, limits, routes]
+      properties:
+        id:
+          type: string
+          description: The model id as a client sends it, prefix and alias included.
+        display_name:
+          type: [string, "null"]
+        owned_by:
+          type: [string, "null"]
+        limits:
+          $ref: "#/components/schemas/Limits"
+          description: |
+            What the registry publishes for the model: the smallest limit across its routes, null where
+            routes disagree and one declares none.
+        routes:
+          type: array
+          minItems: 1
+          description: Highest priority first, then provider, kind, login label, auth_index.
+          items:
+            $ref: "#/components/schemas/ModelRoute"
+    ModelRoutesResponse:
+      type: object
+      required: [observed_at, last_served, models]
+      properties:
+        observed_at:
+          $ref: "#/components/schemas/Timestamp"
+        last_served:
+          type: object
+          required: [recording_since]
+          properties:
+            recording_since:
+              $ref: "#/components/schemas/Timestamp"
+              description: Since when last_served_at has been recorded; the process start.
+        models:
+          type: array
+          description: Sorted by id. Every model at least one enabled credential registered, also while all its routes are cooling.
+          items:
+            $ref: "#/components/schemas/Model"
+    LiveListFailure:
+      type: object
+      description: The latest fetch attempt, when it failed.
+      required: [at, http_status, message]
+      properties:
+        at:
+          $ref: "#/components/schemas/Timestamp"
+        http_status:
+          type: [integer, "null"]
+          description: The provider's status, when the failure was one.
+        message:
+          type: [string, "null"]
+          maxLength: 200
+          description: |
+            The fetcher's error as it is written to the log, one line. Null when the server does not record it.
+    LiveListLogin:
+      type: object
+      required:
+        - auth_index
+        - provider
+        - login
+        - disabled
+        - source
+        - reason
+        - fetching
+        - fetched_at
+        - listed_models
+        - registered_models
+        - last_failure
+        - next_retry_at
+        - refresh_due_at
+      properties:
+        auth_index:
+          type: [string, "null"]
+        provider:
+          type: string
+          example: claude
+        login:
+          $ref: "#/components/schemas/Login"
+        disabled:
+          type: boolean
+          description: The login is switched off and is never fetched.
+        source:
+          type: string
+          description: |
+            "live": a list of this account is held and filters the login's models. "catalog": the built-in
+            catalog is used unchanged. Clients treat other values as unknown.
+          example: live
+        reason:
+          type: [string, "null"]
+          description: |
+            Why the source is "catalog"; null when it is "live". Known values, first that applies:
+            option_off (models.live-lists is off), login_disabled, failed (no list and a failure is waiting
+            for its retry), pending (no list yet). Clients treat other values as unknown.
+          example: pending
+        fetching:
+          type: boolean
+          description: A fetch for this login is running now.
+        fetched_at:
+          oneOf:
+            - $ref: "#/components/schemas/Timestamp"
+            - type: "null"
+          description: When the held list arrived.
+        listed_models:
+          type: [integer, "null"]
+          description: How many model ids the provider returned. Null without a list.
+        registered_models:
+          type: integer
+          description: How many models the login serves now.
+        last_failure:
+          oneOf:
+            - $ref: "#/components/schemas/LiveListFailure"
+            - type: "null"
+          description: Null once a fetch succeeds. With source "live" it means the previous list is kept.
+        next_retry_at:
+          oneOf:
+            - $ref: "#/components/schemas/Timestamp"
+            - type: "null"
+          description: After a failure, not fetched again before this unless a refresh is forced.
+        refresh_due_at:
+          oneOf:
+            - $ref: "#/components/schemas/Timestamp"
+            - type: "null"
+          description: When the held list becomes due again. fetched_at plus timing.refresh_seconds.
+    LiveListsResponse:
+      type: object
+      required: [observed_at, enabled, providers, timing, logins]
+      properties:
+        observed_at:
+          $ref: "#/components/schemas/Timestamp"
+        enabled:
+          type: boolean
+          description: The models.live-lists option.
+        providers:
+          type: array
+          description: Providers whose logins have live lists. Logins of other providers and all API keys keep the catalog and are not listed.
+          items:
+            type: string
+        timing:
+          type: object
+          required: [refresh_seconds, retry_seconds, scan_seconds]
+          properties:
+            refresh_seconds:
+              type: integer
+              description: A list older than this is fetched again.
+            retry_seconds:
+              type: integer
+              description: Wait after a failed fetch.
+            scan_seconds:
+              type: integer
+              description: How often due logins are looked for; a fetch starts up to this long after it is due.
+        logins:
+          type: array
+          description: Sorted by provider, login name, auth_index. Disabled logins included.
+          items:
+            $ref: "#/components/schemas/LiveListLogin"
