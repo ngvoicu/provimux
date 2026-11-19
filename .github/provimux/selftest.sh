@@ -59,6 +59,10 @@
 #   provenance    the release workflow's inline check (run from the workflow): only the
 #                 owner's newest success status for exactly this tag counts; a bot's,
 #                 another tag's, a moved tag, an unreadable list (told apart) refuse
+#   T-90          tap.sh still (latest again before a tap push; both writers);
+#                 notify without the optional plan; a failed tap-check opens the tap
+#                 issue (the report job, run from the workflow); publish.sh's tap runs
+#                 even when closing the sync issue fails
 #   latest        release-latest (run from the workflow): only its own release id,
 #                 never backward, stops on an unreadable or tagless latest, fails a
 #                 wrong readback
@@ -1010,6 +1014,98 @@ latest '{"tag_name": "v1.2.0-pmx.1"}'
 expect "latest reads back as another release after the change: fails" refused "$(lrun TAG=v1.3.0-pmx.1 ID=301)"
 contains "  ... says so" "$tmp/latest.out" "reads back as"
 
+
+# --- T-90: the tap's last moment, the optional plan, tap-check's failure, the owner's order -----
+echo "# tap.sh still: GitHub's latest again, right before a tap push"
+tlatest '{"tag_name": "v'"$TV"'"}'
+expect "latest is still the tag: ok" ok "$(tapsh bash "$here/tap.sh" still "v$TV")"
+contains "  ... still=yes" "$tmp/tap.out" "still=yes"
+tlatest '{"tag_name": "v1.3.0-pmx.2"}'
+expect "a newer release became latest: ok (no push)" ok "$(tapsh bash "$here/tap.sh" still "v$TV")"
+contains "  ... still=no" "$tmp/tap.out" "still=no"
+contains "  ... superseded, tap left alone" "$tmp/tap.err" "v$TV is superseded by v1.3.0-pmx.2; tap left alone"
+tlatest 'HTTP 503'
+expect "latest unreadable: refused" refused "$(tapsh bash "$here/tap.sh" still "v$TV")"
+tlatest '{"tag_name": "v1.2.0-pmx.1"}'
+expect "latest went back to an older release: refused" refused "$(tapsh bash "$here/tap.sh" still "v$TV")"
+pwf="$here/../workflows/provimux-publish.yml"
+if grep -qF "steps.tap.outputs.action == 'push' && steps.tapstill.outputs.still == 'yes' }}" "$pwf"; then ok "the publish job's Tap push runs only after the token-free re-check said still=yes"; else bad "the publish job's Tap push runs only after the token-free re-check said still=yes"; fi
+if grep -qF "steps.tapstill.outcome == 'failure'" "$pwf"; then ok "  ... a failed re-check is a tap failure (the tap issue)"; else bad "  ... a failed re-check is a tap failure (the tap issue)"; fi
+
+echo "# publish.sh (owner): the re-check before the tap push; a failed sync close never skips the tap"
+# harness: publish.sh's own hand_tap and close_issues (and its "finish" lines), with a
+# fake tap.sh for prepare and a git that only records a push.
+pubfn() { awk -v f="$1() {" '$0 == f {p = 1} p {print} p && $0 == "}" {exit}' "$here/publish.sh"; }
+fake="$tmp/fakepub"; mkdir -p "$fake/bin"
+realgit="$(command -v git)"
+# shellcheck disable=SC2016 # expanded by the git wrapper
+printf '#!/usr/bin/env bash\nfor a in "$@"; do [ "$a" = push ] && { echo "git $*" >>"$FAKE_LOG"; exit 0; }; done\nexec %q "$@"\n' "$realgit" >"$fake/bin/git"
+cat >"$fake/tap.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "tap.sh $*" >>"$FAKE_LOG"
+case "$1" in
+  prepare) printf '%b\n' "$FAKE_PREPARE" ;;
+  still) exec bash "$REAL_HERE/tap.sh" still "$2" ;;
+esac
+EOF
+cat >"$fake/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+if [ "$1 $2" = "issue close" ]; then echo "gh: Service Unavailable (HTTP 503)" >&2; exit 1; fi
+exec "$STUB_GH" "$@"
+EOF
+chmod +x "$fake/bin/git" "$fake/bin/gh"
+# shellcheck disable=SC2016 # expanded by the harness shell
+{ echo 'set -euo pipefail'; printf '. %q\n' "$here/common.sh"; echo 'here="$FAKE_HERE"'
+  echo 'die() { echo "publish: $*" >&2; exit 1; }'; echo 'log() { :; }'; echo 'wait_release() { :; }'
+  echo "PMX_PMX_RE='^v[0-9]+\\.[0-9]+\\.[0-9]+-pmx\\.[0-9]+\$'"
+  pubfn hand_tap; pubfn close_issues; } >"$tmp/pub-harness.sh"
+sed -n '/^# >>> finish$/,/^# <<< finish$/p' "$here/publish.sh" >"$tmp/pub-finish.sh"
+if [[ "$(grep -c '' "$tmp/pub-finish.sh")" -gt 3 ]]; then ok "publish.sh's finish lines found"; else bad "publish.sh's finish lines found"; fi
+pubrun() { # pubrun SCRIPT: runs the harness then SCRIPT; output in $tmp/pub.out, the fake log in $tmp/pub.log
+  : >"$tmp/pub.log"
+  env PATH="$fake/bin:$stub/bin:$PATH" STUB_GH="$stub/bin/gh" STUB_API="$stub/api" PMX_REPO=test/provimux FAKE_HERE="$fake" REAL_HERE="$here" \
+    FAKE_LOG="$tmp/pub.log" FAKE_PREPARE="${FAKE_PREPARE:-action=none}" pmx_tag="v$TV" base=1.3.0 candidate="$pmx_sha" old_main="$pmx_sha" \
+    bash -c ". \"$tmp/pub-harness.sh\"; $1" >"$tmp/pub.out" 2>&1 && echo "exit 0" || echo "exit $?"
+}
+prep="action=push\nrepo=$tmp/no-such.git\nlease=refs/heads/main:$pmx_sha\nref=$pmx_sha:refs/heads/main\nfrom=1.2.0-pmx.1"
+tlatest '{"tag_name": "v1.3.0-pmx.2"}'
+expect "publish.sh --tap: latest moved after prepare: exit 0" "exit 0" "$(FAKE_PREPARE="$prep" pubrun "hand_tap v$TV")"
+lacks "  ... no push" "$tmp/pub.log" "git "
+contains "  ... superseded, tap left alone" "$tmp/pub.out" "superseded by v1.3.0-pmx.2; tap left alone"
+tlatest '{"tag_name": "v'"$TV"'"}'
+expect "publish.sh --tap: latest unchanged: exit 0" "exit 0" "$(FAKE_PREPARE="$prep" pubrun "hand_tap v$TV")"
+contains "  ... pushes with the lease on the tap's main" "$tmp/pub.log" "--force-with-lease=refs/heads/main:$pmx_sha"
+echo '[{"number": 22, "title": "sync: v1.3.0 — ready to publish"}]' >"$stub/api/repos_test_provimux_issues_state_open_per_page_100.json"
+expect "hand publish, closing the sync issue fails (503): still exits 1 at the end" "exit 1" "$(pubrun ". \"$tmp/pub-finish.sh\"")"
+contains "  ... the tap was still updated" "$tmp/pub.log" "tap.sh prepare v$TV"
+contains "  ... says the close failed" "$tmp/pub.out" "cannot close issue #22"
+contains "  ... and that the sync issue stays open" "$tmp/pub.out" "the sync issue of v1.3.0 could not be closed"
+echo '[]' >"$stub/api/repos_test_provimux_issues_state_open_per_page_100.json"
+
+echo "# autopublish.sh notify: the tap issue without the optional plan"
+expect "tap step failed, the plan artifact missing: released, and the tap issue" "sync: v1.1.0 — released" \
+  "$(notify v1.1.0 tap-failed 'publish: the Homebrew tap update was refused (see the log)' PLAN="$tmp/no-such-plan.env")"
+contains "  ... the tap issue, for <tag>-pmx.1" "$tmp/notify.out" "tap_title=homebrew tap: v1.1.0-pmx.1 needs the owner"
+
+echo "# provimux-release.yml: a failed tap-check opens the tap issue too"
+if inline report; then ok "report lines found in the workflow"; else bad "report lines found in the workflow"; fi
+rrep() { # rrep FAILED-JOB: the report step with that job failed; the gh issue commands in $stub/issue.log
+  : >"$stub/issue.log"
+  jq -n --arg j "$1" '{jobs: [{name: "formula", conclusion: "success"}, {name: $j, conclusion: "failure"}]}' \
+    >"$stub/api/repos_test_provimux_actions_runs_66_attempts_1_jobs_per_page_100.json"
+  env PATH="$stub/bin:$PATH" STUB_API="$stub/api" GH_REPO=test/provimux TAG="v$TV" SHA="$pmx_sha" RUN_URL=https://example.invalid/run \
+    ATTEMPT=1 GITHUB_RUN_ID=66 bash "$tmp/report.sh" >"$tmp/rrep.out" 2>&1 && echo "exit 0" || echo "exit $?"
+}
+expect "tap-check failed: the report step runs" "exit 0" "$(rrep tap-check)"
+contains "  ... the sync issue" "$stub/issue.log" "issue create -R test/provimux --title sync: v1.3.0 — release v$TV failed, owner needed"
+contains "  ... and the tap issue" "$stub/issue.log" "issue create -R test/provimux --title homebrew tap: v$TV needs the owner"
+echo '[{"number": 31, "title": "homebrew tap: v'"$TV"' needs the owner"}]' >"$stub/api/repos_test_provimux_issues_state_open_per_page_100.json"
+rrep tap-check >/dev/null
+contains "tap-check failed, the tap issue open: commented on" "$stub/issue.log" "issue comment 31 "
+lacks "  ... never retitled or closed" "$stub/issue.log" "issue edit 31"
+echo '[]' >"$stub/api/repos_test_provimux_issues_state_open_per_page_100.json"
+expect "another job failed: the report step runs" "exit 0" "$(rrep image-push)"
+lacks "  ... no tap issue" "$stub/issue.log" "homebrew tap:"
 echo
 echo "$pass passed, $failed failed"
 [[ $failed -eq 0 ]]
