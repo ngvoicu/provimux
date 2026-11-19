@@ -256,13 +256,6 @@ Their READMEs describe the settings.
 Provimux uses the same `config.yaml`, auth folder (`~/.cli-proxy-api`) and management console as CLIProxyAPI, so an
 existing CLIProxyAPI setup works as it is: stop CLIProxyAPI and start Provimux in its place.
 
-**Homebrew** (macOS and Linux):
-
-```bash
-brew install ngvoicu/tap/provimux
-brew services start provimux
-```
-
 **Release archives:** download the archive for your system from
 [Releases](https://github.com/ngvoicu/provimux/releases):
 
