@@ -7,8 +7,10 @@
 # release.yaml sets it), publish (true only for a tag push).
 #
 # <base> must be exactly the base of the tagged commit, found by the same rule as
-# guard.sh: the newest vX.Y.Z tag reachable from HEAD that is a tag of upstream
-# CLIProxyAPI (one at another commit than upstream's is an error, not skipped).
+# guard.sh (upstream_base in common.sh): the newest vX.Y.Z tag of upstream CLIProxyAPI,
+# read from upstream's refs (git ls-remote), whose commit is an ancestor of HEAD; no
+# local tag is needed. A reachable local vX.Y.Z tag that upstream withdrew or moved is
+# an error, never a reason to fall back to an older base.
 # A tag naming any other release (an older one that is merely an ancestor, or
 # one that is not reachable) is refused, so no artifact can claim a base it is
 # not built on.
@@ -16,31 +18,19 @@
 set -euo pipefail
 fail() { echo "::error::$*"; exit 1; }
 
-upstream=${PMX_UPSTREAM:-https://github.com/router-for-me/CLIProxyAPI}
+here="$(cd "$(dirname "$0")" && pwd)"
+PMX_UPSTREAM_URL="${PMX_UPSTREAM:-${PMX_UPSTREAM_URL:-https://github.com/router-for-me/CLIProxyAPI}}"
+# shellcheck source=common.sh
+. "$here/common.sh"
 
-# --- The base of HEAD (same rule as guard.sh) ------------------------------------
-upstream_tags=$(git ls-remote --tags "$upstream" 'refs/tags/v*') ||
-  fail "Cannot list the tags of $upstream."
-upstream_commit() { # commit an upstream tag points to (peeled when annotated)
-  local t=$1 peeled plain
-  peeled=$(awk -v r="refs/tags/$t^{}" '$2==r {print $1}' <<<"$upstream_tags")
-  plain=$(awk -v r="refs/tags/$t" '$2==r {print $1}' <<<"$upstream_tags")
-  echo "${peeled:-$plain}"
-}
-base_tag=''
-for t in $(git tag --merged HEAD --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -rV); do
-  up="$(upstream_commit "$t")"
-  if [[ -z "$up" ]]; then
-    echo "Skipping tag $t: not a tag in $upstream." >&2
-  elif [[ "$up" != "$(git rev-parse "$t^{commit}")" ]]; then
-    fail "Tag $t is $(git rev-parse --short "$t^{commit}") here but ${up:0:8} in $upstream; refusing to fall back to an older base."
-  else
-    base_tag=$t
-    break
-  fi
-done
-[[ -n "$base_tag" ]] || fail "No vX.Y.Z tag reachable from HEAD matches a release tag of $upstream."
-[[ "$(git rev-parse "$base_tag^{commit}")" != "$(git rev-parse HEAD)" ]] ||
+# --- The base of HEAD (same rule as guard.sh: upstream's refs, not local tags) ----
+upstream_tags=$(git ls-remote --tags "$PMX_UPSTREAM_URL" 'refs/tags/v*') ||
+  fail "Cannot list the tags of $PMX_UPSTREAM_URL."
+err="$(mktemp)"
+b="$(upstream_base HEAD "$upstream_tags" 2>"$err")" || fail "$(cat "$err")"
+rm -f "$err"
+base_tag="${b%% *}"
+[[ "${b#* }" != "$(git rev-parse HEAD)" ]] ||
   fail "HEAD is the upstream release $base_tag itself, not a Provimux commit."
 
 # --- The version asked for -----------------------------------------------------------
@@ -65,7 +55,7 @@ else
 fi
 
 [[ "v$base" == "$base_tag" ]] ||
-  fail "Version $provimux_version names base v$base, but $(git rev-parse --short HEAD) is built on $base_tag (the newest upstream release tag reachable from it). Tag it ${base_tag}-pmx.<n>."
+  fail "Version $provimux_version names base v$base, but $(git rev-parse --short HEAD) is built on $base_tag (the newest upstream release tag whose commit is an ancestor of it). Tag it ${base_tag}-pmx.<n>."
 
 # Follow upstream's Go version: read it from the tree's own release.yaml.
 go_version="$(sed -nE "s/^[[:space:]]*GO_VERSION:[[:space:]]*['\"]?([0-9][0-9.]*)['\"]?.*$/\1/p" .github/workflows/release.yaml | head -n 1)"
@@ -91,7 +81,7 @@ out="${GITHUB_OUTPUT:-/dev/stdout}"
 {
   echo "### Provimux ${provimux_version}"
   echo
-  echo "- CLIProxyAPI base: \`${base}\` (newest upstream release tag reachable from the commit)"
+  echo "- CLIProxyAPI base: \`${base}\` (newest upstream release tag whose commit is an ancestor of the commit)"
   echo "- Go (archives, from release.yaml): \`${go_version}\`"
   echo "- Commit: \`${commit}\`, built at \`${build_date}\`"
   echo "- Publish: ${publish}"
