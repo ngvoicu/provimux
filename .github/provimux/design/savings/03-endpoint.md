@@ -10,7 +10,7 @@ One line in `registerProvimuxRoutes` (`internal/api/server_provimux.go`), the la
 	v8.GET("/provimux/savings", s.mgmt.ProvimuxSavings)
 ```
 
-It is in the authenticated v8 group, so the availability check, the management key and the version headers are those of every other route (`internal/api/server_management_v8.go:17-21`; `../pui13/05-console-contract.md` section 1). Read-only: it never writes to the store, never starts a download, and changes no routing state. Absent (404) on stock CLIProxyAPI and on a Provimux older than it. Having prices means every installation downloads OpenRouter's public list, at most every 3 hours while requests are recorded and never under `--local-model` (chief's decision on open question 3; `../../../README.md`, Savings). In home mode every management route is 404 (`internal/api/server_management.go:219-222`).
+It is in the authenticated v8 group, so the availability check, the management key and the version headers are those of every other route (`internal/api/server_management_v8.go:17-21`; `../pui13/05-console-contract.md` section 1). Read-only: it never writes to the store, never starts a download, and changes no routing state. Absent (404) on stock CLIProxyAPI and on a Provimux older than it. Every estimate is at base list prices, never the higher rates some models publish above a prompt size: the answer says so in `prices.rates` (`base`). Having prices means every installation downloads OpenRouter's public list, at most every 3 hours while requests are recorded and never under `--local-model` (chief's decision on open question 3; `../../../README.md`, Savings). In home mode every management route is 404 (`internal/api/server_management.go:219-222`).
 
 The handler is a method of `*management.Handler` in a new file `provimux_savings.go`, as the other two are (`../pui13/README.md`, D1). It parses the query, calls `savings.Query`, and writes the result; all logic is in the `savings` package, where it is tested without HTTP.
 
@@ -87,6 +87,7 @@ Present with a value: only rows whose field equals it (`provider`, `host` and `m
 | `recording.saved_at` | the last successful write of a day by this process |
 | `recording.folded_days` | days in the range (after filters, any row left) whose value has `folded` |
 | `prices.openrouter` | `fetched_at` and the number of models of the list in use (`02-prices.md` section 2); `remote` from `ProvimuxOpenRouterPrices` |
+| `prices.rates` | `base`: the estimates use each model's base list rate (`02-prices.md` section 7) |
 | `prices.provimux` | `updated` and the number of entries of the embedded table |
 | `totals`, `breakdowns[].rows[]` | the same `Metrics`, from the same function |
 | `models` | one entry per (provider, model), most tokens first, at most 500 (`models_truncated`); `tokens` = `in + cr + cw + out + unc`. `price` is that of the latest day in the range that priced the pair; `basis` is `recorded` when every priced row used its day's price, `current` when none did, `mixed` otherwise. Model `~other` has `price` null |
