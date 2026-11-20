@@ -1478,6 +1478,9 @@ jobs:
       SHA: ${{ github.sha }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       ATTEMPT: ${{ github.run_attempt }}
+      # tap-check's own result, from the run itself: the tap issue must not depend on the
+      # jobs API, which can fail (a 503) exactly when Actions is having an outage.
+      TAP_CHECK_RESULT: ${{ needs.tap-check.result }}
     steps:
       - name: Tell the sync issue (and the tap issue when tap-check failed)
         run: |
@@ -1505,8 +1508,9 @@ jobs:
           fi
           # A failed tap-check (the formula does not fit the tap) is a tap failure too: the
           # issue "homebrew tap: <tag> needs the owner" (SYNC.md, "The Homebrew tap"), opened
-          # or commented on once per run attempt; never retitled or closed here.
-          if [[ "$failed" == *"tap-check ("* ]]; then
+          # or commented on once per run attempt; never retitled or closed here. Decided by
+          # needs.tap-check.result, never by the job list above (unreadable during an outage).
+          if [[ "${TAP_CHECK_RESULT:-}" == failure || "${TAP_CHECK_RESULT:-}" == cancelled ]]; then
             ttitle="homebrew tap: $TAG needs the owner"
             # shellcheck disable=SC2016 # Markdown backticks in the text
             tbody="$(printf '%s\n**The release run for `%s` failed its job `tap-check`**: the formula does not fit the Homebrew tap. No automation closes or retitles this issue. When the cause is fixed and the release is complete, the owner runs, with their own credentials (if a newer `-pmx` release exists by then, use that tag):\n\n```sh\nbash .github/provimux/publish.sh --tap %s\nbash .github/provimux/tap.sh check %s "$(mktemp -d)"\n```\n\nand closes this issue once `tap.sh check` prints `ok`.\n\nRun: %s\n' \
