@@ -1368,6 +1368,7 @@ func (h *OpenAIAPIHandler) collectRoutedImages(c *gin.Context, imageReq []byte, 
 	}
 
 	handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
+	handlers.ConfirmAnswer(c)
 	_, _ = c.Writer.Write(resp)
 	cliCancel(nil)
 }
@@ -1454,6 +1455,7 @@ func (h *OpenAIAPIHandler) streamRoutedImages(c *gin.Context, imageReq []byte, i
 			setImagesSSEHeaders(c)
 			handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
 			trailingNewlines := advanceImagesSSENewlineCount(2, chunk)
+			handlers.ConfirmAnswer(c)
 			_, _ = c.Writer.Write(chunk)
 			flusher.Flush()
 			streamStarted = true
@@ -1615,6 +1617,7 @@ func (h *OpenAIAPIHandler) streamOpenAICompatImages(c *gin.Context, compatReq []
 			setImagesSSEHeaders(c)
 			handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
 			trailingNewlines := advanceImagesSSENewlineCount(2, chunk)
+			handlers.ConfirmAnswer(c)
 			_, _ = c.Writer.Write(chunk)
 			flusher.Flush()
 			streamStarted = true
@@ -1694,6 +1697,7 @@ func (h *OpenAIAPIHandler) collectImagesWithModelAndOriginal(c *gin.Context, ima
 	}
 
 	handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
+	handlers.ConfirmAnswer(c)
 	_, _ = c.Writer.Write(out)
 	cliCancel(nil)
 }
@@ -1808,6 +1812,7 @@ func (h *OpenAIAPIHandler) streamImagesWithModel(c *gin.Context, imageReq []byte
 				if len(usageRaw) > 0 && json.Valid(usageRaw) {
 					_ = dataDoc.SetRawBytes("usage", usageRaw)
 				}
+				handlers.ConfirmAnswer(c)
 				if strings.TrimSpace(eventName) != "" {
 					_, _ = fmt.Fprintf(c.Writer, "event: %s\n", eventName)
 				}
@@ -1846,6 +1851,7 @@ func (h *OpenAIAPIHandler) collectImagesFromResponses(c *gin.Context, responsesR
 		return
 	}
 	handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
+	handlers.ConfirmAnswer(c)
 	_, _ = c.Writer.Write(out)
 	cliCancel()
 }
@@ -2046,6 +2052,7 @@ func (h *OpenAIAPIHandler) streamImagesFromResponses(c *gin.Context, responsesRe
 	defer stopKeepAlive()
 
 	writeEvent := func(eventName string, dataJSON []byte) {
+		handlers.ConfirmAnswer(c)
 		if strings.TrimSpace(eventName) != "" {
 			_, _ = fmt.Fprintf(c.Writer, "event: %s\n", eventName)
 		}
