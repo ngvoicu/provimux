@@ -63,7 +63,7 @@ type options struct {
 	interval        time.Duration // 10 s
 	flushTimeout    time.Duration // 2 s
 	table           *priceTable
-	// maxMemoryDays bounds the days kept in memory while the store is off.
+	// maxMemoryDays bounds the days that hold deltas (the store off or failing): the oldest go first.
 	maxMemoryDays int
 }
 
@@ -93,49 +93,38 @@ func serverLocation() *time.Location {
 	return time.Local
 }
 
-// dayState is one day in memory (01-recording.md section 5, "Absolute totals, written whole").
-type dayState struct {
-	rows           *dayRows // the stored rows, keyed by key id
-	loaded         bool     // rows were read from the store in this process
-	pending        map[pendingKey]*counters
-	pendingRegular int  // pending combinations that are not folded
-	dirty          bool // rows differ from the store
-	version        uint64
-	broken         bool // the stored value does not decode: never overwritten, skipped by reads
-}
-
-// recorder holds the totals in memory and writes them to the local store.
+// recorder keeps, per day and combination, what was recorded since the last successful write of
+// that day (01-recording.md section 5, "Deltas since the last save"). Memory never holds a day's
+// totals or a copy of what the store holds: a round reads the day from the store in use, adds the
+// deltas, writes the sum and only then forgets those deltas; a query reads the store and adds them.
 type recorder struct {
 	opts options
 
-	saveMu sync.Mutex // one round at a time; held across store calls, never by HandleUsage
+	// inMu guards incoming, and nothing else: HandleUsage holds it for a map update only.
+	inMu     sync.Mutex
+	incoming map[string]*deltaDay
 
-	mu   sync.Mutex // HandleUsage's one mutex; never held across a store call
-	days map[string]*dayState
-	// secret makes key ids. The process's own until the store's meta is known (metaKnown).
-	secret    []byte
-	metaKnown bool
-	meta      metaValue
-	metaOK    bool // meta decoded; false keeps first_day from being rewritten
-	// The OpenRouter list: as last downloaded (asked for by the saver) and the saved copy.
+	// mu guards the deltas and everything below, and is held for the whole of a save round and of a
+	// query, store calls included, so a query never sees a write half done. HandleUsage never takes it.
+	mu     sync.Mutex
+	deltas map[string]*deltaDay
+	// secret is the process's own: key ids while no store's meta is known (the store is off), and
+	// the secret written as meta on a store that has none.
+	secret []byte
+	// The OpenRouter list as last downloaded (asked for by the saver).
 	downloaded   map[string]registry.ProvimuxOpenRouterPrice
 	downloadedAt time.Time
 	remote       bool
-	saved        map[string]registry.ProvimuxOpenRouterPrice
-	savedAt      time.Time
-	savedKnown   bool
+	// listSavedAt is the fetched_at of the list copy last seen in or written to a store: an idle round
+	// makes no store call unless the downloaded list is newer.
+	listSavedAt time.Time
 	// What the answer says about the record itself.
 	wroteOnce   bool
 	lastWriteOK bool
 	lastSavedAt time.Time
-	storeWasOn  bool
+	failing     bool            // in a streak of failed store calls: logged once per streak
+	dropped     bool            // a day beyond maxMemoryDays was dropped: logged once
 	logged      map[string]bool // keys whose value did not decode, logged once
-
-	// bound is the store the in-memory state describes (bindLocked).
-	bound localStore
-	// generation changes with every successful day write and every store switch: a query whose
-	// reads straddled one reads again.
-	generation uint64
 
 	savers atomic.Int32
 }
@@ -172,7 +161,7 @@ func newRecorder(opts options) *recorder {
 	if _, errRand := rand.Read(secret); errRand != nil {
 		log.Errorf("savings: no random key secret: %v", errRand)
 	}
-	return &recorder{opts: opts, days: map[string]*dayState{}, secret: secret, logged: map[string]bool{}}
+	return &recorder{opts: opts, incoming: map[string]*deltaDay{}, deltas: map[string]*deltaDay{}, secret: secret, logged: map[string]bool{}}
 }
 
 func (r *recorder) location() *time.Location {
@@ -180,18 +169,6 @@ func (r *recorder) location() *time.Location {
 		return r.opts.location
 	}
 	return time.Local
-}
-
-// dayLocked returns the day's state, made with the zone of now when it is new.
-func (r *recorder) dayLocked(day string) *dayState {
-	if st, ok := r.days[day]; ok {
-		return st
-	}
-	now := r.opts.now().In(r.location())
-	_, offset := now.Zone()
-	st := &dayState{rows: newDayRows(r.location().String(), offset), pending: map[pendingKey]*counters{}}
-	r.days[day] = st
-	return st
 }
 
 var (
@@ -214,8 +191,8 @@ func Start() {
 	})
 }
 
-// FlushNow writes every changed day to the local store and returns when that is done, or after
-// 2 seconds. Safe to call at any time and more than once; a no-op before Start.
+// FlushNow writes the deltas of every day to the local store in use and returns when that is done,
+// or after 2 seconds; what it could not write stays in memory for the next round. Safe to call at any time and more than once; a no-op before Start.
 func FlushNow() {
 	if !started.Load() {
 		return

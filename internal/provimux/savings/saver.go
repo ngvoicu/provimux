@@ -79,100 +79,201 @@ func decodeListCopy(data []byte) (map[string]registry.ProvimuxOpenRouterPrice, t
 func formatTime(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
 
 // refreshPrices asks for OpenRouter's list (the catalog's own cadence and policy) and keeps it.
+// Under mu.
 func (r *recorder) refreshPrices() {
 	list, fetchedAt, remote := r.opts.openRouter()
-	r.mu.Lock()
 	r.remote = remote
 	if list != nil {
 		r.downloaded, r.downloadedAt = list, fetchedAt
 	}
-	r.mu.Unlock()
 }
 
 // refreshKept takes the list as the catalog keeps it now, without asking for a download, so a list
-// that arrived after the last round is used and saved.
+// that arrived after the last round is used and saved. Under mu.
 func (r *recorder) refreshKept() {
 	list, fetchedAt, remote := r.opts.openRouterKept()
-	r.mu.Lock()
 	r.remote = remote
 	if list != nil && (r.downloaded == nil || fetchedAt.After(r.downloadedAt)) {
 		r.downloaded, r.downloadedAt = list, fetchedAt
 	}
-	r.mu.Unlock()
 }
 
-// bindLocked binds the in-memory state to the store it describes. On a switch to another store
-// (server.kv-store.path changed), what memory held as stored belongs to the old store: it is dropped,
-// and each day is read from the new store before its next write. Records not yet written stay in
-// pending and go to the new store. Clean stops and config reloads flush to the old store first
-// (provimuxFlushSavings in sdk/cliproxy). A store that is off keeps what memory holds.
-func (r *recorder) bindLocked(store localStore) {
-	if store == nil || store == r.bound {
-		return
-	}
-	if r.bound != nil {
-		now := r.opts.now().In(r.location())
-		_, offset := now.Zone()
-		for day, st := range r.days {
-			if st.dirty {
-				log.Warnf("savings: %s was not written before the local store changed", dayKey(day))
-			}
-			st.rows = newDayRows(r.location().String(), offset)
-			st.loaded, st.dirty, st.broken = false, false, false
-			st.version++
-		}
-		r.metaKnown, r.meta, r.metaOK = false, metaValue{}, false
-		r.saved, r.savedAt, r.savedKnown = nil, time.Time{}, false
-		r.wroteOnce, r.lastWriteOK, r.lastSavedAt = false, false, time.Time{}
-		r.generation++
-	}
-	r.bound = store
-}
-
-// bookLocked is the prices in use: the list with the later fetched_at of the downloaded and the saved
-// copy, and the table.
-func (r *recorder) bookLocked() *priceBook {
-	book := &priceBook{remote: r.remote, table: r.opts.table}
+// bookOf is the prices in use: the list with the later fetched_at of the downloaded one and the copy
+// read from the store (nil when there is none), and the table.
+func bookOf(downloaded map[string]registry.ProvimuxOpenRouterPrice, downloadedAt time.Time, remote bool,
+	saved map[string]registry.ProvimuxOpenRouterPrice, savedAt time.Time, table *priceTable) *priceBook {
+	book := &priceBook{remote: remote, table: table}
 	switch {
-	case r.downloaded != nil && (r.saved == nil || !r.downloadedAt.Before(r.savedAt)):
-		book.openRouter, book.fetchedAt = r.downloaded, r.downloadedAt
-	case r.saved != nil:
-		book.openRouter, book.fetchedAt = r.saved, r.savedAt
+	case downloaded != nil && (saved == nil || !downloadedAt.Before(savedAt)):
+		book.openRouter, book.fetchedAt = downloaded, downloadedAt
+	case saved != nil:
+		book.openRouter, book.fetchedAt = saved, savedAt
 	}
 	return book
 }
 
 func (r *recorder) logOnce(key, format string, args ...any) {
-	r.mu.Lock()
-	seen := r.logged[key]
-	r.logged[key] = true
-	r.mu.Unlock()
-	if !seen {
+	if !r.logged[key] {
+		r.logged[key] = true
 		log.Errorf(format, args...)
 	}
 }
 
-// saveRound is one round of the saver: 01-recording.md section 5, steps 1 to 3, for every day
-// with pending or dirty rows; then the price list copy.
-func (r *recorder) saveRound(ctx context.Context) {
-	r.saveMu.Lock()
-	defer r.saveMu.Unlock()
+// failed records that a store call failed: recording.persistent is false until a write succeeds.
+// The error is logged once per streak of failures. Under mu.
+func (r *recorder) failed(err error) {
+	if !r.failing {
+		r.failing = true
+		log.Errorf("savings: local store call failed; what was recorded stays in memory and is retried every round: %v", err)
+	}
+	r.wroteOnce, r.lastWriteOK = true, false
+}
 
-	r.mu.Lock()
-	var work []string
-	for day, st := range r.days {
-		if !st.broken && (len(st.pending) > 0 || st.dirty) {
-			work = append(work, day)
+// succeeded ends a failure streak: every day of a round was written. Under mu.
+func (r *recorder) succeeded() {
+	if r.failing {
+		r.failing = false
+		log.Info("savings: local store writes succeed again")
+	}
+	r.wroteOnce, r.lastWriteOK = true, true
+}
+
+// drainLocked moves the incoming deltas into r.deltas, then drops the oldest days beyond
+// maxMemoryDays (the store off or failing for a long time). Under mu.
+func (r *recorder) drainLocked() {
+	var incoming map[string]*deltaDay
+	r.inMu.Lock()
+	if len(r.incoming) > 0 {
+		incoming, r.incoming = r.incoming, map[string]*deltaDay{}
+	}
+	r.inMu.Unlock()
+	for day, d := range incoming {
+		if mine := r.deltas[day]; mine != nil {
+			mine.addAll(d)
+		} else {
+			r.deltas[day] = d
 		}
 	}
-	r.mu.Unlock()
-	r.refreshKept()
-	if len(work) == 0 {
-		r.saveArrivedList(ctx)
-		r.evict()
+	if len(r.deltas) <= r.opts.maxMemoryDays {
 		return
 	}
-	slices.Sort(work)
+	days := slices.Sorted(maps.Keys(r.deltas))
+	for _, day := range days[:len(days)-r.opts.maxMemoryDays] {
+		delete(r.deltas, day)
+	}
+	if !r.dropped {
+		r.dropped = true
+		log.Warnf("savings: more than %d days are waiting for the local store; the oldest were dropped", r.opts.maxMemoryDays)
+	}
+}
+
+// storeState is what a round or a query read of a store's meta and list copy.
+type storeState struct {
+	secret    []byte    // the store's key secret; the process's when meta does not decode
+	meta      metaValue // valid when metaOK
+	metaOK    bool
+	saved     map[string]registry.ProvimuxOpenRouterPrice // the list copy; nil when none
+	savedAt   time.Time
+	savedSeen bool // the store holds a list copy (decoded or not)
+}
+
+// readState reads meta and the list copy in one call. With create, a store without meta gets one:
+// the process's secret and firstDay (KVSetNX, then the value that won). Under mu.
+func (r *recorder) readState(ctx context.Context, store localStore, create bool, firstDay string) (storeState, error) {
+	values, found, errGet := store.KVMGet(ctx, metaKey, openRouterListKey)
+	if errGet == nil && (len(values) != 2 || len(found) != 2) {
+		errGet = fmt.Errorf("multi-get returned %d values for 2 keys", len(values))
+	}
+	if errGet != nil {
+		return storeState{}, errGet
+	}
+	state := storeState{secret: r.secret}
+	metaData, metaFound := values[0], found[0]
+	if !metaFound && create {
+		meta := metaValue{V: 1, CreatedAt: formatTime(r.opts.now()), FirstDay: firstDay, KeySecret: base64.StdEncoding.EncodeToString(r.secret)}
+		data, errEncode := json.Marshal(meta)
+		if errEncode != nil {
+			return storeState{}, errEncode
+		}
+		if _, errSet := store.KVSetNX(ctx, metaKey, data, 0); errSet != nil {
+			return storeState{}, errSet
+		}
+		var errRead error
+		if metaData, metaFound, errRead = store.KVGet(ctx, metaKey); errRead != nil {
+			return storeState{}, errRead
+		}
+	}
+	if metaFound {
+		if meta, secret, errMeta := decodeMeta(metaData); errMeta == nil {
+			state.meta, state.secret, state.metaOK = meta, secret, true
+		} else {
+			r.logOnce(metaKey, "savings: %s does not decode; key ids use this process's secret", metaKey)
+		}
+	}
+	if found[1] {
+		state.savedSeen = true
+		if list, at, errList := decodeListCopy(values[1]); errList == nil {
+			state.saved, state.savedAt = list, at
+		} else {
+			r.logOnce(openRouterListKey, "savings: %s does not decode and is ignored", openRouterListKey)
+		}
+	}
+	return state, nil
+}
+
+// readDays reads days from the store in one call: a day absent from the answer is not in the store;
+// a day that does not decode is nil (logged once, never overwritten, skipped by reads).
+func (r *recorder) readDays(ctx context.Context, store localStore, days []string) (map[string]*dayRows, error) {
+	out := make(map[string]*dayRows, len(days))
+	if len(days) == 0 {
+		return out, nil
+	}
+	keys := make([]string, len(days))
+	for i, day := range days {
+		keys[i] = dayKey(day)
+	}
+	values, found, errGet := store.KVMGet(ctx, keys...)
+	if errGet == nil && (len(values) != len(keys) || len(found) != len(keys)) {
+		errGet = fmt.Errorf("multi-get returned %d values for %d keys", len(values), len(keys))
+	}
+	if errGet != nil {
+		return nil, errGet
+	}
+	for i, day := range days {
+		if !found[i] {
+			continue
+		}
+		decoded, errDecode := decodeDay(values[i])
+		if errDecode != nil {
+			r.logOnce(dayKey(day), "savings: %s does not decode; it is kept as it is and skipped", dayKey(day))
+			out[day] = nil
+			continue
+		}
+		out[day] = decoded
+	}
+	return out, nil
+}
+
+// newDayRowsNow is an empty day in the zone in use now.
+func (r *recorder) newDayRowsNow() *dayRows {
+	_, offset := r.opts.now().In(r.location()).Zone()
+	return newDayRows(r.location().String(), offset)
+}
+
+// saveRound is one round of the saver (01-recording.md section 5), all of it under mu: for each day
+// with deltas, read the day from the store in use now, add the deltas, give rows without a price
+// one, write the day, and only once the write succeeded forget those deltas. A failed read or write
+// keeps them for the next round. Then the price list copy.
+func (r *recorder) saveRound(ctx context.Context) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.drainLocked()
+	r.refreshKept()
+	if len(r.deltas) == 0 {
+		r.saveArrivedList(ctx)
+		return
+	}
+	work := slices.Sorted(maps.Keys(r.deltas))
 	r.refreshPrices()
 
 	store, errStore := r.opts.store()
@@ -180,252 +281,99 @@ func (r *recorder) saveRound(ctx context.Context) {
 		if errStore != nil {
 			log.Debugf("savings: local store unavailable: %v", errStore)
 		}
-		r.mu.Lock()
-		r.storeWasOn = false
-		r.mu.Unlock()
-		r.evict()
+		return // the deltas wait in memory
+	}
+	state, errState := r.readState(ctx, store, true, work[0])
+	if errState != nil {
+		r.failed(errState)
 		return
 	}
-	r.mu.Lock()
-	r.storeWasOn = true
-	r.bindLocked(store)
-	r.mu.Unlock()
-	if !r.ensureMeta(ctx, store, work[0]) {
+	stored, errDays := r.readDays(ctx, store, work)
+	if errDays != nil {
+		r.failed(errDays)
 		return
 	}
+	book := bookOf(r.downloaded, r.downloadedAt, r.remote, state.saved, state.savedAt, r.opts.table)
+	wrote, failedAny := false, false
 	for _, day := range work {
-		r.saveDay(ctx, store, day)
+		rows, inStore := stored[day]
+		if inStore && rows == nil {
+			continue // does not decode: never overwritten; its deltas stay in memory
+		}
+		if rows == nil {
+			rows = r.newDayRowsNow()
+		}
+		rows.mergePending(r.deltas[day].rows, state.secret)
+		rows.assignPrices(book)
+		data, errEncode := rows.encode(day)
+		if errEncode != nil {
+			log.Errorf("savings: encode %s: %v", dayKey(day), errEncode)
+			continue
+		}
+		if _, errSet := store.KVSet(ctx, dayKey(day), data, kvstore.KVSetOptions{}); errSet != nil {
+			r.failed(errSet)
+			failedAny = true
+			continue
+		}
+		delete(r.deltas, day) // only now: the store holds them
+		wrote = true
+		r.lastSavedAt = r.opts.now()
 	}
-	r.moveFirstDay(ctx, store, work[0])
-	r.saveListCopy(ctx, store)
-	r.evict()
+	if wrote && !failedAny {
+		r.succeeded()
+	}
+	r.moveFirstDay(ctx, store, state, work[0])
+	r.saveListCopy(ctx, store, state)
 }
 
 // saveArrivedList saves, in a round with no day to write, a downloaded list that is newer than the
-// saved copy: the first download often completes after the round that asked for it. No store call
-// unless there is such a list.
+// copy last seen in a store: the first download often completes after the round that asked for it.
+// No store call unless there is such a list. Under mu.
 func (r *recorder) saveArrivedList(ctx context.Context) {
-	r.mu.Lock()
-	pending := r.downloaded != nil && (!r.savedKnown || r.saved == nil || r.downloadedAt.After(r.savedAt))
-	r.mu.Unlock()
-	if !pending {
+	if r.downloaded == nil || !r.downloadedAt.After(r.listSavedAt) {
 		return
 	}
 	store, errStore := r.opts.store()
 	if errStore != nil || store == nil {
 		return
 	}
-	r.mu.Lock()
-	r.bindLocked(store)
-	known := r.savedKnown
-	r.mu.Unlock()
-	if !known {
-		data, found, errGet := store.KVGet(ctx, openRouterListKey)
-		if errGet != nil {
-			r.failed(errGet)
-			return
-		}
-		var saved map[string]registry.ProvimuxOpenRouterPrice
-		var savedAt time.Time
-		if found {
-			var errList error
-			if saved, savedAt, errList = decodeListCopy(data); errList != nil {
-				saved = nil
-			}
-		}
-		r.mu.Lock()
-		if r.bound == store {
-			if saved != nil {
-				r.saved, r.savedAt = saved, savedAt
-			}
-			r.savedKnown = true
-		}
-		r.mu.Unlock()
+	state, errState := r.readState(ctx, store, false, "")
+	if errState != nil {
+		r.failed(errState)
+		return
 	}
-	r.saveListCopy(ctx, store)
+	r.saveListCopy(ctx, store, state)
 }
 
-// ensureMeta reads meta (and the saved list copy) the first time the saver reaches a store; on a new
-// store it writes the process's secret as meta, then takes the value that won.
-func (r *recorder) ensureMeta(ctx context.Context, store localStore, firstDay string) bool {
-	r.mu.Lock()
-	known := r.metaKnown
-	r.mu.Unlock()
-	if known {
-		return true
-	}
-	values, found, errGet := store.KVMGet(ctx, metaKey, openRouterListKey)
-	if errGet != nil || len(values) != 2 || len(found) != 2 {
-		r.failed(errGet)
-		return false
-	}
-	metaData, metaFound := values[0], found[0]
-	if !metaFound {
-		r.mu.Lock()
-		meta := metaValue{V: 1, CreatedAt: formatTime(r.opts.now()), FirstDay: firstDay, KeySecret: base64.StdEncoding.EncodeToString(r.secret)}
-		r.mu.Unlock()
-		data, errEncode := json.Marshal(meta)
-		if errEncode != nil {
-			return false
-		}
-		if _, errSet := store.KVSetNX(ctx, metaKey, data, 0); errSet != nil {
-			r.failed(errSet)
-			return false
-		}
-		var errRead error
-		metaData, metaFound, errRead = store.KVGet(ctx, metaKey)
-		if errRead != nil || !metaFound {
-			r.failed(errRead)
-			return false
-		}
-	}
-	meta, secret, errMeta := decodeMeta(metaData)
-	var saved map[string]registry.ProvimuxOpenRouterPrice
-	var savedAt time.Time
-	if found[1] {
-		var errList error
-		if saved, savedAt, errList = decodeListCopy(values[1]); errList != nil {
-			r.logOnce(openRouterListKey, "savings: %s does not decode and is ignored", openRouterListKey)
-			saved = nil
-		}
-	}
-	if errMeta != nil {
-		r.logOnce(metaKey, "savings: %s does not decode; key ids use this process's secret", metaKey)
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.bound != store {
-		return false
-	}
-	r.metaKnown = true
-	if errMeta == nil {
-		r.meta, r.secret, r.metaOK = meta, secret, true
-	}
-	if saved != nil {
-		r.saved, r.savedAt = saved, savedAt
-	}
-	r.savedKnown = true
-	return true
-}
-
-// failed records that a store call failed: recording.persistent is false until a write succeeds.
-func (r *recorder) failed(err error) {
-	if err != nil {
-		log.Debugf("savings: local store call failed: %v", err)
-	}
-	r.mu.Lock()
-	r.wroteOnce = true
-	r.lastWriteOK = false
-	r.mu.Unlock()
-}
-
-// saveDay is steps 1 to 3 for one day.
-func (r *recorder) saveDay(ctx context.Context, store localStore, day string) {
-	r.mu.Lock()
-	st := r.days[day]
-	if st == nil || st.broken {
-		r.mu.Unlock()
+// moveFirstDay writes meta again when a day before its first_day was recorded. Under mu.
+func (r *recorder) moveFirstDay(ctx context.Context, store localStore, state storeState, earliest string) {
+	if !state.metaOK || state.meta.FirstDay == "" || earliest >= state.meta.FirstDay {
 		return
 	}
-	needLoad := !st.loaded
-	r.mu.Unlock()
-
-	// 1. Read the day once per process, outside the mutex.
-	if needLoad {
-		data, found, errGet := store.KVGet(ctx, dayKey(day))
-		if errGet != nil {
-			r.failed(errGet)
-			return
-		}
-		var loaded *dayRows
-		if found {
-			var errDecode error
-			if loaded, errDecode = decodeDay(data); errDecode != nil {
-				r.mu.Lock()
-				st.broken = true
-				r.mu.Unlock()
-				r.logOnce(dayKey(day), "savings: %s does not decode; it is kept as it is and skipped", dayKey(day))
-				return
-			}
-		}
-		r.mu.Lock()
-		if r.bound != store || r.days[day] != st {
-			r.mu.Unlock()
-			return
-		}
-		if loaded != nil {
-			st.rows = loaded
-		}
-		st.loaded = true
-		r.mu.Unlock()
-	}
-
-	// 2. Under the mutex: pending into rows by key id, prices for rows without one, a copy.
-	r.mu.Lock()
-	if r.bound != store || !st.loaded {
-		r.mu.Unlock()
-		return
-	}
-	st.rows.mergePending(st.pending, r.secret)
-	st.pending = map[pendingKey]*counters{}
-	st.pendingRegular = 0
-	st.rows.assignPrices(r.bookLocked())
-	st.dirty = true
-	st.version++
-	version := st.version
-	snapshot := st.rows.clone()
-	r.mu.Unlock()
-
-	// 3. Outside the mutex: encode and write the whole value.
-	data, errEncode := snapshot.encode(day)
-	if errEncode != nil {
-		log.Errorf("savings: encode %s: %v", dayKey(day), errEncode)
-		return
-	}
-	if _, errSet := store.KVSet(ctx, dayKey(day), data, kvstore.KVSetOptions{}); errSet != nil {
-		r.failed(errSet)
-		return
-	}
-	r.mu.Lock()
-	if st.version == version {
-		st.dirty = false
-	}
-	r.wroteOnce, r.lastWriteOK, r.lastSavedAt = true, true, r.opts.now()
-	r.generation++ // a query that read around this write reads again
-	r.mu.Unlock()
-}
-
-// moveFirstDay writes meta again when a day before its first_day was recorded.
-func (r *recorder) moveFirstDay(ctx context.Context, store localStore, earliest string) {
-	r.mu.Lock()
-	if !r.metaOK || r.meta.FirstDay == "" || earliest >= r.meta.FirstDay {
-		r.mu.Unlock()
-		return
-	}
-	meta := r.meta
+	meta := state.meta
 	meta.FirstDay = earliest
-	r.mu.Unlock()
 	data, errEncode := json.Marshal(meta)
 	if errEncode != nil {
 		return
 	}
 	if _, errSet := store.KVSet(ctx, metaKey, data, kvstore.KVSetOptions{}); errSet != nil {
 		r.failed(errSet)
-		return
 	}
-	r.mu.Lock()
-	r.meta = meta
-	r.mu.Unlock()
 }
 
-// saveListCopy writes the downloaded list when it is newer than the saved copy and differs from it.
-func (r *recorder) saveListCopy(ctx context.Context, store localStore) {
-	r.mu.Lock()
+// saveListCopy writes the downloaded list when it is newer than the store's copy and differs from it.
+// Under mu.
+func (r *recorder) saveListCopy(ctx context.Context, store localStore, state storeState) {
 	list, fetchedAt := r.downloaded, r.downloadedAt
-	newer := list != nil && (r.saved == nil || fetchedAt.After(r.savedAt))
-	same := newer && r.saved != nil && reflect.DeepEqual(list, r.saved)
-	r.mu.Unlock()
-	if !newer || same {
+	if list == nil {
+		return
+	}
+	if state.saved != nil && !fetchedAt.After(state.savedAt) {
+		r.listSavedAt = maxTime(r.listSavedAt, state.savedAt)
+		return
+	}
+	if state.saved != nil && reflect.DeepEqual(list, state.saved) {
+		r.listSavedAt = maxTime(r.listSavedAt, fetchedAt)
 		return
 	}
 	data, errEncode := encodeListCopy(list, fetchedAt)
@@ -436,33 +384,12 @@ func (r *recorder) saveListCopy(ctx context.Context, store localStore) {
 		r.failed(errSet)
 		return
 	}
-	r.mu.Lock()
-	if r.bound == store {
-		r.saved, r.savedAt, r.savedKnown = maps.Clone(list), fetchedAt, true
-	}
-	r.mu.Unlock()
+	r.listSavedAt = maxTime(r.listSavedAt, fetchedAt)
 }
 
-// evict drops from memory the clean days more than 2 days old while the store is on, and the oldest
-// days beyond the memory bound while it is off.
-func (r *recorder) evict() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.storeWasOn {
-		today := r.opts.now().In(r.location())
-		limit := time.Date(today.Year(), today.Month(), today.Day()-2, 12, 0, 0, 0, time.UTC).Format(time.DateOnly)
-		for day, st := range r.days {
-			if day < limit && len(st.pending) == 0 && !st.dirty {
-				delete(r.days, day)
-			}
-		}
-		return
+func maxTime(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
 	}
-	if len(r.days) <= r.opts.maxMemoryDays {
-		return
-	}
-	days := slices.Sorted(maps.Keys(r.days))
-	for _, day := range days[:len(days)-r.opts.maxMemoryDays] {
-		delete(r.days, day)
-	}
+	return a
 }
