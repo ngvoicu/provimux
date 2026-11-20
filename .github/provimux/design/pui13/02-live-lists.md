@@ -170,6 +170,6 @@ With no auth manager: `200` with `"logins": []`.
 
 ## 6. What this endpoint does not do
 
-- It starts no fetch. Refreshing stays `POST /v8/management/models/refresh`, which the stock console already calls; it returns before the lists arrive (`model_definitions.go:34-37` only wakes the loop), so the console polls this endpoint afterwards (`05-console-contract.md`).
+- It starts no fetch. Refreshing stays `POST /v8/management/models/refresh`, which the stock console already calls; it returns before the lists arrive (`model_definitions.go:34-37` only wakes the loop), so the console reads this endpoint again once the POST is answered and then on its usual 30 s schedule (`05-console-contract.md` §3).
 - It does not switch the option. That stays `PUT /v8/management/config/models/live-lists`.
 - It does not list the models of a login. That is `GET /v8/management/credentials/models?name=` (`auth_files.go:336-381`).
