@@ -472,3 +472,39 @@ func TestRequestExecutionMetadataAuthKindCallbackSkipsWebsocket(t *testing.T) {
 		})
 	}
 }
+
+func TestRequestExecutionMetadataAuthProviderCallbacksSkipWebsocket(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, test := range []struct {
+		name      string
+		websocket bool
+	}{
+		{name: "ordinary HTTP request", websocket: false},
+		{name: "websocket upgrade", websocket: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+			ginCtx.Request = httptest.NewRequest(http.MethodGet, "/v1/messages", nil)
+			if test.websocket {
+				ginCtx.Request.Header.Set("Connection", "Upgrade")
+				ginCtx.Request.Header.Set("Upgrade", "websocket")
+			}
+			ctx := context.WithValue(context.Background(), "gin", ginCtx)
+
+			meta := requestExecutionMetadata(ctx)
+
+			providerCallback, providerExists := meta[coreexecutor.SelectedAuthProviderCallbackMetadataKey].(func(string))
+			hostCallback, hostExists := meta[coreexecutor.SelectedAuthHostCallbackMetadataKey].(func(string))
+			if providerExists == test.websocket || hostExists == test.websocket {
+				t.Fatalf("provider callback present = %v, host callback present = %v for %s", providerExists, hostExists, test.name)
+			}
+			if providerExists {
+				providerCallback("openai-compatible-lab")
+				hostCallback("api.example.test")
+				if provider, host := logging.GetGinCPAAuthProvider(ginCtx); provider != "openai-compatible-lab" || host != "api.example.test" {
+					t.Fatalf("stored provider, host = %q, %q", provider, host)
+				}
+			}
+		})
+	}
+}
