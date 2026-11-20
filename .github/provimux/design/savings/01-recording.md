@@ -19,7 +19,7 @@ A new package `internal/provimux/savings` holds everything. It registers one usa
 - recording begins when the management routes exist, which is when a management key is configured (`internal/api/server.go:285-287`, `server_reload.go:149`, `:158`). Without a key nobody could read the page; this is also the rule of upstream's usage queue (`server.go:285`);
 - test binaries of other packages, which never build the API server, record nothing.
 
-`Start` is idempotent and starts one goroutine, the saver (section 5). Recording then lasts as long as the process.
+`Start` is idempotent and starts one goroutine, the saver (section 5). Recording then lasts as long as the process: removing the management key later stops the endpoint (404), not the recording, whose totals stay in the user's own local store (the chief's decision in T-116; `05` check 18).
 
 `HandleUsage` runs on the usage manager's goroutine. It reduces the record to the fields below, takes the package's mutex, adds the numbers to a map, and returns. It does no I/O and never waits for the disk: the saver never holds that mutex across a store call. The same shape measured 84 ns per record with no allocation in PUI-13 (`../pui13/README.md`, "What I ran").
 
@@ -29,7 +29,7 @@ A new package `internal/provimux/savings` holds everything. It registers one usa
 |---|---|---|
 | day | `RequestedAt` (`time.Now()` when zero) | calendar day in the server's zone, section 6 |
 | kind `k` | `AuthType` | `oauth` or `apikey` as `Auth.AuthKind()` gives them (`sdk/cliproxy/auth/classification.go:30-50`, set at `usage_helpers.go:150`); anything else, and empty, is `unknown` |
-| provider `p` | `Provider` | trimmed, lower case, at most 64 bytes; empty is `unknown`. It is the executor's identifier: `claude`, `codex`, `gemini`, `vertex`, `aistudio`, `antigravity`, `xai`, `kimi`, `meta`, `devin`, or the name of an OpenAI-compatible entry (`openai_compat_executor.go:62`) |
+| provider `p` | the account's provider: what the model registry has for the record's `AuthID` (`registry.ProvimuxClientProvider`); `Provider` (the executor's identifier) when the registry has none | trimmed, lower case, at most 64 bytes; empty is `unknown`: `claude`, `codex`, `gemini`, `vertex`, `aistudio`, `antigravity`, `xai`, `kimi`, `meta`, `devin`, or the name of an OpenAI-compatible entry. The account's, not the executor's (T-116): a Kimi login served through its Claude Messages route runs the embedded Claude executor (`kimi_executor.go:114`), whose identifier is `claude`. The executor's `Provider` still chooses the token semantics (section 3) |
 | host `h` | `BaseURL` | only for kind `apikey`: lower-cased hostname of the URL (`url.Parse(...).Hostname()`), else `""`. The rule of `provimuxBaseURLHost` (`internal/api/handlers/management/provimux_model_routes.go:289-298`). Never the path, the port or user info |
 | model `m` | `Model` | trimmed, lower case, at most 128 bytes; empty is `unknown`. It is the upstream model: the conductor resolves aliases and removes a credential's prefix before the executor runs (`sdk/cliproxy/auth/conductor_execution.go:998`, `conductor_models.go:770-783`), and executors remove the thinking suffix (`thinking.ParseSuffix(req.Model).ModelName`, e.g. `openai_compat_executor.go:130-132`, `claude_executor_execute.go:42`) |
 | client key | `APIKey` | the key the client sent (`manager.go:42`, `usage_helpers.go:912-932`), turned into an id and a tail, section 7. Never `Source`, which can be the provider's key (`usage_helpers.go:964-1001`) |
@@ -39,7 +39,7 @@ A new package `internal/provimux/savings` holds everything. It registers one usa
 | `cw5`, `cw1h` | `Detail.CacheCreation5mTokens`, `CacheCreation1hTokens` | section 3 |
 | `cost`, `ucost`, `costn` | `Detail.CostDetails` | section 4 |
 
-Nothing else is read. In particular not `Alias` (the client's name for the model), `Source`, `AuthID`, `AuthIndex`, `SessionID`, `ResponseHeaders`, `Fail.Body`.
+Nothing else is read. `AuthID` is only looked up for the provider and never kept. In particular not `Alias` (the client's name for the model), `Source`, `AuthIndex`, `SessionID`, `ResponseHeaders`, `Fail.Body`.
 
 Tokens of a failed record are counted: a truncated stream was still billed (`PublishFailureWithDetail`, `usage_helpers.go:624-626`).
 
@@ -154,6 +154,7 @@ Days more than 2 days old with nothing pending and nothing dirty leave memory; a
 | the store cannot be opened (`CurrentKVClient` returns an error) | the same, retried every round; when it opens, `pending` is merged into what the store holds and written |
 | a write fails (disk full) | the day stays `dirty` and is retried every round; `recording.persistent` is false until a write succeeds |
 | the store is switched off at run time (config reload, `sdk/cliproxy/kv_store.go:18-22`) | as the first row from then on; days already in memory keep their totals |
+| `server.kv-store.path` changes at run time (config reload) | before the reload changes the store, `applyKVStoreConfig` flushes to the store in use (one line, `provimuxFlushSavings()`). The in-memory state is bound to the store it describes: on the first use of the new store, what memory held as stored is dropped, meta, the key secret and the saved list are read again from the new store, and each day is read from it before its next write, so the new store's history is extended, never replaced (T-116) |
 | a day's value cannot be decoded | it is not overwritten: the day is skipped by the saver and by reads, an error is logged once per day with the key, no value. `pending` for it is kept in memory |
 
 ### Growth
@@ -201,3 +202,14 @@ Why a secret and not a plain SHA-256: the page is the proof the owner will show,
 Why `pending` is keyed by the key itself: an id can only be made with the stored secret, and the store may not be reachable when the first record arrives. Keeping the key in memory until the write (at most 10 s with the store on) means every id that is ever stored was made with the stored secret. A query that comes before the saver's first round reads `meta` itself (it never writes it), so the ids it shows for `pending` rows are already the stored ones. Without a store the process's own secret is used for the ids it shows.
 
 If the store's file is replaced at run time by one with another secret (the path is changed in the configuration), days already loaded are written with the ids they have; the same key can then appear under two ids for those days. Not handled further.
+
+## 8. Corrections from the review (T-116)
+
+| Finding of T-112 | Now |
+|---|---|
+| 1. A switch of the store path overwrote the new store's days with the old store's rows | section 5, "When the store is off or failing": flush before the reload, then the state is bound to the active store |
+| 5. A query whose read straddled the first write of a day counted its records twice | a write generation moves with every successful day write and every store switch; a query whose copy of memory and read of the store straddle one reads again, the third time holding the saver's lock |
+| 6. With the store off, prices moved with the list but were labelled `recorded` | a price given while reading is not the day's: rows without a recorded price are valued with today's list and counted in `floating_requests`, `basis` `current`, until the saver writes the day |
+| 7. A list whose first download completed after the last write was never saved | every round, even one with no day to write, takes the kept list (`ProvimuxOpenRouterPricesKept`, no download) and saves it when it is newer than the saved copy; a clean stop runs such a round |
+| 8. At exactly 2000 combinations a repeat took a slot and the next new one folded | a repeat of a stored row takes no slot |
+| 9. A Kimi login through its Claude Messages route counted under `claude` | the account's provider, section 2 |

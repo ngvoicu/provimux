@@ -147,7 +147,7 @@ Input: the row's provider and model, both lower case (`01-recording.md` section 
 
 **Step 4.** Take the model without its `:` suffix, and of that the part after the last `/`. Call it `n`.
 
-1. Remove a date at the end: `-` and 8 digits, or `-YYYY-MM-DD`.
+1. Remove a date at the end: `-` and 8 digits, or `-YYYY-MM-DD`. The id with its date is tried first (`<maker>/<n with the date>`, then its dotted form): a dated snapshot is often a product of its own at another price (`gpt-4o-2024-05-13` is $5/$15, `gpt-4o` $2.50/$10). Only then the forms without it (T-116).
 2. Find the maker by the first prefix of `n` in this table; none means unpriced.
 
    | `n` starts with | Maker |
@@ -253,7 +253,7 @@ Two of them need a sentence on the page, because the number alone would claim to
 
 | Not modelled | Effect |
 |---|---|
-| Prices that rise above a prompt size (`pricing.overrides`, 88 models in the list) | a daily total has no request sizes; long prompts are valued at the lower price, so cost and saving are understated |
+| Prices that rise above a prompt size (`pricing.overrides`, 88 models in the list) | a daily total has no request sizes; long prompts are valued at the lower price, so cost and saving are understated. The answer says so: `prices.rates` is `base`, and the page says "at base list prices" (T-116) |
 | Fast mode and priority tiers (the record has `ResponseServiceTier`, `Detail.Speed`; `usage_helpers.go:2842-2848`) | valued at the standard price: understated |
 | Web search, image, audio and per-request fees | not valued |
 | Discounts, credits, a negotiated price | list price is used |
