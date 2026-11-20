@@ -17,8 +17,10 @@ type authKindClaudeExecutor struct{ served []string }
 
 func (e *authKindClaudeExecutor) Identifier() string { return "claude" }
 
-func (e *authKindClaudeExecutor) Execute(_ context.Context, a *auth.Auth, _ coreexecutor.Request, _ coreexecutor.Options) (coreexecutor.Response, error) {
+func (e *authKindClaudeExecutor) Execute(ctx context.Context, a *auth.Auth, _ coreexecutor.Request, _ coreexecutor.Options) (coreexecutor.Response, error) {
 	e.served = append(e.served, a.ID)
+	// Like a real executor's transport: the response comes from an upstream exchange.
+	coreexecutor.MarkUpstreamAttempt(ctx)
 	return coreexecutor.Response{Payload: []byte(`{"id":"msg_1","type":"message","role":"assistant","model":"auth-kind-model","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)}, nil
 }
 

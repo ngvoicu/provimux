@@ -126,7 +126,9 @@ type gatewayCreatedExecutor struct {
 
 func (e gatewayCreatedExecutor) Identifier() string { return e.provider }
 
-func (e gatewayCreatedExecutor) ExecuteStream(_ context.Context, auth *coreauth.Auth, _ coreexecutor.Request, _ coreexecutor.Options) (*coreexecutor.StreamResult, error) {
+func (e gatewayCreatedExecutor) ExecuteStream(ctx context.Context, auth *coreauth.Auth, _ coreexecutor.Request, _ coreexecutor.Options) (*coreexecutor.StreamResult, error) {
+	// Like a real executor's transport: the response comes from an upstream exchange.
+	coreexecutor.MarkUpstreamAttempt(ctx)
 	chunks := make(chan coreexecutor.StreamChunk, 2)
 	chunks <- coreexecutor.StreamChunk{Payload: []byte(fmt.Sprintf(`{"type":"response.created","response":{"id":"resp-%s"},"cpa_auth_kind":"apikey","cpa_auth_provider":"inner-gateway-provider","cpa_auth_host":"inner.gateway.example.test"}`, auth.ID))}
 	chunks <- coreexecutor.StreamChunk{Payload: []byte(fmt.Sprintf(`{"type":"response.completed","response":{"id":"resp-%s","output":[]}}`, auth.ID))}
