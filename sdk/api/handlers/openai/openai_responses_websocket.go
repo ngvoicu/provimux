@@ -1008,9 +1008,8 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		var lastAttemptedAuthID string
 		var attemptedUpstreamMode string
 		var selectedAuthObserved bool
-		var selectedAuthKind atomic.Value
-		var selectedAuthProvider atomic.Value
-		var selectedAuthHost atomic.Value
+		// answeredAuth holds this turn's credential statement (a logging.AuthStatement), set and read as one.
+		var answeredAuth atomic.Value
 		var preserveNativeOutput atomic.Bool
 		var pinnedAuthAttempted bool
 		var cliCtx context.Context
@@ -1024,9 +1023,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			lastAttemptedAuthID = pinnedAuthID
 			attemptedUpstreamMode = responsesWebsocketUpstreamModeUnknown
 			selectedAuthObserved = false
-			selectedAuthKind.Store("")
-			selectedAuthProvider.Store("")
-			selectedAuthHost.Store("")
+			answeredAuth.Store(logging.AuthStatement{})
 			nativeRequest := util.IsCodexResponsesLiteRequest(payload, c.Request.Header)
 			preserveNativeOutput.Store(false)
 			codexDuplexStream.Store(false)
@@ -1067,6 +1064,11 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 				cliCtx = cliproxyexecutor.WithRequiredUpstreamWebsocket(cliCtx)
 			}
 			cliCtx = handlers.WithExecutionSessionID(cliCtx, passthroughSessionID)
+			// The conductor publishes the statement of the credential whose upstream answered this turn, and withdraws it
+			// at each selection: response.created carries it, as response headers would.
+			cliCtx = handlers.WithAnsweredAuthCallback(cliCtx, func(kind, provider, host string) {
+				answeredAuth.Store(logging.AuthStatement{Kind: kind, Provider: provider, Host: host})
+			})
 			cliCtx = handlers.WithSelectedAuthIDCallback(cliCtx, func(authID string) {
 				preserveNativeOutput.Store(false)
 				codexDuplexStream.Store(false)
@@ -1082,9 +1084,6 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 				if !ok || selectedAuth == nil {
 					return
 				}
-				selectedAuthKind.Store(selectedAuth.AuthKind())
-				selectedAuthProvider.Store(selectedAuth.Provider)
-				selectedAuthHost.Store(selectedAuth.BaseURLHost())
 				attemptedUpstreamMode = upstreamModeForAuth(selectedAuth)
 				codexDuplexStream.Store(duplexInput != nil && attemptedUpstreamMode == responsesWebsocketUpstreamModeWS && strings.EqualFold(strings.TrimSpace(selectedAuth.Provider), "codex"))
 				preserveNativeOutput.Store(nativeRequest && strings.EqualFold(strings.TrimSpace(selectedAuth.Provider), "codex"))
@@ -1186,17 +1185,9 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 						return codexDuplexStream.Load() && !cliproxyexecutor.LocalWebsocketTurnExecuted(cliCtx)
 					},
 					toolCacheTurn: toolCacheTurn,
-					authKind: func() string {
-						kind, _ := selectedAuthKind.Load().(string)
-						return kind
-					},
-					authProvider: func() string {
-						provider, _ := selectedAuthProvider.Load().(string)
-						return provider
-					},
-					authHost: func() string {
-						host, _ := selectedAuthHost.Load().(string)
-						return host
+					authStatement: func() logging.AuthStatement {
+						statement, _ := answeredAuth.Load().(logging.AuthStatement)
+						return statement
 					},
 					suppressError:      replayPinnedAuthFailure,
 					onDownstreamCommit: func() { downstreamCommitted.Store(true) },

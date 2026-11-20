@@ -120,23 +120,23 @@ func TestCPAAuthKindHeaderNamesTheCredentialThatServedTheResponse(t *testing.T) 
 	engine := gin.New()
 	engine.Use(CPATraceIDMiddleware())
 	engine.GET("/oauth", func(c *gin.Context) {
-		SetGinCPAAuthKind(c, "oauth")
+		SetGinCPAAuthStatement(c, AuthStatement{Kind: "oauth"})
 		c.Status(http.StatusOK)
 	})
 	engine.GET("/fallback", func(c *gin.Context) {
 		// The first credential failed before anything was sent; the second one answered.
-		callback := GinCPAAuthKindCallback(c)
-		callback("oauth")
-		callback("apikey")
+		callback := GinCPAAuthStatementCallback(c)
+		callback("oauth", "", "")
+		callback("apikey", "", "")
 		c.Status(http.StatusOK)
 	})
 	engine.GET("/unknown", func(c *gin.Context) {
-		SetGinCPAAuthKind(c, "")
+		SetGinCPAAuthStatement(c, AuthStatement{})
 		c.Status(http.StatusOK)
 	})
 	engine.GET("/committed", func(c *gin.Context) {
 		c.Writer.WriteHeaderNow()
-		SetGinCPAAuthKind(c, "apikey")
+		SetGinCPAAuthStatement(c, AuthStatement{Kind: "apikey"})
 	})
 
 	for _, test := range []struct {
@@ -163,25 +163,23 @@ func TestCPAAuthProviderAndHostHeadersNameTheCredentialThatServedTheResponse(t *
 	engine := gin.New()
 	engine.Use(CPATraceIDMiddleware())
 	engine.GET("/key", func(c *gin.Context) {
-		SetGinCPAAuthProvider(c, "openai-compatible-lab", "api.example.test")
+		SetGinCPAAuthStatement(c, AuthStatement{Kind: "apikey", Provider: "openai-compatible-lab", Host: "api.example.test"})
 		c.Status(http.StatusOK)
 	})
 	engine.GET("/login", func(c *gin.Context) {
-		SetGinCPAAuthProvider(c, "devin", "")
+		SetGinCPAAuthStatement(c, AuthStatement{Kind: "oauth", Provider: "devin"})
 		c.Status(http.StatusOK)
 	})
 	engine.GET("/fallback", func(c *gin.Context) {
 		// An API key with a base URL failed before anything was sent; a login of another provider answered.
-		provider, host := GinCPAAuthProviderCallback(c), GinCPAAuthHostCallback(c)
-		provider("claude")
-		host("api.example.test")
-		provider("devin")
-		host("")
+		callback := GinCPAAuthStatementCallback(c)
+		callback("apikey", "claude", "api.example.test")
+		callback("oauth", "devin", "")
 		c.Status(http.StatusOK)
 	})
 	engine.GET("/committed", func(c *gin.Context) {
 		c.Writer.WriteHeaderNow()
-		SetGinCPAAuthProvider(c, "claude", "api.example.test")
+		SetGinCPAAuthStatement(c, AuthStatement{Kind: "apikey", Provider: "claude", Host: "api.example.test"})
 	})
 
 	for _, test := range []struct {
@@ -232,8 +230,7 @@ func TestCPAAuthProviderAndHostHeadersSkipInvalidValues(t *testing.T) {
 			engine.GET("/", func(c *gin.Context) {
 				SetGinRequestID(c, "1234abcd")
 				SetGinCPATraceID(c, "auth-index")
-				SetGinCPAAuthKind(c, "apikey")
-				SetGinCPAAuthProvider(c, test.provider, test.host)
+				SetGinCPAAuthStatement(c, AuthStatement{Kind: "apikey", Provider: test.provider, Host: test.host})
 				c.String(http.StatusOK, "fixture body")
 			})
 			// A real HTTP/1.1 server and client: the recorder would not show the client rejecting the response.

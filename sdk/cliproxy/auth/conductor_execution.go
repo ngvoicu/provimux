@@ -2258,27 +2258,20 @@ func publishSelectedAuthMetadata(meta map[string]any, auth *Auth) {
 	publishAnsweredAuthMetadata(meta, nil)
 }
 
-// publishAnsweredAuthMetadata names, through the kind, provider and host callbacks, the credential whose response
-// the client receives. It is called where a credential has answered (an execution returned a response, a stream
-// passed its bootstrap); a selection calls it with nil, so headers committed before an answer, and an error after
-// the last selection, name no credential.
+// publishAnsweredAuthMetadata publishes, in one call, the statement of the credential whose response the client
+// receives. It is called where a credential has answered (an execution returned a response, a stream passed its
+// bootstrap); a selection calls it with nil, so headers committed before an answer, and an error after the last
+// selection, name no credential.
 func publishAnsweredAuthMetadata(meta map[string]any, auth *Auth) {
 	if len(meta) == 0 {
 		return
 	}
-	var kind, provider, host string
-	if auth != nil {
-		kind, provider, host = auth.AuthKind(), auth.Provider, auth.BaseURLHost()
+	callback, ok := meta[cliproxyexecutor.AnsweredAuthCallbackMetadataKey].(func(kind, provider, host string))
+	if !ok || callback == nil {
+		return
 	}
-	if callback, ok := meta[cliproxyexecutor.SelectedAuthKindCallbackMetadataKey].(func(string)); ok && callback != nil {
-		callback(kind)
-	}
-	if callback, ok := meta[cliproxyexecutor.SelectedAuthProviderCallbackMetadataKey].(func(string)); ok && callback != nil {
-		callback(provider)
-	}
-	if callback, ok := meta[cliproxyexecutor.SelectedAuthHostCallbackMetadataKey].(func(string)); ok && callback != nil {
-		callback(host)
-	}
+	statement := auth.AuthStatement()
+	callback(statement.Kind, statement.Provider, statement.Host)
 }
 
 func (m *Manager) executorFor(provider string) ProviderExecutor {
