@@ -36,11 +36,22 @@ type responsesWebsocketForwardOptions struct {
 	// authKind returns the kind of the credential selected for this turn ("oauth" or "apikey"), named on
 	// response.created as cpa_auth_kind: a websocket has no per-turn response headers for X-CPA-AUTH-KIND.
 	authKind func() string
+	// authProvider and authHost return the provider and the API key base URL host ("" for a login or a key without
+	// one) of the same credential, named on response.created as cpa_auth_provider and cpa_auth_host.
+	authProvider func() string
+	authHost     func() string
 }
 
 // responsesWebsocketAuthKindField names, on a websocket turn's response.created event, the kind of credential serving
 // the turn: the websocket counterpart of the X-CPA-AUTH-KIND response header.
 const responsesWebsocketAuthKindField = "cpa_auth_kind"
+
+// responsesWebsocketAuthProviderField and responsesWebsocketAuthHostField are the websocket counterparts of the
+// X-CPA-AUTH-PROVIDER and X-CPA-AUTH-HOST response headers, set beside cpa_auth_kind.
+const (
+	responsesWebsocketAuthProviderField = "cpa_auth_provider"
+	responsesWebsocketAuthHostField     = "cpa_auth_host"
+)
 
 func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 	c *gin.Context,
@@ -242,6 +253,22 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 					if opts.authKind != nil {
 						if kind := opts.authKind(); kind != "" {
 							if named, errSet := ojson.SetBytes(payloads[i], responsesWebsocketAuthKindField, kind); errSet == nil {
+								payloads[i] = named
+							}
+						}
+					}
+					for _, origin := range []struct {
+						field string
+						value func() string
+					}{
+						{field: responsesWebsocketAuthProviderField, value: opts.authProvider},
+						{field: responsesWebsocketAuthHostField, value: opts.authHost},
+					} {
+						if origin.value == nil {
+							continue
+						}
+						if value := origin.value(); value != "" {
+							if named, errSet := ojson.SetBytes(payloads[i], origin.field, value); errSet == nil {
 								payloads[i] = named
 							}
 						}
