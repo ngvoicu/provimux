@@ -88,6 +88,7 @@ func (h *OpenAIAPIHandler) handleXAISpeech(c *gin.Context) {
 	c.Header("Content-Type", speechResponseContentType(format, upstreamHeaders.Get("Content-Type")))
 	handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
 	c.Writer.Header().Del("Content-Length")
+	handlers.ConfirmAnswer(c)
 	_, _ = c.Writer.Write(resp)
 	cliCancel(nil)
 }

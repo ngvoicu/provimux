@@ -317,6 +317,7 @@ func (h *GeminiAPIHandler) handleStreamGenerateContent(c *gin.Context, modelName
 			commitHeaders()
 
 			// Write first chunk
+			handlers.ConfirmAnswer(c)
 			if alt == "" {
 				_, _ = c.Writer.Write([]byte("data: "))
 				_, _ = c.Writer.Write(chunk)
@@ -360,6 +361,7 @@ func (h *GeminiAPIHandler) handleCountTokens(c *gin.Context, modelName string, r
 		return
 	}
 	handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
+	handlers.ConfirmAnswer(c)
 	_, _ = c.Writer.Write(resp)
 	cliCancel()
 }
@@ -386,6 +388,7 @@ func (h *GeminiAPIHandler) handleGenerateContent(c *gin.Context, modelName strin
 		return
 	}
 	handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
+	handlers.ConfirmAnswer(c)
 	_, _ = c.Writer.Write(resp)
 	cliCancel()
 }
