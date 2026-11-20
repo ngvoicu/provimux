@@ -381,3 +381,173 @@ upstream_base() {
   done
   echo "$base $base_commit"
 }
+
+# --- the README commit (design: .github/provimux/design/root-readme.md) -------------------
+# One commit of the layer, the README commit (trailer "Provimux-Readme: root"), replaces
+# upstream's root READMEs: README.md becomes Provimux's pointer, the translations are
+# deleted. The set of its paths, root and literal; guard.sh has its own copy (selftest).
+PMX_README_PATHS=(README.md README_CN.md README_JA.md)
+
+# in_readme_set NAME: NAME is a path of the set (whole name compared).
+in_readme_set() {
+  local p
+  for p in "${PMX_README_PATHS[@]}"; do [[ "$1" == "$p" ]] && return 0; done
+  return 1
+}
+
+# readme_commits RANGE GIT...: the commits of RANGE (A..B) whose trailer Provimux-Readme is
+# "root": full SHAs, oldest first, one per line. GIT... is the git command (git, or
+# git --git-dir=<repo>).
+readme_commits() {
+  local range=$1 c; shift
+  for c in $("$@" rev-list --reverse "$range"); do
+    if "$@" log -1 --format='%(trailers:key=Provimux-Readme,valueonly)' "$c" | sed 's/[[:space:]]*$//' | grep -qx 'root'; then
+      echo "$c"
+    fi
+  done
+}
+
+# readme_entry COMMIT NAME GIT...: "<mode> <type> <oid>" of the root entry NAME of COMMIT's
+# tree, or "" when there is none (NUL-delimited, whole names compared).
+readme_entry() {
+  local c=$1 name=$2 e; shift 2
+  while IFS= read -r -d '' e; do
+    [[ "${e#*$'\t'}" == "$name" ]] && { printf '%s\n' "${e%%$'\t'*}"; return 0; }
+  done < <("$@" ls-tree -z "$c")
+  return 0
+}
+
+# readme_changed A B GIT...: the paths that differ between the trees of commits A and B,
+# NUL-ended records (no renames, recursive).
+readme_changed() {
+  local a=$1 b=$2; shift 2
+  "$@" diff-tree -r --no-renames -z --name-only --no-commit-id "$a" "$b"
+}
+
+# readme_only_set A B GIT...: A and B differ in no path outside the set.
+readme_only_set() {
+  local a=$1 b=$2 f; shift 2
+  while IFS= read -r -d '' f; do
+    in_readme_set "$f" || return 1
+  done < <(readme_changed "$a" "$b" "$@")
+  return 0
+}
+
+# readme_split COMMIT GIT...: COMMIT's raw object split into $rn_dir/<sha>.author (its
+# author line) and $rn_dir/<sha>.msg (its message, every byte after the header).
+readme_split() {
+  local c=$1 n; shift
+  "$@" cat-file commit "$c" >"$rn_dir/$c.raw"
+  n="$(sed '/^$/q' "$rn_dir/$c.raw" | wc -c | tr -d ' ')"
+  tail -c +"$((n + 1))" "$rn_dir/$c.raw" >"$rn_dir/$c.msg"
+  sed '/^$/q' "$rn_dir/$c.raw" | grep '^author ' >"$rn_dir/$c.author" || true
+}
+
+# readme_normal OLD NEW OLD_TIP NEW_TIP GIT...: status 0 when NEW is OLD re-applied:
+#   1. OLD and NEW each have exactly one parent;
+#   2. their author lines and messages are byte for byte the same (the committer may differ);
+#   3. for every path of the set, NEW has what OLD has (mode and blob, or no entry in both);
+#   4. NEW differs from its parent in no path outside the set;
+#   5. for every path of the set, NEW_TIP has what OLD_TIP has.
+# Status 1 and the first failed condition on stderr otherwise.
+readme_normal() {
+  local o=$1 n=$2 ot=$3 nt=$4 c p rc=0; shift 4
+  local rn_dir
+  rn_dir="$(mktemp -d "${TMPDIR:-/tmp}/provimux-readme.XXXXXX")"
+  for c in "$o" "$n"; do
+    [[ "$("$@" rev-list --parents -n 1 "$c" | wc -w | tr -d ' ')" == 2 ]] ||
+      { echo "README rule, condition 1: ${c:0:12} does not have exactly one parent" >&2; rm -rf "${rn_dir:?}"; return 1; }
+  done
+  readme_split "$o" "$@"; readme_split "$n" "$@"
+  if ! command cmp -s "$rn_dir/$o.author" "$rn_dir/$n.author"; then
+    echo "README rule, condition 2: ${n:0:12} has another author line than ${o:0:12}" >&2; rc=1
+  elif ! command cmp -s "$rn_dir/$o.msg" "$rn_dir/$n.msg"; then
+    echo "README rule, condition 2: ${n:0:12} has another message than ${o:0:12}" >&2; rc=1
+  fi
+  rm -rf "${rn_dir:?}"
+  [[ $rc -eq 0 ]] || return 1
+  for p in "${PMX_README_PATHS[@]}"; do
+    [[ "$(readme_entry "$o" "$p" "$@")" == "$(readme_entry "$n" "$p" "$@")" ]] ||
+      { echo "README rule, condition 3: ${n:0:12} does not leave $p as ${o:0:12} does" >&2; return 1; }
+  done
+  readme_only_set "$n^" "$n" "$@" ||
+    { echo "README rule, condition 4: ${n:0:12} changes a path outside $(printf '%s ' "${PMX_README_PATHS[@]}")" >&2; return 1; }
+  for p in "${PMX_README_PATHS[@]}"; do
+    [[ "$(readme_entry "$ot" "$p" "$@")" == "$(readme_entry "$nt" "$p" "$@")" ]] ||
+      { echo "README rule, condition 5: the candidate's $p is not the old main's" >&2; return 1; }
+  done
+  return 0
+}
+
+# readme_one_sided SIDE RANGE GIT...: every commit of RANGE (A..B, oldest first) as a
+# range-diff header line with full SHAs: SIDE "<" (only in the old range, dropped) or ">"
+# (only in the new one), so the parsers of check.sh and publish.sh list it.
+readme_one_sided() {
+  local side=$1 range=$2 c i=0 none; shift 2
+  none="$(printf '%040d' 0 | tr 0 -)"
+  for c in $("$@" rev-list --reverse "$range"); do
+    i=$((i + 1))
+    if [[ "$side" == '<' ]]; then
+      printf '%s:  %s < -:  %s %s\n' "$i" "$c" "$none" "$("$@" log -1 --format=%s "$c")"
+    else
+      printf -- '-:  %s > %s:  %s %s\n' "$none" "$i" "$c" "$("$@" log -1 --format=%s "$c")"
+    fi
+  done
+}
+
+# readme_segment OLD_RANGE NEW_RANGE GIT...: the range-diff of one segment on stdout. An
+# empty range is never given to git range-diff (it refuses one): both empty, nothing;
+# one empty, the other's commits one-sided.
+readme_segment() {
+  local a=$1 b=$2 na nb; shift 2
+  na="$("$@" rev-list --count "$a")" nb="$("$@" rev-list --count "$b")"
+  if [[ "$na" == 0 && "$nb" == 0 ]]; then return 0
+  elif [[ "$na" == 0 ]]; then readme_one_sided '>' "$b" "$@"
+  elif [[ "$nb" == 0 ]]; then readme_one_sided '<' "$a" "$@"
+  else "$@" range-diff --no-color --no-notes "$a" "$b"
+  fi
+}
+
+# stack_range_diff OLD_BASE OLD_MAIN NEW_BASE CANDIDATE OUT GIT...: writes the stack's
+# range-diff to OUT and prints "<R> <R'>" (or nothing when not both sides have a README
+# commit). The only place the sync scripts run git range-diff.
+#   - no README commit on either side, or on one side only: one git range-diff of the
+#     whole ranges, as before (a README commit on one side only is "<" or ">" in it);
+#   - one on each side, R and R': the normal form (readme_normal) is required; OUT holds
+#     the range-diff of the segments below (<old base>..R^ against <new base>..R'^), the
+#     line "README  <R> -> <R'>  <subject>" (which no header pattern matches), and the
+#     segments above (R..<old main> against R'..<candidate>);
+#   - more than one on either side, a merge commit in a range, or segments that do not
+#     add up: OUT holds the whole-range range-diff.
+# Status 1, the reason on stderr, when the README rule is broken (OUT is still written).
+stack_range_diff() {
+  local ob=$1 om=$2 nb=$3 cand=$4 out=$5 ro rn no nn a b r rp; shift 5
+  ro="$(readme_commits "$ob..$om" "$@")" rn="$(readme_commits "$nb..$cand" "$@")"
+  no="$(grep -c . <<<"$ro" || true)" nn="$(grep -c . <<<"$rn" || true)"
+  if [[ "$no" -gt 1 || "$nn" -gt 1 ]]; then
+    readme_segment "$ob..$om" "$nb..$cand" "$@" >"$out"
+    echo "README rule: more than one README commit (old main: $no, candidate: $nn)" >&2; return 1
+  fi
+  if [[ "$no" == 0 || "$nn" == 0 ]]; then
+    "$@" range-diff --no-color --no-notes "$ob..$om" "$nb..$cand" >"$out"
+    return 0
+  fi
+  if [[ -n "$("$@" rev-list --merges "$ob..$om" "$nb..$cand")" ]]; then
+    readme_segment "$ob..$om" "$nb..$cand" "$@" >"$out"
+    echo "README rule: a range has a merge commit" >&2; return 1
+  fi
+  for rp in "$ob $om $ro" "$nb $cand $rn"; do
+    read -r a b r <<<"$rp"
+    if [[ $(( $("$@" rev-list --count "$a..$r^") + 1 + $("$@" rev-list --count "$r..$b") )) -ne "$("$@" rev-list --count "$a..$b")" ]]; then
+      readme_segment "$ob..$om" "$nb..$cand" "$@" >"$out"
+      echo "README rule: the segments around ${r:0:12} do not add up to ${a:0:12}..${b:0:12}" >&2; return 1
+    fi
+  done
+  {
+    readme_segment "$ob..$ro^" "$nb..$rn^" "$@"
+    printf 'README  %s -> %s  %s\n' "$ro" "$rn" "$("$@" log -1 --format=%s "$ro")"
+    readme_segment "$ro..$om" "$rn..$cand" "$@"
+  } >"$out"
+  readme_normal "$ro" "$rn" "$om" "$cand" "$@" || return 1
+  echo "$ro $rn"
+}

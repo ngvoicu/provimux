@@ -24,8 +24,10 @@
 #    release at the recorded commit, the old base tag too; the remote main is the
 #    recorded old main; v<base>-pmx.* does not exist yet.
 # 3. Verifies the candidate again here, in a temporary repository: the new base descends
-#    from the old base, the candidate from the new base, no merge commits; git range-diff
-#    of <old base>..<old main> against <new base>..<candidate>; the new workflow paths;
+#    from the old base, the candidate from the new base, no merge commits; the range-diff
+#    of <old base>..<old main> against <new base>..<candidate>, by segments around the
+#    README commit, which must be in normal form and be result.json's (stack_range_diff
+#    in common.sh; no flag accepts a README commit out of normal form); the new workflow paths;
 #    the guard of the owner's current main (the remote main, = the old main) with the
 #    expected base. Dropped or changed patches are refused unless named exactly with the
 #    --accept-* flags (commits: the old main's commit, 7 or more hex digits). A release
@@ -82,7 +84,7 @@ here="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=common.sh
 . "$here/common.sh"
 
-usage() { sed -n '2,79p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,81p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 die() { echo "publish: $*" >&2; exit 1; }
 log() { echo "==> $*" >&2; }
 
@@ -376,7 +378,12 @@ g merge-base --is-ancestor "$old_base_commit" "$upstream_commit" || die "$tag do
 g merge-base --is-ancestor "$upstream_commit" "$candidate" || die "the candidate is not built on $tag"
 [[ -z "$(g rev-list --merges "$upstream_commit..$candidate")" ]] || die "the candidate has merge commits above $tag"
 
-g range-diff --no-color --no-notes "$old_base_commit..$old_main" "$upstream_commit..$candidate" >"$work/range-diff.txt"
+# By segments around the README commit, which must be in normal form: no --accept-* flag
+# covers a README commit that is not (stack_range_diff in common.sh).
+readme_pair="$(stack_range_diff "$old_base_commit" "$old_main" "$upstream_commit" "$candidate" "$work/range-diff.txt" g 2>"$work/readme.err")" ||
+  die "the README commit: $(cat "$work/readme.err") (see $work/range-diff.txt)"
+[[ "$readme_pair" == "$(jq -r 'if .readme == null then "" else "\(.readme.old) \(.readme.new)" end' "$res")" ]] ||
+  die "result.json's README commit ($(jq -c '.readme' "$res")) is not this range-diff's ('$readme_pair')"
 : >"$work/dropped"; : >"$work/changed"; : >"$work/added"
 while IFS= read -r line; do
   p="$(sed -E 's/^ *([0-9]+|-+): +([0-9a-f]+|-+) ([=!<>]) +([0-9]+|-+): +([0-9a-f]+|-+) (.*)$/\3	\2	\5	\6/' <<<"$line")"
@@ -464,7 +471,8 @@ Provimux publish: CLIProxyAPI $tag ($upstream_commit)
   check run       https://github.com/$PMX_REPO/actions/runs/$run_id
   old main        $old_main (on $old_base_tag)
   candidate       $candidate ($(g rev-list --count "$upstream_commit..$candidate") commits on $tag)
-  range-diff      $n_same unchanged, $(wc -l <"$work/changed" | tr -d ' ') changed, $(wc -l <"$work/dropped" | tr -d ' ') dropped
+  range-diff      $n_same unchanged, $(wc -l <"$work/changed" | tr -d ' ') changed, $(wc -l <"$work/dropped" | tr -d ' ') dropped${readme_pair:+
+  root READMEs    ${readme_pair% *} -> ${readme_pair#* }}
   new workflows   $(wc -l <"$work/wf-new" | tr -d ' ')
   guard (here)    $guard_ok
   tests (check)   $(jq -r '.tests | "candidate \(.candidate.packages) packages, \(.candidate.passed) passed, \(.candidate.failed) failed; \(.new_failures | length) new failures; \(.flaky | length) flaky; \(.failing_on_tag_too | length) failing on the tag too"' "$res")
