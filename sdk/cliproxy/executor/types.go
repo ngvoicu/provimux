@@ -52,10 +52,11 @@ const (
 	SelectedAuthIndexMetadataKey = "selected_auth_index"
 	// SelectedAuthIndexCallbackMetadataKey carries an optional callback invoked with the selected auth index.
 	SelectedAuthIndexCallbackMetadataKey = "selected_auth_index_callback"
-	// AnsweredAuthCallbackMetadataKey carries an optional func(kind, provider, host string), invoked in one call with
-	// the statement of the credential whose upstream produced the response (its kind, "oauth" or "apikey"; its
-	// provider; the host of an API key's base URL, or ""), and with three empty values when a credential is selected
-	// and none has answered yet.
+	// AnsweredAuthCallbackMetadataKey carries an optional func(kind, provider, host string), called once per
+	// Manager.Execute, ExecuteCount or ExecuteStream call that returns a response, at that return: with the statement
+	// of the credential whose upstream produced the response (its kind, "oauth" or "apikey"; its provider; the host of
+	// an API key's base URL, or ""), or with three empty values when no upstream exchange produced it. It is not
+	// called at a selection, and not called when the call returns an error.
 	AnsweredAuthCallbackMetadataKey = "answered_auth_callback"
 	// FinalizedResponseFormatCallbackMetadataKey carries an optional callback invoked with the effective response_format after payload rules.
 	FinalizedResponseFormatCallbackMetadataKey = "finalized_response_format_callback"
