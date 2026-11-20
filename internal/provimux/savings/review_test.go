@@ -96,10 +96,20 @@ func TestReviewQueryOverlappingTheFirstSave(t *testing.T) {
 		}
 		got <- answer
 	}()
-	<-gated.atRead // the query copied pending and is about to read the day
-	env.round()    // the saver writes that pending record
+	<-gated.atRead // the query holds the lock and is about to read the day
+	saved := make(chan struct{})
+	go func() { env.round(); close(saved) }() // the saver waits for the query
+	select {
+	case <-saved:
+		t.Fatal("a round ran during a query")
+	case <-time.After(50 * time.Millisecond):
+	}
 	close(gated.resume)
 	during := <-got
+	<-saved
+	if after := env.query(t, "period=today"); after.Totals.Requests != 1 || sumRows(storedDay(t, store, today)).Req != 1 {
+		t.Fatalf("after the round: %d", after.Totals.Requests)
+	}
 	if during == nil || during.Totals.Requests != 1 || during.Totals.Tokens.Input.CacheRead != 1000 {
 		t.Fatalf("overlapping query: %+v", during.Totals)
 	}
@@ -212,10 +222,8 @@ func TestReviewProviderIsTheAccounts(t *testing.T) {
 		Provider: "claude", Model: "claude-opus-5-5", AuthType: "oauth", AuthID: "review-unregistered",
 		Detail: coreusage.Detail{InputTokens: 1, OutputTokens: 1},
 	})
-	r.mu.Lock()
-	defer r.mu.Unlock()
 	got := map[string]counters{}
-	for k, c := range r.days[today].pending {
+	for k, c := range (&testEnv{r: r}).waiting()[today].rows {
 		got[k.p+"/"+k.m] = *c
 	}
 	if c, ok := got["kimi/kimi-k2.6"]; !ok || c.In != 100 || c.Cr != 900 {
