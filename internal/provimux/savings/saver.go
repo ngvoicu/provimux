@@ -2,13 +2,13 @@ package savings
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"maps"
 	"reflect"
 	"slices"
 	"time"
 
+	"github.com/MoeForge/moego/base64"
 	"github.com/MoeForge/moego/json"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/kvstore"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
