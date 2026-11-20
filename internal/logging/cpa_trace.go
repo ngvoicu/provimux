@@ -47,16 +47,34 @@ type AuthStatement struct {
 	Host     string
 }
 
-// OnTheWire returns the statement as every transport sends it, response headers and websocket fields alike. The
-// kind is sent as it is. The provider and the host are sent only if both are plain printable ASCII (which is also a
-// valid header field value) and there is a provider; otherwise neither is, and a client falls back to the kind. A
-// value outside ASCII would be read differently by different clients (UTF-8 octets in a header, text in JSON), so
-// one credential would look like two services depending on the transport.
+// OnTheWire returns the statement as every transport sends it, response headers and websocket fields alike: whole,
+// or the zero statement. It is whole when the kind is "oauth" or "apikey", there is a provider, and the host is empty
+// or printable ASCII (Auth.AuthStatement gives an internationalised host in its IDNA form). The provider is sent byte
+// for byte, except that a byte outside printable ASCII, a space or "%" is written as "%" and two upper-case hex digits:
+// every built-in provider name goes out unchanged, and a header and a JSON field carry the same value. The kind is
+// never sent alone: a client reads a kind without a provider as an older proxy and guesses the credential.
 func (s AuthStatement) OnTheWire() AuthStatement {
-	if s.Provider == "" || !printableASCII(s.Provider) || !printableASCII(s.Host) {
-		return AuthStatement{Kind: s.Kind}
+	if (s.Kind != "oauth" && s.Kind != "apikey") || s.Provider == "" || !printableASCII(s.Host) {
+		return AuthStatement{}
 	}
-	return s
+	return AuthStatement{Kind: s.Kind, Provider: encodeProvider(s.Provider), Host: s.Host}
+}
+
+// encodeProvider writes each byte <= 0x20, >= 0x7F or "%" of a provider as "%" and two upper-case hex digits.
+func encodeProvider(provider string) string {
+	const hex = "0123456789ABCDEF"
+	var encoded strings.Builder
+	for i := 0; i < len(provider); i++ {
+		b := provider[i]
+		if b <= 0x20 || b >= 0x7f || b == '%' {
+			encoded.WriteByte('%')
+			encoded.WriteByte(hex[b>>4])
+			encoded.WriteByte(hex[b&0x0f])
+			continue
+		}
+		encoded.WriteByte(b)
+	}
+	return encoded.String()
 }
 
 func printableASCII(value string) bool {
