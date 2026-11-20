@@ -1089,12 +1089,18 @@ contains "  ... the tap issue, for <tag>-pmx.1" "$tmp/notify.out" "tap_title=hom
 
 echo "# provimux-release.yml: a failed tap-check opens the tap issue too"
 if inline report; then ok "report lines found in the workflow"; else bad "report lines found in the workflow"; fi
-rrep() { # rrep FAILED-JOB: the report step with that job failed; the gh issue commands in $stub/issue.log
+rrep() { # rrep FAILED-JOB [jobs-api-503]: the report step with that job failed (needs.tap-check.result
+  # follows it); with a second argument the jobs API answers 503. The gh issue commands in $stub/issue.log
   : >"$stub/issue.log"
-  jq -n --arg j "$1" '{jobs: [{name: "formula", conclusion: "success"}, {name: $j, conclusion: "failure"}]}' \
-    >"$stub/api/repos_test_provimux_actions_runs_66_attempts_1_jobs_per_page_100.json"
+  local jobs="$stub/api/repos_test_provimux_actions_runs_66_attempts_1_jobs_per_page_100.json" tcr=success
+  if [[ $# -gt 1 ]]; then
+    echo "HTTP 503" >"$jobs"
+  else
+    jq -n --arg j "$1" '{jobs: [{name: "formula", conclusion: "success"}, {name: $j, conclusion: "failure"}]}' >"$jobs"
+  fi
+  [[ "$1" != tap-check ]] || tcr=failure
   env PATH="$stub/bin:$PATH" STUB_API="$stub/api" GH_REPO=test/provimux TAG="v$TV" SHA="$pmx_sha" RUN_URL=https://example.invalid/run \
-    ATTEMPT=1 GITHUB_RUN_ID=66 bash "$tmp/report.sh" >"$tmp/rrep.out" 2>&1 && echo "exit 0" || echo "exit $?"
+    ATTEMPT=1 GITHUB_RUN_ID=66 TAP_CHECK_RESULT="$tcr" bash "$tmp/report.sh" >"$tmp/rrep.out" 2>&1 && echo "exit 0" || echo "exit $?"
 }
 expect "tap-check failed: the report step runs" "exit 0" "$(rrep tap-check)"
 contains "  ... the sync issue" "$stub/issue.log" "issue create -R test/provimux --title sync: v1.3.0 — release v$TV failed, owner needed"
@@ -1105,6 +1111,11 @@ contains "tap-check failed, the tap issue open: commented on" "$stub/issue.log" 
 lacks "  ... never retitled or closed" "$stub/issue.log" "issue edit 31"
 echo '[]' >"$stub/api/repos_test_provimux_issues_state_open_per_page_100.json"
 expect "another job failed: the report step runs" "exit 0" "$(rrep image-push)"
+lacks "  ... no tap issue" "$stub/issue.log" "homebrew tap:"
+expect "tap-check failed and the jobs API answers 503: the report step runs" "exit 0" "$(rrep tap-check 503)"
+contains "  ... the sync issue, without the job list" "$stub/issue.log" "issue create -R test/provimux --title sync: v1.3.0 — release v$TV failed, owner needed"
+contains "  ... and still the tap issue (from needs.tap-check.result)" "$stub/issue.log" "issue create -R test/provimux --title homebrew tap: v$TV needs the owner"
+expect "another job failed and the jobs API answers 503: the report step runs" "exit 0" "$(rrep image-push 503)"
 lacks "  ... no tap issue" "$stub/issue.log" "homebrew tap:"
 echo
 echo "$pass passed, $failed failed"
