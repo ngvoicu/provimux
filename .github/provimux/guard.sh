@@ -138,18 +138,28 @@ if [ -z "$first_layer" ]; then
 fi
 
 # --- 5. The README commit ------------------------------------------------------------
+# Every git read here is checked: a failure stops the guard (fatal), never an empty answer.
 in_readme_paths() { local p; for p in "${readme_paths[@]}"; do [ "$1" = "$p" ] && return 0; done; return 1; }
+fatal() { echo "::error::$*" >&2; echo "::error::$*"; exit 1; }
+rtmp=$(mktemp -d "${TMPDIR:-/tmp}/provimux-guard.XXXXXX")
+trap 'rm -rf "${rtmp:?}"' EXIT
+# root_records COMMIT FILE: COMMIT's root tree entries, NUL-ended "<mode> <type> <oid>\t<name>".
+root_records() { git ls-tree -z "$1^{tree}" >"$2" || fatal "Cannot read the tree of $1."; }
 # root_entry COMMIT NAME: "<mode> <type> <oid>" of the root entry NAME, or "".
 root_entry() {
   local e
+  root_records "$1" "$rtmp/entry"
   while IFS= read -r -d '' e; do
     [ "${e#*$'\t'}" = "$2" ] && { printf '%s\n' "${e%%$'\t'*}"; return 0; }
-  done < <(git ls-tree -z "$1")
+  done <"$rtmp/entry"
   return 0
 }
+list=$(git rev-list --reverse --topo-order "$base_commit..HEAD") || fatal "Cannot list $base..HEAD."
 readme_commits=''
-for c in $(git rev-list --reverse --topo-order "$base_commit..HEAD"); do
-  if git log -1 --format='%(trailers:key=Provimux-Readme,valueonly)' "$c" | sed 's/[[:space:]]*$//' | grep -qx 'root'; then
+for c in $list; do
+  t=$(git log -1 --format='%(trailers:key=Provimux-Readme,valueonly)' "$c") || fatal "Cannot read commit $c."
+  # shellcheck disable=SC2001 # a trailer value may span lines
+  if sed 's/[[:space:]]*$//' <<<"$t" | grep -qx 'root'; then
     readme_commits="$readme_commits $c"
   fi
 done
@@ -162,14 +172,33 @@ elif [ $# -eq 0 ]; then
 else
   rc=$1
   rs="$(short "$rc") (\"$(subject "$rc")\")"
-  git log -1 --format='%(trailers:key=Provimux-Layer,valueonly)' "$rc" | sed 's/[[:space:]]*$//' | grep -qx 'branding' ||
+  t=$(git log -1 --format='%(trailers:key=Provimux-Layer,valueonly)' "$rc") || fatal "Cannot read commit $rc."
+  # shellcheck disable=SC2001 # a trailer value may span lines
+  sed 's/[[:space:]]*$//' <<<"$t" | grep -qx 'branding' ||
     err "The README commit $rs has no 'Provimux-Layer: branding' trailer."
-  if [ "$(git rev-list --parents -n 1 "$rc" | wc -w | tr -d ' ')" -ne 2 ]; then
+  pl=$(git rev-list --parents -n 1 "$rc") || fatal "Cannot read commit $rc."
+  if [ "$(wc -w <<<"$pl" | tr -d ' ')" -ne 2 ]; then
     err "The README commit $rs does not have exactly one parent."
   else
-    while IFS= read -r -d '' f; do
-      in_readme_paths "$f" || err "The README commit $rs changes $(printf '%s' "${f//$'\n'/?}"), which is not one of: ${readme_paths[*]}."
-    done < <(git diff-tree -r --no-renames -z --name-only --no-commit-id "$rc^" "$rc")
+    # The root entries outside the set (name, mode, type, object id: a subtree's id covers
+    # everything under it, an empty directory included) are its parent's, byte for byte;
+    # and neither has a directory at a path of the set.
+    for w in parent commit; do
+      if [ "$w" = parent ]; then root_records "$rc^" "$rtmp/$w"; else root_records "$rc" "$rtmp/$w"; fi
+      : >"$rtmp/$w.out"
+      while IFS= read -r -d '' e; do
+        name="${e#*$'\t'}"
+        if in_readme_paths "$name"; then
+          case "${e%%$'\t'*}" in *" tree "*) err "The README commit $rs: the $w has a directory at $name." ;; esac
+        else
+          printf '%s\0' "$e" >>"$rtmp/$w.out"
+        fi
+      done <"$rtmp/$w"
+    done
+    if ! cmp -s "$rtmp/parent.out" "$rtmp/commit.out"; then
+      changed=$( { tr '\0' '\n' <"$rtmp/parent.out"; tr '\0' '\n' <"$rtmp/commit.out"; } | sort | uniq -u | sed 's/^[^	]*	//' | sort -u | paste -sd ',' - | sed 's/,/, /g')
+      err "The README commit $rs changes the root entries $changed, which are not among: ${readme_paths[*]}."
+    fi
   fi
   for p in "${readme_paths[@]}"; do
     e=$(root_entry "$rc" "$p")
@@ -182,6 +211,7 @@ else
   # At HEAD: no other root README, of any case (a root README upstream adds, or a later
   # commit brings back).
   n=0
+  root_records HEAD "$rtmp/head"
   while IFS= read -r -d '' e; do
     name="${e#*$'\t'}"
     # shellcheck disable=SC2018,SC2019 # ASCII only, on purpose
@@ -193,7 +223,7 @@ else
     else
       case "${e%%$'\t'*}" in "100644 blob "*) ;; *) err "README.md at HEAD must be a regular file (100644 blob), not '${e%%$'\t'*}'." ;; esac
     fi
-  done < <(git ls-tree -z HEAD)
+  done <"$rtmp/head"
   [ "$n" -gt 0 ] || err "HEAD has no root README.md."
 fi
 
