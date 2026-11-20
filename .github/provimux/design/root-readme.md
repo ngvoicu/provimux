@@ -4,6 +4,12 @@ Design only. It says how Provimux replaces upstream's root `README.md`, `README_
 short pointer of its own, and how the sync (`SYNC.md`) still publishes every upstream release with no step by the
 owner. provimux-ui has the same rule; its file (`.github/provimux/design/root-readme.md` there) gives what differs.
 
+**Scope.** The goal is that no referral code reaches a user of Provimux: not in the README GitHub shows, not in
+the root READMEs of the tree, not in a release archive, not in the console's pages. This design covers the root
+READMEs and the release archives. It does not rewrite other upstream files: the sponsor images under `assets/`
+stay (they carry no link, and nothing shows them once the root READMEs are gone), and so do the upstream source
+files of provimux-ui whose sponsor links its layer already hides, so that syncs do not conflict on them.
+
 ## Why a rule is needed
 
 Checked on 2026-11-20 (`main` = `ff02809c`, on `v8.0.79`; git 2.55.0; a scratch repository for the git behaviour):
@@ -62,8 +68,29 @@ MIT licensed, like CLIProxyAPI. [LICENSE](LICENSE) keeps CLIProxyAPI's copyright
 To change the pointer later, add a layer commit on top that edits `README.md`. It is an ordinary layer commit: the
 README commit below it always leaves the same `README.md`, so it rebases cleanly and range-diff calls it `=`.
 
-**Before it lands**, one layer commit changes `provimux-release.yml`: the four archive steps stop copying and
-packing `README_CN.md`. They keep `README.md` (then the pointer) and `README_PROVIMUX.md`.
+## Release archives
+
+**Before the README commit lands**, one layer commit changes `provimux-release.yml`: in each of the four steps
+that fill an archive, `README_CN.md` leaves the `cp` line and the `tar` line (the Windows zip packs the whole
+directory, so the `cp` line decides it). Nothing else of the workflow changes. Every archive, all ten, then holds
+exactly:
+
+| File | What it is |
+|---|---|
+| `provimux` (`provimux.exe` on Windows) | the binary |
+| `LICENSE` | the tree's, with CLIProxyAPI's copyright notices and Provimux's line |
+| `README.md` | the tree's root `README.md`: the pointer, once the README commit is on `main` |
+| `README_PROVIMUX.md` | the tree's `.github/README.md`, Provimux's README |
+| `config.example.yaml` | the tree's, upstream's example config |
+
+No translation, and no file with a referral link (checked today for `LICENSE`, `.github/README.md` and
+`config.example.yaml`). Inside an archive the pointer's link to `.github/README.md` leads nowhere, which is why
+the pointer names `README_PROVIMUX.md`; its other links are absolute, or to `LICENSE`, which is next to it.
+
+The order matters one way only. With the workflow changed and the README commit not yet on `main` (the time of
+the review), an archive still carries upstream's `README.md`, as every archive does today. The other order, the
+README commit first, breaks the release build at `cp`. A release cut from a `main` that has both is the first one
+with no referral link in its archives.
 
 ## The normal form
 
@@ -270,8 +297,10 @@ Provimux stack. So, before the README commit reaches `main`:
    tree, a layer commit. `check.sh prepare` for the real `v8.0.74`. Expected: status `test`. Keep the plain
    whole-range `git range-diff` of that pair in the log: it shows what today's rule would have refused.
 3. **The archives.** A dry run of `provimux-release.yml` (`gh workflow run provimux-release.yml -R ngvoicu/provimux
-   --ref <a temporary branch with the work's commits>`): every build job passes, and an archive lists `provimux`,
-   `LICENSE`, `README.md` (the pointer), `README_PROVIMUX.md`, `config.example.yaml`. Delete the branch after.
+   --ref <a temporary branch with all the work's commits, the README commit included>`): every build job passes.
+   For one tar archive and the Windows zip, from the run's artifacts: the file list is exactly the five of
+   "Release archives"; `README.md` is the pointer byte for byte; `grep -r -I -l -E '[?&](aff|utm_source|track_id)='`
+   over the unpacked files lists nothing. Delete the branch after.
 4. **The first real sync** after the work is on `main`: the issue of the next upstream release shows the `README`
    line when upstream changed a README, "Decisions needed: none", and it publishes by itself.
 
@@ -300,7 +329,7 @@ Provimux stack. So, before the README commit reaches `main`:
 
 Layer commits on top of `main`, each with the trailer, in two pushes with the review between them:
 
-1. `provimux-release.yml`: the archives without `README_CN.md`.
+1. `provimux-release.yml`: the archives without `README_CN.md` ("Release archives").
 2. The rule: `common.sh`, `check.sh`, `publish.sh`, `guard.sh`, `report.sh` (one line for the `readme` key),
    `selftest.sh`, `SYNC.md`. With no README commit on `main`, every script behaves as before.
 
@@ -322,12 +351,9 @@ Layer commits on top of `main`, each with the trailer, in two pushes with the re
    paths of the set.
 7. The set is the same in `guard.sh` and `common.sh`, and the guard runs on git objects only.
 8. Empty segments: the README commit first above the base, and at the tip.
-9. No workflow file of the check or the publish changed; `provimux-release.yml` changed only in the four archive
-   steps.
+9. No workflow file of the check or the publish changed; `provimux-release.yml` changed only in the `cp` and `tar`
+   lines of the four archive steps, and the dry run's archives hold exactly the five files of "Release archives".
 10. The README commit's diff: the three paths, the pointer above byte for byte, both trailers.
 11. After the work: `git ls-tree --name-only main | grep -i '^readme'` prints `README.md` only; `git grep -I -l -E
     '[?&]aff='` on `main` lists no file (today it lists the three root READMEs and nothing else); the rehearsal's
     results are in the task's log.
-
-Not covered by this rule, and left as they are: the sponsor images under `assets/` (no link, no code), which
-upstream's README used.
