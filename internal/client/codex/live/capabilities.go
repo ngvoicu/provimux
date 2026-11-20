@@ -132,8 +132,6 @@ func (h *Handler) HandleHangup(c *gin.Context) {
 		return
 	}
 	logging.SetGinCPATraceID(c, selected.EnsureIndex())
-	logging.SetGinCPAAuthKind(c, selected.AuthKind())
-	logging.SetGinCPAAuthProvider(c, selected.Provider, selected.BaseURLHost())
 
 	body, errRead := readBody(c.Request.Body)
 	if errRead != nil {
@@ -204,6 +202,9 @@ func (h *Handler) HandleHangup(c *gin.Context) {
 	if contentType := response.Header.Get("Content-Type"); contentType != "" {
 		c.Header("Content-Type", contentType)
 	}
+	// The upstream answered: name the credential whose response this is.
+	logging.SetGinCPAAuthKind(c, selected.AuthKind())
+	logging.SetGinCPAAuthProvider(c, selected.Provider, selected.BaseURLHost())
 	copyRealtimeHandshakeHeaders(c.Writer.Header(), response.Header)
 	c.Status(response.StatusCode)
 	if _, errWrite := c.Writer.Write(responseBody); errWrite != nil {

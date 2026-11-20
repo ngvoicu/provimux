@@ -1551,6 +1551,7 @@ func (m *Manager) tryAntigravityCreditsExecute(ctx context.Context, req cliproxy
 			m.MarkResult(creditsCtx, result)
 			attemptAliasResult := resolveAttemptAliasResult(routing, c.auth, routeModel, upstreamModel, aliasResult)
 			rewriteForceMappedResponse(&resp, attemptAliasResult)
+			publishAnsweredAuthMetadata(creditsOpts.Metadata, c.auth)
 			return resp, true, nil
 		}
 	}

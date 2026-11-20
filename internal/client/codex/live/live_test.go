@@ -1062,7 +1062,7 @@ func TestHandleSidebandDialErrorPreservesBodyReturnedWithReadError(t *testing.T)
 		Body:       &errorResponseBody{payload: []byte(upstreamError)},
 	}
 
-	responseBody := handleSidebandDialError(c, ctx, &config.Config{SDKConfig: config.SDKConfig{RequestLog: true}}, response, errors.New("websocket: bad handshake"))
+	responseBody := handleSidebandDialError(c, ctx, &config.Config{SDKConfig: config.SDKConfig{RequestLog: true}}, nil, response, errors.New("websocket: bad handshake"))
 	if recorder.Code != http.StatusUnauthorized || recorder.Body.String() != upstreamError || string(responseBody) != upstreamError {
 		t.Fatalf("forwarded response = status %d body %q returned %q, want original upstream 401", recorder.Code, recorder.Body.String(), responseBody)
 	}
@@ -1086,7 +1086,7 @@ func TestHandleSidebandDialErrorDoesNotForwardNonUnauthorizedBody(t *testing.T) 
 		Body:       io.NopCloser(strings.NewReader(upstreamError)),
 	}
 
-	responseBody := handleSidebandDialError(c, ctx, &config.Config{SDKConfig: config.SDKConfig{RequestLog: true}}, response, errors.New("websocket: bad handshake"))
+	responseBody := handleSidebandDialError(c, ctx, &config.Config{SDKConfig: config.SDKConfig{RequestLog: true}}, nil, response, errors.New("websocket: bad handshake"))
 	if recorder.Code != http.StatusBadGateway || len(responseBody) != 0 {
 		t.Fatalf("response = status %d returned %q, want generic 502", recorder.Code, responseBody)
 	}
