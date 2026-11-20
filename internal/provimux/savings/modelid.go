@@ -37,13 +37,19 @@ func normalizedCandidates(model string) []string {
 	if i := strings.LastIndexByte(n, '/'); i >= 0 {
 		n = n[i+1:]
 	}
-	n = withoutDate(n)
 	maker := makerOf(n)
 	if maker == "" {
 		return nil
 	}
-	names := []string{n}
-	for current, removed := n, 0; removed < 2; removed++ {
+	// A dated snapshot is a product of its own, often at another price (gpt-4o-2024-05-13 is not
+	// gpt-4o): the maker-qualified id with its date is tried first, the forms without it after.
+	var names []string
+	if dateless := withoutDate(n); dateless != n {
+		names = append(names, n)
+		n = dateless
+	}
+	names = append(names, n)
+	for current, removed := n, 0; removed < 2; removed++ { // effort suffixes of the form without a date
 		next, ok := withoutEffort(current)
 		if !ok {
 			break
