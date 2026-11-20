@@ -250,6 +250,7 @@ All in new `provimux_*_test.go` files or in the new package, so no upstream test
 | the list follows the store in use (T-124 finding 7) | A has the list copy, the path moves to a populated B without one: the idle round saves it in B, a second idle round and the flush write nothing, a restart on B prices its history as before |
 | `first_day` before the day (T-124 finding 14) | a late record for yesterday while `meta` cannot be written: yesterday is not written and waits; once `meta` can be written, `first_day` moves and the day is written; a fresh recorder gives the same count for `all` and `7d` |
 | folded keys leave no ids (T-124 finding 15) | 2,000 regular keys, then 50 that fold: the day keeps exactly 2,000 ids, each with its row |
+| `persistent` follows only the days (T-127 7a) | one failed idle read of the list copy, then healthy rounds and a flush: `persistent` true with no day write; a newer list's write rejected, then saved by the next idle round: `persistent` true throughout, the day byte-identical; each list streak logs once, never as a day failure; a rejected day write still makes it false, the next good one true |
 | store off, then on | off: no write, `persistent` false, floating, the process's ids; on: the answer adds the deltas to the file with the file's ids; the round writes them and forgets them |
 
 ### `internal/provimux/savings/query_test.go`
