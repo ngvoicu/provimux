@@ -11,6 +11,7 @@ import (
 	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
@@ -34,8 +35,10 @@ func TestResponsesWebsocketAuthProviderSkipsInvalidValues(t *testing.T) {
 		{name: "host without provider", host: "api.example.test"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			payload := setResponsesWebsocketAuthProvider([]byte(`{"type":"response.created","response":{"id":"resp-1"}}`),
-				func() string { return test.provider }, func() string { return test.host })
+			payload := setResponsesWebsocketAuthStatement([]byte(`{"type":"response.created","response":{"id":"resp-1"}}`),
+				func() logging.AuthStatement {
+					return logging.AuthStatement{Kind: "apikey", Provider: test.provider, Host: test.host}
+				})
 			var event map[string]any
 			if errDecode := json.Unmarshal(payload, &event); errDecode != nil {
 				t.Fatalf("response.created is not valid JSON: %v (%q)", errDecode, payload)
