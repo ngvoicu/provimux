@@ -372,7 +372,7 @@ The check never builds a base that already has a `v<base>-pmx.*` tag, so later r
 
    ```sh
    sha=<the main commit that passed>
-   [ "$(git ls-remote provimux refs/heads/main | cut -f1)" = "$sha" ] && git push provimux "$sha:refs/tags/v<base>-pmx.2"
+   [ "$(git ls-remote provimux refs/heads/main | cut -f1)" = "$sha" ] && git push provimux "${sha}:refs/tags/v<base>-pmx.2"
    ```
 4. Authorize it (the release run waits up to 10 minutes for this; later, rerun the release run):
 
