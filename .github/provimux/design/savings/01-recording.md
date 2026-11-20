@@ -155,6 +155,7 @@ Consequences:
 | `server.kv-store.disabled: true` (`internal/config/config_types.go:483-490`), or home mode | the deltas accumulate in memory, bounded per day by the row limit (beyond it new combinations fold into `~other`) and to 400 days (the oldest dropped first, logged once). The endpoint answers from them with `recording.persistent: false`, every amount `current`. **They are lost on restart** |
 | the store cannot be opened (`CurrentKVClient` returns an error) | the same, retried every round; when it opens, the deltas are added to what the store holds and written |
 | a read or a write fails (disk full) | the deltas stay in memory and are retried every round; `recording.persistent` is false until a round writes every day it has; logged once per failure streak |
+| only the price list copy cannot be read (an idle round) or written | the copy is retried every round; `recording.persistent` is not touched, since it says only whether the days reach the store; logged once per streak of its own, and once when it succeeds again (T-127 7a) |
 | the store is switched off at run time (config reload, `sdk/cliproxy/kv_store.go:18-22`) | the reload flushes first (`provimuxFlushSavings()`); from then on as the first row |
 | `server.kv-store.path` changes at run time (config reload) | nothing special. Before the reload changes the store, `applyKVStoreConfig` flushes to the store in use (`provimuxFlushSavings()`), so what was recorded before the switch normally lands in the old store. Whatever is not written by then (that flush failed or timed out, or a record arrived between the flush and the switch) is written to the store in use at the next round: **up to one save interval of usage made just before a switch can land in the new store**. Nothing is lost and nothing is counted twice; the old store is not touched again. Each store's days are read from that store, so its history is extended, never replaced, and its row limit is its own |
 | a day's value cannot be decoded | it is not overwritten: the day is skipped by the saver and by reads, an error is logged once per day with the key, no value. Its deltas are kept in memory (bounded as above) |
@@ -204,6 +205,12 @@ Why a secret and not a plain SHA-256: the page is the proof the owner will show,
 Why the deltas are keyed by the key itself: an id can only be made with the secret of the store it is written to, and that store may not be reachable when the record arrives, or may change before the write. Keeping the key in memory until the write (at most 10 s with the store on) means every id that is ever stored was made with that store's secret, also after a switch of `server.kv-store.path`. A query reads `meta` itself (it never writes it), so the ids it shows for deltas are the ones the round then writes. Without a store the process's own secret is used for the ids it shows.
 
 ## 8. Corrections from the reviews
+
+### T-130 (after the fourth review, T-127)
+
+| Note of T-127 | Now |
+|---|---|
+| 7a. One failed idle read of the list copy (or a rejected write of it) left `recording.persistent` false until the next day write, though the days were safely stored | the list copy's errors are tracked apart (`listFailed`); `persistent` follows only the reads and writes of the days |
 
 ### T-125 (after the third review, T-124)
 
