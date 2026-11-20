@@ -370,8 +370,7 @@ func TestFilters(t *testing.T) {
 func TestFoldedDaysFollowFilters(t *testing.T) {
 	env := newTestEnv(t, nil)
 	env.r.mu.Lock()
-	st := env.r.dayLocked(today)
-	st.rows.regular = maxRows // as if the day were full
+	env.r.deltas[today] = &deltaDay{rows: map[pendingKey]*counters{}, regular: maxRows} // as if the day were full
 	env.r.mu.Unlock()
 	env.record(claudeRecord("model-x", "", 1, 0, 0, 1))
 	if a := env.query(t, "period=today"); a.Recording.FoldedDays != 1 {
@@ -429,7 +428,11 @@ func TestTheModelList(t *testing.T) {
 }
 
 // refreshCache makes the recorder take the current test list, as a saver round would.
-func (e *testEnv) refreshCache() { e.r.refreshPrices() }
+func (e *testEnv) refreshCache() {
+	e.r.mu.Lock()
+	e.r.refreshPrices()
+	e.r.mu.Unlock()
+}
 
 func TestFloating(t *testing.T) {
 	store := openTestStore(t, "")
@@ -488,9 +491,6 @@ func TestAKeysTail(t *testing.T) {
 	d.keys[id] = "OLD1"
 	data, _ := d.encode("2026-11-17")
 	_, _ = store.inner.KVSet(context.Background(), dayKey("2026-11-17"), data, kvstore.KVSetOptions{})
-	env.r.mu.Lock()
-	delete(env.r.days, "2026-11-17")
-	env.r.mu.Unlock()
 	env.record(claudeRecord("claude-opus-5-5", key, 1, 0, 0, 1))
 	a := env.query(t, "period=7d&group=key")
 	if k := a.Breakdowns[0].Rows[0].Key; k.ID != id || k.Tail == nil || *k.Tail != "9Zq1" || k.Name != nil {
