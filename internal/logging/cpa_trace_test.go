@@ -208,9 +208,10 @@ func TestCPAAuthProviderAndHostHeadersNameTheCredentialThatServedTheResponse(t *
 	}
 }
 
-// A provider or host that is not a valid header field value is not written, and without a provider no host is: an
-// HTTP/1.1 client otherwise rejects the whole response. The kind and the trace ID are unaffected.
-func TestCPAAuthProviderAndHostHeadersSkipInvalidValues(t *testing.T) {
+// The provider and the host are sent only as plain printable ASCII, both or neither: an HTTP/1.1 client would reject
+// the whole response for a control character, and read a non-ASCII host differently from the websocket's JSON. The
+// kind and the trace ID are sent either way.
+func TestCPAAuthProviderAndHostHeadersAreASCIIOrAbsent(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	for _, test := range []struct {
 		name         string
@@ -221,7 +222,10 @@ func TestCPAAuthProviderAndHostHeadersSkipInvalidValues(t *testing.T) {
 	}{
 		{name: "control character in the provider", provider: "openai-compatible-study\x7fteam", host: "api.example.test"},
 		{name: "line break in the provider", provider: "claude\r\nX-Injected: 1", host: "api.example.test"},
-		{name: "control character in the host", provider: "openai-compatible-lab", host: "api.example\x01.test", wantProvider: "openai-compatible-lab"},
+		{name: "control character in the host", provider: "openai-compatible-lab", host: "api.example\x01.test"},
+		{name: "internationalized host", provider: "claude", host: "bücher.example"},
+		{name: "provider outside ASCII", provider: "openai-compatible-büro", host: "api.example.test"},
+		{name: "login without a host", provider: "devin", wantProvider: "devin"},
 		{name: "valid values", provider: "openai-compatible-lab", host: "api.example.test", wantProvider: "openai-compatible-lab", wantHost: "api.example.test"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
