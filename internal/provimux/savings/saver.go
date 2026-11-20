@@ -89,6 +89,46 @@ func (r *recorder) refreshPrices() {
 	r.mu.Unlock()
 }
 
+// refreshKept takes the list as the catalog keeps it now, without asking for a download, so a list
+// that arrived after the last round is used and saved.
+func (r *recorder) refreshKept() {
+	list, fetchedAt, remote := r.opts.openRouterKept()
+	r.mu.Lock()
+	r.remote = remote
+	if list != nil && (r.downloaded == nil || fetchedAt.After(r.downloadedAt)) {
+		r.downloaded, r.downloadedAt = list, fetchedAt
+	}
+	r.mu.Unlock()
+}
+
+// bindLocked binds the in-memory state to the store it describes. On a switch to another store
+// (server.kv-store.path changed), what memory held as stored belongs to the old store: it is dropped,
+// and each day is read from the new store before its next write. Records not yet written stay in
+// pending and go to the new store. Clean stops and config reloads flush to the old store first
+// (provimuxFlushSavings in sdk/cliproxy). A store that is off keeps what memory holds.
+func (r *recorder) bindLocked(store localStore) {
+	if store == nil || store == r.bound {
+		return
+	}
+	if r.bound != nil {
+		now := r.opts.now().In(r.location())
+		_, offset := now.Zone()
+		for day, st := range r.days {
+			if st.dirty {
+				log.Warnf("savings: %s was not written before the local store changed", dayKey(day))
+			}
+			st.rows = newDayRows(r.location().String(), offset)
+			st.loaded, st.dirty, st.broken = false, false, false
+			st.version++
+		}
+		r.metaKnown, r.meta, r.metaOK = false, metaValue{}, false
+		r.saved, r.savedAt, r.savedKnown = nil, time.Time{}, false
+		r.wroteOnce, r.lastWriteOK, r.lastSavedAt = false, false, time.Time{}
+		r.generation++
+	}
+	r.bound = store
+}
+
 // bookLocked is the prices in use: the list with the later fetched_at of the downloaded and the saved
 // copy, and the table.
 func (r *recorder) bookLocked() *priceBook {
@@ -126,7 +166,9 @@ func (r *recorder) saveRound(ctx context.Context) {
 		}
 	}
 	r.mu.Unlock()
+	r.refreshKept()
 	if len(work) == 0 {
+		r.saveArrivedList(ctx)
 		r.evict()
 		return
 	}
@@ -146,6 +188,7 @@ func (r *recorder) saveRound(ctx context.Context) {
 	}
 	r.mu.Lock()
 	r.storeWasOn = true
+	r.bindLocked(store)
 	r.mu.Unlock()
 	if !r.ensureMeta(ctx, store, work[0]) {
 		return
@@ -156,6 +199,50 @@ func (r *recorder) saveRound(ctx context.Context) {
 	r.moveFirstDay(ctx, store, work[0])
 	r.saveListCopy(ctx, store)
 	r.evict()
+}
+
+// saveArrivedList saves, in a round with no day to write, a downloaded list that is newer than the
+// saved copy: the first download often completes after the round that asked for it. No store call
+// unless there is such a list.
+func (r *recorder) saveArrivedList(ctx context.Context) {
+	r.mu.Lock()
+	pending := r.downloaded != nil && (!r.savedKnown || r.saved == nil || r.downloadedAt.After(r.savedAt))
+	r.mu.Unlock()
+	if !pending {
+		return
+	}
+	store, errStore := r.opts.store()
+	if errStore != nil || store == nil {
+		return
+	}
+	r.mu.Lock()
+	r.bindLocked(store)
+	known := r.savedKnown
+	r.mu.Unlock()
+	if !known {
+		data, found, errGet := store.KVGet(ctx, openRouterListKey)
+		if errGet != nil {
+			r.failed(errGet)
+			return
+		}
+		var saved map[string]registry.ProvimuxOpenRouterPrice
+		var savedAt time.Time
+		if found {
+			var errList error
+			if saved, savedAt, errList = decodeListCopy(data); errList != nil {
+				saved = nil
+			}
+		}
+		r.mu.Lock()
+		if r.bound == store {
+			if saved != nil {
+				r.saved, r.savedAt = saved, savedAt
+			}
+			r.savedKnown = true
+		}
+		r.mu.Unlock()
+	}
+	r.saveListCopy(ctx, store)
 }
 
 // ensureMeta reads meta (and the saved list copy) the first time the saver reaches a store; on a new
@@ -207,6 +294,9 @@ func (r *recorder) ensureMeta(ctx context.Context, store localStore, firstDay st
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.bound != store {
+		return false
+	}
 	r.metaKnown = true
 	if errMeta == nil {
 		r.meta, r.secret, r.metaOK = meta, secret, true
@@ -259,6 +349,10 @@ func (r *recorder) saveDay(ctx context.Context, store localStore, day string) {
 			}
 		}
 		r.mu.Lock()
+		if r.bound != store || r.days[day] != st {
+			r.mu.Unlock()
+			return
+		}
 		if loaded != nil {
 			st.rows = loaded
 		}
@@ -268,6 +362,10 @@ func (r *recorder) saveDay(ctx context.Context, store localStore, day string) {
 
 	// 2. Under the mutex: pending into rows by key id, prices for rows without one, a copy.
 	r.mu.Lock()
+	if r.bound != store || !st.loaded {
+		r.mu.Unlock()
+		return
+	}
 	st.rows.mergePending(st.pending, r.secret)
 	st.pending = map[pendingKey]*counters{}
 	st.pendingRegular = 0
@@ -293,6 +391,7 @@ func (r *recorder) saveDay(ctx context.Context, store localStore, day string) {
 		st.dirty = false
 	}
 	r.wroteOnce, r.lastWriteOK, r.lastSavedAt = true, true, r.opts.now()
+	r.generation++ // a query that read around this write reads again
 	r.mu.Unlock()
 }
 
@@ -338,7 +437,9 @@ func (r *recorder) saveListCopy(ctx context.Context, store localStore) {
 		return
 	}
 	r.mu.Lock()
-	r.saved, r.savedAt = maps.Clone(list), fetchedAt
+	if r.bound == store {
+		r.saved, r.savedAt, r.savedKnown = maps.Clone(list), fetchedAt, true
+	}
 	r.mu.Unlock()
 }
 
