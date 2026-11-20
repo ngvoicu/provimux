@@ -259,38 +259,49 @@ rgit() {
 # nothing is touched:
 #   - the old main has exactly one README commit R and the stop is at it (REBASE_HEAD);
 #   - it is the first stop of this rebase (at most one is resolved);
-#   - R has one parent and changes only paths of the set;
+#   - R has one parent and changes no root entry outside the set (readme_outside);
 #   - every unmerged path, and every path the index holds differently from HEAD, is a
-#     path of the set (NUL-delimited, whole names compared).
+#     path of the set (NUL-delimited, whole names compared);
+#   - neither HEAD nor R has a directory at a path of the set (its files would be
+#     replaced or removed with it).
 # Each path of the set is then R's (git checkout R -- path), or removed when R has none;
 # no path may stay unmerged and the work tree must match the index. A second stop is a
-# failure. Sets readme_stop to R and lists the paths that conflicted in
-# $out/readme-conflicts.txt.
+# failure, and so is any git read that fails. Sets readme_stop to R and lists the paths
+# that conflicted in $out/readme-conflicts.txt.
 readme_resolve() {
-  local wt=$1 r stop f p
+  local wt=$1 r stop pl
   [[ -z "$readme_stop" ]] || return 1
-  r="$(readme_commits "$old_base_commit..$old_main" git)"
+  r="$(readme_commits "$old_base_commit..$old_main" git)" || return 1
   [[ -n "$r" && "$(grep -c . <<<"$r")" == 1 ]] || return 1
   stop="$(cd "$wt" && git rev-parse -q --verify REBASE_HEAD)" || return 1
   [[ "$stop" == "$r" ]] || return 1
-  [[ "$(git rev-list --parents -n 1 "$r" | wc -w | tr -d ' ')" == 2 ]] || return 1
-  readme_only_set "$r^" "$r" git || return 1
+  pl="$(git rev-list --parents -n 1 "$r")" || return 1
+  [[ "$(wc -w <<<"$pl" | tr -d ' ')" == 2 ]] || return 1
+  readme_outside "$r^" "$r" git || return 1
   (
     cd "$wt" || exit 1
     : >"$out/readme-conflicts.txt"
+    git diff --name-only -z --diff-filter=U >"$out/readme-unmerged.z" || exit 1
+    git diff --cached --name-only -z --no-renames HEAD >"$out/readme-staged.z" || exit 1
     while IFS= read -r -d '' f; do
       in_readme_set "$f" || exit 1
       grep -qxF -- "$f" "$out/readme-conflicts.txt" || printf '%s\n' "$f" >>"$out/readme-conflicts.txt"
-    done < <(git diff --name-only -z --diff-filter=U)
-    while IFS= read -r -d '' f; do in_readme_set "$f" || exit 1; done < <(git diff --cached --name-only -z --no-renames HEAD)
+    done <"$out/readme-unmerged.z"
+    while IFS= read -r -d '' f; do in_readme_set "$f" || exit 1; done <"$out/readme-staged.z"
     for p in "${PMX_README_PATHS[@]}"; do
-      if [[ -n "$(readme_entry "$r" "$p" git)" ]]; then
+      h="$(readme_entry HEAD "$p" git)" && e="$(readme_entry "$r" "$p" git)" || exit 1
+      case "$h $e" in *" tree "*) exit 1 ;; esac
+    done
+    for p in "${PMX_README_PATHS[@]}"; do
+      e="$(readme_entry "$r" "$p" git)" || exit 1
+      if [[ -n "$e" ]]; then
         git checkout -q "$r" -- ":(literal)$p" || exit 1
       else
         git rm -q -f --ignore-unmatch -- ":(literal)$p" >/dev/null || exit 1
       fi
     done
-    [[ -z "$(git ls-files -u)" ]] && git diff --quiet || exit 1
+    u="$(git ls-files -u)" || exit 1
+    [[ -z "$u" ]] && git diff --quiet || exit 1
   ) || { : >"$out/readme-conflicts.txt"; return 1; }
   readme_stop=$r
   log "the rebase stopped at the README commit ${r:0:8}; re-applied its paths ($(paste -sd ' ' "$out/readme-conflicts.txt"))"
@@ -364,7 +375,7 @@ do_prepare() {
   fi
   # Header lines: "<n>:  <sha> <op> <n>:  <sha> <subject>", op one of = ! < >.
   : >"$out/dropped.tsv"; : >"$out/changed.tsv"; : >"$out/added.tsv"
-  grep -E '^ *([0-9]+|-+): +([0-9a-f]+|-+) [=!<>] +([0-9]+|-+): +([0-9a-f]+|-+) ' "$out/logs/range-diff.txt" |
+  { grep -E '^ *([0-9]+|-+): +([0-9a-f]+|-+) [=!<>] +([0-9]+|-+): +([0-9a-f]+|-+) ' "$out/logs/range-diff.txt" || true; } |
     while IFS= read -r line; do
       p="$(sed -E 's/^ *([0-9]+|-+): +([0-9a-f]+|-+) ([=!<>]) +([0-9]+|-+): +([0-9a-f]+|-+) (.*)$/\3	\2	\5	\6/' <<<"$line")"
       IFS=$'\t' read -r op a b subj <<<"$p"
