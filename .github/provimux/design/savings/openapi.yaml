@@ -261,10 +261,11 @@ components:
         persistent:
           type: boolean
           description: |
-            True when the local store is on and this process's last write to it (before the first
-            write: its last read) succeeded. False when the store is off (server.kv-store.disabled),
-            cannot be opened or refused the last write: what is not yet written then lives in memory
-            and ends with the process.
+            True when the local store is on and this process's last write of a day to it (before the
+            first write: its last read for the days) succeeded. False when the store is off
+            (server.kv-store.disabled), cannot be opened or refused the last write of a day: what is
+            not yet written then lives in memory and ends with the process. A failure to read or write
+            only the price list copy does not change it.
         saved_at:
           oneOf:
             - $ref: "#/components/schemas/Timestamp"
