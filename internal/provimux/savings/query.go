@@ -21,6 +21,9 @@ const (
 	maxModels        = 500
 )
 
+// ratesBase is prices.rates: estimates use each model's base list rate (02-prices.md section 7).
+const ratesBase = "base"
+
 var periods = []string{"today", "yesterday", "7d", "30d", "month", "last_month", "year", "all"}
 
 var dimensions = []string{"day", "month", "kind", "provider", "host", "model", "key"}
@@ -163,7 +166,10 @@ type Recording struct {
 
 // Prices says where the prices come from.
 type Prices struct {
-	Currency   string           `json:"currency"`
+	Currency string `json:"currency"`
+	// Rates is which rates of a list are applied: "base", each model's standard rate. Higher rates
+	// some models publish above a prompt size (long context) and fast or priority tiers are not applied.
+	Rates      string           `json:"rates"`
 	OpenRouter OpenRouterSource `json:"openrouter"`
 	Provimux   ProvimuxSource   `json:"provimux"`
 }
@@ -315,6 +321,7 @@ func (r *recorder) query(ctx context.Context, req Request) (*Response, error) {
 
 	// What the process knows, under the mutex. No store call under it.
 	r.mu.Lock()
+	r.bindLocked(store)
 	memEarliest := ""
 	for day := range r.days {
 		if memEarliest == "" || day < memEarliest {
@@ -367,56 +374,9 @@ func (r *recorder) query(ctx context.Context, req Request) (*Response, error) {
 		days = append(days, d.Format(time.DateOnly))
 	}
 
-	r.mu.Lock()
-	memory := make(map[string]memoryDay)
-	for _, day := range days {
-		st, ok := r.days[day]
-		if !ok {
-			continue
-		}
-		m := memoryDay{loaded: st.loaded, broken: st.broken, pending: make(map[pendingKey]*counters, len(st.pending))}
-		if st.loaded {
-			m.rows = st.rows.clone()
-		} else {
-			m.rows = newDayRows(st.rows.tz, st.rows.offset)
-		}
-		for k, c := range st.pending {
-			copied := *c
-			m.pending[k] = &copied
-		}
-		memory[day] = m
-	}
-	r.mu.Unlock()
-
-	// One read of the days in range that memory does not hold as stored.
-	var toRead []string
-	for _, day := range days {
-		if m, ok := memory[day]; !ok || (!m.loaded && !m.broken) {
-			toRead = append(toRead, day)
-		}
-	}
-	fromStore := make(map[string]*dayRows)
-	if store != nil && len(toRead) > 0 {
-		keys := make([]string, len(toRead))
-		for i, day := range toRead {
-			keys[i] = dayKey(day)
-		}
-		values, found, errGet := store.KVMGet(ctx, keys...)
-		if errGet != nil || len(values) != len(keys) || len(found) != len(keys) {
-			return nil, ErrStoreUnavailable
-		}
-		for i, day := range toRead {
-			if !found[i] {
-				continue
-			}
-			decoded, errDecode := decodeDay(values[i])
-			if errDecode != nil {
-				r.logOnce(dayKey(day), "savings: %s does not decode; it is kept as it is and skipped", dayKey(day))
-				fromStore[day] = nil
-				continue
-			}
-			fromStore[day] = decoded
-		}
+	memory, fromStore, errRead := r.readRange(ctx, store, days)
+	if errRead != nil {
+		return nil, errRead
 	}
 
 	var assembled []queryDay
@@ -438,8 +398,9 @@ func (r *recorder) query(ctx context.Context, req Request) (*Response, error) {
 			continue
 		}
 		if inMemory && len(m.pending) > 0 {
+			// Not assignPrices: a price given while reading is not the day's. Rows without one are
+			// valued with today's list and counted as floating until the saver records a price.
 			rows.mergePending(m.pending, secret)
-			rows.assignPrices(book)
 		}
 		if len(rows.rows) > 0 {
 			assembled = append(assembled, queryDay{day: day, rows: rows})
@@ -466,6 +427,7 @@ func (r *recorder) query(ctx context.Context, req Request) (*Response, error) {
 	}
 	answer.Prices = Prices{
 		Currency:   "USD",
+		Rates:      ratesBase,
 		OpenRouter: OpenRouterSource{URL: openRouterModelsURL, Models: len(book.openRouter), Remote: book.remote},
 		Provimux:   ProvimuxSource{Updated: book.table.Updated, Models: len(book.table.Models)},
 	}
@@ -474,6 +436,94 @@ func (r *recorder) query(ctx context.Context, req Request) (*Response, error) {
 		answer.Prices.OpenRouter.FetchedAt = &fetched
 	}
 	return answer, nil
+}
+
+// readRange copies the in-memory state of the days and reads the days memory does not hold as stored.
+// A day written by the saver between the copy and the read would count its pending records twice,
+// so when a write happened in between (the generation moved) it reads again; the last attempt holds
+// the saver's lock, so no write can happen in between.
+func (r *recorder) readRange(ctx context.Context, store localStore, days []string) (map[string]memoryDay, map[string]*dayRows, error) {
+	const attempts = 3
+	for attempt := 1; ; attempt++ {
+		last := attempt == attempts
+		if last {
+			r.saveMu.Lock()
+		}
+		memory, generation := r.copyDays(days)
+		fromStore, errRead := r.readStoredDays(ctx, store, days, memory)
+		r.mu.Lock()
+		same := r.generation == generation
+		r.mu.Unlock()
+		if last {
+			r.saveMu.Unlock()
+		}
+		if errRead != nil {
+			return nil, nil, errRead
+		}
+		if same || last {
+			return memory, fromStore, nil
+		}
+	}
+}
+
+// copyDays copies the in-memory state of the days, under the mutex, with the generation it is of.
+func (r *recorder) copyDays(days []string) (map[string]memoryDay, uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	memory := make(map[string]memoryDay)
+	for _, day := range days {
+		st, ok := r.days[day]
+		if !ok {
+			continue
+		}
+		m := memoryDay{loaded: st.loaded, broken: st.broken, pending: make(map[pendingKey]*counters, len(st.pending))}
+		if st.loaded {
+			m.rows = st.rows.clone()
+		} else {
+			m.rows = newDayRows(st.rows.tz, st.rows.offset)
+		}
+		for k, c := range st.pending {
+			copied := *c
+			m.pending[k] = &copied
+		}
+		memory[day] = m
+	}
+	return memory, r.generation
+}
+
+// readStoredDays is one read of the days in range that memory does not hold as stored.
+func (r *recorder) readStoredDays(ctx context.Context, store localStore, days []string, memory map[string]memoryDay) (map[string]*dayRows, error) {
+	var toRead []string
+	for _, day := range days {
+		if m, ok := memory[day]; !ok || (!m.loaded && !m.broken) {
+			toRead = append(toRead, day)
+		}
+	}
+	fromStore := make(map[string]*dayRows)
+	if store == nil || len(toRead) == 0 {
+		return fromStore, nil
+	}
+	keys := make([]string, len(toRead))
+	for i, day := range toRead {
+		keys[i] = dayKey(day)
+	}
+	values, found, errGet := store.KVMGet(ctx, keys...)
+	if errGet != nil || len(values) != len(keys) || len(found) != len(keys) {
+		return nil, ErrStoreUnavailable
+	}
+	for i, day := range toRead {
+		if !found[i] {
+			continue
+		}
+		decoded, errDecode := decodeDay(values[i])
+		if errDecode != nil {
+			r.logOnce(dayKey(day), "savings: %s does not decode; it is kept as it is and skipped", dayKey(day))
+			fromStore[day] = nil
+			continue
+		}
+		fromStore[day] = decoded
+	}
+	return fromStore, nil
 }
 
 // resolveRange is 03-endpoint.md section 2, on calendar dates of the server's zone.
