@@ -5,29 +5,168 @@
   </picture></a>
 </h1>
 
-Provimux, by [providers.dev](https://providers.dev), is one local endpoint for your AI subscriptions and API keys. Sign
-in with your Claude and Codex subscriptions, add your API keys and an OpenRouter key, and point your tools at
-`http://127.0.0.1:8317`. Provimux is a distribution of [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI):
-everything CLIProxyAPI does, plus the features below.
+<p>
+  <a href="https://github.com/ngvoicu/provimux/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/ngvoicu/provimux?label=release&amp;color=4338ca"></a>
+  <a href="../LICENSE"><img alt="License: MIT" src="https://img.shields.io/github/license/ngvoicu/provimux?color=4338ca"></a>
+  <a href="https://github.com/router-for-me/CLIProxyAPI"><img alt="Built on CLIProxyAPI" src="https://img.shields.io/badge/built%20on-CLIProxyAPI-4338ca"></a>
+</p>
+
+**Provimux**, by [providers.dev](https://providers.dev), is one local endpoint for your AI subscriptions and API keys.
+Sign in with your Claude and Codex subscriptions (subscription login, `oauth`), add your API keys (API key, `apikey`)
+and an OpenRouter key, and point your tools at `http://127.0.0.1:8317`. It is a drop-in distribution of
+[CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) by router-for-me: everything CLIProxyAPI does, plus the
+features below, with its web console, [provimux-ui](https://github.com/ngvoicu/provimux-ui).
+
+**Provimux** · the endpoint (this repository) &nbsp;·&nbsp; **[provimux-ui](https://github.com/ngvoicu/provimux-ui)** · its
+web console &nbsp;·&nbsp; **[providers.dev](https://providers.dev)**
+
+```bash
+brew install ngvoicu/tap/provimux
+brew services start provimux
+```
+
+Then open the console at `http://127.0.0.1:8317/management.html`. Docker, release archives and building from source:
+[Install](#install). An existing CLIProxyAPI setup works as it is.
+
+## What Provimux adds
+
+- **[Which account serves each model, and which one answered](#which-account-serves-each-model-and-which-one-answered).**
+  The model list names, per model, the subscription logins (`oauth`) and API keys (`apikey`) behind it, and every
+  response says which kind answered.
+- **[Live model lists for each login](#live-model-lists-for-each-login).** Each Claude, Codex and Meta login serves
+  what its own account lists: retired models disappear, new ones appear the day the provider lists them.
+- **[OpenRouter built in](#openrouter-built-in).** Prompt caching, one upstream per conversation, and each model's
+  real limits and reasoning levels for an OpenRouter key.
+- **[The right context and output limits](#the-right-context-and-output-limits-for-configured-models)** for the
+  models you declare under an API key, and **[Devin's real output limits](#devin-real-output-limits-and-a-quota-pause-per-model)**
+  with a quota pause per model.
+- **[The longer prompt cache on OpenAI API keys](#the-longer-prompt-cache-on-openai-api-keys)** and
+  **[a Codex WebSocket replay that stays a replay](#codex-websocket-a-full-replay-stays-a-replay)**.
+- **[Its own console pages](#the-console-provimux-ui)**: model routes and live model lists in provimux-ui, from
+  [two read-only endpoints](#model-routes-and-live-list-status-for-the-console).
+- **[Works with pi](#works-with-pi)**, through two extensions that show which account answered.
 
 ![A diagram. On the left, "Your tools": pi, Codex CLI, Claude Code, and any OpenAI-, Claude- or Gemini-format client. They point at the middle box, "Provimux, http://127.0.0.1:8317", which lists: which account serves each model, and which one answered; each login's own model list; OpenRouter caching, sessions and limits; the right context and output limits. Provimux points at "Your accounts" on the right: Claude subscription (oauth), Claude API key (apikey), Codex subscription (oauth), and OpenRouter key (apikey, openrouter.ai).](provimux/media/overview.png)
 
-What Provimux adds:
-
-- [Which account serves each model, and which one answered](#which-account-serves-each-model-and-which-one-answered)
-- [Live model lists for each login](#live-model-lists-for-each-login)
-- [Model routes and live-list status for the console](#model-routes-and-live-list-status-for-the-console)
-- [OpenRouter built in](#openrouter-built-in)
-- [The right context and output limits for configured models](#the-right-context-and-output-limits-for-configured-models)
-- [Devin: real output limits, and a quota pause per model](#devin-real-output-limits-and-a-quota-pause-per-model)
-- [The longer prompt cache on OpenAI API keys](#the-longer-prompt-cache-on-openai-api-keys)
-- [Codex WebSocket: a full replay stays a replay](#codex-websocket-a-full-replay-stays-a-replay)
-- [Works with pi](#works-with-pi)
-
-Then: [Install](#install) · [Versions](#versions) · [Requests to providers](#requests-to-providers) ·
+Then: [Install](#install) · [The console](#the-console-provimux-ui) · [Versions and releases](#versions-and-releases) ·
+[Features in detail](#features-in-detail) · [Requests to providers](#requests-to-providers) ·
 [Built on CLIProxyAPI](#built-on-cliproxyapi) · [License](#license)
 
-## Which account serves each model, and which one answered
+## Install
+
+Provimux uses the same `config.yaml`, auth folder (`~/.cli-proxy-api`) and port (8317) as CLIProxyAPI, so an existing
+CLIProxyAPI setup works as it is: stop CLIProxyAPI and start Provimux in its place.
+
+### Homebrew
+
+macOS (Apple silicon and Intel) and Linux (x64 and Arm), from the tap [ngvoicu/homebrew-tap](https://github.com/ngvoicu/homebrew-tap):
+
+```bash
+brew install ngvoicu/tap/provimux
+brew services start provimux
+```
+
+The config is `$(brew --prefix)/etc/provimux.conf`, created from `config.example.yaml` on first install and never
+overwritten. To reuse an existing Homebrew CLIProxyAPI setup, stop its service (both listen on port 8317 by default) and
+point Provimux at its config:
+
+```bash
+brew services stop cliproxyapi
+ln -sf "$(brew --prefix)/etc/cliproxyapi.conf" "$(brew --prefix)/etc/provimux.conf"
+brew services start provimux
+```
+
+### Docker
+
+linux/amd64 and linux/arm64:
+
+```bash
+docker run -d --name provimux -p 8317:8317 \
+  -v "$PWD/config.yaml:/CLIProxyAPI/config.yaml" \
+  -v "$PWD/auths:/root/.cli-proxy-api" \
+  ghcr.io/ngvoicu/provimux:latest
+```
+
+The image uses CLIProxyAPI's paths: the config at `/CLIProxyAPI/config.yaml`, the auth folder at
+`/root/.cli-proxy-api`, logs in `/CLIProxyAPI/logs` and plugins in `/CLIProxyAPI/plugins`, so a CLIProxyAPI
+`docker-compose.yml` works with only the image name changed. Each release is also tagged with its version
+(`ghcr.io/ngvoicu/provimux:8.0.79-pmx.1`).
+
+### Release archives
+
+Download the archive for your system from [Releases](https://github.com/ngvoicu/provimux/releases):
+
+| System | Archive | Binary |
+|---|---|---|
+| macOS, Apple silicon | `provimux_<version>_darwin_aarch64.tar.gz` | `provimux` |
+| macOS, Intel | `provimux_<version>_darwin_amd64.tar.gz` | `provimux` |
+| Windows, x64 | `provimux_<version>_windows_amd64.zip` | `provimux.exe` |
+| Windows, Arm | `provimux_<version>_windows_aarch64.zip` | `provimux.exe` |
+| Linux, x64 | `provimux_<version>_linux_amd64.tar.gz` | `provimux` |
+| Linux, Arm | `provimux_<version>_linux_aarch64.tar.gz` | `provimux` |
+| Linux, x64, portable | `provimux_<version>_linux_amd64_no-plugin.tar.gz` | `provimux` |
+| Linux, Arm, portable | `provimux_<version>_linux_aarch64_no-plugin.tar.gz` | `provimux` |
+| FreeBSD, x64 | `provimux_<version>_freebsd_amd64.tar.gz` | `provimux` |
+| FreeBSD, Arm, no plugins | `provimux_<version>_freebsd_aarch64_no-plugin.tar.gz` | `provimux` |
+
+`<version>` is the Provimux version, for example `8.0.79-pmx.1`; `checksums.txt` in each release lists the SHA-256 of
+every archive. The default Linux builds need glibc 2.17 or newer; the Linux `_no-plugin` builds also run on musl-based
+or older systems such as OpenWrt. `_no-plugin` builds do not support plugins.
+
+### From source
+
+With Go:
+
+```bash
+git clone https://github.com/ngvoicu/provimux
+cd provimux
+go build -o provimux ./cmd/server
+./provimux --config /path/to/your/config.yaml
+```
+
+A fresh checkout has no `config.yaml`, only `config.example.yaml`. Pass your existing CLIProxyAPI config with
+`--config`, or copy the example (`cp config.example.yaml config.yaml`), edit it, and start with
+`--config config.yaml`.
+
+For logins and the configuration reference, CLIProxyAPI's
+[documentation](https://github.com/router-for-me/CLIProxyAPI#readme) applies; `config.example.yaml` in this
+repository includes the Provimux options.
+
+## The console: provimux-ui
+
+Provimux's web console is [provimux-ui](https://github.com/ngvoicu/provimux-ui), the CLI Proxy API Management Center
+in the providers.dev look, with Provimux's own pages (from console v1.28.3-pmx.2): **Model routes**, which logins and
+keys serve each model, by priority, with the cooldowns Provimux recorded; and **Live model lists**, each login's own
+list, with a refresh.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="provimux/media/console-model-routes-dark.png">
+  <img alt="The console's Model routes page. The sidebar reads Provimux by providers.dev. Chips read 9 models, 5 subscriptions, 3 API keys, 4 cooldowns recorded. Two cards: Devin: quota pause per model, switched on, with devin-opus-5-5 paused for this model, 55 min left; and OpenRouter, built in, with the entry openrouter (2 models, 1 key). Below, one card per model: anthropic/claude-opus-5.5 on an API key at openrouter.ai, 1M context, 128K output; claude-haiku-5-5 with two Claude subscriptions at priority 10 and a Claude API key at api.anthropic.com at priority 0." src="provimux/media/console-model-routes-light.png">
+</picture>
+
+Nothing to install: Provimux downloads the latest provimux-ui release by itself, at startup and every 3 hours, and
+installs it only when it matches the release's `checksums.txt`. A config that still names the original console
+(`management.panel-github-repository`) gets provimux-ui too. Open `http://127.0.0.1:8317/management.html` and sign in
+with your management key (`management.secret-key` in your config; while it is empty, the management API is off). To keep a
+console version, turn the updates off with `management.disable-auto-update-panel: true`.
+
+## Versions and releases
+
+A Provimux version names the CLIProxyAPI release it is built on: `v8.0.79-pmx.1` is CLIProxyAPI 8.0.79 with Provimux
+build 1.
+
+Releases are automatic. When CLIProxyAPI publishes a release, a workflow moves Provimux onto it, builds and tests it,
+and when the check passes publishes `v<base>-pmx.1` on its own: the release archives, the Docker image and the Homebrew
+formula. A release that fails a check waits for the owner, and the reason is in an issue.
+[.github/provimux/SYNC.md](provimux/SYNC.md) describes the whole process.
+
+The startup banner and the `X-CPA-VERSION` response header show the Provimux version, with the CLIProxyAPI release it
+is based on. The version sent to providers is CLIProxyAPI's (`8.0.79` in this example), so providers see the same
+client as with CLIProxyAPI.
+
+## Features in detail
+
+### Which account serves each model, and which one answered
 
 **What you get.** The OpenAI-format model list can tell you, for each model, which of your accounts serve it: the
 provider, whether it is a subscription login (`oauth`) or an API key (`apikey`), its priority, and for an API key the
@@ -65,7 +204,7 @@ Priorities are CLIProxyAPI's: set `priority` on an API-key entry, or in a login'
 first. For example a Claude subscription at `10` and a Claude API key at `0` uses the subscription and falls back to
 the key.
 
-## Live model lists for each login
+### Live model lists for each login
 
 **What you get.** Each Claude, Codex and Meta login registers the models its own account lists, not only the shared
 catalog. Models the provider has retired, or doesn't offer to your account, disappear from the list, and new models
@@ -97,9 +236,10 @@ models:
   account never keeps the old list.
 - API keys keep the catalog. Changing `live-lists` in a running instance applies at once.
 
-## Model routes and live-list status for the console
+### Model routes and live-list status for the console
 
-**What you get.** Two read-only management endpoints that the Provimux console uses for its own pages: for each
+**What you get.** Two read-only management endpoints that the Provimux console,
+[provimux-ui](https://github.com/ngvoicu/provimux-ui), uses for its own pages: for each
 model, every login and key that registered it with the cooldown recorded on it; and for each Claude, Codex and Meta
 login, the state of its live model list.
 
@@ -129,7 +269,7 @@ The contract is [`openapi.yaml`](provimux/design/pui13/openapi.yaml), with examp
 curl -s http://127.0.0.1:8317/v8/management/provimux/model-routes -H "Authorization: Bearer $MANAGEMENT_KEY"
 ```
 
-## OpenRouter built in
+### OpenRouter built in
 
 **What you get.** An OpenRouter key works like a built-in provider: prompt caching for models that cache only when
 asked (Claude among them), one conversation kept on one upstream so its cache keeps being read, and each model's real
@@ -167,7 +307,7 @@ api-keys:
 | Reasoning levels | The model's own levels (for example `low` to `max`), when your config sets no `thinking` for it. |
 | Owner | `owned_by` is the model's vendor (`anthropic` for `anthropic/claude-opus-5.5`), not the entry's name. |
 
-## The right context and output limits for configured models
+### The right context and output limits for configured models
 
 **What you get.** Models you declare under an API key (Claude, Codex, Gemini, Vertex, xAI, Meta), for example an
 alias, report the same context window and output limit as the catalog's model they point to.
@@ -200,7 +340,7 @@ api-keys:
 - OpenAI-compatible entries have no catalog; OpenRouter entries get their limits from
   [OpenRouter built in](#openrouter-built-in).
 
-## Devin: real output limits, and a quota pause per model
+### Devin: real output limits, and a quota pause per model
 
 **Real output limits.** CLIProxyAPI lists every Devin model with a 64,000-token output limit and enforces it.
 Provimux's Devin list carries each model's own limit, read from Devin's model configuration. For example:
@@ -236,7 +376,7 @@ It is off by default. One known limit: with the option on, Provimux may not lear
 model retries with a growing backoff (1 second up to 30 minutes, one quick refused request each time) instead of
 waiting for the reset.
 
-## The longer prompt cache on OpenAI API keys
+### The longer prompt cache on OpenAI API keys
 
 **What you get.** A client that asks for a longer prompt-cache lifetime on an OpenAI API key gets it:
 `prompt_cache_options.ttl` (for example `"12h"`) is forwarded on Codex API-key credentials. OpenAI's default is 30
@@ -254,7 +394,7 @@ ChatGPT logins, which answer 400 to it, but an API key supports it.
 Only `ttl` is carried, and only when the client sends it as a non-empty string and the request arrives in the
 Responses format. No default is added. Subscription logins are unchanged.
 
-## Codex WebSocket: a full replay stays a replay
+### Codex WebSocket: a full replay stays a replay
 
 **What you get.** On the `/v1/responses` WebSocket, a client that sends its whole conversation again (without
 `previous_response_id`) gets that conversation answered, not a merged one.
@@ -268,7 +408,7 @@ twice and the request was billed at about twice the input.
 and an input that starts with every input item of the previous request, in order, replaces the transcript. An
 incremental request that names no model still appends, and pending tool calls answered by a replay are kept.
 
-## Works with pi
+### Works with pi
 
 Provimux works with any client CLIProxyAPI works with. For [pi](https://pi.dev), two extensions read what
 [which account serves each model](#which-account-serves-each-model-and-which-one-answered) reports:
@@ -289,88 +429,6 @@ pi install git:github.com/ngvoicu/pi-cache-keeper
 
 Their READMEs describe the settings.
 
-## Install
-
-Provimux uses the same `config.yaml`, auth folder (`~/.cli-proxy-api`) and management console as CLIProxyAPI, so an
-existing CLIProxyAPI setup works as it is: stop CLIProxyAPI and start Provimux in its place.
-
-**Homebrew** (macOS, Apple silicon and Intel; Linux, x64 and Arm):
-
-```bash
-brew install ngvoicu/tap/provimux
-brew services start provimux
-```
-
-The config is `$(brew --prefix)/etc/provimux.conf`, created from `config.example.yaml` on first install and never
-overwritten. To reuse an existing Homebrew CLIProxyAPI setup, stop its service (both listen on port 8317 by default) and
-point Provimux at its config:
-
-```bash
-brew services stop cliproxyapi
-ln -sf "$(brew --prefix)/etc/cliproxyapi.conf" "$(brew --prefix)/etc/provimux.conf"
-brew services start provimux
-```
-
-**Release archives:** download the archive for your system from
-[Releases](https://github.com/ngvoicu/provimux/releases):
-
-| System | Archive | Binary |
-|---|---|---|
-| macOS, Apple silicon | `provimux_<version>_darwin_aarch64.tar.gz` | `provimux` |
-| macOS, Intel | `provimux_<version>_darwin_amd64.tar.gz` | `provimux` |
-| Windows, x64 | `provimux_<version>_windows_amd64.zip` | `provimux.exe` |
-| Windows, Arm | `provimux_<version>_windows_aarch64.zip` | `provimux.exe` |
-| Linux, x64 | `provimux_<version>_linux_amd64.tar.gz` | `provimux` |
-| Linux, Arm | `provimux_<version>_linux_aarch64.tar.gz` | `provimux` |
-| Linux, x64, portable | `provimux_<version>_linux_amd64_no-plugin.tar.gz` | `provimux` |
-| Linux, Arm, portable | `provimux_<version>_linux_aarch64_no-plugin.tar.gz` | `provimux` |
-| FreeBSD, x64 | `provimux_<version>_freebsd_amd64.tar.gz` | `provimux` |
-| FreeBSD, Arm, no plugins | `provimux_<version>_freebsd_aarch64_no-plugin.tar.gz` | `provimux` |
-
-`<version>` is the Provimux version, for example `8.0.77-pmx.1`; `checksums.txt` in each release lists the SHA-256 of
-every archive. The default Linux builds need glibc 2.17 or newer; the Linux `_no-plugin` builds also run on musl-based
-or older systems such as OpenWrt. `_no-plugin` builds do not support plugins.
-
-**Docker** (linux/amd64 and linux/arm64):
-
-```bash
-docker run -d --name provimux -p 8317:8317 \
-  -v "$PWD/config.yaml:/CLIProxyAPI/config.yaml" \
-  -v "$PWD/auths:/root/.cli-proxy-api" \
-  ghcr.io/ngvoicu/provimux:latest
-```
-
-The image uses CLIProxyAPI's paths: the config at `/CLIProxyAPI/config.yaml`, the auth folder at
-`/root/.cli-proxy-api`, logs in `/CLIProxyAPI/logs` and plugins in `/CLIProxyAPI/plugins`, so a CLIProxyAPI
-`docker-compose.yml` works with only the image name changed. Each release is also tagged with its version
-(`ghcr.io/ngvoicu/provimux:8.0.77-pmx.1`).
-
-**From source** (Go):
-
-```bash
-git clone https://github.com/ngvoicu/provimux
-cd provimux
-go build -o provimux ./cmd/server
-./provimux --config /path/to/your/config.yaml
-```
-
-A fresh checkout has no `config.yaml`, only `config.example.yaml`. Pass your existing CLIProxyAPI config with
-`--config`, or copy the example (`cp config.example.yaml config.yaml`), edit it, and start with
-`--config config.yaml`.
-
-For logins, the configuration reference and the console, CLIProxyAPI's
-[documentation](https://github.com/router-for-me/CLIProxyAPI#readme) applies; `config.example.yaml` in this
-repository includes the Provimux options.
-
-## Versions
-
-A Provimux version names the CLIProxyAPI release it is built on: `v8.0.77-pmx.1` is CLIProxyAPI 8.0.77 with Provimux
-build 1. A new Provimux release follows each CLIProxyAPI release.
-
-The startup banner and the `X-CPA-VERSION` response header show the Provimux version, with the CLIProxyAPI release it
-is based on. The version sent to providers is CLIProxyAPI's (`8.0.77` in this example), so providers see the same
-client as with CLIProxyAPI.
-
 ## Requests to providers
 
 The requests Provimux sends to providers are the same as CLIProxyAPI's, except where a feature above says otherwise:
@@ -387,8 +445,10 @@ The requests Provimux sends to providers are the same as CLIProxyAPI's, except w
 
 Provimux is built on [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) by
 [Router-For.ME](https://github.com/router-for-me), started by [Luis Pater](https://github.com/luispater). Nearly
-everything Provimux does is CLIProxyAPI's work: the logins, the providers, the translation between formats, the
-routing and the console. Provimux adds the features above on top of each CLIProxyAPI release.
+everything Provimux does is CLIProxyAPI's work: the logins, the providers, the translation between formats and the
+routing. Its console, provimux-ui, is the
+[CLI Proxy API Management Center](https://github.com/router-for-me/Cli-Proxy-API-Management-Center), also by
+router-for-me. Provimux adds the features above on top of each CLIProxyAPI release.
 
 ## License
 
