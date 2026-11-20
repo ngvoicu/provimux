@@ -59,6 +59,8 @@ Then open the console at `http://127.0.0.1:8317/management.html`. Docker, releas
 - **[The right context and output limits](#the-right-context-and-output-limits-for-configured-models)** for the
   models you declare under an API key, and **[Devin's real output limits](#devin-real-output-limits-and-a-quota-pause-per-model)**
   with a quota pause per model.
+- **[Savings](#savings-what-caching-saved-and-what-each-key-cost)**: daily usage totals kept across restarts, valued
+  at OpenRouter's list prices: what prompt caching saved, subscription against API key, what the paid keys cost.
 - **[Works with pi](#works-with-pi)**, through two extensions that show which account answered.
 
 ![A diagram. On the left, "Your tools": pi, Codex CLI, Claude Code, and any OpenAI-, Claude- or Gemini-format client. They point at the middle box, "Provimux, http://127.0.0.1:8317", which lists: which account serves each model, and which one answered; each login's own model list; OpenRouter caching, sessions and limits; the right context and output limits. Provimux points at "Your accounts" on the right: Claude subscription (oauth), Claude API key (apikey), Codex subscription (oauth), and OpenRouter key (apikey, openrouter.ai).](provimux/media/overview.png)
@@ -106,6 +108,10 @@ The image uses CLIProxyAPI's paths: the config at `/CLIProxyAPI/config.yaml`, th
 `/root/.cli-proxy-api`, logs in `/CLIProxyAPI/logs` and plugins in `/CLIProxyAPI/plugins`, so a CLIProxyAPI
 `docker-compose.yml` works with only the image name changed. Each release is also tagged with its version
 (`ghcr.io/ngvoicu/provimux:8.0.79-pmx.1`).
+
+The image's default `TZ` is upstream's `Asia/Shanghai`, and [Savings](#savings-what-caching-saved-and-what-each-key-cost)
+keeps its totals per day of that zone: set `TZ` (e.g. `-e TZ=Europe/Bucharest`) before the first run, since days
+cannot be re-cut later.
 
 ### Release archives
 
@@ -294,6 +300,44 @@ The contract is [`openapi.yaml`](provimux/design/pui13/openapi.yaml), with examp
 
 ```bash
 curl -s http://127.0.0.1:8317/v8/management/provimux/model-routes -H "Authorization: Bearer $MANAGEMENT_KEY"
+```
+
+### Savings: what caching saved, and what each key cost
+
+**What you get.** Provimux adds up every request into daily totals, kept in the local store across restarts, and
+values them at public list prices. `GET /v8/management/provimux/savings` answers, for a range of days: tokens by
+bucket (uncached input, cache reads, cache writes with their 5 minute and 1 hour parts, output, reasoning), the cache
+hit rate, the estimated cost, the cost without the cache and the money saved by caching, and the cost an upstream
+reported (OpenRouter's `usage.cost`). Breakdowns by day, month, account kind (`oauth` or `apikey`), provider, host,
+model and client key come in the same call. The console's Savings page reads it.
+
+**Why it matters.** It is the proof of what the routing does: how much ran on subscriptions instead of paid keys,
+what caching saved, what the paid keys really cost.
+
+**How to use it.** Nothing to turn on: recording starts with the management routes (a management key is
+configured) and needs the local store (`server.kv-store`, on by default) to survive a restart.
+
+- A request is one usage record: one attempt at one upstream; a retried request counts once per attempt.
+- A day is the server's local calendar day (`TZ`; see [Docker](#docker)). The answer names the zone and the server's
+  today.
+- Everything under `estimate` is an estimate at list prices: OpenRouter's public list
+  (`https://openrouter.ai/api/v1/models`), and a small table of Provimux's own for models it does not list. The saving
+  subtracts the cache-write premium and can be negative; a model without a published cache-read price claims none. A
+  model without a price is counted and named, and left out of the amounts. On a subscription, caching saves quota,
+  not money, and the value of subscription requests at API prices is not what the subscription saved.
+- **A new outbound request:** to have prices, every installation downloads OpenRouter's public model list, at most
+  every 3 hours and only while requests are being recorded (after a failed download, no sooner than a minute later),
+  and never under `--local-model`. No key and nothing about the installation is sent. The last list is kept in the
+  local store and used when the download fails.
+- A client key appears as an id only this server can compute (an HMAC with a secret in the local store) and, for a key
+  of 16 characters or more, its last 4 characters. No response, log or stored value carries a key, a token, an auth
+  ID, an account email or a base URL beyond its host. Stock CLIProxyAPI answers 404 on the path.
+
+The contract is [`openapi.yaml`](provimux/design/savings/openapi.yaml), with example answers next to it.
+
+```bash
+curl -s "http://127.0.0.1:8317/v8/management/provimux/savings?period=month&group=kind&group=key" \
+  -H "Authorization: Bearer $MANAGEMENT_KEY"
 ```
 
 ### OpenRouter built in
