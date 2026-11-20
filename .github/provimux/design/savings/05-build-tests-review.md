@@ -214,7 +214,7 @@ All in new `provimux_*_test.go` files or in the new package, so no upstream test
 | Test | Asserts |
 |---|---|
 | totals are absolute | 3 records, a round: the value holds their sums; 2 more, a round: the sums of 5. The same totals encode identical bytes; after a write memory holds nothing for the day |
-| idle | a round with no deltas makes no store call |
+| idle | a round with no deltas and no downloaded list makes no store call; with a list, an idle round reads the active store's copy and writes nothing when it is current |
 | restart | a second instance on the same file, 1 record, a round: old totals plus 1. The day is read once per round that writes it |
 | crash | an instance dropped without `FlushNow`: a new one sees exactly the last written totals |
 | clean stop | `FlushNow` writes the deltas; with a store that blocks it returns within its bound |
@@ -247,6 +247,9 @@ All in new `provimux_*_test.go` files or in the new package, so no upstream test
 | a stuck store does not delay `HandleUsage` | a round blocked in `KVSet` holds `mu` and a query waits behind it: 10,000 records return while the store is still blocked, none slower than 50 ms (measured: about 24 ms for all, slowest about 30 µs); the waiting query and the next round count each once |
 | a query during saves counts once | under `-race`: records, back-to-back rounds on a slow store and queries; every answer lies between the records done before it started and after it ended, cache reads match |
 | a switch lands the deltas in the new store | A gets no store call after the switch and keeps its bytes; B holds the waiting deltas, with ids of B's secret |
+| the list follows the store in use (T-124 finding 7) | A has the list copy, the path moves to a populated B without one: the idle round saves it in B, a second idle round and the flush write nothing, a restart on B prices its history as before |
+| `first_day` before the day (T-124 finding 14) | a late record for yesterday while `meta` cannot be written: yesterday is not written and waits; once `meta` can be written, `first_day` moves and the day is written; a fresh recorder gives the same count for `all` and `7d` |
+| folded keys leave no ids (T-124 finding 15) | 2,000 regular keys, then 50 that fold: the day keeps exactly 2,000 ids, each with its row |
 | store off, then on | off: no write, `persistent` false, floating, the process's ids; on: the answer adds the deltas to the file with the file's ids; the round writes them and forgets them |
 
 ### `internal/provimux/savings/query_test.go`
