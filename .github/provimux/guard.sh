@@ -16,7 +16,7 @@
 #      commit carries the trailer too;
 #   3. no layer commit changes a protected path, against any of its parents;
 #   5. the README commit (trailer "Provimux-Readme: root"; design/root-readme.md): at
-#      most one in base..HEAD (none is an error once require_readme=1); it carries the
+#      exactly one in base..HEAD (none is an error: require_readme=1); it carries the
 #      layer trailer, has one parent, changes only the README paths, leaves README.md a
 #      100644 blob and the other README paths absent; and then, at HEAD, the only root
 #      entry whose name begins with "readme" (any case) is the 100644 blob README.md;
@@ -36,8 +36,8 @@ for p in "${protected[@]}"; do pathspec+=(":(top,literal)$p/"); done
 protected_list="${protected[*]/%//}"
 # The README paths: the same set as PMX_README_PATHS in common.sh (selftest.sh checks it).
 readme_paths=(README.md README_CN.md README_JA.md)
-# 1 once the README commit is on main (the last commit of that work sets it).
-require_readme=0
+# 1: the README commit is on main (since 2026-11-20); 0 would let a stack without it pass.
+require_readme=1
 
 fail=0
 err() { echo "::error::$*"; fail=1; }
