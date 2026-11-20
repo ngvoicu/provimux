@@ -39,60 +39,40 @@ func FormatCPATraceID(selectedAt time.Time, authIndex, requestID string) string 
 	return selectedAt.Format("20060102150405") + "-" + authIndex + "-" + requestID
 }
 
+// AuthStatement says which credential produced a response: its kind ("oauth" or "apikey"), its provider and, for an
+// API key with a base URL, the host. It is one statement, set by one call and read as one: a response carries the
+// whole statement or none of it.
+type AuthStatement struct {
+	Kind     string
+	Provider string
+	Host     string
+}
+
 type cpaTraceState struct {
-	mu       sync.RWMutex
-	traceID  string
-	authKind string
-	// authProvider and authHost name the same credential as authKind; each selection replaces all three.
-	authProvider string
-	authHost     string
+	mu      sync.RWMutex
+	traceID string
+	// authStatement names the credential whose upstream produced the response; empty until one has.
+	authStatement AuthStatement
 }
 
-func (s *cpaTraceState) setAuthProvider(provider string) {
+func (s *cpaTraceState) setAuthStatement(kind, provider, host string) {
 	if s == nil {
 		return
 	}
+	statement := AuthStatement{Kind: strings.TrimSpace(kind), Provider: strings.TrimSpace(provider), Host: strings.TrimSpace(host)}
 	s.mu.Lock()
-	s.authProvider = strings.TrimSpace(provider)
+	s.authStatement = statement
 	s.mu.Unlock()
 }
 
-func (s *cpaTraceState) setAuthHost(host string) {
+func (s *cpaTraceState) getAuthStatement() AuthStatement {
 	if s == nil {
-		return
-	}
-	s.mu.Lock()
-	s.authHost = strings.TrimSpace(host)
-	s.mu.Unlock()
-}
-
-func (s *cpaTraceState) getAuthProviderAndHost() (string, string) {
-	if s == nil {
-		return "", ""
+		return AuthStatement{}
 	}
 	s.mu.RLock()
-	provider, host := s.authProvider, s.authHost
+	statement := s.authStatement
 	s.mu.RUnlock()
-	return provider, host
-}
-
-func (s *cpaTraceState) setAuthKind(kind string) {
-	if s == nil {
-		return
-	}
-	s.mu.Lock()
-	s.authKind = strings.TrimSpace(kind)
-	s.mu.Unlock()
-}
-
-func (s *cpaTraceState) getAuthKind() string {
-	if s == nil {
-		return ""
-	}
-	s.mu.RLock()
-	kind := s.authKind
-	s.mu.RUnlock()
-	return kind
+	return statement
 }
 
 func (s *cpaTraceState) set(traceID string) {
@@ -156,80 +136,36 @@ func SetGinCPATraceID(c *gin.Context, authIndex string) {
 	}
 }
 
-// GinCPAAuthKindCallback returns a callback, safe to invoke after the Gin context is released, that stores the kind
-// of the selected credential. A later call replaces an earlier one, so a retry on another credential before the
-// response headers are committed reports the credential that answered.
-func GinCPAAuthKindCallback(c *gin.Context) func(string) {
+// GinCPAAuthStatementCallback returns a callback, safe to invoke after the Gin context is released, that stores in
+// one step the statement of the credential whose upstream produced the response: kind, provider and host. A later
+// call replaces an earlier one; a call with three empty values withdraws it.
+func GinCPAAuthStatementCallback(c *gin.Context) func(kind, provider, host string) {
 	state := ginCPATraceState(c)
 	if state == nil {
 		return nil
 	}
-	return state.setAuthKind
+	return state.setAuthStatement
 }
 
-// SetGinCPAAuthKind stores the selected credential's kind until the downstream response headers are committed.
-func SetGinCPAAuthKind(c *gin.Context, kind string) {
-	if callback := GinCPAAuthKindCallback(c); callback != nil {
-		callback(kind)
-	}
-}
-
-// GetGinCPAAuthKind returns the credential kind stored for the current request.
-func GetGinCPAAuthKind(c *gin.Context) string {
-	if c == nil {
-		return ""
-	}
-	value, exists := c.Get(ginCPATraceStateKey)
-	if !exists {
-		return ""
-	}
-	state, _ := value.(*cpaTraceState)
-	return state.getAuthKind()
-}
-
-// GinCPAAuthProviderCallback returns a callback, safe to invoke after the Gin context is released, that stores the
-// provider of the selected credential. Like the kind, a later call replaces an earlier one.
-func GinCPAAuthProviderCallback(c *gin.Context) func(string) {
-	state := ginCPATraceState(c)
-	if state == nil {
-		return nil
-	}
-	return state.setAuthProvider
-}
-
-// GinCPAAuthHostCallback returns a callback, safe to invoke after the Gin context is released, that stores the base
-// URL host of the selected API key, "" for a login or a key without one. Like the kind, a later call replaces an
-// earlier one, so a retry on a login clears the host of a key tried before it.
-func GinCPAAuthHostCallback(c *gin.Context) func(string) {
-	state := ginCPATraceState(c)
-	if state == nil {
-		return nil
-	}
-	return state.setAuthHost
-}
-
-// SetGinCPAAuthProvider stores the selected credential's provider and base URL host ("" when it has none) until the
+// SetGinCPAAuthStatement stores the statement of the credential whose upstream produced the response until the
 // downstream response headers are committed.
-func SetGinCPAAuthProvider(c *gin.Context, provider, host string) {
-	if callback := GinCPAAuthProviderCallback(c); callback != nil {
-		callback(provider)
-	}
-	if callback := GinCPAAuthHostCallback(c); callback != nil {
-		callback(host)
+func SetGinCPAAuthStatement(c *gin.Context, statement AuthStatement) {
+	if callback := GinCPAAuthStatementCallback(c); callback != nil {
+		callback(statement.Kind, statement.Provider, statement.Host)
 	}
 }
 
-// GetGinCPAAuthProvider returns the credential provider and base URL host stored for the current request.
-func GetGinCPAAuthProvider(c *gin.Context) (string, string) {
+// GetGinCPAAuthStatement returns the credential statement stored for the current request.
+func GetGinCPAAuthStatement(c *gin.Context) AuthStatement {
 	if c == nil {
-		return "", ""
+		return AuthStatement{}
 	}
 	value, exists := c.Get(ginCPATraceStateKey)
 	if !exists {
-		return "", ""
+		return AuthStatement{}
 	}
 	state, _ := value.(*cpaTraceState)
-	return state.getAuthProviderAndHost()
+	return state.getAuthStatement()
 }
 
 // GetGinCPATraceID returns the trace ID stored for the current request.
@@ -303,17 +239,18 @@ func (w *cpaTraceResponseWriter) applyTraceHeader() {
 	if traceID := w.state.get(); traceID != "" {
 		w.ResponseWriter.Header().Set(CPATraceIDHeader, traceID)
 	}
-	if kind := w.state.getAuthKind(); kind != "" {
-		w.ResponseWriter.Header().Set(CPAAuthKindHeader, kind)
+	// One read: the kind, provider and host written here are one credential's statement.
+	statement := w.state.getAuthStatement()
+	if statement.Kind != "" {
+		w.ResponseWriter.Header().Set(CPAAuthKindHeader, statement.Kind)
 	}
 	// A provider or host that is not a valid header field value would make an HTTP/1.1 client reject the whole
 	// response: it is not written, and without a provider no host is.
-	provider, host := w.state.getAuthProviderAndHost()
-	if provider == "" || !httpguts.ValidHeaderFieldValue(provider) {
+	if statement.Provider == "" || !httpguts.ValidHeaderFieldValue(statement.Provider) {
 		return
 	}
-	w.ResponseWriter.Header().Set(CPAAuthProviderHeader, provider)
-	if host != "" && httpguts.ValidHeaderFieldValue(host) {
-		w.ResponseWriter.Header().Set(CPAAuthHostHeader, host)
+	w.ResponseWriter.Header().Set(CPAAuthProviderHeader, statement.Provider)
+	if statement.Host != "" && httpguts.ValidHeaderFieldValue(statement.Host) {
+		w.ResponseWriter.Header().Set(CPAAuthHostHeader, statement.Host)
 	}
 }
