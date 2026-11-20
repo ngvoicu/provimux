@@ -155,7 +155,7 @@ func (h *Handler) HandleDirectWebsocket(c *gin.Context) {
 		helps.RecordAPIWebsocketError(ctx, helpConfig, "dial", errDial)
 		if handshakeResponse != nil && handshakeResponse.StatusCode == http.StatusUnauthorized {
 			// The upstream answered: name the credential whose response this is.
-			logging.SetGinCPAAuthStatement(c, selected.AuthStatement())
+			logging.ConfirmGinCPAAuthStatement(c, selected.AuthStatement())
 			if contentType := handshakeResponse.Header.Get("Content-Type"); contentType != "" {
 				c.Header("Content-Type", contentType)
 			}

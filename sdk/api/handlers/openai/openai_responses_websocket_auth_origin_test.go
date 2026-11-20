@@ -138,7 +138,7 @@ func TestAuthStatementIsTheSameOnEveryTransport(t *testing.T) {
 		engine := gin.New()
 		engine.Use(logging.CPATraceIDMiddleware())
 		engine.GET("/", func(c *gin.Context) {
-			logging.SetGinCPAAuthStatement(c, statement)
+			logging.ConfirmGinCPAAuthStatement(c, statement)
 			c.Status(http.StatusOK)
 		})
 		recorder := httptest.NewRecorder()

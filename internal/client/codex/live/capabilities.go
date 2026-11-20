@@ -203,7 +203,7 @@ func (h *Handler) HandleHangup(c *gin.Context) {
 		c.Header("Content-Type", contentType)
 	}
 	// The upstream answered: name the credential whose response this is.
-	logging.SetGinCPAAuthStatement(c, selected.AuthStatement())
+	logging.ConfirmGinCPAAuthStatement(c, selected.AuthStatement())
 	copyRealtimeHandshakeHeaders(c.Writer.Header(), response.Header)
 	c.Status(response.StatusCode)
 	if _, errWrite := c.Writer.Write(responseBody); errWrite != nil {

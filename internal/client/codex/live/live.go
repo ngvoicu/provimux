@@ -461,7 +461,7 @@ func (h *Handler) Handle(c *gin.Context) {
 		}
 	}
 	// The upstream answered: name the credential whose response this is.
-	logging.SetGinCPAAuthStatement(c, selected.AuthStatement())
+	logging.ConfirmGinCPAAuthStatement(c, selected.AuthStatement())
 	writeResponseHeaders(c.Writer.Header(), responseHeaders)
 	c.Status(resp.StatusCode)
 	if _, errWrite := c.Writer.Write(responseBodyToWrite); errWrite != nil {
