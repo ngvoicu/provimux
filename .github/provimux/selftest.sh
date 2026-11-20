@@ -1455,7 +1455,7 @@ r="$(grep -lE 'range-diff --' "$here"/*.sh | sed 's|.*/||' | grep -vx 'selftest.
 expect "git range-diff runs in common.sh only" "common.sh" "$r"
 expect "guard.sh's set is PMX_README_PATHS" "$(grep -E '^PMX_README_PATHS=' "$here/common.sh" | sed 's/^[^=]*=//')" \
   "$(grep -E '^readme_paths=' "$here/guard.sh" | sed 's/^[^=]*=//')"
-if grep -qE '^require_readme=[01]$' "$here/guard.sh"; then ok "guard.sh has require_readme"; else bad "guard.sh has require_readme"; fi
+if grep -qE '^require_readme=1$' "$here/guard.sh"; then ok "guard.sh requires the README commit (require_readme=1)"; else bad "guard.sh requires the README commit (require_readme=1)"; fi
 
 echo "# README commit: guard.sh rule 5 (on git objects only)"
 gbare="$tmp/rguard.git"
@@ -1504,6 +1504,8 @@ contains "  ... says so" "$tmp/gd.out" "the parent has a directory at README_CN.
 nor_stack="$(rg rev-parse main~3)"
 expect "no README commit, require_readme=0: passes" pass "$(gd "$nor_stack" "$tmp/guard-req0.sh")"
 expect "no README commit, require_readme=1: fails" fail "$(gd "$nor_stack" "$tmp/guard-req.sh")"
+expect "no README commit, the shipped guard.sh: fails" fail "$(gd "$nor_stack")"
+contains "  ... says so" "$tmp/gd.out" "No README commit"
 contains "  ... says so" "$tmp/gd.out" "No README commit"
 expect "no README commit, upstream's three root READMEs at HEAD: passes (dormant)" pass "$(gd "$(build "$nor_stack" 'echo k >README_KO.md && git add -A && git commit -q -m ko -m "Provimux-Layer: branding"')" "$tmp/guard-req0.sh")"
 
