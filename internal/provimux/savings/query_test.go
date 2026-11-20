@@ -270,9 +270,22 @@ func TestPendingIsIncluded(t *testing.T) {
 	if before.Totals.Requests != 3 {
 		t.Fatalf("a record not yet written is in the answer: %d", before.Totals.Requests)
 	}
+	// A row priced only by the read is floating: its price is not the day's until the saver writes it.
+	// The opus record joins a row the store already priced; the haiku row is new.
+	if before.Totals.Estimate.FloatingRequests != 1 {
+		t.Fatalf("floating before the round: %d, want 1", before.Totals.Estimate.FloatingRequests)
+	}
 	env.round()
-	drop := []string{"observed_at", "recording.saved_at"}
-	diffJSON(t, generic(t, before, drop...), generic(t, env.query(t, q), drop...))
+	after := env.query(t, q)
+	if after.Totals.Estimate.FloatingRequests != 0 {
+		t.Fatalf("floating after the round: %d", after.Totals.Estimate.FloatingRequests)
+	}
+	// Counters and amounts are the same; only the basis of the new row changed.
+	b, a := generic(t, before.Totals, "estimate"), generic(t, after.Totals, "estimate")
+	diffJSON(t, b, a)
+	if before.Totals.Estimate.CostUSD != after.Totals.Estimate.CostUSD || before.Totals.Estimate.SavedByCachingUSD != after.Totals.Estimate.SavedByCachingUSD {
+		t.Fatalf("amounts changed: %+v %+v", before.Totals.Estimate, after.Totals.Estimate)
+	}
 }
 
 func TestOrder(t *testing.T) {
