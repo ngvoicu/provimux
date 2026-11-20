@@ -120,22 +120,27 @@ func TestCPAAuthKindHeaderNamesTheCredentialThatServedTheResponse(t *testing.T) 
 	engine := gin.New()
 	engine.Use(CPATraceIDMiddleware())
 	engine.GET("/oauth", func(c *gin.Context) {
-		ConfirmGinCPAAuthStatement(c, AuthStatement{Kind: "oauth"})
+		ConfirmGinCPAAuthStatement(c, AuthStatement{Kind: "oauth", Provider: "claude"})
 		c.Status(http.StatusOK)
 	})
 	engine.GET("/fallback", func(c *gin.Context) {
 		// The first credential failed before anything was sent; the second one answered.
-		ConfirmGinCPAAuthStatement(c, AuthStatement{Kind: "oauth"})
-		ConfirmGinCPAAuthStatement(c, AuthStatement{Kind: "apikey"})
+		ConfirmGinCPAAuthStatement(c, AuthStatement{Kind: "oauth", Provider: "claude"})
+		ConfirmGinCPAAuthStatement(c, AuthStatement{Kind: "apikey", Provider: "claude"})
 		c.Status(http.StatusOK)
 	})
 	engine.GET("/unknown", func(c *gin.Context) {
 		ConfirmGinCPAAuthStatement(c, AuthStatement{})
 		c.Status(http.StatusOK)
 	})
+	engine.GET("/kind-alone", func(c *gin.Context) {
+		// A kind without a provider is never sent: a client would read it as an older proxy and guess.
+		ConfirmGinCPAAuthStatement(c, AuthStatement{Kind: "apikey"})
+		c.Status(http.StatusOK)
+	})
 	engine.GET("/committed", func(c *gin.Context) {
 		c.Writer.WriteHeaderNow()
-		ConfirmGinCPAAuthStatement(c, AuthStatement{Kind: "apikey"})
+		ConfirmGinCPAAuthStatement(c, AuthStatement{Kind: "apikey", Provider: "claude"})
 	})
 
 	for _, test := range []struct {
@@ -145,6 +150,7 @@ func TestCPAAuthKindHeaderNamesTheCredentialThatServedTheResponse(t *testing.T) 
 		{path: "/oauth", want: "oauth"},
 		{path: "/fallback", want: "apikey"},
 		{path: "/unknown", want: ""},
+		{path: "/kind-alone", want: ""},
 		{path: "/committed", want: ""},
 	} {
 		t.Run(test.path, func(t *testing.T) {
@@ -206,33 +212,40 @@ func TestCPAAuthProviderAndHostHeadersNameTheCredentialThatServedTheResponse(t *
 	}
 }
 
-// The provider and the host are sent only as plain printable ASCII, both or neither: an HTTP/1.1 client would reject
-// the whole response for a control character, and read a non-ASCII host differently from the websocket's JSON. The
-// kind and the trace ID are sent either way.
-func TestCPAAuthProviderAndHostHeadersAreASCIIOrAbsent(t *testing.T) {
+// A statement is sent whole or not at all, and only in printable ASCII: a provider byte outside it (a control
+// character, a line break, UTF-8), a space or "%" is percent-encoded, so an HTTP/1.1 client accepts the response and
+// a header carries what the websocket's JSON carries. A host outside printable ASCII, an unknown kind or a missing
+// provider sends none of the three; the trace ID is sent either way.
+func TestCPAAuthStatementIsSentWholeInASCIIOrNotAtAll(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	for _, test := range []struct {
-		name         string
-		provider     string
-		host         string
-		wantProvider string
-		wantHost     string
+		name      string
+		statement AuthStatement
+		want      AuthStatement
 	}{
-		{name: "control character in the provider", provider: "openai-compatible-study\x7fteam", host: "api.example.test"},
-		{name: "line break in the provider", provider: "claude\r\nX-Injected: 1", host: "api.example.test"},
-		{name: "control character in the host", provider: "openai-compatible-lab", host: "api.example\x01.test"},
-		{name: "internationalized host", provider: "claude", host: "bücher.example"},
-		{name: "provider outside ASCII", provider: "openai-compatible-büro", host: "api.example.test"},
-		{name: "login without a host", provider: "devin", wantProvider: "devin"},
-		{name: "valid values", provider: "openai-compatible-lab", host: "api.example.test", wantProvider: "openai-compatible-lab", wantHost: "api.example.test"},
+		{name: "control character in the provider", statement: AuthStatement{Kind: "apikey", Provider: "openai-compatible-study\x7fteam", Host: "api.example.test"}, want: AuthStatement{Kind: "apikey", Provider: "openai-compatible-study%7Fteam", Host: "api.example.test"}},
+		{name: "line break in the provider", statement: AuthStatement{Kind: "apikey", Provider: "claude\r\nX-Injected: 1", Host: "api.example.test"}, want: AuthStatement{Kind: "apikey", Provider: "claude%0D%0AX-Injected:%201", Host: "api.example.test"}},
+		{name: "provider outside ASCII", statement: AuthStatement{Kind: "apikey", Provider: "openai-compatible-büro", Host: "api.example.test"}, want: AuthStatement{Kind: "apikey", Provider: "openai-compatible-b%C3%BCro", Host: "api.example.test"}},
+		{name: "percent sign in the provider", statement: AuthStatement{Kind: "apikey", Provider: "lab%20team", Host: "api.example.test"}, want: AuthStatement{Kind: "apikey", Provider: "lab%2520team", Host: "api.example.test"}},
+		{name: "control character in the host", statement: AuthStatement{Kind: "apikey", Provider: "openai-compatible-lab", Host: "api.example\x01.test"}},
+		{name: "host outside ASCII", statement: AuthStatement{Kind: "apikey", Provider: "claude", Host: "bücher.example"}},
+		{name: "unknown kind", statement: AuthStatement{Kind: "token", Provider: "claude", Host: "api.example.test"}},
+		{name: "kind alone", statement: AuthStatement{Kind: "apikey"}},
+		{name: "host without a provider", statement: AuthStatement{Kind: "apikey", Host: "api.example.test"}},
+		{name: "login without a host", statement: AuthStatement{Kind: "oauth", Provider: "devin"}, want: AuthStatement{Kind: "oauth", Provider: "devin"}},
+		{name: "IDNA host", statement: AuthStatement{Kind: "apikey", Provider: "claude", Host: "xn--bcher-kva.example"}, want: AuthStatement{Kind: "apikey", Provider: "claude", Host: "xn--bcher-kva.example"}},
+		{name: "valid values", statement: AuthStatement{Kind: "apikey", Provider: "openai-compatible-lab", Host: "api.example.test"}, want: AuthStatement{Kind: "apikey", Provider: "openai-compatible-lab", Host: "api.example.test"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			if got := test.statement.OnTheWire(); got != test.want {
+				t.Fatalf("OnTheWire() = %+q, want %+q", got, test.want)
+			}
 			engine := gin.New()
 			engine.Use(CPATraceIDMiddleware())
 			engine.GET("/", func(c *gin.Context) {
 				SetGinRequestID(c, "1234abcd")
 				SetGinCPATraceID(c, "auth-index")
-				ConfirmGinCPAAuthStatement(c, AuthStatement{Kind: "apikey", Provider: test.provider, Host: test.host})
+				ConfirmGinCPAAuthStatement(c, test.statement)
 				c.String(http.StatusOK, "fixture body")
 			})
 			// A real HTTP/1.1 server and client: the recorder would not show the client rejecting the response.
@@ -247,16 +260,13 @@ func TestCPAAuthProviderAndHostHeadersAreASCIIOrAbsent(t *testing.T) {
 			if response.StatusCode != http.StatusOK || string(body) != "fixture body" {
 				t.Fatalf("status=%d body=%q", response.StatusCode, body)
 			}
-			if got := response.Header.Get(CPAAuthKindHeader); got != "apikey" {
-				t.Fatalf("%s = %q, want apikey", CPAAuthKindHeader, got)
-			}
 			if got := response.Header.Get(CPATraceIDHeader); got == "" {
 				t.Fatalf("%s missing", CPATraceIDHeader)
 			}
 			if got := response.Header.Get("X-Injected"); got != "" {
 				t.Fatalf("X-Injected = %q", got)
 			}
-			for name, want := range map[string]string{CPAAuthProviderHeader: test.wantProvider, CPAAuthHostHeader: test.wantHost} {
+			for name, want := range map[string]string{CPAAuthKindHeader: test.want.Kind, CPAAuthProviderHeader: test.want.Provider, CPAAuthHostHeader: test.want.Host} {
 				values, present := response.Header[http.CanonicalHeaderKey(name)]
 				if present != (want != "") || (present && values[0] != want) {
 					t.Fatalf("%s = %q (present %v), want %q", name, values, present, want)
