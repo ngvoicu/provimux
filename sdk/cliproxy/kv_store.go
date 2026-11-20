@@ -15,6 +15,7 @@ func (s *Service) applyKVStoreConfig(cfg *config.Config) {
 		return
 	}
 	s.kvStoreManaged.Store(true)
+	provimuxFlushSavings()
 	if cfg == nil || cfg.Home.Enabled || home.Current() != nil || cfg.KVStore.Disabled {
 		if errShutdown := kvstore.ShutdownLocal(); errShutdown != nil {
 			log.Errorf("failed to shutdown local kv store: %v", errShutdown)
