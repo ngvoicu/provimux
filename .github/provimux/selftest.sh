@@ -198,11 +198,16 @@ git clone -q "$up" "$pmx"
   git checkout -q --detach v1.1.0
   echo p >patch.txt && git add -A && git commit -q -m 'owner patch'
   echo l >layer.txt && git add -A && git commit -q -m 'layer' -m 'Provimux-Layer: branding'
+  # The README commit, so the guard passes with require_readme=0 and =1 alike.
+  printf '# Provimux\n' >README.md && git add README.md && git commit -q -m 'docs(provimux): root README' -m 'Provimux-Layer: branding
+Provimux-Readme: root'
 )
 guard() { (cd "$pmx" && PMX_UPSTREAM="$up" "$@" bash "$here/guard.sh") >"$tmp/guard.out" 2>&1 && echo pass || echo fail; }
 
 echo "# guard.sh"
 expect "base tag here and upstream: passes" pass "$(guard env)"
+sed 's/^require_readme=[01]$/require_readme=1/' "$here/guard.sh" >"$tmp/guard-fix-req1.sh"
+expect "  ... also with require_readme=1 (the fixture has its README commit)" pass "$( (cd "$pmx" && PMX_UPSTREAM="$up" bash "$tmp/guard-fix-req1.sh") >"$tmp/guard.out" 2>&1 && echo pass || echo fail)"
 contains "  ... on base v1.1.0" "$tmp/guard.out" "Base: v1.1.0"
 git -C "$pmx" tag -d v1.1.0 >/dev/null
 expect "base tag only upstream (no local tag): passes" pass "$(guard env)"
@@ -1371,6 +1376,60 @@ nlc="$(build "$N3" pick:"$P" pick:"$L1" pick:"$R" 'printf x >"README.md
 " && git add -A && git commit -q --amend -C HEAD' pick:"$E" pick:"$L2")"
 expect "R' also adds a file named README.md<newline>: condition 4" 4 "$(rn "$R" "$nlc~2" "$OM" "$nlc")"
 
+echo "# README commit: T-113, a failing git and history the old checks missed"
+# fgit ARGS...: git -C $rp, except that git range-diff fails (status 128) when one of its
+# arguments is $FAIL_RD.
+realgit="$(command -v git)"
+fgit() {
+  local a
+  if [[ "$1" == range-diff ]]; then for a in "$@"; do [[ "$a" == "${FAIL_RD:-}" ]] && { echo "fatal: injected" >&2; return 128; }; done; fi
+  "$realgit" -C "$rp" "$@"
+}
+etree="$(rg hash-object -t tree -w /dev/null)"
+# mkreadme PARENT TREE: a commit of TREE on PARENT with R's author line and message.
+mkreadme() {
+  (cd "$bw" && GIT_AUTHOR_NAME="$(git log -1 --format=%an "$R")" GIT_AUTHOR_EMAIL="$(git log -1 --format=%ae "$R")" \
+    GIT_AUTHOR_DATE="$(git log -1 --format=%ad --date=raw "$R")" git commit-tree "$2" -p "$1" -F <(git cat-file commit "$R" | sed '1,/^$/d'))
+}
+# treewith TREE LINE...: TREE with the root entries given (ls-tree lines) added or replacing those of that name.
+treewith() {
+  local t=$1 l n x; shift
+  { rg ls-tree "$t" | while IFS= read -r l; do
+      n="${l#*$'\t'}"; for x in "$@"; do [[ "${x#*$'\t'}" == "$n" ]] && continue 2; done; printf '%s\n' "$l"; done
+    printf '%s\n' "$@"; } | rg mktree
+}
+fsrd() { local o; if o="$(stack_range_diff "$1" "$2" "$3" "$4" "$tmp/srd.txt" fgit 2>"$tmp/srd.err")"; then echo "ok${o:+ $o}"; else echo fail; fi; }
+expect "T-113 1: git range-diff of the segment below the README commit fails: fails" fail "$(FAIL_RD="$OB..$R^" fsrd "$OB" "$OM" "$N3" "$good")"
+contains "  ... for that reason" "$tmp/srd.err" "segment below the README commit failed"
+expect "T-113 1: git range-diff of the segment above fails: fails" fail "$(FAIL_RD="$R..$OM" fsrd "$OB" "$OM" "$N3" "$good")"
+contains "  ... for that reason" "$tmp/srd.err" "segment above the README commit failed"
+expect "T-113 1: git range-diff of the whole ranges fails (no README commit): fails" fail "$(FAIL_RD="$OB..$nr_old" fsrd "$OB" "$nr_old" "$N3" "$nr_new")"
+contains "  ... for that reason" "$tmp/srd.err" "git range-diff of"
+expect "  ... and with no failure the same calls pass" "ok $R $(rg rev-parse "$good~2")" "$(FAIL_RD=none fsrd "$OB" "$OM" "$N3" "$good")"
+# Blocker 2: R' adds an empty directory (a root tree entry outside the set); the tip keeps
+# the old main's README.md, so only condition 4 can see it.
+ex_tree="$(treewith "$(rg rev-parse "$good~2^{tree}")" "040000 tree $etree	emptydir")"
+ex="$(mkreadme "$good~3" "$ex_tree")"
+ex_tip="$(cd "$bw" && git commit-tree "$(treewith "$ex_tree" "$(rg ls-tree "$OM" README.md)")" -p "$ex" -m tip)"
+if [[ "$(rg diff-tree -r --no-renames -z --name-only --no-commit-id "$ex^" "$ex" | tr '\0' ' ')" == "README.md README_CN.md README_JA.md " ]]; then ok "  (a recursive diff-tree of that commit names only the three READMEs)"; else bad "  (a recursive diff-tree of that commit names only the three READMEs)"; fi
+expect "T-113 2: R' adds an empty directory outside the set: condition 4" 4 "$(rn "$R" "$ex" "$OM" "$ex_tip")"
+dx_par="$(build "$good~3" 'git rm -q README_CN.md && mkdir README_CN.md && echo x >README_CN.md/x && git add -A && git commit -q -m dir')"
+dx="$(mkreadme "$dx_par" "$(rg rev-parse "$good~2^{tree}")")"
+if (readme_outside "$dx_par" "$dx" git -C "$rp"); then bad "T-113 2: a directory at README_CN.md in the parent: readme_outside refuses"; else ok "T-113 2: a directory at README_CN.md in the parent: readme_outside refuses"; fi
+if (readme_outside "$good~3" "$good~2" git -C "$rp"); then ok "  ... and accepts the re-applied commit"; else bad "  ... and accepts the re-applied commit"; fi
+if (readme_outside "$good~3" "$OB" git -C "$rp" 2>/dev/null; [[ $? -eq 1 ]]) && ! (readme_entry 0000000000000000000000000000000000000001 README.md git -C "$rp" >/dev/null 2>&1); then
+  ok "T-113 2: an unreadable commit is a failure of readme_entry, not an empty entry"; else bad "T-113 2: an unreadable commit is a failure of readme_entry, not an empty entry"; fi
+# Blocker 3: the old stack has a merge that the new base already contains. One rev-list
+# over both ranges would exclude it; each range on its own does not.
+ms="$(build "$OB" 'echo s >side.txt && git add side.txt && git commit -q -m side')"
+mg="$(build "$(build "$OB" pick:"$P")" "git merge -q --no-ff -m merge $ms")"
+om3="$(build "$mg" pick:"$L1" pick:"$R" pick:"$E" pick:"$L2")"
+nb3="$(build "$mg" 'echo up >up.txt && git add up.txt && git commit -q -m upstream')"
+cand3="$(build "$nb3" pick:"$om3~3" pick:"$om3~2" pick:"$om3~1" pick:"$om3")"
+expect "  (git rev-list --merges of both ranges at once lists nothing)" "" "$(rg rev-list --merges "$OB..$om3" "$nb3..$cand3")"
+expect "T-113 3: an old-stack merge the new base contains: fails" fail "$(srd "$OB" "$om3" "$nb3" "$cand3")"
+contains "  ... says which range" "$tmp/srd.err" "has a merge commit"
+
 echo "# README commit: the resolver refuses outside its conditions (check.sh prepare)"
 omlic="$(build "$OB" pick:"$P" pick:"$L1" pick:"$R" 'echo GPL >LICENSE && git commit -q -a --amend -C HEAD' pick:"$E" pick:"$L2")"
 expect "the old main's README commit also changes LICENSE: fail" fail "$(prep v1.1.0 "$omlic")"
@@ -1394,7 +1453,9 @@ echo "# README commit: guard.sh rule 5 (on git objects only)"
 gbare="$tmp/rguard.git"
 git init -q --bare "$gbare"
 (cd "$rp/.git/objects" && pwd) >"$gbare/objects/info/alternates"
-sed 's/^require_readme=0$/require_readme=1/' "$here/guard.sh" >"$tmp/guard-req.sh"
+# Both values of the switch, explicitly, whatever the shipped guard.sh says.
+sed 's/^require_readme=[01]$/require_readme=0/' "$here/guard.sh" >"$tmp/guard-req0.sh"
+sed 's/^require_readme=[01]$/require_readme=1/' "$here/guard.sh" >"$tmp/guard-req.sh"
 # gd COMMIT [GUARD]: the guard on a bare repository whose HEAD is COMMIT; pass | fail, output in $tmp/gd.out
 gd() {
   git --git-dir="$gbare" update-ref --no-deref HEAD "$1"
@@ -1410,7 +1471,7 @@ nlt="$(build "$OB" pick:"$P" pick:"$L1" 'printf "%s" "$pointer" >README.md; git 
 expect "a README commit without the layer trailer: fails" fail "$(gd "$nlt")"
 contains "  ... says so" "$tmp/gd.out" "has no 'Provimux-Layer: branding' trailer."
 expect "a README commit that also changes LICENSE: fails" fail "$(gd "$(build "$OB" pick:"$P" pick:"$L1" pick:"$R" 'echo GPL >LICENSE && git commit -q -a --amend -C HEAD' pick:"$E" pick:"$L2")")"
-contains "  ... names LICENSE" "$tmp/gd.out" "changes LICENSE"
+contains "  ... names LICENSE" "$tmp/gd.out" "changes the root entries LICENSE"
 expect "a README commit that keeps README_JA.md: fails" fail "$(gd "$(build "$OB" pick:"$P" pick:"$L1" pick:"$R" "git checkout -q $OB -- README_JA.md && git commit -q --amend -C HEAD" pick:"$E" pick:"$L2")")"
 contains "  ... says absent" "$tmp/gd.out" "must leave README_JA.md absent"
 for n in README_KO.md readme.md README README.md.bak; do
@@ -1421,11 +1482,22 @@ done
 expect "README.md a symlink at HEAD: fails" fail "$(gd "$(build "$OM" 'rm README.md && ln -s LICENSE README.md && git add -A && git commit -q -m link -m "Provimux-Layer: branding"')")"
 contains "  ... says so" "$tmp/gd.out" "README.md at HEAD must be a regular file"
 expect "a README commit that leaves README.md a symlink: fails" fail "$(gd "$(build "$OB" pick:"$P" pick:"$L1" pick:"$R" 'rm README.md && ln -s LICENSE README.md && git add -A && git commit -q --amend -C HEAD')")"
+# T-113, blocker 2: an extra root tree entry outside the set that a recursive diff-tree
+# does not show (an empty directory), and a directory at a path of the set.
+gb="$(build "$OB" pick:"$P" pick:"$L1")"
+rx_tree="$(treewith "$(rg rev-parse "$R^{tree}")" "040000 tree $etree	emptydir")"
+rx="$(mkreadme "$gb" "$rx_tree")"
+expect "T-113: a README commit that adds an empty directory (recursive diff-tree shows nothing): fails" fail "$(gd "$rx")"
+contains "  ... names it" "$tmp/gd.out" "changes the root entries emptydir"
+gdir="$(build "$gb" 'git rm -q README_CN.md && mkdir README_CN.md && echo x >README_CN.md/x && git add -A && git commit -q -m dir -m "Provimux-Layer: branding"')"
+rdir_tree="$(rg ls-tree "$gdir^{tree}" | grep -v -E $'\t''(README_CN.md|README_JA.md|README.md)$' | { cat; rg ls-tree "$R^{tree}" | grep -E $'\t''README.md$'; } | rg mktree)"
+expect "T-113: a README commit whose parent has a directory at README_CN.md (it removes it): fails" fail "$(gd "$(mkreadme "$gdir" "$rdir_tree")")"
+contains "  ... says so" "$tmp/gd.out" "the parent has a directory at README_CN.md"
 nor_stack="$(rg rev-parse main~3)"
-expect "no README commit, require_readme=0: passes" pass "$(gd "$nor_stack")"
+expect "no README commit, require_readme=0: passes" pass "$(gd "$nor_stack" "$tmp/guard-req0.sh")"
 expect "no README commit, require_readme=1: fails" fail "$(gd "$nor_stack" "$tmp/guard-req.sh")"
 contains "  ... says so" "$tmp/gd.out" "No README commit"
-expect "no README commit, upstream's three root READMEs at HEAD: passes (dormant)" pass "$(gd "$(build "$nor_stack" 'echo k >README_KO.md && git add -A && git commit -q -m ko -m "Provimux-Layer: branding"')")"
+expect "no README commit, upstream's three root READMEs at HEAD: passes (dormant)" pass "$(gd "$(build "$nor_stack" 'echo k >README_KO.md && git add -A && git commit -q -m ko -m "Provimux-Layer: branding"')" "$tmp/guard-req0.sh")"
 
 echo "# README commit: publish.sh --ci --plan, end to end (stub gh, local remotes)"
 # The remote holds the old main; the check's artifact is prepare's out dir for v1.1.0
@@ -1455,7 +1527,7 @@ rart() {
 # rplan: publish.sh --ci --plan; "exit N", the output in $tmp/rplan.out, the plan in $tmp/rplan/plan.env
 rplan() {
   rm -rf "$tmp/rplan"
-  (cd "$rp" && env -u PMX_PUSH_TOKEN -u PROVIMUX_TOKEN PATH="$stub/bin:$PATH" STUB_API="$rstub" PMX_REPO=test/provimux \
+  (cd "$rp" && env -u PMX_PUSH_TOKEN -u PROVIMUX_TOKEN PATH="${RPATH:-}$stub/bin:$PATH" STUB_API="$rstub" PMX_REPO=test/provimux \
     PMX_UPSTREAM_REPO=test/up PMX_UPSTREAM_URL="$ru" \
     bash "$here/publish.sh" v1.1.0 --ci --plan "$tmp/rplan" --run 42 --attempt 1 --artifact 501 --expect-main "$OM" --remote pmx) \
     >"$tmp/rplan.out" 2>&1 && echo "exit 0" || echo "exit $?"
@@ -1478,6 +1550,19 @@ expect "result.json's readme names another commit: refused" "exit 1" "$(rplan)"
 contains "  ... says so" "$tmp/rplan.out" "is not this range-diff's"
 rart "$c1" "$tmp/prep-v1.1.0/candidate.bundle" '.readme = null'
 expect "result.json without readme for a README case: refused" "exit 1" "$(rplan)"
+# T-113 1: git range-diff fails in publish.sh (a git on PATH that fails it for one range).
+mkdir -p "$tmp/fgitbin"
+# shellcheck disable=SC2016 # the wrapper's own text
+printf '#!/usr/bin/env bash\nrd=0 hit=0\nfor a in "$@"; do [ "$a" = range-diff ] && rd=1; [ "$a" = "${FAIL_RD:-}" ] && hit=1; done\n[ $rd$hit = 11 ] && { echo "fatal: injected" >&2; exit 128; }\nexec %s "$@"\n' "$realgit" >"$tmp/fgitbin/git"
+chmod +x "$tmp/fgitbin/git"
+rart "$c1" "$tmp/prep-v1.1.0/candidate.bundle"
+expect "  (the same artifact with a working git: plan written)" "exit 0" "$(RPATH="$tmp/fgitbin:" FAIL_RD=none rplan)"
+r_c1="$(rg rev-parse "$c1~2")"
+for seg in "$OB..$R^" "$R..$OM" "$(up_c v1.1.0)..$r_c1^" "$r_c1..$c1"; do
+  expect "T-113 1: publish.sh, git range-diff of $(sed "s/$OB/<old base>/; s/$R/R/g; s/$OM/<old main>/; s/$r_c1/R'/g; s/$c1/<candidate>/; s/$(up_c v1.1.0)/<new base>/" <<<"$seg") fails: refused" "exit 1" "$(RPATH="$tmp/fgitbin:" FAIL_RD="$seg" rplan)"
+  if [[ -e "$tmp/rplan/plan.env" ]]; then bad "  ... and no plan"; else ok "  ... and no plan"; fi
+  contains "  ... because that range-diff failed" "$tmp/rplan.out" "failed"
+done
 rg worktree remove --force "$bw"
 echo
 echo "$pass passed, $failed failed"
