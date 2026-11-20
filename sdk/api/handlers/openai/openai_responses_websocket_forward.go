@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/MoeForge/moego/json"
 	"github.com/MoeForge/moego/ojson"
@@ -52,6 +53,30 @@ const (
 	responsesWebsocketAuthProviderField = "cpa_auth_provider"
 	responsesWebsocketAuthHostField     = "cpa_auth_host"
 )
+
+// setResponsesWebsocketAuthProvider puts the provider and host of the turn's credential on a response.created event.
+// A value a JSON string cannot carry unchanged (not valid UTF-8) is not written, and without a provider no host is.
+func setResponsesWebsocketAuthProvider(payload []byte, authProvider, authHost func() string) []byte {
+	var provider, host string
+	if authProvider != nil {
+		provider = authProvider()
+	}
+	if authHost != nil {
+		host = authHost()
+	}
+	if provider == "" || !utf8.ValidString(provider) {
+		return payload
+	}
+	if named, errSet := ojson.SetBytes(payload, responsesWebsocketAuthProviderField, provider); errSet == nil {
+		payload = named
+	}
+	if host != "" && utf8.ValidString(host) {
+		if named, errSet := ojson.SetBytes(payload, responsesWebsocketAuthHostField, host); errSet == nil {
+			payload = named
+		}
+	}
+	return payload
+}
 
 func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 	c *gin.Context,
@@ -257,22 +282,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 							}
 						}
 					}
-					for _, origin := range []struct {
-						field string
-						value func() string
-					}{
-						{field: responsesWebsocketAuthProviderField, value: opts.authProvider},
-						{field: responsesWebsocketAuthHostField, value: opts.authHost},
-					} {
-						if origin.value == nil {
-							continue
-						}
-						if value := origin.value(); value != "" {
-							if named, errSet := ojson.SetBytes(payloads[i], origin.field, value); errSet == nil {
-								payloads[i] = named
-							}
-						}
-					}
+					payloads[i] = setResponsesWebsocketAuthProvider(payloads[i], opts.authProvider, opts.authHost)
 					responseStarted = true
 					markDownstreamCommitted()
 					completed = false
