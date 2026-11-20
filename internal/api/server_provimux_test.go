@@ -1,22 +1,27 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/management"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 )
 
 // provimuxManagementPaths are Provimux's own management endpoints.
 var provimuxManagementPaths = []string{
 	"/v8/management/provimux/model-routes",
 	"/v8/management/provimux/live-lists",
+	"/v8/management/provimux/savings",
 }
 
 // provimuxTestLiveSource stands in for sdk/cliproxy, which registers the real one and which this
@@ -91,5 +96,31 @@ func TestProvimuxManagementUnknownRouteIsNotFound(t *testing.T) {
 	s := provimuxTestServer(t, true, false)
 	if recorder := provimuxServe(s, "/v8/management/provimux/nope", true); recorder.Code != http.StatusNotFound {
 		t.Fatalf("status=%d want=404 body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+type provimuxSavingsWaiter chan struct{}
+
+func (w provimuxSavingsWaiter) HandleUsage(context.Context, coreusage.Record) {
+	select {
+	case w <- struct{}{}:
+	default:
+	}
+}
+
+// Savings records from the moment the server registered its management routes.
+func TestProvimuxSavingsRecordingStartsWithTheRoutes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	registry.SetLocalModelCatalogs(true)
+	t.Cleanup(func() { registry.SetLocalModelCatalogs(false) })
+	s := provimuxTestServer(t, true, false)
+	seen := make(provimuxSavingsWaiter, 4)
+	coreusage.RegisterNamedPlugin("provimux-savings-routes-test", seen) // after Savings'
+	coreusage.PublishRecord(context.Background(), coreusage.Record{Provider: "claude", Model: "routes-test-model", AuthType: "oauth",
+		Detail: coreusage.Detail{InputTokens: 1, OutputTokens: 1}})
+	<-seen
+	recorder := provimuxServe(s, "/v8/management/provimux/savings?period=today&model=routes-test-model", true)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"requests":1,`) {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
