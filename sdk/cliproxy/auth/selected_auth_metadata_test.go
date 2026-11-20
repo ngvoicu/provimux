@@ -1,8 +1,11 @@
 package auth
 
 import (
+	"context"
+	"strings"
 	"testing"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
@@ -99,5 +102,53 @@ func TestPublishAnsweredAuthMetadataReportsCredentialProviderAndHost(t *testing.
 				t.Fatalf("BaseURLHost() = %q, want %q", got, test.host)
 			}
 		})
+	}
+}
+
+// The selected-kind callback of earlier releases keeps its calls: one per selection, with the selected credential's
+// kind, also for a credential that then fails; under the exported constant and under its string alike.
+func TestSelectedAuthKindCallbackIsCalledAtEverySelection(t *testing.T) {
+	const model = "selected-kind-model"
+	key := &Auth{ID: "kind-key", Provider: "claude", Status: StatusActive, Attributes: map[string]string{AttributeAPIKey: "made-up-key", "priority": "10"}}
+	login := &Auth{ID: "kind-login", Provider: "devin", Status: StatusActive, Attributes: map[string]string{AttributeAuthKind: "oauth", "priority": "0"}}
+	for _, metadataKey := range []string{cliproxyexecutor.SelectedAuthKindCallbackMetadataKey, "selected_auth_kind_callback"} {
+		for _, operation := range []string{"plain", "count", "stream"} {
+			t.Run(metadataKey+"/"+operation, func(t *testing.T) {
+				manager := NewManager(nil, &FillFirstSelector{}, nil)
+				manager.SetRetryConfig(0, 0, 3)
+				for _, credential := range []*Auth{key, login} {
+					manager.RegisterExecutor(&answeredOnceExecutor{provider: credential.Provider, fail: map[string]bool{"kind-key": true}})
+					if _, err := manager.Register(context.Background(), credential.Clone()); err != nil {
+						t.Fatal(err)
+					}
+					registry.GetGlobalRegistry().RegisterClient(credential.ID, credential.Provider, []*registry.ModelInfo{{ID: model}})
+					id := credential.ID
+					t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(id) })
+				}
+				var kinds []string
+				opts := cliproxyexecutor.Options{Metadata: map[string]any{metadataKey: func(kind string) { kinds = append(kinds, kind) }}}
+				providers, req := []string{"claude", "devin"}, cliproxyexecutor.Request{Model: model}
+				var errExec error
+				switch operation {
+				case "plain":
+					_, errExec = manager.Execute(context.Background(), providers, req, opts)
+				case "count":
+					_, errExec = manager.ExecuteCount(context.Background(), providers, req, opts)
+				default:
+					var stream *cliproxyexecutor.StreamResult
+					stream, errExec = manager.ExecuteStream(context.Background(), providers, req, opts)
+					if errExec == nil {
+						for range stream.Chunks {
+						}
+					}
+				}
+				if errExec != nil {
+					t.Fatalf("error = %v", errExec)
+				}
+				if got := strings.Join(kinds, ","); got != "apikey,oauth" {
+					t.Fatalf("selected kinds = %q, want one call per selection: apikey (failed), oauth", got)
+				}
+			})
+		}
 	}
 }
