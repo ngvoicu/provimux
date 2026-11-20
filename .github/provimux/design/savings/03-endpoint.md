@@ -83,7 +83,7 @@ Present with a value: only rows whose field equals it (`provider`, `host` and `m
 | `timezone`, `utc_offset_seconds`, `today` | `01-recording.md` section 6 |
 | `range` | the resolved range; `period` null when `from`/`to` were given |
 | `recording.since` | the earlier of `meta.first_day` and the earliest day in memory; null when neither exists |
-| `recording.persistent` | the local store is on and this process's last write to it succeeded (before the first write: its last read) |
+| `recording.persistent` | the local store is on and this process's last write of a day to it succeeded (before the first write: its last read for the days). The price list copy does not count: a failure to read or write only the copy leaves it as it is |
 | `recording.saved_at` | the last successful write of a day by this process |
 | `recording.folded_days` | days in the range (after filters, any row left) whose value has `folded` |
 | `prices.openrouter` | `fetched_at` and the number of models of the list in use (`02-prices.md` section 2); `remote` from `ProvimuxOpenRouterPrices` |

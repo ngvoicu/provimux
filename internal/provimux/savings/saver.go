@@ -119,8 +119,10 @@ func (r *recorder) logOnce(key, format string, args ...any) {
 	}
 }
 
-// failed records that a store call failed: recording.persistent is false until a write succeeds.
-// The error is logged once per streak of failures. Under mu.
+// failed records that a store call of the days failed (their read, meta, a day's write):
+// recording.persistent is false until a round writes every day it has. The error is logged once per
+// streak of failures. The price list copy has its own, listFailed: persistent says only whether the
+// days reach the store (T-127 7a). Under mu.
 func (r *recorder) failed(err error) {
 	if !r.failing {
 		r.failing = true
@@ -136,6 +138,25 @@ func (r *recorder) succeeded() {
 		log.Info("savings: local store writes succeed again")
 	}
 	r.wroteOnce, r.lastWriteOK = true, true
+}
+
+// listFailed records that reading the store for the list copy, or writing it, failed. The copy is
+// retried every round; recording.persistent is not touched, since the days are not in question. The
+// error is logged once per streak. Under mu.
+func (r *recorder) listFailed(err error) {
+	if !r.listFailing {
+		r.listFailing = true
+		log.Errorf("savings: the price list copy could not be read or written; the recorded days are not affected and it is retried every round: %v", err)
+	}
+}
+
+// listSucceeded ends a streak of listFailed: the store's copy was read, and written when it had to be.
+// Under mu.
+func (r *recorder) listSucceeded() {
+	if r.listFailing {
+		r.listFailing = false
+		log.Info("savings: the price list copy can be read and written again")
+	}
 }
 
 // drainLocked moves the incoming deltas into r.deltas, then drops the oldest days beyond
@@ -346,7 +367,7 @@ func (r *recorder) saveArrivedList(ctx context.Context) {
 	}
 	state, errState := r.readState(ctx, store, false, "")
 	if errState != nil {
-		r.failed(errState)
+		r.listFailed(errState) // no day is read or written here: persistent stays as it is
 		return
 	}
 	r.saveListCopy(ctx, store, state)
@@ -368,13 +389,14 @@ func (r *recorder) moveFirstDay(ctx context.Context, store localStore, state sto
 }
 
 // saveListCopy writes the downloaded list when it is newer than the store's copy and differs from it.
-// Under mu.
+// A failure is the list's own (listFailed), never the days'. Under mu.
 func (r *recorder) saveListCopy(ctx context.Context, store localStore, state storeState) {
 	list, fetchedAt := r.downloaded, r.downloadedAt
 	if list == nil {
 		return
 	}
 	if state.saved != nil && (!fetchedAt.After(state.savedAt) || reflect.DeepEqual(list, state.saved)) {
+		r.listSucceeded() // read, and current
 		return
 	}
 	data, errEncode := encodeListCopy(list, fetchedAt)
@@ -382,6 +404,8 @@ func (r *recorder) saveListCopy(ctx context.Context, store localStore, state sto
 		return
 	}
 	if _, errSet := store.KVSet(ctx, openRouterListKey, data, kvstore.KVSetOptions{}); errSet != nil {
-		r.failed(errSet)
+		r.listFailed(errSet)
+		return
 	}
+	r.listSucceeded()
 }
