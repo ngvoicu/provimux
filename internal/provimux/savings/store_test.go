@@ -225,6 +225,28 @@ func newTestEnv(t testing.TB, store *testStore) *testEnv {
 
 func (e *testEnv) round() { e.r.saveRound(context.Background()) }
 
+// waiting is what memory holds for the store, per day: the deltas, the incoming ones moved in first.
+func (e *testEnv) waiting() map[string]*deltaDay {
+	e.r.mu.Lock()
+	defer e.r.mu.Unlock()
+	e.r.drainLocked()
+	out := make(map[string]*deltaDay, len(e.r.deltas))
+	for day, d := range e.r.deltas {
+		copied := newDeltaDay()
+		copied.addAll(d)
+		out[day] = copied
+	}
+	return out
+}
+
+func (d *deltaDay) requests() int64 {
+	var n int64
+	for _, c := range d.rows {
+		n += c.Req
+	}
+	return n
+}
+
 func (e *testEnv) record(rec coreusage.Record) { e.r.HandleUsage(context.Background(), rec) }
 
 // claudeRecord is a login request to Claude with the given token counts.
