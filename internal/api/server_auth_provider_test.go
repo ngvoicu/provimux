@@ -37,6 +37,8 @@ func (e *authProviderExecutor) Execute(ctx context.Context, a *auth.Auth, _ core
 		coreexecutor.MarkUpstreamAttempt(ctx)
 		return coreexecutor.Response{}, authProviderUnavailableError{}
 	}
+	// Like a real executor's transport: the response comes from an upstream exchange.
+	coreexecutor.MarkUpstreamAttempt(ctx)
 	return coreexecutor.Response{Payload: []byte(`{"id":"msg_1","type":"message","role":"assistant","model":"auth-provider-model","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)}, nil
 }
 
