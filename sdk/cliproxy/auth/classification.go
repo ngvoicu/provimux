@@ -1,6 +1,9 @@
 package auth
 
-import "strings"
+import (
+	"net/url"
+	"strings"
+)
 
 const (
 	AuthKindAPIKey = "apikey"
@@ -47,6 +50,20 @@ func (a *Auth) AuthKind() string {
 		return AuthKindOAuth
 	}
 	return ""
+}
+
+// BaseURLHost returns the lowercased host of an API key's base URL, or "" for a login or a key without one. Only the
+// host: no credentials, port, path or query, since a path can carry an account ID. The model accounts list and the
+// X-CPA-AUTH-HOST response header both use it, so they cannot disagree.
+func (a *Auth) BaseURLHost() string {
+	if a == nil || a.Attributes == nil || a.AuthKind() != AuthKindAPIKey {
+		return ""
+	}
+	parsed, errParse := url.Parse(strings.TrimSpace(a.Attributes["base_url"]))
+	if errParse != nil {
+		return ""
+	}
+	return strings.ToLower(parsed.Hostname())
 }
 
 // AuthSourceKind returns where the Auth entry came from at runtime.

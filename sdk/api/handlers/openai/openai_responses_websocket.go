@@ -1009,6 +1009,8 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		var attemptedUpstreamMode string
 		var selectedAuthObserved bool
 		var selectedAuthKind atomic.Value
+		var selectedAuthProvider atomic.Value
+		var selectedAuthHost atomic.Value
 		var preserveNativeOutput atomic.Bool
 		var pinnedAuthAttempted bool
 		var cliCtx context.Context
@@ -1023,6 +1025,8 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			attemptedUpstreamMode = responsesWebsocketUpstreamModeUnknown
 			selectedAuthObserved = false
 			selectedAuthKind.Store("")
+			selectedAuthProvider.Store("")
+			selectedAuthHost.Store("")
 			nativeRequest := util.IsCodexResponsesLiteRequest(payload, c.Request.Header)
 			preserveNativeOutput.Store(false)
 			codexDuplexStream.Store(false)
@@ -1079,6 +1083,8 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 					return
 				}
 				selectedAuthKind.Store(selectedAuth.AuthKind())
+				selectedAuthProvider.Store(selectedAuth.Provider)
+				selectedAuthHost.Store(selectedAuth.BaseURLHost())
 				attemptedUpstreamMode = upstreamModeForAuth(selectedAuth)
 				codexDuplexStream.Store(duplexInput != nil && attemptedUpstreamMode == responsesWebsocketUpstreamModeWS && strings.EqualFold(strings.TrimSpace(selectedAuth.Provider), "codex"))
 				preserveNativeOutput.Store(nativeRequest && strings.EqualFold(strings.TrimSpace(selectedAuth.Provider), "codex"))
@@ -1183,6 +1189,14 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 					authKind: func() string {
 						kind, _ := selectedAuthKind.Load().(string)
 						return kind
+					},
+					authProvider: func() string {
+						provider, _ := selectedAuthProvider.Load().(string)
+						return provider
+					},
+					authHost: func() string {
+						host, _ := selectedAuthHost.Load().(string)
+						return host
 					},
 					suppressError:      replayPinnedAuthFailure,
 					onDownstreamCommit: func() { downstreamCommitted.Store(true) },
