@@ -8,7 +8,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/httpwire"
-	"golang.org/x/net/http/httpguts"
 )
 
 // CPATraceIDHeader is the downstream response header used to correlate requests with selected credentials.
@@ -46,6 +45,27 @@ type AuthStatement struct {
 	Kind     string
 	Provider string
 	Host     string
+}
+
+// OnTheWire returns the statement as every transport sends it, response headers and websocket fields alike. The
+// kind is sent as it is. The provider and the host are sent only if both are plain printable ASCII (which is also a
+// valid header field value) and there is a provider; otherwise neither is, and a client falls back to the kind. A
+// value outside ASCII would be read differently by different clients (UTF-8 octets in a header, text in JSON), so
+// one credential would look like two services depending on the transport.
+func (s AuthStatement) OnTheWire() AuthStatement {
+	if s.Provider == "" || !printableASCII(s.Provider) || !printableASCII(s.Host) {
+		return AuthStatement{Kind: s.Kind}
+	}
+	return s
+}
+
+func printableASCII(value string) bool {
+	for i := 0; i < len(value); i++ {
+		if value[i] < 0x20 || value[i] > 0x7e {
+			return false
+		}
+	}
+	return true
 }
 
 type cpaTraceState struct {
@@ -239,18 +259,11 @@ func (w *cpaTraceResponseWriter) applyTraceHeader() {
 	if traceID := w.state.get(); traceID != "" {
 		w.ResponseWriter.Header().Set(CPATraceIDHeader, traceID)
 	}
-	// One read: the kind, provider and host written here are one credential's statement.
-	statement := w.state.getAuthStatement()
-	if statement.Kind != "" {
-		w.ResponseWriter.Header().Set(CPAAuthKindHeader, statement.Kind)
-	}
-	// A provider or host that is not a valid header field value would make an HTTP/1.1 client reject the whole
-	// response: it is not written, and without a provider no host is.
-	if statement.Provider == "" || !httpguts.ValidHeaderFieldValue(statement.Provider) {
-		return
-	}
-	w.ResponseWriter.Header().Set(CPAAuthProviderHeader, statement.Provider)
-	if statement.Host != "" && httpguts.ValidHeaderFieldValue(statement.Host) {
-		w.ResponseWriter.Header().Set(CPAAuthHostHeader, statement.Host)
+	// One read: the kind, provider and host written here are one credential's statement, as sent on the wire.
+	statement := w.state.getAuthStatement().OnTheWire()
+	for name, value := range map[string]string{CPAAuthKindHeader: statement.Kind, CPAAuthProviderHeader: statement.Provider, CPAAuthHostHeader: statement.Host} {
+		if value != "" {
+			w.ResponseWriter.Header().Set(name, value)
+		}
 	}
 }
