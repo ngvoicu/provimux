@@ -277,11 +277,20 @@ components:
     Prices:
       type: object
       description: Where the prices come from. Both sources are list prices in US dollars.
-      required: [currency, openrouter, provimux]
+      required: [currency, rates, openrouter, provimux]
       properties:
         currency:
           type: string
           enum: [USD]
+        rates:
+          type: string
+          description: |
+            Which rates of the lists the estimates use. `base`: each model's standard (base) list rate.
+            The higher rates some models publish above a prompt size (long context, OpenRouter's
+            `pricing.overrides`) and fast or priority tiers are not applied, because a daily total
+            has no request sizes: for long prompts the estimate is below what the provider charges.
+            The console says "at base list prices". Clients treat a value they do not know as unknown
+            rates. Added in T-116.
         openrouter:
           type: object
           description: OpenRouter's public model list, https://openrouter.ai/api/v1/models.
@@ -363,7 +372,7 @@ components:
     Estimate:
       type: object
       description: |
-        Estimates at list prices, over the rows that have a price.
+        Estimates at base list prices (see `Prices.rates`), over the rows that have a price.
         cost = uncached x input + cache_read x cache read + cache_write x cache write + output x output.
         cost_without_cache = all input tokens x input + output x output.
         saved_by_caching = cost_without_cache - cost; negative when cache writes cost more than reads saved.
