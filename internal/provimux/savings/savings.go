@@ -115,9 +115,6 @@ type recorder struct {
 	downloaded   map[string]registry.ProvimuxOpenRouterPrice
 	downloadedAt time.Time
 	remote       bool
-	// listSavedAt is the fetched_at of the list copy last seen in or written to a store: an idle round
-	// makes no store call unless the downloaded list is newer.
-	listSavedAt time.Time
 	// What the answer says about the record itself.
 	wroteOnce   bool
 	lastWriteOK bool

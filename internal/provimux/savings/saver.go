@@ -260,10 +260,11 @@ func (r *recorder) newDayRowsNow() *dayRows {
 	return newDayRows(r.location().String(), offset)
 }
 
-// saveRound is one round of the saver (01-recording.md section 5), all of it under mu: for each day
-// with deltas, read the day from the store in use now, add the deltas, give rows without a price
-// one, write the day, and only once the write succeeded forget those deltas. A failed read or write
-// keeps them for the next round. Then the price list copy.
+// saveRound is one round of the saver (01-recording.md section 5), all of it under mu: read meta and
+// the days with deltas from the store in use now; move first_day back first when a day is earlier
+// (an index too early is harmless, one too late hides a day from period=all); then for each day add
+// the deltas, give rows without a price one, write the day, and only once the write succeeded forget
+// those deltas. A failed read or write keeps them for the next round. Then the price list copy.
 func (r *recorder) saveRound(ctx context.Context) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -291,6 +292,11 @@ func (r *recorder) saveRound(ctx context.Context) {
 	stored, errDays := r.readDays(ctx, store, work)
 	if errDays != nil {
 		r.failed(errDays)
+		return
+	}
+	// The index before the days: no day is written while meta's first_day is later than it.
+	if errFirst := r.moveFirstDay(ctx, store, state, work[0]); errFirst != nil {
+		r.failed(errFirst)
 		return
 	}
 	book := bookOf(r.downloaded, r.downloadedAt, r.remote, state.saved, state.savedAt, r.opts.table)
@@ -322,15 +328,16 @@ func (r *recorder) saveRound(ctx context.Context) {
 	if wrote && !failedAny {
 		r.succeeded()
 	}
-	r.moveFirstDay(ctx, store, state, work[0])
 	r.saveListCopy(ctx, store, state)
 }
 
-// saveArrivedList saves, in a round with no day to write, a downloaded list that is newer than the
-// copy last seen in a store: the first download often completes after the round that asked for it.
-// No store call unless there is such a list. Under mu.
+// saveArrivedList saves, in a round with no day to write, the downloaded list when the store in use
+// now has no copy or an older one: the first download often completes after the round that asked for
+// it, and after a switch of server.kv-store.path the new store may have none (T-124 finding 7). It
+// reads that store's copy every such round (one KVMGet, nothing written when it is current); no store
+// call while no list was downloaded. Under mu.
 func (r *recorder) saveArrivedList(ctx context.Context) {
-	if r.downloaded == nil || !r.downloadedAt.After(r.listSavedAt) {
+	if r.downloaded == nil {
 		return
 	}
 	store, errStore := r.opts.store()
@@ -345,20 +352,19 @@ func (r *recorder) saveArrivedList(ctx context.Context) {
 	r.saveListCopy(ctx, store, state)
 }
 
-// moveFirstDay writes meta again when a day before its first_day was recorded. Under mu.
-func (r *recorder) moveFirstDay(ctx context.Context, store localStore, state storeState, earliest string) {
+// moveFirstDay writes meta again when a day before its first_day is about to be written. Under mu.
+func (r *recorder) moveFirstDay(ctx context.Context, store localStore, state storeState, earliest string) error {
 	if !state.metaOK || state.meta.FirstDay == "" || earliest >= state.meta.FirstDay {
-		return
+		return nil
 	}
 	meta := state.meta
 	meta.FirstDay = earliest
 	data, errEncode := json.Marshal(meta)
 	if errEncode != nil {
-		return
+		return errEncode
 	}
-	if _, errSet := store.KVSet(ctx, metaKey, data, kvstore.KVSetOptions{}); errSet != nil {
-		r.failed(errSet)
-	}
+	_, errSet := store.KVSet(ctx, metaKey, data, kvstore.KVSetOptions{})
+	return errSet
 }
 
 // saveListCopy writes the downloaded list when it is newer than the store's copy and differs from it.
@@ -368,12 +374,7 @@ func (r *recorder) saveListCopy(ctx context.Context, store localStore, state sto
 	if list == nil {
 		return
 	}
-	if state.saved != nil && !fetchedAt.After(state.savedAt) {
-		r.listSavedAt = maxTime(r.listSavedAt, state.savedAt)
-		return
-	}
-	if state.saved != nil && reflect.DeepEqual(list, state.saved) {
-		r.listSavedAt = maxTime(r.listSavedAt, fetchedAt)
+	if state.saved != nil && (!fetchedAt.After(state.savedAt) || reflect.DeepEqual(list, state.saved)) {
 		return
 	}
 	data, errEncode := encodeListCopy(list, fetchedAt)
@@ -382,14 +383,5 @@ func (r *recorder) saveListCopy(ctx context.Context, store localStore, state sto
 	}
 	if _, errSet := store.KVSet(ctx, openRouterListKey, data, kvstore.KVSetOptions{}); errSet != nil {
 		r.failed(errSet)
-		return
 	}
-	r.listSavedAt = maxTime(r.listSavedAt, fetchedAt)
-}
-
-func maxTime(a, b time.Time) time.Time {
-	if b.After(a) {
-		return b
-	}
-	return a
 }

@@ -201,13 +201,15 @@ func (d *dayRows) mergePending(pending map[pendingKey]*counters, secret []byte) 
 			k.m, k.c = otherValue, otherValue
 		} else if pk.key != "" {
 			k.c = keyID(secret, pk.key)
-			d.keys[k.c] = keyTail(pk.key)
 		}
 		if _, ok := d.rows[k]; !ok && !k.folded() && d.regular >= maxRows {
 			k.m, k.c = otherValue, otherValue
 		}
+		// A key's id and tail are kept only for a row that refers to them, after the fold decision.
 		if k.folded() {
 			d.folded = true
+		} else if k.c != "" {
+			d.keys[k.c] = keyTail(pk.key)
 		}
 		r, ok := d.rows[k]
 		if !ok {
