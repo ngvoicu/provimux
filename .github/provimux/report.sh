@@ -138,6 +138,7 @@ esac
       echo "| build | ok |"
       echo "| tests | $(jq -r '.tests | "candidate: \(.candidate.packages) packages, \(.candidate.passed) tests passed, \(.candidate.failed) failed; tag: \(.tag.packages) packages, \(.tag.passed) passed, \(.tag.failed) failed; new failures: \(.new_failures | length); flaky (passed on the package rerun): \(.flaky | length); failing on the tag too: \(.failing_on_tag_too | length)"' "$r" | tr -cd 'A-Za-z0-9 ,.;:()_-') |"
       echo "| guard | ok |"
+      [[ "$(jq -r '.readme // null | type' "$r")" != object ]] || echo "| root READMEs | $(jq -r '.readme | "README commit \(.old[0:12]) -> \(.new[0:12]), in normal form" + (if .reapplied then "; re-applied at the rebase stop (" + (.conflicts | join(", ")) + ")" else "" end)' "$r" | tr -cd 'A-Za-z0-9 ,.;:()_>-') |"
       echo
       nd="$(jq '.decisions.dropped | length' "$r")"; nc="$(jq '.decisions.changed | length' "$r")"; nw="$(jq '.decisions.new_workflows | length' "$r")"
       if [[ "$nd$nc$nw" == "000" ]]; then
