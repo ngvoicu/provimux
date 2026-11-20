@@ -71,16 +71,6 @@ func newDayRows(tz string, offset int) *dayRows {
 	return &dayRows{tz: tz, offset: offset, keys: map[string]string{}, prices: map[string]price{}, rows: map[rowKey]*row{}}
 }
 
-func (d *dayRows) clone() *dayRows {
-	out := &dayRows{tz: d.tz, offset: d.offset, folded: d.folded, keys: maps.Clone(d.keys), prices: maps.Clone(d.prices),
-		rows: make(map[rowKey]*row, len(d.rows)), regular: d.regular}
-	for k, r := range d.rows {
-		copied := *r
-		out.rows[k] = &copied
-	}
-	return out
-}
-
 // sortedKeys orders rows by kind, provider, host, model and key, so a value encodes the same bytes
 // for the same totals.
 func (d *dayRows) sortedKeys() []rowKey {
@@ -159,8 +149,49 @@ func boolCompare(a, b bool) int {
 	}
 }
 
-// mergePending adds pending to the rows by key id (step 2 of 01-recording.md section 5). A new
-// combination beyond the row limit goes to the ~other row of its kind, provider and host.
+// deltaDay is what a day received since its last successful write: counters per combination, the
+// client key itself kept until the write (01-recording.md section 7). Never what the store holds.
+type deltaDay struct {
+	rows    map[pendingKey]*counters
+	regular int // combinations that are not folded
+}
+
+func newDeltaDay() *deltaDay { return &deltaDay{rows: map[pendingKey]*counters{}} }
+
+// add adds n to a combination. A combination already present takes no new slot; beyond maxRows
+// combinations a new one joins its kind, provider and host's folded delta. This bounds memory only:
+// against the stored rows the limit is applied when the deltas meet them (mergePending), where a
+// repeat of a stored row never takes a slot. So a delta is folded here only when one day sees more
+// than maxRows distinct combinations between two successful writes (or ever, with the store off).
+func (d *deltaDay) add(pk pendingKey, n counters) {
+	if c, ok := d.rows[pk]; ok {
+		c.add(n)
+		return
+	}
+	if !pk.folded && d.regular >= maxRows {
+		pk = pendingKey{k: pk.k, p: pk.p, h: pk.h, folded: true}
+		if c, ok := d.rows[pk]; ok {
+			c.add(n)
+			return
+		}
+	}
+	if !pk.folded {
+		d.regular++
+	}
+	c := n
+	d.rows[pk] = &c
+}
+
+// addAll adds every delta of other, by the same rule.
+func (d *deltaDay) addAll(other *deltaDay) {
+	for _, pk := range slices.SortedFunc(maps.Keys(other.rows), comparePendingKeys) {
+		d.add(pk, *other.rows[pk])
+	}
+}
+
+// mergePending adds deltas to the rows by key id (01-recording.md section 5). A repeat of a row takes
+// no slot; a new combination beyond the row limit goes to the ~other row of its kind, provider and
+// host.
 func (d *dayRows) mergePending(pending map[pendingKey]*counters, secret []byte) {
 	keys := slices.Collect(maps.Keys(pending))
 	slices.SortFunc(keys, comparePendingKeys)

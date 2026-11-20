@@ -123,7 +123,8 @@ func deref(v *int64) int64 {
 	return nonNegative(*v)
 }
 
-// HandleUsage implements coreusage.Plugin. No I/O; one mutex; never held across a store call.
+// HandleUsage implements coreusage.Plugin. No I/O: it adds the record to the incoming deltas under
+// inMu, a lock nothing holds across a store call, and returns.
 func (r *recorder) HandleUsage(ctx context.Context, record coreusage.Record) {
 	s := sampleOf(ctx, record, r.location(), r.opts.now())
 	// The account's provider, not the executor's: Kimi's Claude Messages route runs the embedded
@@ -131,39 +132,13 @@ func (r *recorder) HandleUsage(ctx context.Context, record coreusage.Record) {
 	if provider := r.opts.accountProvider(record.AuthID); provider != "" {
 		s.provider = cut(provider, 64)
 	}
-	r.mu.Lock()
-	r.addLocked(s)
-	r.mu.Unlock()
-}
-
-// addLocked adds a sample to its day's pending totals.
-func (r *recorder) addLocked(s sample) {
-	st := r.dayLocked(s.day)
 	pk := pendingKey{k: s.kind, p: s.provider, h: s.host, m: s.model, key: s.key}
-	if c, ok := st.pending[pk]; ok {
-		c.add(s.n)
-		return
+	r.inMu.Lock()
+	d := r.incoming[s.day]
+	if d == nil {
+		d = newDeltaDay()
+		r.incoming[s.day] = d
 	}
-	// A new combination in pending. A repeat of a stored row takes no slot. A combination that would
-	// add a row beyond the limit joins its kind, provider and host's ~other row. The limit is applied
-	// exactly when pending meets the stored rows; this keeps memory bounded too.
-	if st.loaded && r.metaKnown {
-		id := keyID(r.secret, s.key)
-		if _, stored := st.rows.rows[rowKey{k: s.kind, p: s.provider, h: s.host, m: s.model, c: id}]; stored {
-			c := s.n
-			st.pending[pk] = &c
-			return
-		}
-	}
-	if st.rows.regular+st.pendingRegular >= maxRows {
-		pk = pendingKey{k: s.kind, p: s.provider, h: s.host, folded: true}
-		if c, ok := st.pending[pk]; ok {
-			c.add(s.n)
-			return
-		}
-	} else {
-		st.pendingRegular++
-	}
-	c := s.n
-	st.pending[pk] = &c
+	d.add(pk, s.n)
+	r.inMu.Unlock()
 }
