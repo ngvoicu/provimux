@@ -3331,17 +3331,15 @@ func publishSelectedAuthMetadata(meta map[string]any, auth *Auth) {
 			callback(authIndex)
 		}
 	}
-	// A selected credential has not answered yet: until one does, nothing names the credential behind the response.
-	publishAnsweredAuthMetadata(nil, meta, nil)
 }
 
-// publishAnsweredAuthMetadata publishes, in one call, the statement of the credential whose response the client
-// receives: auth must be the credential the attempt went out with (prepared, where preparation replaced it), and
-// attemptCtx the attempt's context. It is called where an attempt returned a response (an execution or count
-// returned, a stream passed its bootstrap). Only a response an upstream produced names a credential: when the
-// attempt's tracker records no upstream exchange (a count the proxy estimated itself), the statement is withdrawn.
-// A selection calls it with nil, so headers committed before an answer, and an error after the last selection, name
-// no credential.
+// publishAnsweredAuthMetadata states, in one call to AnsweredAuthCallbackMetadataKey, who produced the response an
+// Execute, ExecuteCount or ExecuteStream call returns: it is called once per call that returns a response, at that
+// return (an execution or count returned, a stream passed its bootstrap), and never at a selection or for a call that
+// returns an error. auth must be the credential the attempt went out with (prepared, where preparation replaced it),
+// and attemptCtx the attempt's context. Only a response an upstream produced names a credential: when the attempt's
+// tracker records no upstream exchange (a count the proxy estimated itself), the callback receives three empty
+// values.
 func publishAnsweredAuthMetadata(attemptCtx context.Context, meta map[string]any, auth *Auth) {
 	if len(meta) == 0 {
 		return
