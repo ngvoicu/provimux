@@ -88,7 +88,7 @@ When the downloaded list differs from the saved one, the saver writes it to `pro
   "models": { "anthropic/claude-opus-5.5": { "in": 4, "out": 20, "cr": 0.2, "cw": 5, "cw1h": 8 } } }
 ```
 
-About 30 KB for 469 models [ran: 28,294 B], rewritten only on a change of a price or of the set of models. It is read when the saver first reaches the store. The list in use is the one with the later `fetched_at` of the downloaded and the saved; the response reports it (`prices.openrouter.fetched_at`, `.models`).
+About 30 KB for 469 models [ran: 28,294 B], rewritten only on a change of a price or of the set of models. It is read with `meta` by every round that writes and by every query, from the store in use. The list in use is the one with the later `fetched_at` of the downloaded and the saved; the response reports it (`prices.openrouter.fetched_at`, `.models`).
 
 ### Without the list
 
