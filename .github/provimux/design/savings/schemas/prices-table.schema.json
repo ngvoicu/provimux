@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ngvoicu/provimux/.github/provimux/design/savings/schemas/prices-table.schema.json",
+  "title": "Provimux Savings: Provimux's own price table",
+  "description": "internal/provimux/savings/prices.json, embedded in the binary. Prices for models OpenRouter's public list does not carry, and names OpenRouter lists under another id. Every entry names where its price or its equivalence is published.",
+  "type": "object",
+  "required": ["v", "updated", "models"],
+  "additionalProperties": false,
+  "properties": {
+    "v": { "const": 1 },
+    "updated": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$", "description": "The day the table was last checked against its sources." },
+    "models": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/entry" }
+    }
+  },
+  "$defs": {
+    "entry": {
+      "type": "object",
+      "required": ["provider", "model", "source"],
+      "additionalProperties": false,
+      "oneOf": [
+        { "required": ["price"] },
+        { "required": ["same_as"] }
+      ],
+      "properties": {
+        "provider": { "type": "string", "minLength": 1, "description": "The provider the entry applies to, lower case, or * for any. An entry naming the provider wins over *." },
+        "model": { "type": "string", "minLength": 1, "description": "The model id as usage records carry it, lower case." },
+        "price": { "$ref": "#/$defs/price" },
+        "same_as": { "type": "string", "pattern": "^[a-z0-9._-]+/[a-z0-9._:-]+$", "description": "An id of OpenRouter's list: the model is valued at that entry's price. Unpriced while the list has no such id." },
+        "source": { "type": "string", "format": "uri", "pattern": "^https://", "description": "The public page that states the price, or that the model is the one named in same_as." },
+        "note": { "type": "string" }
+      }
+    },
+    "price": {
+      "type": "object",
+      "description": "US dollars per million tokens.",
+      "required": ["in", "out"],
+      "additionalProperties": false,
+      "properties": {
+        "in": { "type": "number", "minimum": 0 },
+        "out": { "type": "number", "minimum": 0 },
+        "cr": { "type": "number", "minimum": 0 },
+        "cw": { "type": "number", "minimum": 0 },
+        "cw1h": { "type": "number", "minimum": 0 }
+      }
+    }
+  }
+}

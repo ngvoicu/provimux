@@ -1,0 +1,365 @@
+[
+  {
+    "v": 1,
+    "day": "2026-11-18",
+    "tz": "Europe/Bucharest",
+    "utc_offset": 7200,
+    "keys": {
+      "3f9a1c2b7d4e5f60": "x9Qz",
+      "8c41d0e2a7b35f19": ""
+    },
+    "prices": {
+      "anthropic/claude-opus-5.5": {
+        "src": "openrouter",
+        "in": 4.0,
+        "out": 20.0,
+        "cr": 0.2,
+        "cw": 5.0,
+        "cw1h": 8.0
+      },
+      "openai/gpt-6.2-sol": {
+        "src": "openrouter",
+        "in": 2.0,
+        "out": 10.0,
+        "cr": 0.1,
+        "cw": 2.5
+      },
+      "anthropic/claude-sonnet-5.5": {
+        "src": "openrouter",
+        "in": 2.0,
+        "out": 10.0,
+        "cr": 0.1,
+        "cw": 2.5,
+        "cw1h": 4.0
+      },
+      "anthropic/claude-haiku-5.5": {
+        "src": "openrouter",
+        "in": 0.1,
+        "out": 0.5,
+        "cr": 0.01,
+        "cw": 0.125,
+        "cw1h": 0.2
+      }
+    },
+    "rows": [
+      {
+        "k": "oauth",
+        "p": "claude",
+        "m": "claude-opus-5-5",
+        "c": "3f9a1c2b7d4e5f60",
+        "pm": "anthropic/claude-opus-5.5",
+        "pmm": "normalized",
+        "n": {
+          "req": 489,
+          "fail": 3,
+          "in": 568000,
+          "cr": 110720000,
+          "cw": 4880000,
+          "cw1h": 4880000,
+          "out": 2640000,
+          "rsn": 560000
+        }
+      },
+      {
+        "k": "oauth",
+        "p": "codex",
+        "m": "gpt-6.2-sol",
+        "c": "3f9a1c2b7d4e5f60",
+        "pm": "openai/gpt-6.2-sol",
+        "pmm": "normalized",
+        "n": {
+          "req": 192,
+          "in": 4160000,
+          "cr": 48800000,
+          "out": 1520000,
+          "rsn": 656000
+        }
+      },
+      {
+        "k": "apikey",
+        "p": "openrouter",
+        "h": "openrouter.ai",
+        "m": "anthropic/claude-sonnet-5.5",
+        "c": "8c41d0e2a7b35f19",
+        "pm": "anthropic/claude-sonnet-5.5",
+        "pmm": "exact",
+        "n": {
+          "req": 76,
+          "fail": 1,
+          "in": 720000,
+          "cr": 7840000,
+          "cw": 960000,
+          "cw5": 960000,
+          "out": 328000,
+          "costn": 74,
+          "cost": 7873964800
+        }
+      },
+      {
+        "k": "oauth",
+        "p": "devin",
+        "m": "swe-2",
+        "c": "3f9a1c2b7d4e5f60",
+        "n": {
+          "req": 32,
+          "in": 240000,
+          "out": 72000
+        }
+      },
+      {
+        "k": "apikey",
+        "p": "claude",
+        "m": "claude-haiku-5-5",
+        "pm": "anthropic/claude-haiku-5.5",
+        "pmm": "normalized",
+        "n": {
+          "req": 9,
+          "in": 64000,
+          "out": 16000
+        }
+      }
+    ]
+  },
+  {
+    "v": 1,
+    "day": "2026-11-19",
+    "tz": "Europe/Bucharest",
+    "utc_offset": 7200,
+    "keys": {
+      "3f9a1c2b7d4e5f60": "x9Qz",
+      "8c41d0e2a7b35f19": ""
+    },
+    "prices": {
+      "anthropic/claude-opus-5.5": {
+        "src": "openrouter",
+        "in": 4.0,
+        "out": 20.0,
+        "cr": 0.2,
+        "cw": 5.0,
+        "cw1h": 8.0
+      },
+      "openai/gpt-6.2-sol": {
+        "src": "openrouter",
+        "in": 2.0,
+        "out": 10.0,
+        "cr": 0.1,
+        "cw": 2.5
+      },
+      "anthropic/claude-sonnet-5.5": {
+        "src": "openrouter",
+        "in": 2.0,
+        "out": 10.0,
+        "cr": 0.1,
+        "cw": 2.5,
+        "cw1h": 4.0
+      },
+      "anthropic/claude-haiku-5.5": {
+        "src": "openrouter",
+        "in": 0.1,
+        "out": 0.5,
+        "cr": 0.01,
+        "cw": 0.125,
+        "cw1h": 0.2
+      }
+    },
+    "rows": [
+      {
+        "k": "oauth",
+        "p": "claude",
+        "m": "claude-opus-5-5",
+        "c": "3f9a1c2b7d4e5f60",
+        "pm": "anthropic/claude-opus-5.5",
+        "pmm": "normalized",
+        "n": {
+          "req": 612,
+          "fail": 4,
+          "in": 710000,
+          "cr": 138400000,
+          "cw": 6100000,
+          "cw1h": 6100000,
+          "out": 3300000,
+          "rsn": 700000
+        }
+      },
+      {
+        "k": "oauth",
+        "p": "codex",
+        "m": "gpt-6.2-sol",
+        "c": "3f9a1c2b7d4e5f60",
+        "pm": "openai/gpt-6.2-sol",
+        "pmm": "normalized",
+        "n": {
+          "req": 240,
+          "fail": 1,
+          "in": 5200000,
+          "cr": 61000000,
+          "out": 1900000,
+          "rsn": 820000
+        }
+      },
+      {
+        "k": "apikey",
+        "p": "openrouter",
+        "h": "openrouter.ai",
+        "m": "anthropic/claude-sonnet-5.5",
+        "c": "8c41d0e2a7b35f19",
+        "pm": "anthropic/claude-sonnet-5.5",
+        "pmm": "exact",
+        "n": {
+          "req": 95,
+          "fail": 2,
+          "in": 900000,
+          "cr": 9800000,
+          "cw": 1200000,
+          "cw5": 1200000,
+          "out": 410000,
+          "costn": 93,
+          "cost": 9842456000
+        }
+      },
+      {
+        "k": "oauth",
+        "p": "devin",
+        "m": "swe-2",
+        "c": "3f9a1c2b7d4e5f60",
+        "n": {
+          "req": 40,
+          "in": 300000,
+          "out": 90000
+        }
+      },
+      {
+        "k": "apikey",
+        "p": "claude",
+        "m": "claude-haiku-5-5",
+        "pm": "anthropic/claude-haiku-5.5",
+        "pmm": "normalized",
+        "n": {
+          "req": 12,
+          "in": 80000,
+          "out": 20000
+        }
+      }
+    ]
+  },
+  {
+    "v": 1,
+    "day": "2026-11-20",
+    "tz": "Europe/Bucharest",
+    "utc_offset": 7200,
+    "keys": {
+      "3f9a1c2b7d4e5f60": "x9Qz",
+      "8c41d0e2a7b35f19": ""
+    },
+    "prices": {
+      "anthropic/claude-opus-5.5": {
+        "src": "openrouter",
+        "in": 4.0,
+        "out": 20.0,
+        "cr": 0.2,
+        "cw": 5.0,
+        "cw1h": 8.0
+      },
+      "openai/gpt-6.2-sol": {
+        "src": "openrouter",
+        "in": 2.0,
+        "out": 10.0,
+        "cr": 0.1,
+        "cw": 2.5
+      },
+      "anthropic/claude-sonnet-5.5": {
+        "src": "openrouter",
+        "in": 2.0,
+        "out": 10.0,
+        "cr": 0.1,
+        "cw": 2.5,
+        "cw1h": 4.0
+      },
+      "anthropic/claude-haiku-5.5": {
+        "src": "openrouter",
+        "in": 0.1,
+        "out": 0.5,
+        "cr": 0.01,
+        "cw": 0.125,
+        "cw1h": 0.2
+      }
+    },
+    "rows": [
+      {
+        "k": "oauth",
+        "p": "claude",
+        "m": "claude-opus-5-5",
+        "c": "3f9a1c2b7d4e5f60",
+        "pm": "anthropic/claude-opus-5.5",
+        "pmm": "normalized",
+        "n": {
+          "req": 275,
+          "fail": 1,
+          "in": 319500,
+          "cr": 62280000,
+          "cw": 2745000,
+          "cw1h": 2745000,
+          "out": 1485000,
+          "rsn": 315000
+        }
+      },
+      {
+        "k": "oauth",
+        "p": "codex",
+        "m": "gpt-6.2-sol",
+        "c": "3f9a1c2b7d4e5f60",
+        "pm": "openai/gpt-6.2-sol",
+        "pmm": "normalized",
+        "n": {
+          "req": 108,
+          "in": 2340000,
+          "cr": 27450000,
+          "out": 855000,
+          "rsn": 369000
+        }
+      },
+      {
+        "k": "apikey",
+        "p": "openrouter",
+        "h": "openrouter.ai",
+        "m": "anthropic/claude-sonnet-5.5",
+        "c": "8c41d0e2a7b35f19",
+        "pm": "anthropic/claude-sonnet-5.5",
+        "pmm": "exact",
+        "n": {
+          "req": 42,
+          "in": 405000,
+          "cr": 4410000,
+          "cw": 540000,
+          "cw5": 540000,
+          "out": 184500,
+          "costn": 41,
+          "cost": 4429105200
+        }
+      },
+      {
+        "k": "oauth",
+        "p": "devin",
+        "m": "swe-2",
+        "c": "3f9a1c2b7d4e5f60",
+        "n": {
+          "req": 18,
+          "in": 135000,
+          "out": 40500
+        }
+      },
+      {
+        "k": "apikey",
+        "p": "claude",
+        "m": "claude-haiku-5-5",
+        "pm": "anthropic/claude-haiku-5.5",
+        "pmm": "normalized",
+        "n": {
+          "req": 5,
+          "in": 36000,
+          "out": 9000
+        }
+      }
+    ]
+  }
+]
