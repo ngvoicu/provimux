@@ -52,15 +52,11 @@ const (
 	SelectedAuthIndexMetadataKey = "selected_auth_index"
 	// SelectedAuthIndexCallbackMetadataKey carries an optional callback invoked with the selected auth index.
 	SelectedAuthIndexCallbackMetadataKey = "selected_auth_index_callback"
-	// SelectedAuthKindCallbackMetadataKey carries an optional callback invoked with the selected auth's kind
-	// ("oauth" or "apikey"), so a client can tell a subscription login from an API key.
-	SelectedAuthKindCallbackMetadataKey = "selected_auth_kind_callback"
-	// SelectedAuthProviderCallbackMetadataKey carries an optional callback invoked with the selected auth's provider,
-	// so a client can tell two credentials of the same kind serving one model apart.
-	SelectedAuthProviderCallbackMetadataKey = "selected_auth_provider_callback"
-	// SelectedAuthHostCallbackMetadataKey carries an optional callback invoked with the host of the selected API key's
-	// base URL, or "" for a login or a key without one.
-	SelectedAuthHostCallbackMetadataKey = "selected_auth_host_callback"
+	// AnsweredAuthCallbackMetadataKey carries an optional func(kind, provider, host string), invoked in one call with
+	// the statement of the credential whose upstream produced the response (its kind, "oauth" or "apikey"; its
+	// provider; the host of an API key's base URL, or ""), and with three empty values when a credential is selected
+	// and none has answered yet.
+	AnsweredAuthCallbackMetadataKey = "answered_auth_callback"
 	// FinalizedResponseFormatCallbackMetadataKey carries an optional callback invoked with the effective response_format after payload rules.
 	FinalizedResponseFormatCallbackMetadataKey = "finalized_response_format_callback"
 	// ExecutionSessionMetadataKey identifies a long-lived downstream execution session.
