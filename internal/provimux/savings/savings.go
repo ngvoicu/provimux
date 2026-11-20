@@ -119,7 +119,8 @@ type recorder struct {
 	wroteOnce   bool
 	lastWriteOK bool
 	lastSavedAt time.Time
-	failing     bool            // in a streak of failed store calls: logged once per streak
+	failing     bool            // in a streak of failed store calls for the days: logged once per streak
+	listFailing bool            // in a streak of failed reads or writes of the list copy: logged once per streak
 	dropped     bool            // a day beyond maxMemoryDays was dropped: logged once
 	logged      map[string]bool // keys whose value did not decode, logged once
 
