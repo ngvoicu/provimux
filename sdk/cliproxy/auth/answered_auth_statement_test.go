@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executionregistry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
@@ -53,7 +55,8 @@ func TestAnsweredAuthStatementIsCommittedWholeOrNotAtAll(t *testing.T) {
 				case 1:
 					publishAnsweredAuthMetadata(upstreamAnswered(), meta, login)
 				default:
-					publishSelectedAuthMetadata(meta, hostedKey)
+					// No upstream exchange: the statement is withdrawn.
+					publishAnsweredAuthMetadata(cliproxyexecutor.WithUpstreamAttemptTracker(context.Background()), meta, hostedKey)
 				}
 			}
 			close(done)
@@ -221,5 +224,114 @@ func TestAnsweredAuthStatementNamesThePreparedHomeCredential(t *testing.T) {
 				t.Fatalf("statement = %+v, want %+v (the prepared credential's host)", statement, want)
 			}
 		})
+	}
+}
+
+type answeredOnceUnavailable struct{}
+
+func (answeredOnceUnavailable) Error() string   { return "fixture upstream unavailable" }
+func (answeredOnceUnavailable) StatusCode() int { return http.StatusServiceUnavailable }
+
+// answeredOnceExecutor stands for an upstream: every attempt marks its exchange; a credential in fail answers with an
+// error.
+type answeredOnceExecutor struct {
+	provider string
+	fail     map[string]bool
+}
+
+func (e *answeredOnceExecutor) Identifier() string { return e.provider }
+
+func (e *answeredOnceExecutor) Execute(ctx context.Context, a *Auth, _ cliproxyexecutor.Request, _ cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	cliproxyexecutor.MarkUpstreamAttempt(ctx)
+	if e.fail[a.ID] {
+		return cliproxyexecutor.Response{}, answeredOnceUnavailable{}
+	}
+	return cliproxyexecutor.Response{Payload: []byte("served-by-" + a.ID)}, nil
+}
+
+func (e *answeredOnceExecutor) CountTokens(ctx context.Context, a *Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	return e.Execute(ctx, a, req, opts)
+}
+
+func (e *answeredOnceExecutor) ExecuteStream(ctx context.Context, a *Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+	resp, errExec := e.Execute(ctx, a, req, opts)
+	if errExec != nil {
+		return nil, errExec
+	}
+	chunks := make(chan cliproxyexecutor.StreamChunk, 1)
+	chunks <- cliproxyexecutor.StreamChunk{Payload: resp.Payload}
+	close(chunks)
+	return &cliproxyexecutor.StreamResult{Chunks: chunks}, nil
+}
+
+func (e *answeredOnceExecutor) Refresh(_ context.Context, a *Auth) (*Auth, error) { return a, nil }
+
+func (e *answeredOnceExecutor) HttpRequest(context.Context, *Auth, *http.Request) (*http.Response, error) {
+	return nil, answeredOnceUnavailable{}
+}
+
+// The answered-auth callback is called exactly once per Execute, ExecuteCount or ExecuteStream call that returns a
+// response, with the statement of the credential that produced it (after a failed first credential, the second's);
+// never at a selection, and never for a call that returns an error.
+func TestAnsweredAuthCallbackIsCalledOncePerReturnedResponse(t *testing.T) {
+	const model = "answered-once-model"
+	key := &Auth{ID: "once-key", Provider: "claude", Status: StatusActive, Attributes: map[string]string{AttributeAPIKey: "made-up-key", "base_url": "https://openrouter.example.test/v1", "priority": "10"}}
+	login := &Auth{ID: "once-login", Provider: "devin", Status: StatusActive, Attributes: map[string]string{AttributeAuthKind: "oauth", "priority": "0"}}
+	for _, operation := range []string{"plain", "count", "stream"} {
+		for _, test := range []struct {
+			name  string
+			fail  map[string]bool
+			calls []logging.AuthStatement
+		}{
+			{name: "first answers", calls: []logging.AuthStatement{{Kind: "apikey", Provider: "claude", Host: "openrouter.example.test"}}},
+			{name: "first fails, second answers", fail: map[string]bool{"once-key": true}, calls: []logging.AuthStatement{{Kind: "oauth", Provider: "devin"}}},
+			{name: "all fail", fail: map[string]bool{"once-key": true, "once-login": true}},
+		} {
+			t.Run(operation+"/"+test.name, func(t *testing.T) {
+				manager := NewManager(nil, &FillFirstSelector{}, nil)
+				manager.SetRetryConfig(0, 0, 3)
+				for _, credential := range []*Auth{key, login} {
+					manager.RegisterExecutor(&answeredOnceExecutor{provider: credential.Provider, fail: test.fail})
+					if _, err := manager.Register(context.Background(), credential.Clone()); err != nil {
+						t.Fatal(err)
+					}
+					registry.GetGlobalRegistry().RegisterClient(credential.ID, credential.Provider, []*registry.ModelInfo{{ID: model}})
+					id := credential.ID
+					t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(id) })
+				}
+				var calls []logging.AuthStatement
+				selections := 0
+				opts := cliproxyexecutor.Options{Metadata: map[string]any{
+					cliproxyexecutor.AnsweredAuthCallbackMetadataKey: func(kind, provider, host string) {
+						calls = append(calls, logging.AuthStatement{Kind: kind, Provider: provider, Host: host})
+					},
+					cliproxyexecutor.SelectedAuthCallbackMetadataKey: func(string) { selections++ },
+				}}
+				providers, req := []string{"claude", "devin"}, cliproxyexecutor.Request{Model: model}
+				var errExec error
+				switch operation {
+				case "plain":
+					_, errExec = manager.Execute(context.Background(), providers, req, opts)
+				case "count":
+					_, errExec = manager.ExecuteCount(context.Background(), providers, req, opts)
+				default:
+					var stream *cliproxyexecutor.StreamResult
+					stream, errExec = manager.ExecuteStream(context.Background(), providers, req, opts)
+					if errExec == nil {
+						for range stream.Chunks {
+						}
+					}
+				}
+				if (errExec == nil) != (len(test.calls) == 1) {
+					t.Fatalf("error = %v", errExec)
+				}
+				if selections == 0 {
+					t.Fatalf("no selection was made")
+				}
+				if fmt.Sprint(calls) != fmt.Sprint(test.calls) {
+					t.Fatalf("answered callback calls = %+v over %d selections, want %+v", calls, selections, test.calls)
+				}
+			})
+		}
 	}
 }
