@@ -45,7 +45,7 @@ The client keeps the status on the error (`client.ts:181`), and the console alre
 | Page | When to ask |
 |---|---|
 | Model routes | on open, on the refresh button, and every 30 s while the page is visible. Count recorded cooldowns down in the browser from `until`; `observed_at` gives the server's clock for the offset |
-| Live lists | on open and on the refresh button. After `POST /v8/management/models/refresh` (the existing button), every 2 s until each login has `fetching: false` and either a `fetched_at` or a `last_failure.at` later than the click, for at most 60 s. The POST returns before the lists arrive |
+| Live lists | on open, on Reload, and every 30 s while the page is visible. **Refresh lists now** sends one `POST /v8/management/models/refresh` and then reads the status once more as soon as the POST is answered (unless the server refused it); after that the page keeps its 30 s schedule and follows no login. The POST returns before the lists arrive, so each row shows its login's state (`fetching`, `fetched_at`, `last_failure`) as of the latest read. A POST with no HTTP reply (network error, timeout, a dropped reply) shows "Could not confirm the refresh request": the server may have taken it, so the page does not say it was not requested |
 
 Neither endpoint is cached by the server. Neither should be polled while the tab is hidden.
 
