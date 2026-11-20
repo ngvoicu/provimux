@@ -3,6 +3,8 @@ package auth
 import (
 	"net/url"
 	"strings"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 )
 
 const (
@@ -64,6 +66,15 @@ func (a *Auth) BaseURLHost() string {
 		return ""
 	}
 	return strings.ToLower(parsed.Hostname())
+}
+
+// AuthStatement returns, as one statement, what names this credential to a client: its kind, its provider and, for
+// an API key with a base URL, the host (BaseURLHost).
+func (a *Auth) AuthStatement() logging.AuthStatement {
+	if a == nil {
+		return logging.AuthStatement{}
+	}
+	return logging.AuthStatement{Kind: a.AuthKind(), Provider: a.Provider, Host: a.BaseURLHost()}
 }
 
 // AuthSourceKind returns where the Auth entry came from at runtime.

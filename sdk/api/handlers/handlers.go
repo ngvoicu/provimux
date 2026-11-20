@@ -370,15 +370,13 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 		if traceCallback := logging.GinCPATraceIDCallback(ginCtx); traceCallback != nil {
 			meta[coreexecutor.SelectedAuthIndexCallbackMetadataKey] = traceCallback
 		}
-		if kindCallback := logging.GinCPAAuthKindCallback(ginCtx); kindCallback != nil {
-			meta[coreexecutor.SelectedAuthKindCallbackMetadataKey] = kindCallback
+		if statementCallback := logging.GinCPAAuthStatementCallback(ginCtx); statementCallback != nil {
+			meta[coreexecutor.AnsweredAuthCallbackMetadataKey] = statementCallback
 		}
-		if providerCallback := logging.GinCPAAuthProviderCallback(ginCtx); providerCallback != nil {
-			meta[coreexecutor.SelectedAuthProviderCallbackMetadataKey] = providerCallback
-		}
-		if hostCallback := logging.GinCPAAuthHostCallback(ginCtx); hostCallback != nil {
-			meta[coreexecutor.SelectedAuthHostCallbackMetadataKey] = hostCallback
-		}
+	}
+	// A websocket turn has no response headers of its own: it receives the statement through its context instead.
+	if statementCallback := answeredAuthCallbackFromContext(ctx); statementCallback != nil {
+		meta[coreexecutor.AnsweredAuthCallbackMetadataKey] = statementCallback
 	}
 	if executionSessionID := executionSessionIDFromContext(ctx); executionSessionID != "" {
 		meta[coreexecutor.ExecutionSessionMetadataKey] = executionSessionID

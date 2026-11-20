@@ -17,6 +17,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
@@ -34,13 +35,9 @@ type responsesWebsocketForwardOptions struct {
 	// websocketOwned reports whether this turn runs on an upstream
 	// websocket. While true, no interrupt may claim the local HTTP path.
 	websocketOwned func() bool
-	// authKind returns the kind of the credential selected for this turn ("oauth" or "apikey"), named on
-	// response.created as cpa_auth_kind: a websocket has no per-turn response headers for X-CPA-AUTH-KIND.
-	authKind func() string
-	// authProvider and authHost return the provider and the API key base URL host ("" for a login or a key without
-	// one) of the same credential, named on response.created as cpa_auth_provider and cpa_auth_host.
-	authProvider func() string
-	authHost     func() string
+	// authStatement returns the statement (kind, provider, host) of the credential whose upstream answered this turn,
+	// named on response.created: a websocket has no per-turn response headers.
+	authStatement func() logging.AuthStatement
 }
 
 // responsesWebsocketAuthKindField names, on a websocket turn's response.created event, the kind of credential serving
@@ -69,26 +66,28 @@ func removeResponsesWebsocketAuthOrigin(payload []byte) []byte {
 	return payload
 }
 
-// setResponsesWebsocketAuthProvider puts the provider and host of the turn's credential on a response.created event.
-// A value a JSON string cannot carry unchanged (not valid UTF-8) is not written, and without a provider no host is.
-func setResponsesWebsocketAuthProvider(payload []byte, authProvider, authHost func() string) []byte {
-	var provider, host string
-	if authProvider != nil {
-		provider = authProvider()
-	}
-	if authHost != nil {
-		host = authHost()
-	}
-	if provider == "" || !utf8.ValidString(provider) {
+// setResponsesWebsocketAuthStatement puts on a response.created event the turn's credential statement, read once:
+// the kind, and the provider and host where they can be carried. A provider or host that a JSON string cannot carry
+// unchanged (not valid UTF-8) is not written, and without a provider no host is.
+func setResponsesWebsocketAuthStatement(payload []byte, authStatement func() logging.AuthStatement) []byte {
+	if authStatement == nil {
 		return payload
 	}
-	if named, errSet := ojson.SetBytes(payload, responsesWebsocketAuthProviderField, provider); errSet == nil {
-		payload = named
-	}
-	if host != "" && utf8.ValidString(host) {
-		if named, errSet := ojson.SetBytes(payload, responsesWebsocketAuthHostField, host); errSet == nil {
+	statement := authStatement()
+	set := func(field, value string) {
+		if named, errSet := ojson.SetBytes(payload, field, value); errSet == nil {
 			payload = named
 		}
+	}
+	if statement.Kind != "" {
+		set(responsesWebsocketAuthKindField, statement.Kind)
+	}
+	if statement.Provider == "" || !utf8.ValidString(statement.Provider) {
+		return payload
+	}
+	set(responsesWebsocketAuthProviderField, statement.Provider)
+	if statement.Host != "" && utf8.ValidString(statement.Host) {
+		set(responsesWebsocketAuthHostField, statement.Host)
 	}
 	return payload
 }
@@ -291,14 +290,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 				}
 				if eventType == "response.created" {
 					payloads[i] = removeResponsesWebsocketAuthOrigin(payloads[i])
-					if opts.authKind != nil {
-						if kind := opts.authKind(); kind != "" {
-							if named, errSet := ojson.SetBytes(payloads[i], responsesWebsocketAuthKindField, kind); errSet == nil {
-								payloads[i] = named
-							}
-						}
-					}
-					payloads[i] = setResponsesWebsocketAuthProvider(payloads[i], opts.authProvider, opts.authHost)
+					payloads[i] = setResponsesWebsocketAuthStatement(payloads[i], opts.authStatement)
 					responseStarted = true
 					markDownstreamCommitted()
 					completed = false
