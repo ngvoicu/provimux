@@ -444,6 +444,69 @@ func TestDeltasStoreOffThenOn(t *testing.T) {
 	}
 }
 
+// A stuck store does not delay HandleUsage: with a round blocked in KVSet (holding mu) and a query
+// waiting behind it, 10,000 records are taken while the store is still blocked, each well under a
+// millisecond; once the store moves, all are written exactly once.
+func TestDeltasStuckStoreDoesNotDelayHandleUsage(t *testing.T) {
+	store := openTestStore(t, "")
+	env := newTestEnv(t, store)
+	env.record(claudeRecord("claude-opus-5-5", "client-key-stuck-000001", 1, 0, 0, 1))
+	store.mu.Lock()
+	store.block, store.entered = make(chan struct{}), make(chan struct{}, 1)
+	release := store.block
+	store.mu.Unlock()
+	saved := make(chan struct{})
+	go func() { env.round(); close(saved) }()
+	<-store.entered // the round holds mu and is stuck in the write
+	answered := make(chan struct{})
+	var answer *Response
+	go func() { answer = env.query(t, "period=today"); close(answered) }()
+
+	const n = 10_000
+	var slowest time.Duration
+	took := make(chan time.Duration, 1)
+	go func() {
+		start := time.Now()
+		for i := 0; i < n; i++ {
+			begin := time.Now()
+			env.record(claudeRecord("claude-opus-5-5", "client-key-stuck-000001", 1, 0, 0, 1))
+			slowest = max(slowest, time.Since(begin))
+		}
+		took <- time.Since(start)
+	}()
+	var total time.Duration
+	select {
+	case total = <-took:
+	case <-time.After(10 * time.Second):
+		t.Fatal("HandleUsage waited for the stuck store")
+	}
+	select {
+	case <-saved:
+		t.Fatal("premise: the round is still stuck")
+	case <-answered:
+		t.Fatal("premise: the query waits for the round")
+	default:
+	}
+	if slowest > 50*time.Millisecond {
+		t.Fatalf("one HandleUsage took %v while the store was stuck", slowest)
+	}
+	t.Logf("%d records in %v with the store stuck (slowest %v)", n, total, slowest)
+
+	store.mu.Lock()
+	store.block = nil
+	store.mu.Unlock()
+	close(release)
+	<-saved
+	<-answered
+	if answer.Totals.Requests != n+1 {
+		t.Fatalf("the waiting query saw %d, want %d", answer.Totals.Requests, n+1)
+	}
+	env.round()
+	if got := sumRows(storedDay(t, store, today)).Req; got != n+1 {
+		t.Fatalf("stored %d, want %d", got, n+1)
+	}
+}
+
 // BenchmarkHandleUsageDuringSave: HandleUsage while a save round holds the lock, stuck in a write.
 func BenchmarkHandleUsageDuringSave(b *testing.B) {
 	store := openTestStore(b, "")
