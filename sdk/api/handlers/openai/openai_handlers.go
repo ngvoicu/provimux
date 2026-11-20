@@ -494,6 +494,7 @@ func (h *OpenAIAPIHandler) handleNonStreamingResponse(c *gin.Context, rawJSON []
 		return
 	}
 	handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
+	handlers.ConfirmAnswer(c)
 	_, _ = c.Writer.Write(resp)
 	cliCancel()
 }
@@ -622,6 +623,7 @@ func (h *OpenAIAPIHandler) handleStreamingResponse(c *gin.Context, rawJSON []byt
 				h.LoggingAPIResponseError(c, termErr)
 			}
 			initialHasFinishReason := termErr != nil || chunkHasFinishReason(chunk)
+			handlers.ConfirmAnswer(c)
 			_, _ = fmt.Fprintf(c.Writer, "data: %s\n\n", string(chunk))
 			flusher.Flush()
 			if termErr != nil {
@@ -669,6 +671,7 @@ func (h *OpenAIAPIHandler) handleCompletionsNonStreamingResponse(c *gin.Context,
 	}
 	handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
 	completionsResp := convertChatCompletionsResponseToCompletions(resp)
+	handlers.ConfirmAnswer(c)
 	_, _ = c.Writer.Write(completionsResp)
 	cliCancel()
 }
@@ -795,6 +798,7 @@ func (h *OpenAIAPIHandler) handleCompletionsStreamingResponse(c *gin.Context, ra
 
 			if termErr := chunkTerminalError(chunk); termErr != nil {
 				h.LoggingAPIResponseError(c, termErr)
+				handlers.ConfirmAnswer(c)
 				_, _ = fmt.Fprintf(c.Writer, "data: %s\n\n", string(chunk))
 				flusher.Flush()
 				cliCancel(termErr.Error)
@@ -806,6 +810,7 @@ func (h *OpenAIAPIHandler) handleCompletionsStreamingResponse(c *gin.Context, ra
 			var initialHasFinishReason bool
 			if converted != nil {
 				initialHasFinishReason = chunkHasFinishReason(converted)
+				handlers.ConfirmAnswer(c)
 				_, _ = fmt.Fprintf(c.Writer, "data: %s\n\n", string(converted))
 				flusher.Flush()
 			}
@@ -906,6 +911,7 @@ func (h *OpenAIAPIHandler) handleStreamResult(c *gin.Context, flusher http.Flush
 			} else if !sawFinishReason && chunkHasFinishReason(chunk) {
 				sawFinishReason = true
 			}
+			handlers.ConfirmAnswer(c)
 			_, _ = fmt.Fprintf(c.Writer, "data: %s\n\n", string(chunk))
 		},
 		ChunkError: func() *interfaces.ErrorMessage {

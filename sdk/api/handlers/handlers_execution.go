@@ -10,6 +10,7 @@ import (
 	"github.com/MoeForge/moego/json"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
@@ -51,6 +52,10 @@ func (h *BaseAPIHandler) executeWithAuthManager(ctx context.Context, handlerType
 }
 
 func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entryProtocol, exitProtocol, modelName string, rawJSON []byte, alt string, allowImageModel bool, execOptions modelExecutionOptions) ([]byte, http.Header, *interfaces.ErrorMessage) {
+	// Every return offers the statement of what it returns: the answered credential's on success, none otherwise.
+	offerCtx := ctx
+	var offer logging.AuthStatement
+	defer func() { offerAnsweredAuth(offerCtx, execOptions.InternalSource, offer) }()
 	originalRequestedModel := modelName
 	// Speech-only models are reachable solely through the speech entry protocol.
 	execOptions.AllowSpeechModel = isModelExecutionSpeechProtocol(entryProtocol)
@@ -71,6 +76,8 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 	}
 	providers = adjustExecutionProvidersForEntryProtocol(entryProtocol, providers)
 	reqMeta := requestExecutionMetadata(ctx)
+	answered := &answeredAuthCapture{}
+	reqMeta[coreexecutor.AnsweredAuthCallbackMetadataKey] = answered.set
 	if execOptions.Path != "" {
 		reqMeta[coreexecutor.RequestPathMetadataKey] = execOptions.Path
 	}
@@ -144,6 +151,7 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 	responseHeaders := downstreamHeadersFromExecutor(rawResponseHeaders, passthroughHeaders)
 	body, responseHeaders := h.applyResponseInterceptors(ctx, pluginapi.ResponseInterceptKindExecution, lifecycle.requestID(), responseProtocol, normalizedModel, originalRequestedModel, executedOpts, rawResponseHeaders, responseHeaders, executedOpts.OriginalRequest, executedReq.Payload, resp.Payload, http.StatusOK, execOptions.SkipInterceptorPluginID, passthroughHeaders)
 	lifecycle.complete(pluginapi.RequestCompletionSucceeded, http.StatusOK, nil)
+	offer = answered.get()
 	return body, responseHeaders, nil
 }
 
@@ -154,6 +162,10 @@ func (h *BaseAPIHandler) ExecuteCountWithAuthManager(ctx context.Context, handle
 }
 
 func (h *BaseAPIHandler) executeCountWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt string, execOptions modelExecutionOptions) ([]byte, http.Header, *interfaces.ErrorMessage) {
+	// Every return offers the statement of what it returns: the answered credential's on success, none otherwise.
+	offerCtx := ctx
+	var offer logging.AuthStatement
+	defer func() { offerAnsweredAuth(offerCtx, execOptions.InternalSource, offer) }()
 	originalRequestedModel := modelName
 	var routeDecision modelRouteDecision
 	if !h.isHomeLocalExecutorModel(modelName) {
@@ -168,6 +180,8 @@ func (h *BaseAPIHandler) executeCountWithAuthManager(ctx context.Context, handle
 	}
 	providers = adjustExecutionProvidersForEntryProtocol(handlerType, providers)
 	reqMeta := requestExecutionMetadata(ctx)
+	answered := &answeredAuthCapture{}
+	reqMeta[coreexecutor.AnsweredAuthCallbackMetadataKey] = answered.set
 	if execOptions.Path != "" {
 		reqMeta[coreexecutor.RequestPathMetadataKey] = execOptions.Path
 	}
@@ -236,6 +250,7 @@ func (h *BaseAPIHandler) executeCountWithAuthManager(ctx context.Context, handle
 	responseHeaders := downstreamHeadersFromExecutor(rawResponseHeaders, passthroughHeaders)
 	body, responseHeaders := h.applyResponseInterceptors(ctx, pluginapi.ResponseInterceptKindCountTokens, lifecycle.requestID(), handlerType, normalizedModel, originalRequestedModel, executedOpts, rawResponseHeaders, responseHeaders, executedOpts.OriginalRequest, executedReq.Payload, resp.Payload, http.StatusOK, execOptions.SkipInterceptorPluginID, passthroughHeaders)
 	lifecycle.complete(pluginapi.RequestCompletionSucceeded, http.StatusOK, nil)
+	offer = answered.get()
 	return body, responseHeaders, nil
 }
 
