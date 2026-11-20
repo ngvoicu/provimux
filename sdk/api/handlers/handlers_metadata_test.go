@@ -439,14 +439,18 @@ func TestHomeUpdatedAPIKeyOverridesParentWithAPIKeyAfterCapture(t *testing.T) {
 	}
 }
 
-func TestRequestExecutionMetadataAuthKindCallbackSkipsWebsocket(t *testing.T) {
+// One callback carries the whole credential statement. A websocket upgrade has no per-turn headers, so it gets the
+// Gin callback only through its turn's context.
+func TestRequestExecutionMetadataAuthStatementCallback(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	for _, test := range []struct {
-		name      string
-		websocket bool
+		name        string
+		websocket   bool
+		turnContext bool
 	}{
-		{name: "ordinary HTTP request", websocket: false},
+		{name: "ordinary HTTP request"},
 		{name: "websocket upgrade", websocket: true},
+		{name: "websocket turn", websocket: true, turnContext: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -456,54 +460,30 @@ func TestRequestExecutionMetadataAuthKindCallbackSkipsWebsocket(t *testing.T) {
 				ginCtx.Request.Header.Set("Upgrade", "websocket")
 			}
 			ctx := context.WithValue(context.Background(), "gin", ginCtx)
+			var turn logging.AuthStatement
+			if test.turnContext {
+				ctx = WithAnsweredAuthCallback(ctx, func(kind, provider, host string) {
+					turn = logging.AuthStatement{Kind: kind, Provider: provider, Host: host}
+				})
+			}
 
 			meta := requestExecutionMetadata(ctx)
 
-			callback, exists := meta[coreexecutor.SelectedAuthKindCallbackMetadataKey].(func(string))
-			if exists == test.websocket {
-				t.Fatalf("auth kind callback present = %v for %s", exists, test.name)
+			callback, exists := meta[coreexecutor.AnsweredAuthCallbackMetadataKey].(func(kind, provider, host string))
+			if want := !test.websocket || test.turnContext; exists != want {
+				t.Fatalf("statement callback present = %v, want %v", exists, want)
 			}
-			if exists {
-				callback("oauth")
-				if got := logging.GetGinCPAAuthKind(ginCtx); got != "oauth" {
-					t.Fatalf("stored auth kind = %q, want oauth", got)
-				}
+			if !exists {
+				return
 			}
-		})
-	}
-}
-
-func TestRequestExecutionMetadataAuthProviderCallbacksSkipWebsocket(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	for _, test := range []struct {
-		name      string
-		websocket bool
-	}{
-		{name: "ordinary HTTP request", websocket: false},
-		{name: "websocket upgrade", websocket: true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
-			ginCtx.Request = httptest.NewRequest(http.MethodGet, "/v1/messages", nil)
-			if test.websocket {
-				ginCtx.Request.Header.Set("Connection", "Upgrade")
-				ginCtx.Request.Header.Set("Upgrade", "websocket")
+			want := logging.AuthStatement{Kind: "apikey", Provider: "openai-compatible-lab", Host: "api.example.test"}
+			callback(want.Kind, want.Provider, want.Host)
+			got := logging.GetGinCPAAuthStatement(ginCtx)
+			if test.turnContext {
+				got = turn
 			}
-			ctx := context.WithValue(context.Background(), "gin", ginCtx)
-
-			meta := requestExecutionMetadata(ctx)
-
-			providerCallback, providerExists := meta[coreexecutor.SelectedAuthProviderCallbackMetadataKey].(func(string))
-			hostCallback, hostExists := meta[coreexecutor.SelectedAuthHostCallbackMetadataKey].(func(string))
-			if providerExists == test.websocket || hostExists == test.websocket {
-				t.Fatalf("provider callback present = %v, host callback present = %v for %s", providerExists, hostExists, test.name)
-			}
-			if providerExists {
-				providerCallback("openai-compatible-lab")
-				hostCallback("api.example.test")
-				if provider, host := logging.GetGinCPAAuthProvider(ginCtx); provider != "openai-compatible-lab" || host != "api.example.test" {
-					t.Fatalf("stored provider, host = %q, %q", provider, host)
-				}
+			if got != want {
+				t.Fatalf("stored statement = %+v, want %+v", got, want)
 			}
 		})
 	}

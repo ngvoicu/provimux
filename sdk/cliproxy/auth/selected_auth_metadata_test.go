@@ -52,7 +52,7 @@ func TestPublishAnsweredAuthMetadataReportsCredentialKind(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			kind := "not called"
 			meta := map[string]any{
-				cliproxyexecutor.SelectedAuthKindCallbackMetadataKey: func(value string) { kind = value },
+				cliproxyexecutor.AnsweredAuthCallbackMetadataKey: func(value, _, _ string) { kind = value },
 			}
 			publishSelectedAuthMetadata(meta, test.auth)
 			if kind != "" {
@@ -81,8 +81,7 @@ func TestPublishAnsweredAuthMetadataReportsCredentialProviderAndHost(t *testing.
 		t.Run(test.name, func(t *testing.T) {
 			provider, host := "not called", "not called"
 			meta := map[string]any{
-				cliproxyexecutor.SelectedAuthProviderCallbackMetadataKey: func(value string) { provider = value },
-				cliproxyexecutor.SelectedAuthHostCallbackMetadataKey:     func(value string) { host = value },
+				cliproxyexecutor.AnsweredAuthCallbackMetadataKey: func(_, providerValue, hostValue string) { provider, host = providerValue, hostValue },
 			}
 			publishSelectedAuthMetadata(meta, test.auth)
 			if provider != "" || host != "" {
