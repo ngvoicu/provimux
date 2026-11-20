@@ -110,7 +110,7 @@ Twelve increments per record would be about 100 ms of disk per request on the us
 | Key | Value | Written |
 |---|---|---|
 | `provimux:savings:v1:day:<YYYY-MM-DD>` | the day's totals, JSON, `schemas/day.schema.json` | while the day changes, every 10 s at most |
-| `provimux:savings:v1:meta` | `{"v":1,"created_at":"<RFC 3339>","first_day":"<YYYY-MM-DD>","key_secret":"<base64 of 32 random bytes>"}` | once; again only when a record lands on a day before `first_day` |
+| `provimux:savings:v1:meta` | `{"v":1,"created_at":"<RFC 3339>","first_day":"<YYYY-MM-DD>","key_secret":"<base64 of 32 random bytes>"}` | once; again only when a day before `first_day` is about to be written, **before** that day (T-125) |
 | `provimux:savings:v1:prices:openrouter` | the last OpenRouter price list that was downloaded, `02-prices.md` section 2 | when a downloaded list differs from the saved one |
 
 No key has a TTL (`KVSet` without `EX`/`PX` stores no expiry, `bolt_store.go:296-367`), so the sweeper never removes them. The `v1` in the key is the layout's version; a counter added later goes into the same value (readers ignore what they do not know, absent means 0).
@@ -131,7 +131,7 @@ Memory holds only what was recorded since the last successful write of each day:
 A round or a query first moves `incoming` into the deltas (under `mu`, taking `inMu` for the swap). Every 10 seconds, and on `FlushNow`, a round then does, under `mu`:
 
 1. Read `meta` and the list copy of the store **in use now** (one `KVMGet`); on a store without `meta`, write it (`KVSetNX`, then `KVGet` for the value that won; section 7).
-2. Read every day that has deltas (one `KVMGet`).
+2. Read every day that has deltas (one `KVMGet`). If the earliest of them is before `meta.first_day`, write `meta` with that day first; if that write fails, no day is written this round and every delta waits. The index may be too early (harmless: `period=all` starts at an empty day) but never later than a stored day, which `period=all` would miss (T-124 finding 14).
 3. Per day: add the deltas to the rows read (by key id, with the secret of that store's `meta`), apply the row limit to the merged rows (a repeat of a row takes no slot), give rows without a price the one in use now (`02-prices.md` section 5), encode and `KVSet` the whole value.
 4. **Only after the write succeeded**, forget that day's deltas. A failed read or write keeps all of them for the next round; nothing is dropped. The error is logged once per streak of failures, and once more when writes succeed again.
 
@@ -143,6 +143,7 @@ Consequences:
 - **Nothing is counted twice.** The value written is the stored total plus deltas that are forgotten in the same critical section; writing it again cannot happen, because the deltas are gone once written. Each round reads the day again, so another writer of the file (a second Provimux on it, not supported) would lose nothing either.
 - **A crash or `kill -9` loses at most what was recorded since the last write**: up to 10 seconds of records, more while the store is failing. The page does not show that loss; it is the price of not touching the disk per request.
 - **A clean stop loses nothing that reached the recorder.** `Service.Shutdown` stops the API server (`sdk/cliproxy/service_lifecycle.go:370`), then closes the store (`:396`), then stops the usage manager (`:404`). One added line calls `FlushNow` just before the store closes (`05`, section 2). A record still in the usage manager's queue at that instant is lost; the server has stopped accepting requests by then.
+- **The price list copy** follows the store in use: every round, idle ones and the clean flush included, compares the downloaded list with that store's copy and writes it when the store has none or an older, different one; there is no memory of which store was last given it (T-124 finding 7). An idle round makes this one read only once a list was downloaded.
 - **Write volume**: at most one write of the days with deltas every 10 s while there is traffic, none when idle. bbolt reuses the pages of the replaced value, so the file grows with the days kept, not with the writes. Each such round also reads those days and `meta` (about 2 ms for a year of days, section "Why not one key per counter").
 - **A query waits for a round in progress**, and a round for a query: at most one store write (about 9 ms) or one range read. `HandleUsage` waits for neither.
 - **Prices.** A row read from the store keeps the price it was written with (`basis` `recorded`). A row that exists only in the deltas, or was stored without a price, is valued with the current list and counted in `floating_requests` (`basis` `current`) until a write records its price. A row whose write is in flight or failed is therefore never `recorded`.
@@ -194,7 +195,7 @@ The clock and the zone are injected (`now func() time.Time`, `loc *time.Location
 The key is never written to the store, a log or a response.
 
 - **Id**: the first 16 hex characters of HMAC-SHA-256(`key_secret`, key). `key_secret` is 32 random bytes kept in `provimux:savings:v1:meta`. The process makes a random secret at `Start`. Every round that writes reads `meta` from the store in use and makes the ids with its secret; a store without `meta` gets the process's secret (`KVSetNX`, then `KVGet` for the value that won). The process's secret is never replaced by a store's, so a new store gets the process's own secret, not that of the store used before (but two new stores made by one process share it). The same key gives the same id for the life of the store; another installation gives another id.
-- **Tail**: the key's last 4 characters when the key has 16 or more, else none. It is kept per day in the value's `keys` map (id to tail).
+- **Tail**: the key's last 4 characters when the key has 16 or more, else none. It is kept per day in the value's `keys` map (id to tail), only for a row that refers to the id: a key whose record folds into `~other` leaves neither id nor tail (T-124 finding 15).
 - **No key**: a request without a client key has id `""`.
 - **Names**: none in this version. The response's key object has `name: null`; a later version keeps id to name under `provimux:savings:v1:key-names` and fills it, without touching the days.
 
@@ -203,6 +204,16 @@ Why a secret and not a plain SHA-256: the page is the proof the owner will show,
 Why the deltas are keyed by the key itself: an id can only be made with the secret of the store it is written to, and that store may not be reachable when the record arrives, or may change before the write. Keeping the key in memory until the write (at most 10 s with the store on) means every id that is ever stored was made with that store's secret, also after a switch of `server.kv-store.path`. A query reads `meta` itself (it never writes it), so the ids it shows for deltas are the ones the round then writes. Without a store the process's own secret is used for the ids it shows.
 
 ## 8. Corrections from the reviews
+
+### T-125 (after the third review, T-124)
+
+| Finding of T-124 | Now |
+|---|---|
+| 7. After a switch to a populated B without a list copy, the idle round and the flush skipped B because A had been given the list | every round compares the downloaded list with the copy of the store in use; `listSavedAt` is removed |
+| 14. A late earlier day was committed, then the `first_day` update failed: `period=all` missed that day for good | `first_day` is moved back before the day is written; a failure keeps the day's deltas |
+| 15. Folded keys still added their id and tail to the day | the id and tail are kept only after the fold decision, for a regular row |
+
+Unchanged, as decided: above 2,000 distinct combinations between two successful writes a repeat of a stored row can fold (section 5, "The row limit").
 
 ### T-122: deltas instead of totals (after the second review, T-121)
 
