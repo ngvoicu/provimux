@@ -14,6 +14,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 )
 
@@ -111,5 +112,64 @@ func TestResponsesWebsocketCarriesAProviderValidAsAJSONString(t *testing.T) {
 		if got := event[field]; got != want {
 			t.Fatalf("%s = %q, want %q: %q", field, got, want, created)
 		}
+	}
+}
+
+// gatewayCreatedExecutor is an upstream that is itself a gateway: its response.created names its own credential.
+type gatewayCreatedExecutor struct {
+	websocketCreatedExecutor
+	provider string
+}
+
+func (e gatewayCreatedExecutor) Identifier() string { return e.provider }
+
+func (e gatewayCreatedExecutor) ExecuteStream(_ context.Context, auth *coreauth.Auth, _ coreexecutor.Request, _ coreexecutor.Options) (*coreexecutor.StreamResult, error) {
+	chunks := make(chan coreexecutor.StreamChunk, 2)
+	chunks <- coreexecutor.StreamChunk{Payload: []byte(fmt.Sprintf(`{"type":"response.created","response":{"id":"resp-%s"},"cpa_auth_kind":"apikey","cpa_auth_provider":"inner-gateway-provider","cpa_auth_host":"inner.gateway.example.test"}`, auth.ID))}
+	chunks <- coreexecutor.StreamChunk{Payload: []byte(fmt.Sprintf(`{"type":"response.completed","response":{"id":"resp-%s","output":[]}}`, auth.ID))}
+	close(chunks)
+	return &coreexecutor.StreamResult{Chunks: chunks}, nil
+}
+
+// The three fields on response.created are this proxy's own: what an upstream gateway put there is removed, and the
+// host is absent when this proxy's credential has none.
+func TestResponsesWebsocketAuthOriginIsThisProxysOwn(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		credential *coreauth.Auth
+		want       map[string]string
+	}{
+		{
+			name:       "login behind a gateway base URL",
+			credential: &coreauth.Auth{ID: "auth-origin-gateway-login", Provider: "codex", Status: coreauth.StatusActive, Attributes: map[string]string{coreauth.AttributeAuthKind: "oauth", "base_url": "https://gateway.example.test/v1"}},
+			want:       map[string]string{"cpa_auth_kind": "oauth", "cpa_auth_provider": "codex"},
+		},
+		{
+			name:       "key with its own host",
+			credential: &coreauth.Auth{ID: "auth-origin-gateway-key", Provider: "openai-compatible-lab", Status: coreauth.StatusActive, Attributes: map[string]string{coreauth.AttributeAPIKey: "made-up-key", "base_url": "https://api.example.test/v1"}},
+			want:       map[string]string{"cpa_auth_kind": "apikey", "cpa_auth_provider": "openai-compatible-lab", "cpa_auth_host": "api.example.test"},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			created := responsesWebsocketCreatedFor(t, "auth-origin-gateway-model-"+test.credential.ID, gatewayCreatedExecutor{provider: test.credential.Provider}, test.credential)
+			for _, field := range []string{"cpa_auth_kind", "cpa_auth_provider", "cpa_auth_host"} {
+				value := ojson.GetBytesNoCopy(created, field)
+				want, named := test.want[field]
+				if value.Exists() != named || value.String() != want {
+					t.Fatalf("%s = %q (present %v), want %q (present %v): %s", field, value.String(), value.Exists(), want, named, created)
+				}
+			}
+			if strings.Count(string(created), "cpa_auth_") != len(test.want) {
+				t.Fatalf("response.created carries other credential fields: %s", created)
+			}
+		})
+	}
+}
+
+// Without any value of this proxy's own, none of the upstream's fields survive.
+func TestRemoveResponsesWebsocketAuthOriginDropsAllThree(t *testing.T) {
+	payload := removeResponsesWebsocketAuthOrigin([]byte(`{"type":"response.created","response":{"id":"r"},"cpa_auth_kind":"apikey","cpa_auth_provider":"inner","cpa_auth_host":"inner.example.test"}`))
+	if strings.Contains(string(payload), "cpa_auth_") || ojson.GetBytesNoCopy(payload, "response.id").String() != "r" {
+		t.Fatalf("payload = %s", payload)
 	}
 }
