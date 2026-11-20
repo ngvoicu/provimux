@@ -15,7 +15,7 @@ Repository conventions that apply (provimux `AGENTS.md`): JSON through `github.c
 | `internal/provimux/savings/savings.go` | yes | `savings` | `Start`, `FlushNow`, `Query`, the default instance, the options tests inject |
 | `internal/provimux/savings/record.go` | yes | `savings` | the usage plugin: a record's fields (`01` section 2 to 4) |
 | `internal/provimux/savings/day.go` | yes | `savings` | the day value: types, encode, decode, the row limit (`schemas/day.schema.json`) |
-| `internal/provimux/savings/saver.go` | yes | `savings` | the saver's round: read, merge, write; `meta`; the price list copy (`01` section 5) |
+| `internal/provimux/savings/saver.go` | yes | `savings` | the saver's round: read the store in use, add the deltas, write, forget them; `meta`; the price list copy (`01` section 5) |
 | `internal/provimux/savings/clientkey.go` | yes | `savings` | key id and tail (`01` section 7) |
 | `internal/provimux/savings/prices.go` | yes | `savings` | the prices in use: OpenRouter's list, its saved copy, the table (`02` sections 1 to 3) |
 | `internal/provimux/savings/prices.json` | yes | | Provimux's table, embedded (`schemas/prices-table.schema.json`) |
@@ -27,7 +27,7 @@ Repository conventions that apply (provimux `AGENTS.md`): JSON through `github.c
 | `sdk/cliproxy/provimux_savings.go` | yes | `cliproxy` | `provimuxFlushSavings()`: calls `savings.FlushNow()` |
 | `internal/api/server_provimux.go` | the layer's own, **+2 lines** and an import | `api` | the route, and `savings.Start()` |
 | `internal/registry/openrouter_models.go` | **1 line added** | `registry` | `provimuxKeepOpenRouterPrices(data)` at `:198` (the owner's patch file; open question 4) |
-| `sdk/cliproxy/kv_store.go` | **1 line added** | `cliproxy` | `provimuxFlushSavings()` in `shutdownKVStore`, before `kvstore.ShutdownLocal()` (`:27-33`) |
+| `sdk/cliproxy/kv_store.go` | **2 lines added** | `cliproxy` | `provimuxFlushSavings()` in `shutdownKVStore`, before `kvstore.ShutdownLocal()` (`:27-33`), and in `applyKVStoreConfig` before a reload changes the store (T-116; kept by T-122, not needed for correctness) |
 
 Imports are free of cycles [ran: `go list -deps`]: `savings` needs `sdk/cliproxy/usage`, `internal/kvstore`, `internal/registry` and `internal/logging`; none of them reaches `internal/api`, `internal/api/handlers/management` or `sdk/cliproxy`, which import `savings`.
 
@@ -204,27 +204,27 @@ All in new `provimux_*_test.go` files or in the new package, so no upstream test
 | cost | 0.0123 becomes 12,300,000; a negative cost is ignored; `ucost` only with `IsBYOK` true; `costn` |
 | the day | 23:59:59 and 00:00:00 local fall on two days; a fixed zone is used, not the machine's; the two daylight-saving days; a zero `RequestedAt` uses the clock |
 | nothing else is read | a record whose `Source`, `AuthID`, `Fail.Body`, `ResponseHeaders` and `APIKey` hold marker strings: after a write, none of the markers is in the store's file |
-| no I/O | with a store whose calls block, 1,000 `HandleUsage` calls return while a round is stuck in a write |
+| no I/O | with a store whose calls block, 1,000 `HandleUsage` calls return while a round is stuck in a write (holding `mu`) |
 | before `Start` | a published record is not recorded |
 
-`BenchmarkHandleUsage` is reported in the commit message (records per second, allocations); no test asserts a time.
+`BenchmarkHandleUsage`, `BenchmarkHandleUsageDuringSave` (a round blocked in a write) and `BenchmarkHandleUsageWithSaves` (rounds back to back on a real file) are reported in the commit message (time per record, allocations); no test asserts a time.
 
 ### `internal/provimux/savings/saver_test.go`
 
 | Test | Asserts |
 |---|---|
-| totals are absolute | 3 records, a round: the value holds their sums; 2 more, a round: the sums of 5. The same round twice writes identical bytes |
-| idle | a round with nothing pending makes no store call |
-| restart | a second instance on the same file, 1 record, a round: old totals plus 1. The day was read once |
+| totals are absolute | 3 records, a round: the value holds their sums; 2 more, a round: the sums of 5. The same totals encode identical bytes; after a write memory holds nothing for the day |
+| idle | a round with no deltas makes no store call |
+| restart | a second instance on the same file, 1 record, a round: old totals plus 1. The day is read once per round that writes it |
 | crash | an instance dropped without `FlushNow`: a new one sees exactly the last written totals |
-| clean stop | `FlushNow` writes what is pending; with a store that blocks it returns within its bound |
+| clean stop | `FlushNow` writes the deltas; with a store that blocks it returns within its bound |
 | store off | memory only, `persistent` false, answers still come; at most 400 days are kept |
-| store appears later | pending is added to the totals the file already has for that day, and written |
-| write fails | the day stays dirty and is written by a later round; `persistent` false, then true |
+| store appears later | the deltas are added to the totals the file already has for that day, and written |
+| write fails | the deltas stay in memory and are written by a later round; `persistent` false, then true |
 | a value that does not decode | is not overwritten; reads skip the day; one log line, without the value |
 | only the local store | `currentLocalStore` returns nil for a `KVClient` that is not a `*kvstore.BoltStore` (home mode), and no call reaches that client |
 | row limit | 2,001 models: 2,000 rows and `~other`, `folded` true, and the sums equal the sums of all records |
-| old days leave memory | a clean day older than 2 days is dropped; a late record for it is merged with the file, not written over it |
+| written days leave memory | after a write no day is kept, whatever its age; a late record for an old day is added to the file, not written over it |
 | `meta` | made once; `first_day` only moves earlier; the secret and every key id are the same after a restart |
 | key id and tail | 16 hex characters; another store gives another id; a tail only from 16 characters; `""` for no key |
 | the key never reaches the disk | after a write the store's file does not contain the client key |
@@ -235,6 +235,19 @@ All in new `provimux_*_test.go` files or in the new package, so no upstream test
 | concurrent | under `-race`: 8 goroutines of records, rounds and queries together; the totals are exact |
 | `Start` twice | one plugin, one saver |
 
+### `internal/provimux/savings/deltas_test.go` (T-122)
+
+| Test | Asserts |
+|---|---|
+| failed flush before a switch loses nothing (T-121 finding 1) | A's write and the reload's flush fail, the path moves to B: A is byte-identical, B has its own rows plus the waiting delta, 5 recorded = 5 stored, memory empty |
+| a query and a save do not interleave (T-121 finding 5) | a round paused right after Bolt committed: a query waits and then counts the request once; a query paused at its read: the round waits; both orders give 1 |
+| `recorded` only from disk (T-121 finding 6) | after a failed write the row is `current`, floating, and moves with the list; once written, `recorded` at the price of the write; a query during a write in flight waits and then says `recorded` |
+| a full store does not fold in the next (T-121 finding 8) | A at 2000 rows, switch to an empty B: B's first request is a regular row, priced; back on A a repeat merges and a new combination folds |
+| failed write kept, then written | three rounds of a failing write: one log line, the deltas wait, `persistent` false; a failing read keeps them too; the next good round writes all, memory empty, `persistent` true; a new streak logs again |
+| a query during saves counts once | under `-race`: records, back-to-back rounds on a slow store and queries; every answer lies between the records done before it started and after it ended, cache reads match |
+| a switch lands the deltas in the new store | A gets no store call after the switch and keeps its bytes; B holds the waiting deltas, with ids of B's secret |
+| store off, then on | off: no write, `persistent` false, floating, the process's ids; on: the answer adds the deltas to the file with the file's ids; the round writes them and forgets them |
+
 ### `internal/provimux/savings/query_test.go`
 
 | Test | Asserts |
@@ -244,7 +257,7 @@ All in new `provimux_*_test.go` files or in the new package, so no upstream test
 | every 400 | each case listed in `openapi.yaml`, with a message naming the parameter, and no store call before it |
 | **the examples** | the three values of `examples/days.json` in a store, today 2026-11-20, zone Europe/Bucharest, the request of `03` section 4: the answer equals `examples/savings-month.json` except `observed_at`, `recording.saved_at` and `prices`. An empty store and `period=today`: `examples/savings-empty.json`, with the same exceptions |
 | sums agree | for each single dimension, the rows of its breakdown add up to `totals` in every counter and amount; `priced_requests + unpriced_requests = requests` in every row |
-| pending is included | a record not yet written is in the answer, and the answer equals the one after a round |
+| deltas are included | a record not yet written is in the answer, and the answer equals the one after a round (a new row is floating until written) |
 | order | the same on repeated calls; time first, then requests, then the dimension values |
 | truncation | 2,001 combinations: 2,000 rows, `truncated`, the ones with the most requests |
 | filters | each alone and two together; `host=` and `key=` select rows without one; an absent parameter does not filter; filters narrow `models`, `reported_cost_hosts` and `folded_days` |
@@ -318,13 +331,13 @@ The claims a critical reader should try to break, each with where to look.
 
 **That it cannot slow or break a request**
 
-1. `HandleUsage` makes no store call and takes one mutex; the saver never holds that mutex across a store call (read `saver.go` for every `Lock`). Before the mutex it reads the account's provider from the model registry (`registry.ProvimuxClientProvider`, a read lock, no I/O; T-116).
+1. `HandleUsage` makes no store call and takes only `inMu`, which guards the incoming map and is never held across anything else; `mu`, which rounds and queries hold across their store calls, is never taken by `HandleUsage` (read `record.go` and `saver.go` for every `Lock`). Before the mutex it reads the account's provider from the model registry (`registry.ProvimuxClientProvider`, a read lock, no I/O; T-116).
 2. A stuck disk stalls only the saver: the "no I/O" test, and the usage manager's queue does not grow because of Savings.
 3. A panic in the plugin is recovered by the manager (`manager.go:818-825`); the saver's goroutine recovers and logs its own.
 
 **That the totals are right**
 
-4. No day is counted twice across a restart, a failed write, a late record or an eviction (the saver tests). Kill the process between requests and compare with what was sent.
+4. No request is lost or counted twice across a restart, a failed read or write, a late record, a store switch or a query during a save (the saver and deltas tests). Memory holds only deltas since the last successful write: `grep` `saver.go` for any state describing a store; there should be none but `listSavedAt`, which only saves a store call. Kill the process between requests and compare with what was sent.
 5. Token buckets come from `TokenBreakdown` only. `git grep` the package for `CachedTokens`, `InputTokens`, `OutputTokens`: none outside tests.
 6. Breakdown rows add up to the totals; priced plus unpriced is all.
 7. The examples are reproduced by the code, not pasted into a test's expected value by hand.
@@ -346,7 +359,7 @@ The claims a critical reader should try to break, each with where to look.
 
 **That it stays a layer**
 
-17. `git diff <base of the layer>..HEAD --stat`: new files; `server_provimux.go` +2 and an import; one line in `openrouter_models.go` and two in `kv_store.go` (the flush in `shutdownKVStore`, and since T-116 the flush in `applyKVStoreConfig` before a reload changes the store); nothing under a guarded path. The guard passes.
+17. `git diff <base of the layer>..HEAD --stat`: new files; `server_provimux.go` +2 and an import; one line in `openrouter_models.go` and two in `kv_store.go` (the flush in `shutdownKVStore`, and since T-116 the flush in `applyKVStoreConfig` before a reload changes the store; T-122 keeps it, see `01` section 8); nothing under a guarded path. The guard passes.
 18. Stock CLIProxyAPI still answers 404 on the path. A server started without management records nothing and starts no goroutine. Once started, recording continues while management is off (the chief's decision in T-116: the totals go to the user's own local store); only the endpoint is gated, and answers 404 then. A server started without management and given a key later starts recording then.
 19. A Provimux without an OpenRouter entry downloads the list from openrouter.ai at most once per 3 hours (after a failure, no sooner than a minute later), only while requests are recorded, and never under `--local-model` (count the requests against a test server).
 20. Nothing is written to Home's store.
