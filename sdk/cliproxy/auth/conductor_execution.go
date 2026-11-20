@@ -1106,7 +1106,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			m.MarkResult(execCtx, result)
 			attemptAliasResult := resolveAttemptAliasResult(routing, auth, routeModel, upstreamModel, aliasResult)
 			rewriteForceMappedResponse(&resp, attemptAliasResult)
-			publishAnsweredAuthMetadata(execOpts.Metadata, auth)
+			publishAnsweredAuthMetadata(execCtx, execOpts.Metadata, auth)
 			return resp, nil
 		}
 		if authErr != nil {
@@ -1333,7 +1333,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			m.MarkResult(execCtx, result)
 			attemptAliasResult := resolveAttemptAliasResult(routing, auth, routeModel, upstreamModel, aliasResult)
 			rewriteForceMappedResponse(&resp, attemptAliasResult)
-			publishAnsweredAuthMetadata(execOpts.Metadata, auth)
+			publishAnsweredAuthMetadata(execCtx, execOpts.Metadata, auth)
 			return resp, nil
 		}
 		if authErr != nil {
@@ -2255,14 +2255,17 @@ func publishSelectedAuthMetadata(meta map[string]any, auth *Auth) {
 		}
 	}
 	// A selected credential has not answered yet: until one does, nothing names the credential behind the response.
-	publishAnsweredAuthMetadata(meta, nil)
+	publishAnsweredAuthMetadata(nil, meta, nil)
 }
 
 // publishAnsweredAuthMetadata publishes, in one call, the statement of the credential whose response the client
-// receives. It is called where a credential has answered (an execution returned a response, a stream passed its
-// bootstrap); a selection calls it with nil, so headers committed before an answer, and an error after the last
-// selection, name no credential.
-func publishAnsweredAuthMetadata(meta map[string]any, auth *Auth) {
+// receives: auth must be the credential the attempt went out with (prepared, where preparation replaced it), and
+// attemptCtx the attempt's context. It is called where an attempt returned a response (an execution or count
+// returned, a stream passed its bootstrap). Only a response an upstream produced names a credential: when the
+// attempt's tracker records no upstream exchange (a count the proxy estimated itself), the statement is withdrawn.
+// A selection calls it with nil, so headers committed before an answer, and an error after the last selection, name
+// no credential.
+func publishAnsweredAuthMetadata(attemptCtx context.Context, meta map[string]any, auth *Auth) {
 	if len(meta) == 0 {
 		return
 	}
@@ -2270,7 +2273,10 @@ func publishAnsweredAuthMetadata(meta map[string]any, auth *Auth) {
 	if !ok || callback == nil {
 		return
 	}
-	statement := auth.AuthStatement()
+	var statement logging.AuthStatement
+	if auth != nil && cliproxyexecutor.UpstreamAttempted(attemptCtx) {
+		statement = auth.AuthStatement()
+	}
 	callback(statement.Kind, statement.Provider, statement.Host)
 }
 
