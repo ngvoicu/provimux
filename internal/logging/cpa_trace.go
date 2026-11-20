@@ -71,26 +71,54 @@ func printableASCII(value string) bool {
 type cpaTraceState struct {
 	mu      sync.RWMutex
 	traceID string
-	// authStatement names the credential whose upstream produced the response; empty until one has.
-	authStatement AuthStatement
+	// offered is the statement handed over with the result the execution layer last returned on this request. It
+	// names nothing by itself: a route confirms it where it writes that result.
+	offered AuthStatement
+	// confirmed is the statement a route confirmed at the write of its answer's first byte: the only statement the
+	// response headers carry.
+	confirmed AuthStatement
 }
 
-func (s *cpaTraceState) setAuthStatement(kind, provider, host string) {
+func trimmedAuthStatement(statement AuthStatement) AuthStatement {
+	return AuthStatement{Kind: strings.TrimSpace(statement.Kind), Provider: strings.TrimSpace(statement.Provider), Host: strings.TrimSpace(statement.Host)}
+}
+
+func (s *cpaTraceState) offer(statement AuthStatement) {
 	if s == nil {
 		return
 	}
-	statement := AuthStatement{Kind: strings.TrimSpace(kind), Provider: strings.TrimSpace(provider), Host: strings.TrimSpace(host)}
+	statement = trimmedAuthStatement(statement)
 	s.mu.Lock()
-	s.authStatement = statement
+	s.offered = statement
+	s.confirmed = AuthStatement{}
 	s.mu.Unlock()
 }
 
-func (s *cpaTraceState) getAuthStatement() AuthStatement {
+func (s *cpaTraceState) confirmOffer() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.confirmed = s.offered
+	s.mu.Unlock()
+}
+
+func (s *cpaTraceState) confirm(statement AuthStatement) {
+	if s == nil {
+		return
+	}
+	statement = trimmedAuthStatement(statement)
+	s.mu.Lock()
+	s.confirmed = statement
+	s.mu.Unlock()
+}
+
+func (s *cpaTraceState) getConfirmed() AuthStatement {
 	if s == nil {
 		return AuthStatement{}
 	}
 	s.mu.RLock()
-	statement := s.authStatement
+	statement := s.confirmed
 	s.mu.RUnlock()
 	return statement
 }
@@ -156,7 +184,7 @@ func SetGinCPATraceID(c *gin.Context, authIndex string) {
 	}
 }
 
-// GinCPAAuthStatementCallback returns a callback, safe to invoke after the Gin context is released, that stores in
+// GinCPAAuthStatementCallback returns a callback, safe to invoke after the Gin context is released, that confirms in
 // one step the statement of the credential whose upstream produced the response: kind, provider and host. A later
 // call replaces an earlier one; a call with three empty values withdraws it.
 func GinCPAAuthStatementCallback(c *gin.Context) func(kind, provider, host string) {
@@ -164,10 +192,12 @@ func GinCPAAuthStatementCallback(c *gin.Context) func(kind, provider, host strin
 	if state == nil {
 		return nil
 	}
-	return state.setAuthStatement
+	return func(kind, provider, host string) {
+		state.confirm(AuthStatement{Kind: kind, Provider: provider, Host: host})
+	}
 }
 
-// SetGinCPAAuthStatement stores the statement of the credential whose upstream produced the response until the
+// SetGinCPAAuthStatement confirms the statement of the credential whose upstream produced the response until the
 // downstream response headers are committed.
 func SetGinCPAAuthStatement(c *gin.Context, statement AuthStatement) {
 	if callback := GinCPAAuthStatementCallback(c); callback != nil {
@@ -175,7 +205,27 @@ func SetGinCPAAuthStatement(c *gin.Context, statement AuthStatement) {
 	}
 }
 
-// GetGinCPAAuthStatement returns the credential statement stored for the current request.
+// OfferGinCPAAuthStatement hands over the statement of the result the execution layer returns on this request (an
+// empty statement withdraws an earlier one). An offer names nothing: it withdraws any confirmed statement, and the
+// response headers carry it only once a route confirms it with ConfirmGinCPAAuthOffer.
+func OfferGinCPAAuthStatement(c *gin.Context, statement AuthStatement) {
+	ginCPATraceState(c).offer(statement)
+}
+
+// ConfirmGinCPAAuthOffer confirms the statement last offered on this request. A route calls it immediately before it
+// writes the first byte of the result that statement was offered with, with nothing between that can write: the
+// response headers committed by that write carry the statement. After the headers are committed it has no effect.
+func ConfirmGinCPAAuthOffer(c *gin.Context) {
+	ginCPATraceState(c).confirmOffer()
+}
+
+// ConfirmGinCPAAuthStatement confirms the statement of a credential a route holds itself (a relay that selected it),
+// immediately before the route writes that credential's upstream response.
+func ConfirmGinCPAAuthStatement(c *gin.Context, statement AuthStatement) {
+	ginCPATraceState(c).confirm(statement)
+}
+
+// GetGinCPAAuthStatement returns the credential statement confirmed for the current request.
 func GetGinCPAAuthStatement(c *gin.Context) AuthStatement {
 	if c == nil {
 		return AuthStatement{}
@@ -185,7 +235,7 @@ func GetGinCPAAuthStatement(c *gin.Context) AuthStatement {
 		return AuthStatement{}
 	}
 	state, _ := value.(*cpaTraceState)
-	return state.getAuthStatement()
+	return state.getConfirmed()
 }
 
 // GetGinCPATraceID returns the trace ID stored for the current request.
@@ -259,11 +309,15 @@ func (w *cpaTraceResponseWriter) applyTraceHeader() {
 	if traceID := w.state.get(); traceID != "" {
 		w.ResponseWriter.Header().Set(CPATraceIDHeader, traceID)
 	}
-	// One read: the kind, provider and host written here are one credential's statement, as sent on the wire.
-	statement := w.state.getAuthStatement().OnTheWire()
+	// One read: the kind, provider and host written here are one credential's confirmed statement, as sent on the
+	// wire. Every pass sets or deletes all three, so a value put in the header map earlier (a staged status, a foreign
+	// writer) never outlives the statement it belonged to.
+	statement := w.state.getConfirmed().OnTheWire()
 	for name, value := range map[string]string{CPAAuthKindHeader: statement.Kind, CPAAuthProviderHeader: statement.Provider, CPAAuthHostHeader: statement.Host} {
 		if value != "" {
 			w.ResponseWriter.Header().Set(name, value)
+		} else {
+			w.ResponseWriter.Header().Del(name)
 		}
 	}
 }
