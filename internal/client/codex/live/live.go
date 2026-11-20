@@ -282,8 +282,6 @@ func (h *Handler) Handle(c *gin.Context) {
 	}
 	selectedIndex := selected.EnsureIndex()
 	logging.SetGinCPATraceID(c, selectedIndex)
-	logging.SetGinCPAAuthKind(c, selected.AuthKind())
-	logging.SetGinCPAAuthProvider(c, selected.Provider, selected.BaseURLHost())
 	if selection != nil {
 		defer func() {
 			if selection.Active() && !selection.Retained() {
@@ -486,6 +484,9 @@ func (h *Handler) Handle(c *gin.Context) {
 			}
 		}
 	}
+	// The upstream answered: name the credential whose response this is.
+	logging.SetGinCPAAuthKind(c, selected.AuthKind())
+	logging.SetGinCPAAuthProvider(c, selected.Provider, selected.BaseURLHost())
 	writeResponseHeaders(c.Writer.Header(), responseHeaders)
 	c.Status(resp.StatusCode)
 	if _, errWrite := c.Writer.Write(responseBodyToWrite); errWrite != nil {
