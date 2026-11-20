@@ -2016,6 +2016,7 @@ func (m *Manager) tryAntigravityCreditsExecuteCandidates(ctx context.Context, re
 			m.MarkResult(creditsCtx, result)
 			attemptAliasResult := resolveAttemptAliasResult(routing, c.auth, routeModel, upstreamModel, aliasResult)
 			rewriteForceMappedResponse(&resp, attemptAliasResult)
+			publishAnsweredAuthMetadata(creditsOpts.Metadata, c.auth)
 			return resp, true, nil
 		}
 	}
