@@ -375,8 +375,13 @@ do_prepare() {
   fi
   # Header lines: "<n>:  <sha> <op> <n>:  <sha> <subject>", op one of = ! < >.
   : >"$out/dropped.tsv"; : >"$out/changed.tsv"; : >"$out/added.tsv"
-  { grep -E '^ *([0-9]+|-+): +([0-9a-f]+|-+) [=!<>] +([0-9]+|-+): +([0-9a-f]+|-+) ' "$out/logs/range-diff.txt" || true; } |
-    while IFS= read -r line; do
+  # grep: 0 = header lines, 1 = none (a range-diff of the README line only); anything else
+  # (the file cannot be read) is an error, never an empty list.
+  if grep -E '^ *([0-9]+|-+): +([0-9a-f]+|-+) [=!<>] +([0-9]+|-+): +([0-9a-f]+|-+) ' "$out/logs/range-diff.txt" >"$out/range-diff-headers.txt"; then :
+  elif [[ $? -ne 1 ]]; then
+    status=error; reason "cannot read the range-diff (logs/range-diff.txt)"; return
+  fi
+  while IFS= read -r line; do
       p="$(sed -E 's/^ *([0-9]+|-+): +([0-9a-f]+|-+) ([=!<>]) +([0-9]+|-+): +([0-9a-f]+|-+) (.*)$/\3	\2	\5	\6/' <<<"$line")"
       IFS=$'\t' read -r op a b subj <<<"$p"
       case "$op" in
@@ -384,7 +389,7 @@ do_prepare() {
         '!') printf '%s\t%s\n' "$(git rev-parse "$a^{commit}")" "$subj" >>"$out/changed.tsv" ;;
         '>') printf '%s\t%s\n' "$(git rev-parse "$b^{commit}")" "$subj" >>"$out/added.tsv" ;;
       esac
-    done
+    done <"$out/range-diff-headers.txt"
   [[ -s "$out/added.tsv" ]] && reason "the candidate has commits that are not in the old main (range-diff '>')"
   [[ -z "$(git rev-list --merges "$upstream_commit..$candidate")" ]] || reason "the candidate has merge commits above $tag"
 
