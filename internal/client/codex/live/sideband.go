@@ -420,8 +420,6 @@ func (h *Handler) HandleSideband(c *gin.Context) {
 		defer releaseAttempt()
 	}
 	logging.SetGinCPATraceID(c, selected.EnsureIndex())
-	logging.SetGinCPAAuthKind(c, selected.AuthKind())
-	logging.SetGinCPAAuthProvider(c, selected.Provider, selected.BaseURLHost())
 
 	upstreamURL := buildSidebandURL(h.sidebandAPIBaseURL, style, callID)
 	upstreamHTTPURL := websocketHTTPURL(upstreamURL)
@@ -457,7 +455,7 @@ func (h *Handler) HandleSideband(c *gin.Context) {
 		if handshakeResponse != nil && handshakeResponse.StatusCode > 0 {
 			handshakeStatus = handshakeResponse.StatusCode
 		}
-		responseBody := handleSidebandDialError(c, ctx, runtimeConfig, handshakeResponse, errDial)
+		responseBody := handleSidebandDialError(c, ctx, runtimeConfig, selected, handshakeResponse, errDial)
 		if selection != nil && handshakeStatus == http.StatusUnauthorized {
 			diagnosticBody := responseBody
 			if len(diagnosticBody) == 0 {
@@ -582,7 +580,9 @@ func callIDFromLocation(location string) string {
 	return callID
 }
 
-func handleSidebandDialError(c *gin.Context, ctx context.Context, cfg *config.Config, response *http.Response, errDial error) []byte {
+// handleSidebandDialError answers a failed upstream dial. A 401 handshake is relayed as the upstream sent it, naming
+// served, the credential it rejected; any other failure is the proxy's own error and names no credential.
+func handleSidebandDialError(c *gin.Context, ctx context.Context, cfg *config.Config, served *auth.Auth, response *http.Response, errDial error) []byte {
 	status := clienterror.HTTPStatusFromErrorOr(errDial, http.StatusBadGateway)
 	var responseBody []byte
 	if response != nil {
@@ -605,6 +605,10 @@ func handleSidebandDialError(c *gin.Context, ctx context.Context, cfg *config.Co
 	}
 	helps.RecordAPIWebsocketError(ctx, cfg, "dial", errDial)
 	if response != nil && response.StatusCode == http.StatusUnauthorized {
+		if served != nil {
+			logging.SetGinCPAAuthKind(c, served.AuthKind())
+			logging.SetGinCPAAuthProvider(c, served.Provider, served.BaseURLHost())
+		}
 		if contentType := response.Header.Get("Content-Type"); contentType != "" {
 			c.Header("Content-Type", contentType)
 		}

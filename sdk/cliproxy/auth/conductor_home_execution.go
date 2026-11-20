@@ -434,6 +434,7 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
 				if !m.retainHomeWebsocketSelection(ctx, opts, routeModel, selection) {
 					selection.End("completed")
 				}
+				publishAnsweredAuthMetadata(opts.Metadata, auth)
 				return response, nil
 			}
 			result.Error = resultErrorFromError(errExecute)
