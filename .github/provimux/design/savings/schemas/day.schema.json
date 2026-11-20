@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ngvoicu/provimux/.github/provimux/design/savings/schemas/day.schema.json",
+  "title": "Provimux Savings: the totals of one day",
+  "description": "The value of KV key provimux:savings:v1:day:<YYYY-MM-DD>: absolute totals of one calendar day of the server's time zone. Written whole by one goroutine; never incremented in place. Readers ignore properties they do not know, so a later version can add counters without a migration.",
+  "type": "object",
+  "required": ["v", "day", "tz", "utc_offset", "keys", "prices", "rows"],
+  "properties": {
+    "v": { "const": 1 },
+    "day": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+    "tz": { "type": "string", "description": "The server's zone when the day was first written (time.Local's name)." },
+    "utc_offset": { "type": "integer", "description": "That zone's offset in seconds at that moment." },
+    "folded": { "type": "boolean", "description": "True once the day reached the row limit and rows were folded into model and key ~other." },
+    "keys": {
+      "type": "object",
+      "description": "Client key id -> the key's last 4 characters, or \"\" for a key under 16 characters. Never a key.",
+      "propertyNames": { "pattern": "^[0-9a-f]{16}$" },
+      "additionalProperties": { "type": "string", "maxLength": 4 }
+    },
+    "prices": {
+      "type": "object",
+      "description": "Price id -> the price this day is valued at: the first one seen for that id on this day, never changed afterwards.",
+      "additionalProperties": { "$ref": "#/$defs/price" }
+    },
+    "rows": {
+      "type": "array",
+      "description": "At most 2000 rows, plus one row with model and key ~other per kind, provider and host once the limit was reached.",
+      "items": { "$ref": "#/$defs/row" }
+    }
+  },
+  "$defs": {
+    "price": {
+      "type": "object",
+      "description": "US dollars per million tokens.",
+      "required": ["src", "in", "out"],
+      "properties": {
+        "src": { "type": "string", "description": "openrouter or provimux." },
+        "in": { "type": "number", "minimum": 0 },
+        "out": { "type": "number", "minimum": 0 },
+        "cr": { "type": "number", "minimum": 0, "description": "Cache read. Absent when the source publishes none." },
+        "cw": { "type": "number", "minimum": 0, "description": "Cache write. Absent when the source publishes none." },
+        "cw1h": { "type": "number", "minimum": 0, "description": "1 hour cache write. Absent when the source publishes none." }
+      }
+    },
+    "row": {
+      "type": "object",
+      "description": "One combination of account kind, provider, host, model and client key. The five together are unique in a day.",
+      "required": ["k", "p", "m", "n"],
+      "properties": {
+        "k": { "type": "string", "description": "Account kind: oauth, apikey or unknown." },
+        "p": { "type": "string", "maxLength": 64, "description": "Provider, lower case." },
+        "h": { "type": "string", "maxLength": 255, "description": "Host of an API key's base URL, lower case. Absent for none." },
+        "m": { "type": "string", "maxLength": 128, "description": "Model id, lower case; ~other for folded rows." },
+        "c": { "type": "string", "description": "Client key id; absent for a request without a client key; ~other for folded rows." },
+        "pm": { "type": "string", "description": "Price id in this day's prices, set the first time the row is written while a price is known. Absent while none is." },
+        "pmm": { "type": "string", "description": "How m was matched to pm: exact, variant, normalized or table." },
+        "n": { "$ref": "#/$defs/counters" }
+      }
+    },
+    "counters": {
+      "type": "object",
+      "description": "Sums over the row's usage records. A counter that is 0 is left out.",
+      "properties": {
+        "req": { "type": "integer", "minimum": 0, "description": "Usage records." },
+        "fail": { "type": "integer", "minimum": 0, "description": "Those that failed." },
+        "in": { "type": "integer", "minimum": 0, "description": "token_breakdown.input.uncached_tokens." },
+        "cr": { "type": "integer", "minimum": 0, "description": "token_breakdown.input.cache_read_tokens." },
+        "cw": { "type": "integer", "minimum": 0, "description": "token_breakdown.input.cache_write_tokens." },
+        "cw5": { "type": "integer", "minimum": 0, "description": "The part of cw reported as 5 minute writes." },
+        "cw1h": { "type": "integer", "minimum": 0, "description": "The part of cw reported as 1 hour writes." },
+        "out": { "type": "integer", "minimum": 0, "description": "token_breakdown.output.total_tokens (reasoning included)." },
+        "rsn": { "type": "integer", "minimum": 0, "description": "token_breakdown.output.reasoning_tokens." },
+        "unc": { "type": "integer", "minimum": 0, "description": "token_breakdown.unclassified_tokens." },
+        "cost": { "type": "integer", "minimum": 0, "description": "cost_details.cost, in billionths of a US dollar." },
+        "ucost": { "type": "integer", "minimum": 0, "description": "cost_details.upstream_inference_cost of bring-your-own-key records, in billionths of a US dollar." },
+        "costn": { "type": "integer", "minimum": 0, "description": "Records that carried cost_details.cost." }
+      }
+    }
+  }
+}
