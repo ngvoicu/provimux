@@ -834,6 +834,7 @@ func (h *OpenAIAPIHandler) VideosRetrieve(c *gin.Context) {
 
 	h.bindVideoAuthID(videoID, selectedAuthID, executionModel)
 	handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
+	handlers.ConfirmAnswer(c)
 	_, _ = c.Writer.Write(out)
 	cliCancel(nil)
 }
@@ -945,6 +946,7 @@ func (h *OpenAIAPIHandler) writeVideoContentFromURL(c *gin.Context, contentURL s
 	if c.Writer.Header().Get("Content-Type") == "" {
 		c.Writer.Header().Set("Content-Type", "application/octet-stream")
 	}
+	handlers.ConfirmAnswer(c)
 	c.Status(resp.StatusCode)
 	_, err = io.Copy(c.Writer, resp.Body)
 	return err
@@ -1024,6 +1026,7 @@ func (h *OpenAIAPIHandler) collectXAIVideosNative(c *gin.Context, rawJSON []byte
 		h.bindVideoAuthID(videoID, selectedAuthID, executionModel)
 	}
 	handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
+	handlers.ConfirmAnswer(c)
 	_, _ = c.Writer.Write(resp)
 	cliCancel(nil)
 }
@@ -1063,6 +1066,7 @@ func (h *OpenAIAPIHandler) collectXAIVideosCreate(c *gin.Context, xaiReq []byte,
 
 	h.bindVideoAuthIDAndModelFromPayload(out, selectedAuthID, routingModel)
 	handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
+	handlers.ConfirmAnswer(c)
 	_, _ = c.Writer.Write(out)
 	cliCancel(nil)
 }

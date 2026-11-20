@@ -129,6 +129,7 @@ func (h *GeminiAPIHandler) handleInteractionsNonStream(c *gin.Context, cliCtx co
 		return
 	}
 	handlers.WriteUpstreamHeaders(c.Writer.Header(), resp.Headers)
+	handlers.ConfirmAnswer(c)
 	_, _ = c.Writer.Write(resp.Body)
 }
 
@@ -223,6 +224,7 @@ func (h *GeminiAPIHandler) forwardInteractionsStream(c *gin.Context, flusher htt
 			if len(chunk) == 0 {
 				return
 			}
+			handlers.ConfirmAnswer(c)
 			trimmed := bytes.TrimSpace(chunk)
 			if bytes.HasPrefix(trimmed, []byte("event:")) || bytes.HasPrefix(trimmed, []byte("data:")) {
 				_, _ = c.Writer.Write(chunk)
