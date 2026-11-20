@@ -112,10 +112,10 @@ func WithExcludedAuthIDs(ctx context.Context, authIDs []string) context.Context 
 	return context.WithValue(ctx, excludedAuthIDsContextKey{}, filtered)
 }
 
-// WithSelectedAuthIDCallback returns a child context that receives the selected auth ID.
-// WithAnsweredAuthCallback installs a callback that receives, in one call, the statement (kind, provider, host) of
-// the credential whose upstream answered the request, or three empty values when a credential is selected and none
-// has answered yet. A websocket turn uses it in place of response headers.
+// WithAnsweredAuthCallback installs a callback that the execution layer calls each time it returns to its caller: in
+// one call, the statement (kind, provider, host) of the credential whose upstream produced the result it returns, or
+// three empty values (an error, or a result no upstream produced). A plugin's own model call does not call it. A
+// websocket turn uses it in place of response headers.
 func WithAnsweredAuthCallback(ctx context.Context, callback func(kind, provider, host string)) context.Context {
 	if callback == nil {
 		return ctx
@@ -134,6 +134,7 @@ func answeredAuthCallbackFromContext(ctx context.Context) func(kind, provider, h
 	return callback
 }
 
+// WithSelectedAuthIDCallback returns a child context that receives the selected auth ID.
 func WithSelectedAuthIDCallback(ctx context.Context, callback func(string)) context.Context {
 	if callback == nil {
 		return ctx
