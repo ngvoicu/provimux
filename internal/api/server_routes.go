@@ -576,8 +576,7 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 		log.WithField("status", resp.StatusCode).Warnf("codex alpha search upstream request failed: %s", logging.SafeDiagnosticForLog(string(upstreamBody)))
 	}
 	// The upstream answered: name the credential whose response this is.
-	logging.SetGinCPAAuthKind(c, selected.AuthKind())
-	logging.SetGinCPAAuthProvider(c, selected.Provider, selected.BaseURLHost())
+	logging.SetGinCPAAuthStatement(c, selected.AuthStatement())
 	if contentType := resp.Header.Get("Content-Type"); contentType != "" {
 		c.Header("Content-Type", contentType)
 	}
