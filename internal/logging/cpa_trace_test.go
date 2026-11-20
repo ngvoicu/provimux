@@ -156,3 +156,55 @@ func TestCPAAuthKindHeaderNamesTheCredentialThatServedTheResponse(t *testing.T) 
 		})
 	}
 }
+
+func TestCPAAuthProviderAndHostHeadersNameTheCredentialThatServedTheResponse(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	engine.Use(CPATraceIDMiddleware())
+	engine.GET("/key", func(c *gin.Context) {
+		SetGinCPAAuthProvider(c, "openai-compatible-lab", "api.example.test")
+		c.Status(http.StatusOK)
+	})
+	engine.GET("/login", func(c *gin.Context) {
+		SetGinCPAAuthProvider(c, "devin", "")
+		c.Status(http.StatusOK)
+	})
+	engine.GET("/fallback", func(c *gin.Context) {
+		// An API key with a base URL failed before anything was sent; a login of another provider answered.
+		provider, host := GinCPAAuthProviderCallback(c), GinCPAAuthHostCallback(c)
+		provider("claude")
+		host("api.example.test")
+		provider("devin")
+		host("")
+		c.Status(http.StatusOK)
+	})
+	engine.GET("/committed", func(c *gin.Context) {
+		c.Writer.WriteHeaderNow()
+		SetGinCPAAuthProvider(c, "claude", "api.example.test")
+	})
+
+	for _, test := range []struct {
+		path     string
+		provider string
+		host     string
+	}{
+		{path: "/key", provider: "openai-compatible-lab", host: "api.example.test"},
+		{path: "/login", provider: "devin"},
+		{path: "/fallback", provider: "devin"},
+		{path: "/committed"},
+	} {
+		t.Run(test.path, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			engine.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, test.path, nil))
+			if got := recorder.Header().Get(CPAAuthProviderHeader); got != test.provider {
+				t.Fatalf("%s = %q, want %q", CPAAuthProviderHeader, got, test.provider)
+			}
+			if _, present := recorder.Header()[http.CanonicalHeaderKey(CPAAuthHostHeader)]; present != (test.host != "") {
+				t.Fatalf("%s present = %v, want %v", CPAAuthHostHeader, present, test.host != "")
+			}
+			if got := recorder.Header().Get(CPAAuthHostHeader); got != test.host {
+				t.Fatalf("%s = %q, want %q", CPAAuthHostHeader, got, test.host)
+			}
+		})
+	}
+}

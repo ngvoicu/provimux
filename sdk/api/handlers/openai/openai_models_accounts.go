@@ -1,13 +1,11 @@
 package openai
 
 import (
-	"net/url"
 	"sort"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 // includeAccountsParam is the /v1/models query value that adds, per model, the kinds of credential serving it.
@@ -22,18 +20,6 @@ type modelAccount struct {
 	// Host is the host of an API key's base URL, when it has one: an OpenAI-compatible entry's name is the operator's
 	// choice, so the host is what tells the upstream service. Only the host: no credentials, port, path or query.
 	Host string `json:"host,omitempty"`
-}
-
-// baseURLHost returns the lowercased host of an API key's base URL, or "" when there is none.
-func baseURLHost(auth *coreauth.Auth) string {
-	if auth.Attributes == nil || auth.AuthKind() != "apikey" {
-		return ""
-	}
-	parsed, errParse := url.Parse(strings.TrimSpace(auth.Attributes["base_url"]))
-	if errParse != nil {
-		return ""
-	}
-	return strings.ToLower(parsed.Hostname())
 }
 
 // wantsAccounts reports whether the request asked for the accounts of each model (`?include=accounts`).
@@ -65,7 +51,7 @@ func (h *OpenAIAPIHandler) modelAccounts() map[string][]modelAccount {
 		if auth == nil || auth.Disabled {
 			continue
 		}
-		account := modelAccount{Provider: auth.Provider, Kind: auth.AuthKind(), Priority: auth.Priority(), Host: baseURLHost(auth)}
+		account := modelAccount{Provider: auth.Provider, Kind: auth.AuthKind(), Priority: auth.Priority(), Host: auth.BaseURLHost()}
 		for _, model := range modelRegistry.GetModelsForClient(auth.ID) {
 			if model == nil || model.ID == "" {
 				continue
