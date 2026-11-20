@@ -39,7 +39,7 @@ func TestPublishSelectedAuthMetadataIncludesStableIndex(t *testing.T) {
 	}
 }
 
-// The kind is published once a credential has answered; selecting one clears it.
+// The kind is published once a credential has answered; a selection publishes nothing.
 func TestPublishAnsweredAuthMetadataReportsCredentialKind(t *testing.T) {
 	for _, test := range []struct {
 		name string
@@ -55,8 +55,8 @@ func TestPublishAnsweredAuthMetadataReportsCredentialKind(t *testing.T) {
 				cliproxyexecutor.AnsweredAuthCallbackMetadataKey: func(value, _, _ string) { kind = value },
 			}
 			publishSelectedAuthMetadata(meta, test.auth)
-			if kind != "" {
-				t.Fatalf("kind after selection = %q, want none until the credential answers", kind)
+			if kind != "not called" {
+				t.Fatalf("a selection called the answered callback with kind %q", kind)
 			}
 			publishAnsweredAuthMetadata(upstreamAnswered(), meta, test.auth)
 			if kind != test.want {
@@ -66,7 +66,7 @@ func TestPublishAnsweredAuthMetadataReportsCredentialKind(t *testing.T) {
 	}
 }
 
-// The provider and host are published once a credential has answered; selecting one clears them.
+// The provider and host are published once a credential has answered; a selection publishes nothing.
 func TestPublishAnsweredAuthMetadataReportsCredentialProviderAndHost(t *testing.T) {
 	for _, test := range []struct {
 		name     string
@@ -84,8 +84,8 @@ func TestPublishAnsweredAuthMetadataReportsCredentialProviderAndHost(t *testing.
 				cliproxyexecutor.AnsweredAuthCallbackMetadataKey: func(_, providerValue, hostValue string) { provider, host = providerValue, hostValue },
 			}
 			publishSelectedAuthMetadata(meta, test.auth)
-			if provider != "" || host != "" {
-				t.Fatalf("provider, host after selection = %q, %q, want none until the credential answers", provider, host)
+			if provider != "not called" || host != "not called" {
+				t.Fatalf("a selection called the answered callback with provider, host %q, %q", provider, host)
 			}
 			publishAnsweredAuthMetadata(upstreamAnswered(), meta, test.auth)
 			if provider != test.provider {
