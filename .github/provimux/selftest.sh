@@ -66,6 +66,17 @@
 #   latest        release-latest (run from the workflow): only its own release id,
 #                 never backward, stops on an unreadable or tagless latest, fails a
 #                 wrong readback
+#   README commit (design/root-readme.md) check.sh prepare on one upstream tag per case:
+#                 the READMEs edited, rewritten (a plain range-diff then unpairs the
+#                 README commit), untouched: resolved, same candidate twice; a later
+#                 layer conflict, a moved README_CN.md, an added README_KO.md (guard), an
+#                 owner patch conflict, a README commit that changes another path, two
+#                 README commits: fail. stack_range_diff and readme_normal on hand-built
+#                 candidates: each of the five conditions alone, the lists of the
+#                 segments, empty segments, whole names. guard.sh rule 5. publish.sh --ci
+#                 --plan end to end: the README case, a bundle out of normal form, a
+#                 result.json naming another README commit. git range-diff only in
+#                 common.sh; guard.sh's set = PMX_README_PATHS
 # Needs bash 3.2+, git, jq.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -1117,6 +1128,357 @@ contains "  ... the sync issue, without the job list" "$stub/issue.log" "issue c
 contains "  ... and still the tap issue (from needs.tap-check.result)" "$stub/issue.log" "issue create -R test/provimux --title homebrew tap: v$TV needs the owner"
 expect "another job failed and the jobs API answers 503: the report step runs" "exit 0" "$(rrep image-push 503)"
 lacks "  ... no tap issue" "$stub/issue.log" "homebrew tap:"
+# --- the README commit (design/root-readme.md) ------------------------------------------------------
+# ru: an upstream with README.md, README_CN.md, README_JA.md (long enough that a rewrite
+# unpairs the README commit in a plain range-diff), LICENSE, code.go, patch.txt at v1.0.0,
+# and one tag per case, each a commit on v1.0.0.
+# rp: the stack on v1.0.0: an owner patch, a layer commit (it also carries guard.sh, for
+# publish.sh), the README commit, a layer commit that edits the pointer, a layer commit.
+echo "# README commit: fixture"
+ru="$tmp/ru"
+rtext() { local i; for i in $(seq 1 40); do echo "$1 line $i, see https://example.invalid/?ref=$1$i"; done; }
+git init -q -b main "$ru"
+(
+  cd "$ru"
+  rtext en >README.md; rtext cn >README_CN.md; rtext ja >README_JA.md
+  echo 'MIT' >LICENSE; echo 'package x' >code.go; seq 1 10 | sed 's/^/p0 /' >patch.txt
+  git add -A && git commit -q -m v1 && git tag v1.0.0
+  # tag NAME MESSAGE SHELL: a commit on v1.0.0 made by SHELL, tagged NAME.
+  t() { git checkout -q --detach v1.0.0; eval "$3"; git add -A; git commit -q -m "$2"; git tag "$1"; }
+  t v1.1.0 'edit the READMEs' 'sed -i.bak "5s/line/LINE/" README.md README_CN.md README_JA.md; rm -f ./*.bak'
+  t v1.2.0 'rewrite the READMEs' 'rtext new >README.md; rtext newcn >README_CN.md; git rm -q README_JA.md'
+  t v1.3.0 'code only' 'echo "// more" >>code.go'
+  t v1.4.0 'READMEs and layer2.txt' 'sed -i.bak "5s/line/LINE/" README.md README_CN.md README_JA.md; rm -f ./*.bak; seq 1 10 | sed "s/^/up /" >layer2.txt'
+  t v1.5.0 'move README_CN.md' 'mkdir docs; git mv README_CN.md docs/README_CN.md'
+  t v1.6.0 'READMEs and README_KO.md' 'sed -i.bak "5s/line/LINE/" README.md README_CN.md README_JA.md; rm -f ./*.bak; rtext ko >README_KO.md'
+  t v1.7.0 'the owner patch upstream, otherwise' 'sed -i.bak "5s/.*/upstream/" patch.txt; rm -f patch.txt.bak'
+  git checkout -q main
+)
+rp="$tmp/rp"
+git clone -q "$ru" "$rp"
+pointer='# Provimux
+
+A pointer (fixture).
+Its README is .github/README.md.
+'
+(
+  cd "$rp"
+  git checkout -q --detach v1.0.0
+  sed -i.bak '5s/.*/p1/' patch.txt && rm -f patch.txt.bak && git commit -q -am 'owner patch'
+  mkdir -p .github/provimux && cp "$here/guard.sh" .github/provimux/guard.sh && echo l1 >layer1.txt
+  git add -A && git commit -q -m 'layer one' -m 'Provimux-Layer: branding'
+  printf '%s' "$pointer" >README.md && git rm -q README_CN.md README_JA.md
+  git add -A && git commit -q -m 'docs(provimux): root README points to the Provimux README' -m 'Provimux-Layer: branding
+Provimux-Readme: root'
+  sed -i.bak '1s/.*/# Provimux, edited/' README.md && rm -f README.md.bak
+  git commit -q -am 'edit the pointer' -m 'Provimux-Layer: branding'
+  seq 1 10 | sed 's/^/l2 /' >layer2.txt && git add -A && git commit -q -m 'layer two' -m 'Provimux-Layer: branding'
+  git branch -q -f main HEAD && git checkout -q main
+)
+rg() { git -C "$rp" "$@"; }
+OB="$(rg rev-parse 'v1.0.0^{commit}')"
+OM="$(rg rev-parse main)"
+P="$(rg rev-parse main~4)" L1="$(rg rev-parse main~3)" R="$(rg rev-parse main~2)" E="$(rg rev-parse main~1)" L2="$OM"
+up_c() { rg rev-parse "$1^{commit}"; }
+
+echo "# README commit: check.sh prepare (rebase, resolver, normal form, guard)"
+# prep TAG [OLD_MAIN]: check.sh prepare from a state "check", in $tmp/prep-TAG; prints the state's status.
+prep() {
+  local t=$1 m=${2:-$OM} d="$tmp/prep-$1"
+  rm -rf "$d"; mkdir -p "$d"
+  jq -n --arg t "$t" --arg u "$(up_c "$t")" --arg m "$m" --arg ob "$OB" '{status: "check", step: "select", tag: $t,
+    base: ($t | ltrimstr("v")), upstream_commit: $u, old_main: $m, old_base_tag: "v1.0.0", old_base_commit: $ob,
+    candidate: "", commits: "", guard_ok: ""}' >"$d/state.json"
+  (cd "$rp" && PMX_UPSTREAM_URL="$ru" PMX_UPSTREAM_REPO=test/up PMX_CHECK_OUT="$d" bash "$here/check.sh" prepare) >"$d/prep.log" 2>&1 || true
+  jq -r .status "$d/state.json"
+}
+pj() { jq -r "$2" "$tmp/prep-$1/$3"; }
+# ops FILE: the header lines of a range-diff as "<op> <old> <new>" (the parsers' pattern), in order.
+ops() { sed -nE 's/^ *([0-9]+|-+): +([0-9a-f]+|-+) ([=!<>]) +([0-9]+|-+): +([0-9a-f]+|-+) .*$/\3 \2 \5/p' "$1"; }
+allsame() { if [[ -n "$(ops "$1")" && -z "$(ops "$1" | grep -v '^=' || true)" ]]; then echo yes; else echo no; fi; }
+
+expect "upstream edits all three READMEs: status test" test "$(prep v1.1.0)"
+expect "  ... rebase ok" true "$(pj v1.1.0 .ok rebase.json)"
+expect "  ... resolved at the README commit" "$R" "$(pj v1.1.0 .readme.commit rebase.json)"
+expect "  ... three paths conflicted" "README.md README_CN.md README_JA.md" "$(pj v1.1.0 '.readme.conflicts | sort | join(" ")' rebase.json)"
+expect "  ... readme: R -> R', reapplied" "$R true" "$(pj v1.1.0 '"\(.old) \(.reapplied)"' readme.json)"
+expect "  ... result.json carries it" "$R" "$(pj v1.1.0 .readme.old result.json)"
+expect "  ... every commit of the segments =" yes "$(allsame "$tmp/prep-v1.1.0/logs/range-diff.txt")"
+contains "  ... the README line" "$tmp/prep-v1.1.0/logs/range-diff.txt" "README  $R -> "
+expect "  ... guard ok" true "$(pj v1.1.0 .guard_ok state.json)"
+expect "  ... no reason" "" "$(cat "$tmp/prep-v1.1.0/reasons.txt")"
+c1="$(pj v1.1.0 .candidate state.json)"
+prep v1.1.0 >/dev/null
+expect "  ... the same candidate on a second run" "$c1" "$(pj v1.1.0 .candidate state.json)"
+rg fetch -q "$tmp/prep-v1.1.0/candidate.bundle" "+refs/pmx-check/candidate:refs/t/c1"
+for p in README_CN.md README_JA.md; do
+  if [[ -z "$(rg ls-tree "$c1" -- "$p")" ]]; then ok "  ... $p absent from the candidate"; else bad "  ... $p absent from the candidate"; fi
+done
+expect "  ... the candidate's README.md is the old main's" "$(rg rev-parse "$OM:README.md")" "$(rg rev-parse "$c1:README.md")"
+expect "  ... R' keeps R's author and message" "$(rg log -1 --format='%an %ae %ad%n%B' "$R")" "$(rg log -1 --format='%an %ae %ad%n%B' "$c1~2")"
+
+expect "upstream rewrites README.md and README_CN.md, deletes README_JA.md: status test" test "$(prep v1.2.0)"
+expect "  ... resolved at the README commit" "$R" "$(pj v1.2.0 .readme.commit rebase.json)"
+expect "  ... README.md and README_CN.md conflicted" "README.md README_CN.md" "$(pj v1.2.0 '.readme.conflicts | sort | join(" ")' rebase.json)"
+expect "  ... every commit of the segments =" yes "$(allsame "$tmp/prep-v1.2.0/logs/range-diff.txt")"
+c2="$(pj v1.2.0 .candidate state.json)"
+rg fetch -q "$tmp/prep-v1.2.0/candidate.bundle" "+refs/pmx-check/candidate:refs/t/c2"
+rg range-diff --no-color --no-notes "$OB..$OM" "$(up_c v1.2.0)..$c2" >"$tmp/plain-v1.2.0.txt"
+contains "  ... a plain whole-range range-diff drops the README commit (<)" "$tmp/plain-v1.2.0.txt" "$(rg rev-parse --short "$R") < -:"
+contains "  ... and shows R' as not in the old main (>)" "$tmp/plain-v1.2.0.txt" "> 3:  $(rg rev-parse --short "$c2~2")"
+
+expect "upstream changes no README: status test" test "$(prep v1.3.0)"
+expect "  ... no stop recorded" "null" "$(pj v1.3.0 .readme rebase.json)"
+expect "  ... readme: not reapplied" false "$(pj v1.3.0 .reapplied readme.json)"
+expect "  ... every commit =" yes "$(allsame "$tmp/prep-v1.3.0/logs/range-diff.txt")"
+rg fetch -q "$tmp/prep-v1.3.0/candidate.bundle" "+refs/pmx-check/candidate:refs/t/c3"
+
+expect "upstream edits the READMEs and a file a later layer commit changes: fail" fail "$(prep v1.4.0)"
+expect "  ... stopped at that later commit" "$L2" "$(pj v1.4.0 .stopped_at rebase.json)"
+expect "  ... after resolving the README commit once" "$R" "$(pj v1.4.0 .readme.commit rebase.json)"
+expect "upstream renames README_CN.md to docs/README_CN.md: fail" fail "$(prep v1.5.0)"
+expect "  ... stopped at the README commit" "$R" "$(pj v1.5.0 .stopped_at rebase.json)"
+expect "  ... conflict docs/README_CN.md" "docs/README_CN.md" "$(pj v1.5.0 '.conflicts | join(" ")' rebase.json)"
+expect "  ... the resolver did not act" null "$(pj v1.5.0 .readme rebase.json)"
+expect "upstream edits the READMEs and adds README_KO.md: the guard fails" false "$(prep v1.6.0 >/dev/null; pj v1.6.0 .guard_ok state.json)"
+contains "  ... naming README_KO.md" "$tmp/prep-v1.6.0/logs/guard.log" "root entry README_KO.md"
+contains "  ... a reason" "$tmp/prep-v1.6.0/reasons.txt" "the guard rejects the candidate"
+expect "upstream changes a file an owner patch changes (no README): fail, as before" fail "$(prep v1.7.0)"
+expect "  ... stopped at the owner patch" "$P" "$(pj v1.7.0 .stopped_at rebase.json)"
+expect "  ... the resolver did not act" null "$(pj v1.7.0 .readme rebase.json)"
+
+echo "# README commit: stack_range_diff and readme_normal"
+# shellcheck source=common.sh
+. "$here/common.sh"
+bw="$tmp/bw"
+rg worktree add -q --detach "$bw" "$OB"
+bg() { git -C "$bw" "$@"; }
+# build BASE STEP...: a candidate on BASE in the worktree $bw; prints its tip. A STEP is
+# "pick:<commit>" (cherry-pick), "readme:<commit>" (that commit's README paths, committed
+# with its author and message: git commit -C), or a shell command run in $bw.
+build() {
+  local s c p
+  # Forced: a commit with both README.md and readme.md leaves a case-insensitive work tree dirty.
+  bg checkout -q -f --detach "$1"; bg clean -q -f -d; shift
+  for s in "$@"; do
+    case "$s" in
+      pick:*) bg cherry-pick --allow-empty "${s#pick:}" >/dev/null ;;
+      readme:*)
+        c="${s#readme:}"
+        for p in "${PMX_README_PATHS[@]}"; do
+          if [[ -n "$(readme_entry "$c" "$p" git -C "$rp")" ]]; then bg checkout -q "$c" -- "$p"; else bg rm -q -f --ignore-unmatch -- "$p" >/dev/null; fi
+        done
+        bg commit -q --allow-empty -C "$c" ;;
+      *) (cd "$bw" && eval "$s") ;;
+    esac
+  done
+  bg rev-parse HEAD
+}
+N3="$(up_c v1.3.0)"
+# srd OLD_BASE OLD_MAIN NEW_BASE CANDIDATE: "ok <R> <R'>" or "fail"; the range-diff in $tmp/srd.txt, stderr in $tmp/srd.err
+srd() { local o; if o="$(stack_range_diff "$1" "$2" "$3" "$4" "$tmp/srd.txt" git -C "$rp" 2>"$tmp/srd.err")"; then echo "ok${o:+ $o}"; else echo fail; fi; }
+# lists: "<op>:<full sha>" of every non-= header line of $tmp/srd.txt, space-separated
+lists() { ops "$tmp/srd.txt" | while read -r o a b; do case "$o" in '<' | '!') echo "$o:$(rg rev-parse "$a")" ;; '>') echo "$o:$(rg rev-parse "$b")" ;; esac; done | paste -sd ' ' -; }
+# rn OLD NEW OLD_TIP NEW_TIP: readme_normal, "ok" or the condition's number
+rn() { if readme_normal "$@" git -C "$rp" 2>"$tmp/rn.err"; then echo ok; else sed -n 's/^README rule, condition \([0-9]\).*/\1/p' "$tmp/rn.err" | head -n 1; fi; }
+
+good="$(build "$N3" pick:"$P" pick:"$L1" pick:"$R" pick:"$E" pick:"$L2")"
+expect "the re-applied stack: normal form" ok "$(rn "$R" "$good~2" "$OM" "$good")"
+expect "  ... stack_range_diff passes with the pair" "ok $R $(rg rev-parse "$good~2")" "$(srd "$OB" "$OM" "$N3" "$good")"
+expect "  ... no list entry" "" "$(lists)"
+# No README commit on either side: exactly git range-diff of the whole ranges.
+nr_old="$(rg rev-parse main~3)"; nr_new="$(build "$N3" pick:"$P" pick:"$L1")"
+srd "$OB" "$nr_old" "$N3" "$nr_new" >/dev/null
+rg range-diff --no-color --no-notes "$OB..$nr_old" "$N3..$nr_new" >"$tmp/plain.txt"
+if command cmp -s "$tmp/plain.txt" "$tmp/srd.txt" && [[ -s "$tmp/plain.txt" ]]; then ok "no README commit on either side: git range-diff's output, byte for byte"; else bad "no README commit on either side: git range-diff's output, byte for byte"; fi
+expect "  ... and no pair" "" "$(stack_range_diff "$OB" "$nr_old" "$N3" "$nr_new" "$tmp/x.txt" git -C "$rp")"
+
+lic="$(build "$N3" pick:"$P" pick:"$L1" pick:"$R" 'echo GPL >LICENSE && git commit -q -a --amend -C HEAD' pick:"$E" pick:"$L2")"
+expect "R' also changes LICENSE: condition 4" 4 "$(rn "$R" "$lic~2" "$OM" "$lic")"
+expect "  ... stack_range_diff fails" fail "$(srd "$OB" "$OM" "$N3" "$lic")"
+cnk="$(build "$N3" pick:"$P" pick:"$L1" pick:"$R" "git checkout -q $OB -- README_CN.md && git commit -q --amend -C HEAD" pick:"$E" pick:"$L2" 'git rm -q README_CN.md && git commit -q -m "rm CN"')"
+expect "R' leaves README_CN.md in place (the tip removes it): condition 3 alone" 3 "$(rn "$R" "$cnk~3" "$OM" "$cnk")"
+# shellcheck disable=SC2016 # run by build in the work tree
+oth="$(build "$N3" pick:"$P" pick:"$L1" pick:"$R" 'echo extra >>README.md && git commit -q -a --amend -C HEAD' pick:"$E" pick:"$L2" 'sed -i.bak "\$d" README.md && rm README.md.bak && git commit -q -am "drop extra"')"
+expect "R' has another README.md (the tip restores it): condition 3 alone" 3 "$(rn "$R" "$oth~3" "$OM" "$oth")"
+expect "  ... the tip's README.md is the old main's (so only 3 fails)" "$(rg rev-parse "$OM:README.md")" "$(rg rev-parse "$oth:README.md")"
+msg="$(build "$N3" pick:"$P" pick:"$L1" pick:"$R" 'git commit -q --amend -m "docs(provimux): another message" -m "Provimux-Layer: branding
+Provimux-Readme: root"' pick:"$E" pick:"$L2")"
+expect "R' has another message: condition 2" 2 "$(rn "$R" "$msg~2" "$OM" "$msg")"
+contains "  ... named: message" "$tmp/rn.err" "another message"
+aut="$(build "$N3" pick:"$P" pick:"$L1" pick:"$R" 'git commit -q --amend --no-edit --author="x <x@example.com>"' pick:"$E" pick:"$L2")"
+expect "R' has another author: condition 2" 2 "$(rn "$R" "$aut~2" "$OM" "$aut")"
+contains "  ... named: author" "$tmp/rn.err" "another author"
+two="$(build "$N3" pick:"$P" pick:"$L1" pick:"$R")"
+twom="$(cd "$bw" && GIT_AUTHOR_NAME="$(git log -1 --format=%an "$R")" GIT_AUTHOR_EMAIL="$(git log -1 --format=%ae "$R")" GIT_AUTHOR_DATE="$(git log -1 --format=%ad --date=raw "$R")" \
+  git commit-tree "$two^{tree}" -p "$two^" -p "$OB" -m "$(git log -1 --format=%B "$R")")"
+# The message through -m loses nothing here but its exact bytes; condition 1 is checked first.
+expect "R' has two parents: condition 1" 1 "$(rn "$R" "$twom" "$OM" "$twom")"
+twot="$(build "$twom" pick:"$E" pick:"$L2")"
+expect "  ... stack_range_diff fails (a merge in the range)" fail "$(srd "$OB" "$OM" "$N3" "$twot")"
+tip5="$(build "$N3" pick:"$P" pick:"$L1" pick:"$R" pick:"$E" 'echo other >>README.md && git commit -q -a --amend -C HEAD' pick:"$L2")"
+expect "the tip has another README.md through a commit above R': condition 5" 5 "$(rn "$R" "$tip5~2" "$OM" "$tip5")"
+expect "  ... stack_range_diff fails" fail "$(srd "$OB" "$OM" "$N3" "$tip5")"
+expect "  ... and that commit is ! in its segment" "!:$E" "$(lists)"
+dbl="$(build "$N3" pick:"$P" pick:"$L1" pick:"$R" pick:"$E" pick:"$L2" 'echo z >z.txt && git add z.txt && git commit -q -m "another" -m "Provimux-Layer: branding
+Provimux-Readme: root"')"
+expect "two README commits in the candidate: fails" fail "$(srd "$OB" "$OM" "$N3" "$dbl")"
+contains "  ... says more than one" "$tmp/srd.err" "more than one README commit"
+trl="$(build "$N3" pick:"$P" pick:"$L1" pick:"$R" pick:"$E" pick:"$L2" 'git commit -q --amend -m "layer two" -m "Provimux-Layer: branding
+Provimux-Readme: root"')"
+expect "the trailer on another commit: fails" fail "$(srd "$OB" "$OM" "$N3" "$trl")"
+nor="$(build "$N3" pick:"$P" pick:"$L1" pick:"$L2")"
+expect "the candidate without the README commit: no pair (a whole-range range-diff)" "ok" "$(srd "$OB" "$OM" "$N3" "$nor")"
+contains "  ... R is dropped" "$tmp/srd.txt" "$(rg rev-parse --short "$R") < -:"
+belo="$(build "$N3" pick:"$P" 'echo p2 >>patch.txt && git commit -q -a --amend -C HEAD' pick:"$L1" pick:"$R" pick:"$E" pick:"$L2")"
+srd "$OB" "$OM" "$N3" "$belo" >/dev/null
+expect "a commit below R changed: it is changed, R is not" "!:$P" "$(lists)"
+abov="$(build "$N3" pick:"$P" pick:"$L1" pick:"$R" pick:"$E" pick:"$L2" 'echo l2x >>layer2.txt && git commit -q -a --amend -C HEAD')"
+srd "$OB" "$OM" "$N3" "$abov" >/dev/null
+expect "a commit above R changed: it is changed, R is not" "!:$L2" "$(lists)"
+drp="$(build "$N3" pick:"$P" pick:"$L1" pick:"$R" pick:"$E")"
+srd "$OB" "$OM" "$N3" "$drp" >/dev/null
+expect "a commit above R dropped: it is dropped" "<:$L2" "$(lists)"
+ext="$(build "$N3" pick:"$P" pick:"$L1" pick:"$R" pick:"$E" pick:"$L2" 'echo x >x.txt && git add x.txt && git commit -q -m extra -m "Provimux-Layer: branding"')"
+srd "$OB" "$OM" "$N3" "$ext" >/dev/null
+expect "an extra commit in the candidate: it is added" ">:$ext" "$(lists)"
+mov="$(build "$N3" pick:"$L1" pick:"$R" pick:"$E" pick:"$L2" pick:"$P")"
+srd "$OB" "$OM" "$N3" "$mov" >/dev/null
+expect "a commit moved from below R to above it: dropped below, added above" "<:$P >:$mov" "$(lists)"
+# Empty segments: the README commit first above the base, and at the tip.
+r0="$(build "$OB" pick:"$R")"; f_old="$(build "$r0" pick:"$L2")"
+f_new="$(build "$N3" pick:"$R" pick:"$L2")"
+expect "the README commit first above the base (both segments below empty): passes" "ok $r0 $(rg rev-parse "$f_new^")" "$(srd "$OB" "$f_old" "$N3" "$f_new")"
+expect "  ... nothing listed" "" "$(lists)"
+f_new2="$(build "$N3" 'echo y >y.txt && git add y.txt && git commit -q -m added-below' pick:"$R" pick:"$L2")"
+srd "$OB" "$f_old" "$N3" "$f_new2" >/dev/null
+expect "  ... one side empty: its commit is listed (>)" ">:$(rg rev-parse "$f_new2~2")" "$(lists)"
+t_old="$(build "$OB" pick:"$P" pick:"$R")"; t_new="$(build "$N3" pick:"$P" pick:"$R")"
+expect "the README commit at the tip (both segments above empty): passes" "ok $t_old $t_new" "$(srd "$OB" "$t_old" "$N3" "$t_new")"
+t_new2="$(build "$N3" pick:"$P" pick:"$R" 'echo y >y.txt && git add y.txt && git commit -q -m added-above')"
+srd "$OB" "$t_old" "$N3" "$t_new2" >/dev/null
+expect "  ... one side empty: its commit is listed (>)" ">:$t_new2" "$(lists)"
+t_new3="$(build "$N3" pick:"$R")"
+srd "$OB" "$t_old" "$N3" "$t_new3" >/dev/null
+expect "  ... the other side empty: the old commit is listed (<)" "<:$(rg rev-parse "$t_old~1")" "$(lists)"
+# Names are whole and NUL-delimited.
+r=''
+for n in README.md.bak docs/README.md $'README.md\n' readme.md ' README.md'; do in_readme_set "$n" && r="$r [$n]"; done
+expect "README.md.bak, docs/README.md, a name with a newline, readme.md: not paths of the set" "" "$r"
+dir="$(build "$N3" pick:"$P" pick:"$L1" pick:"$R" 'mkdir -p docs && echo d >docs/README.md && git add docs && git commit -q --amend -C HEAD' pick:"$E" pick:"$L2")"
+expect "R' also changes docs/README.md: condition 4" 4 "$(rn "$R" "$dir~2" "$OM" "$dir")"
+nlc="$(build "$N3" pick:"$P" pick:"$L1" pick:"$R" 'printf x >"README.md
+" && git add -A && git commit -q --amend -C HEAD' pick:"$E" pick:"$L2")"
+expect "R' also adds a file named README.md<newline>: condition 4" 4 "$(rn "$R" "$nlc~2" "$OM" "$nlc")"
+
+echo "# README commit: the resolver refuses outside its conditions (check.sh prepare)"
+omlic="$(build "$OB" pick:"$P" pick:"$L1" pick:"$R" 'echo GPL >LICENSE && git commit -q -a --amend -C HEAD' pick:"$E" pick:"$L2")"
+expect "the old main's README commit also changes LICENSE: fail" fail "$(prep v1.1.0 "$omlic")"
+expect "  ... stopped at it" "$(rg rev-parse "$omlic~2")" "$(pj v1.1.0 .stopped_at rebase.json)"
+expect "  ... the resolver did not act" null "$(pj v1.1.0 .readme rebase.json)"
+om2="$(build "$OM" 'echo z >z.txt && git add z.txt && git commit -q -m another -m "Provimux-Layer: branding
+Provimux-Readme: root"')"
+expect "the old main has two README commits: fail" fail "$(prep v1.1.0 "$om2")"
+expect "  ... stopped at the first" "$R" "$(pj v1.1.0 .stopped_at rebase.json)"
+expect "  ... the resolver did not act" null "$(pj v1.1.0 .readme rebase.json)"
+prep v1.1.0 >/dev/null
+
+echo "# README commit: structure"
+r="$(grep -lE 'range-diff --' "$here"/*.sh | sed 's|.*/||' | grep -vx 'selftest.sh' | paste -sd ' ' -)"
+expect "git range-diff runs in common.sh only" "common.sh" "$r"
+expect "guard.sh's set is PMX_README_PATHS" "$(grep -E '^PMX_README_PATHS=' "$here/common.sh" | sed 's/^[^=]*=//')" \
+  "$(grep -E '^readme_paths=' "$here/guard.sh" | sed 's/^[^=]*=//')"
+if grep -qE '^require_readme=[01]$' "$here/guard.sh"; then ok "guard.sh has require_readme"; else bad "guard.sh has require_readme"; fi
+
+echo "# README commit: guard.sh rule 5 (on git objects only)"
+gbare="$tmp/rguard.git"
+git init -q --bare "$gbare"
+(cd "$rp/.git/objects" && pwd) >"$gbare/objects/info/alternates"
+sed 's/^require_readme=0$/require_readme=1/' "$here/guard.sh" >"$tmp/guard-req.sh"
+# gd COMMIT [GUARD]: the guard on a bare repository whose HEAD is COMMIT; pass | fail, output in $tmp/gd.out
+gd() {
+  git --git-dir="$gbare" update-ref --no-deref HEAD "$1"
+  (cd "$tmp" && GIT_DIR="$gbare" PMX_UPSTREAM="$ru" bash "${2:-$here/guard.sh}") >"$tmp/gd.out" 2>&1 && echo pass || echo fail
+}
+expect "the stack with the README commit: passes" pass "$(gd "$OM")"
+expect "  ... also with require_readme=1" pass "$(gd "$OM" "$tmp/guard-req.sh")"
+expect "two README commits: fails" fail "$(gd "$(build "$OM" 'echo z >z.txt && git add z.txt && git commit -q -m another -m "Provimux-Layer: branding
+Provimux-Readme: root"')")"
+contains "  ... says so" "$tmp/gd.out" "There are 2 README commits"
+# shellcheck disable=SC2016 # run by build in the work tree
+nlt="$(build "$OB" pick:"$P" pick:"$L1" 'printf "%s" "$pointer" >README.md; git rm -q README_CN.md README_JA.md; git add -A; git commit -q -m readme -m "Provimux-Readme: root"' pick:"$E" pick:"$L2")"
+expect "a README commit without the layer trailer: fails" fail "$(gd "$nlt")"
+contains "  ... says so" "$tmp/gd.out" "has no 'Provimux-Layer: branding' trailer."
+expect "a README commit that also changes LICENSE: fails" fail "$(gd "$(build "$OB" pick:"$P" pick:"$L1" pick:"$R" 'echo GPL >LICENSE && git commit -q -a --amend -C HEAD' pick:"$E" pick:"$L2")")"
+contains "  ... names LICENSE" "$tmp/gd.out" "changes LICENSE"
+expect "a README commit that keeps README_JA.md: fails" fail "$(gd "$(build "$OB" pick:"$P" pick:"$L1" pick:"$R" "git checkout -q $OB -- README_JA.md && git commit -q --amend -C HEAD" pick:"$E" pick:"$L2")")"
+contains "  ... says absent" "$tmp/gd.out" "must leave README_JA.md absent"
+for n in README_KO.md readme.md README README.md.bak; do
+  # By the index, not the file system (macOS's is case-insensitive: readme.md would be README.md).
+  expect "a root $n at HEAD: fails" fail "$(gd "$(build "$OM" "git update-index --add --cacheinfo 100644,\$(echo k | git hash-object -w --stdin),'$n' && git commit -q -m 'add $n' -m 'Provimux-Layer: branding'")")"
+  contains "  ... names it" "$tmp/gd.out" "root entry $n;"
+done
+expect "README.md a symlink at HEAD: fails" fail "$(gd "$(build "$OM" 'rm README.md && ln -s LICENSE README.md && git add -A && git commit -q -m link -m "Provimux-Layer: branding"')")"
+contains "  ... says so" "$tmp/gd.out" "README.md at HEAD must be a regular file"
+expect "a README commit that leaves README.md a symlink: fails" fail "$(gd "$(build "$OB" pick:"$P" pick:"$L1" pick:"$R" 'rm README.md && ln -s LICENSE README.md && git add -A && git commit -q --amend -C HEAD')")"
+nor_stack="$(rg rev-parse main~3)"
+expect "no README commit, require_readme=0: passes" pass "$(gd "$nor_stack")"
+expect "no README commit, require_readme=1: fails" fail "$(gd "$nor_stack" "$tmp/guard-req.sh")"
+contains "  ... says so" "$tmp/gd.out" "No README commit"
+expect "no README commit, upstream's three root READMEs at HEAD: passes (dormant)" pass "$(gd "$(build "$nor_stack" 'echo k >README_KO.md && git add -A && git commit -q -m ko -m "Provimux-Layer: branding"')")"
+
+echo "# README commit: publish.sh --ci --plan, end to end (stub gh, local remotes)"
+# The remote holds the old main; the check's artifact is prepare's out dir for v1.1.0
+# (the README case), its result.json turned into a pass.
+rremote="$tmp/rremote.git"
+git init -q --bare "$rremote"
+rg push -q "$rremote" "$OM:refs/heads/main"
+rg remote add pmx "$rremote"
+rstub="$tmp/rstub"; mkdir -p "$rstub"
+rs() { jq -n "$2" >"$rstub/$1.json"; }
+rs repos_test_up_releases_tags_v1.1.0 '{draft: false, prerelease: false, published_at: "2026-11-20T00:00:00Z"}'
+jq -n --arg sha "$OM" '{id: 42, run_attempt: 1, path: ".github/workflows/provimux-check.yml", head_branch: "main",
+  event: "schedule", status: "completed", conclusion: "success", head_sha: $sha,
+  repository: {full_name: "test/provimux"}, head_repository: {full_name: "test/provimux"}}' >"$rstub/repos_test_provimux_actions_runs_42_attempts_1.json"
+echo '{"jobs": [{"name": "prepare", "id": 800}, {"name": "verdict", "id": 900}]}' >"$rstub/repos_test_provimux_actions_runs_42_attempts_1_jobs_per_page_100.json"
+echo '[{"title": "provimux-check-artifact", "message": "501 provimux-check-v1.1.0 sha256:aa"}]' >"$rstub/repos_test_provimux_check-runs_900_annotations_per_page_100.json"
+echo '{"id": 501, "name": "provimux-check-v1.1.0", "expired": false, "digest": "sha256:aa", "workflow_run": {"id": 42}}' >"$rstub/repos_test_provimux_actions_artifacts_501.json"
+# rart CANDIDATE BUNDLE [JQ]: the artifact 501 with prepare's result.json for v1.1.0 as a pass (JQ edits it) and BUNDLE.
+rart() {
+  local d="$tmp/rart"
+  rm -rf "$d"; mkdir -p "$d"
+  jq --arg c "$1" '.status = "pass" | .reasons = [] | .candidate = $c | .tests = {ok: true} | .build = {ok: true} | .guard.ok = true' \
+    "$tmp/prep-v1.1.0/result.json" | jq "${3:-.}" >"$d/result.json"
+  cp "$2" "$d/candidate.bundle"
+  (cd "$d" && zip -q a.zip result.json candidate.bundle) && mv "$d/a.zip" "$rstub/repos_test_provimux_actions_artifacts_501_zip.json"
+}
+# rplan: publish.sh --ci --plan; "exit N", the output in $tmp/rplan.out, the plan in $tmp/rplan/plan.env
+rplan() {
+  rm -rf "$tmp/rplan"
+  (cd "$rp" && env -u PMX_PUSH_TOKEN -u PROVIMUX_TOKEN PATH="$stub/bin:$PATH" STUB_API="$rstub" PMX_REPO=test/provimux \
+    PMX_UPSTREAM_REPO=test/up PMX_UPSTREAM_URL="$ru" \
+    bash "$here/publish.sh" v1.1.0 --ci --plan "$tmp/rplan" --run 42 --attempt 1 --artifact 501 --expect-main "$OM" --remote pmx) \
+    >"$tmp/rplan.out" 2>&1 && echo "exit 0" || echo "exit $?"
+}
+rart "$c1" "$tmp/prep-v1.1.0/candidate.bundle"
+expect "the README case: plan written" "exit 0" "$(rplan)"
+expect "  ... with the candidate" "CANDIDATE=$c1" "$(grep '^CANDIDATE=' "$tmp/rplan/plan.env" 2>/dev/null || true)"
+contains "  ... the plan names the README commit" "$tmp/rplan.out" "root READMEs    $R -> $(rg rev-parse "$c1~2")"
+contains "  ... nothing changed, nothing dropped" "$tmp/rplan.out" "range-diff      4 unchanged, 0 changed, 0 dropped"
+# R' also changes LICENSE, and the check's result.json says pass for it.
+blic="$(build "$(up_c v1.1.0)" pick:"$c1~4" pick:"$c1~3" pick:"$c1~2" 'echo GPL >LICENSE && git commit -q -a --amend -C HEAD' pick:"$E" pick:"$L2")"
+rg update-ref refs/t/blic "$blic"
+rg bundle create -q "$tmp/blic.bundle" refs/t/blic "^$(up_c v1.1.0)"
+rart "$blic" "$tmp/blic.bundle" ".readme.new = \"$(rg rev-parse "$blic~2")\""
+expect "a bundle whose R' also changes LICENSE, result.json pass: refused" "exit 1" "$(rplan)"
+contains "  ... by the normal form (condition 4)" "$tmp/rplan.out" "condition 4"
+if [[ -e "$tmp/rplan/plan.env" ]]; then bad "  ... and no plan"; else ok "  ... and no plan"; fi
+rart "$c1" "$tmp/prep-v1.1.0/candidate.bundle" ".readme.new = \"$(rg rev-parse "$c1~1")\""
+expect "result.json's readme names another commit: refused" "exit 1" "$(rplan)"
+contains "  ... says so" "$tmp/rplan.out" "is not this range-diff's"
+rart "$c1" "$tmp/prep-v1.1.0/candidate.bundle" '.readme = null'
+expect "result.json without readme for a README case: refused" "exit 1" "$(rplan)"
+rg worktree remove --force "$bw"
 echo
 echo "$pass passed, $failed failed"
 [[ $failed -eq 0 ]]
