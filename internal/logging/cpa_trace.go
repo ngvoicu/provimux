@@ -8,6 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/httpwire"
+	"golang.org/x/net/http/httpguts"
 )
 
 // CPATraceIDHeader is the downstream response header used to correlate requests with selected credentials.
@@ -305,11 +306,14 @@ func (w *cpaTraceResponseWriter) applyTraceHeader() {
 	if kind := w.state.getAuthKind(); kind != "" {
 		w.ResponseWriter.Header().Set(CPAAuthKindHeader, kind)
 	}
+	// A provider or host that is not a valid header field value would make an HTTP/1.1 client reject the whole
+	// response: it is not written, and without a provider no host is.
 	provider, host := w.state.getAuthProviderAndHost()
-	if provider != "" {
-		w.ResponseWriter.Header().Set(CPAAuthProviderHeader, provider)
+	if provider == "" || !httpguts.ValidHeaderFieldValue(provider) {
+		return
 	}
-	if host != "" {
+	w.ResponseWriter.Header().Set(CPAAuthProviderHeader, provider)
+	if host != "" && httpguts.ValidHeaderFieldValue(host) {
 		w.ResponseWriter.Header().Set(CPAAuthHostHeader, host)
 	}
 }
