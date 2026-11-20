@@ -17,7 +17,7 @@ In this order; it is the owner's. The first is the headline.
 
 | # | What | From the answer | The sentence that must be with it |
 |---|---|---|---|
-| 1 | **Money saved by caching** in the period | `totals.estimate.saved_by_caching_usd` | It is an estimate at list prices, net of what writing the cache cost. Its two parts are shown with it: the part on API-key requests (money that would have been paid) and the part on subscription requests (on a subscription, caching saves quota, not dollars; this is its value at list price). Both are in the `group=kind` rows |
+| 1 | **Worth of prompt caching** in the period | `totals.estimate.saved_by_caching_usd` | It is an estimate at list prices, net of what writing the cache cost. Its two parts are shown with it: the part on API-key requests (money that would have been paid) and the part on subscription requests (on a subscription, caching saves quota, not dollars; this is its value at list price). Both are in the `group=kind` rows |
 | 2 | **Subscription against API key**: how many requests each served | `requests` of the `oauth` and `apikey` rows of `group=kind` | These are counts of what happened. The page does not say Provimux preferred one: which is tried first is a priority the owner sets. A row of kind `unknown`, or a kind the page does not know, is shown as "other" |
 | 3 | **What the subscription requests would have cost** on an API key | the `oauth` row's `estimate.cost_usd` | An estimate at API list price. It is not what the subscription saved: Provimux does not know what the subscription costs |
 | 4 | **What the API keys really cost** | the `apikey` row's `reported_cost.usd`, and `reported_cost.requests` of its `requests` | A charge the provider reported, not an estimate. The page names who reported it (`reported_cost_hosts`; `openrouter.ai` is OpenRouter) and for how many of the API-key requests. For API-key requests without a reported cost it shows the estimate, labelled as one |
@@ -75,8 +75,8 @@ Purpose: a sentence the owner can paste anywhere and stand behind.
 
 - **The amount** is the headline: `totals.estimate.saved_by_caching_usd` of the period on screen. Whole dollars from $100, cents below; **rounded down**, so the line never says more than the page.
 - **The text**, English, in `src/provimux/locales/en.json` with the period as a variable:
-  `Provimux saved me $1,429 this month with prompt caching (estimate at OpenRouter list prices).`
-  The owner's words are "Provimux saved me $X this month"; the tail is what makes the line true when it stands alone. Whether the tail stays, and whether X is the caching saving alone, is open question 1 in `README.md`.
+  `Prompt caching through Provimux was worth $1,429 this month at API list prices.`
+  The owner's wording (T-107): it is a worth, not money saved, because the amount includes subscription requests at list price. The formulas are unchanged.
 - **Period words**: today, in the last 7 days, in the last 30 days, this month, last month, this year, so far.
 - **When there is no line to copy**: the button is disabled, with the reason beside it, when the amount is under $0.01 or negative, or when nothing in the period has a price.
 - It says "OpenRouter list prices" only when every priced model in the range has `price.source` `openrouter`; otherwise "list prices".
