@@ -54,6 +54,21 @@ const (
 	responsesWebsocketAuthHostField     = "cpa_auth_host"
 )
 
+// removeResponsesWebsocketAuthOrigin removes from a response.created event the credential fields an upstream may have
+// put there (an upstream that is itself a gateway names its own credential): the three are this proxy's own, and
+// each is absent when this proxy's credential has no value for it.
+func removeResponsesWebsocketAuthOrigin(payload []byte) []byte {
+	for _, field := range []string{responsesWebsocketAuthKindField, responsesWebsocketAuthProviderField, responsesWebsocketAuthHostField} {
+		if !ojson.GetBytesNoCopy(payload, field).Exists() {
+			continue
+		}
+		if removed, errDelete := ojson.DeleteBytes(payload, field); errDelete == nil {
+			payload = removed
+		}
+	}
+	return payload
+}
+
 // setResponsesWebsocketAuthProvider puts the provider and host of the turn's credential on a response.created event.
 // A value a JSON string cannot carry unchanged (not valid UTF-8) is not written, and without a provider no host is.
 func setResponsesWebsocketAuthProvider(payload []byte, authProvider, authHost func() string) []byte {
@@ -275,6 +290,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 					continue
 				}
 				if eventType == "response.created" {
+					payloads[i] = removeResponsesWebsocketAuthOrigin(payloads[i])
 					if opts.authKind != nil {
 						if kind := opts.authKind(); kind != "" {
 							if named, errSet := ojson.SetBytes(payloads[i], responsesWebsocketAuthKindField, kind); errSet == nil {
