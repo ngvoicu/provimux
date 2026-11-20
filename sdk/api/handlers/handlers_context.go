@@ -16,6 +16,8 @@ type excludedAuthIDsContextKey struct{}
 
 type selectedAuthCallbackContextKey struct{}
 
+type answeredAuthCallbackContextKey struct{}
+
 type finalizedResponseFormatCallbackContextKey struct{}
 
 type originalRequestContextKey struct{}
@@ -111,6 +113,27 @@ func WithExcludedAuthIDs(ctx context.Context, authIDs []string) context.Context 
 }
 
 // WithSelectedAuthIDCallback returns a child context that receives the selected auth ID.
+// WithAnsweredAuthCallback installs a callback that receives, in one call, the statement (kind, provider, host) of
+// the credential whose upstream answered the request, or three empty values when a credential is selected and none
+// has answered yet. A websocket turn uses it in place of response headers.
+func WithAnsweredAuthCallback(ctx context.Context, callback func(kind, provider, host string)) context.Context {
+	if callback == nil {
+		return ctx
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, answeredAuthCallbackContextKey{}, callback)
+}
+
+func answeredAuthCallbackFromContext(ctx context.Context) func(kind, provider, host string) {
+	if ctx == nil {
+		return nil
+	}
+	callback, _ := ctx.Value(answeredAuthCallbackContextKey{}).(func(kind, provider, host string))
+	return callback
+}
+
 func WithSelectedAuthIDCallback(ctx context.Context, callback func(string)) context.Context {
 	if callback == nil {
 		return ctx
