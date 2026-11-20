@@ -11,11 +11,17 @@
   <a href="https://github.com/router-for-me/CLIProxyAPI"><img alt="Built on CLIProxyAPI" src="https://img.shields.io/badge/built%20on-CLIProxyAPI-4338ca"></a>
 </p>
 
-**Provimux**, by [providers.dev](https://providers.dev), is one local endpoint for your AI subscriptions and API keys.
-Sign in with your Claude and Codex subscriptions (subscription login, `oauth`), add your API keys (API key, `apikey`)
-and an OpenRouter key, and point your tools at `http://127.0.0.1:8317`. It is a drop-in distribution of
-[CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) by router-for-me: everything CLIProxyAPI does, plus the
-features below, with its web console, [provimux-ui](https://github.com/ngvoicu/provimux-ui).
+**One key for every AI account.**
+
+A self-hosted AI gateway: one OpenAI-, Claude- and Gemini-compatible endpoint for your API keys and accounts, with the
+prompt cache kept in use and the account behind every answer shown.
+
+**Provimux**, by [providers.dev](https://providers.dev), is one local endpoint for your AI accounts. Add your API keys
+(API key, `apikey`) and an OpenRouter key, then point your tools at `http://127.0.0.1:8317`. Provimux keeps your prompt
+cache in use: it adds cache markers on OpenRouter, keeps each conversation on one upstream, and forwards the longer
+cache lifetime on OpenAI API keys. It tells you which accounts serve each model and which one answered, and its
+console shows why a route is paused. Provimux is an open-source (MIT) distribution of
+[CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) by router-for-me, tested against each CLIProxyAPI release.
 
 **Provimux** · the endpoint (this repository) &nbsp;·&nbsp; **[provimux-ui](https://github.com/ngvoicu/provimux-ui)** · its
 web console &nbsp;·&nbsp; **[providers.dev](https://providers.dev)**
@@ -30,27 +36,36 @@ Then open the console at `http://127.0.0.1:8317/management.html`. Docker, releas
 
 ## What Provimux adds
 
+**Cache: you pay for a prompt once and read it after that.**
+
+- **[OpenRouter built in](#openrouter-built-in).** Cache markers added where the client sent none (Claude among
+  them), a 1-hour lifetime kept through translation, one upstream per conversation so the cache keeps being read, and
+  each model's real limits and reasoning levels for an OpenRouter key.
+- **[The longer prompt cache on OpenAI API keys](#the-longer-prompt-cache-on-openai-api-keys)**: a client's
+  `prompt_cache_options.ttl` (for example `"12h"`) is forwarded instead of removed.
+- **[A Codex WebSocket replay that stays a replay](#codex-websocket-a-full-replay-stays-a-replay)**: a re-sent
+  conversation is no longer merged into a double transcript billed at about twice the input.
+
+**Clarity: you see which account has which models, which one answered, and why a route is paused.**
+
 - **[Which account serves each model, and which one answered](#which-account-serves-each-model-and-which-one-answered).**
-  The model list names, per model, the subscription logins (`oauth`) and API keys (`apikey`) behind it, and every
+  The model list names, per model, the API keys (`apikey`) and logins (`oauth`) behind it, by priority, and every
   response says which kind answered.
+- **[Its own console pages](#the-console-provimux-ui)**: **Model routes** (routes by priority, with the cooldown
+  recorded and its reason) and **Live model lists** in provimux-ui, from
+  [two read-only endpoints](#model-routes-and-live-list-status-for-the-console).
 - **[Live model lists for each login](#live-model-lists-for-each-login).** Each Claude, Codex and Meta login serves
   what its own account lists: retired models disappear, new ones appear the day the provider lists them.
-- **[OpenRouter built in](#openrouter-built-in).** Prompt caching, one upstream per conversation, and each model's
-  real limits and reasoning levels for an OpenRouter key.
 - **[The right context and output limits](#the-right-context-and-output-limits-for-configured-models)** for the
   models you declare under an API key, and **[Devin's real output limits](#devin-real-output-limits-and-a-quota-pause-per-model)**
   with a quota pause per model.
-- **[The longer prompt cache on OpenAI API keys](#the-longer-prompt-cache-on-openai-api-keys)** and
-  **[a Codex WebSocket replay that stays a replay](#codex-websocket-a-full-replay-stays-a-replay)**.
-- **[Its own console pages](#the-console-provimux-ui)**: model routes and live model lists in provimux-ui, from
-  [two read-only endpoints](#model-routes-and-live-list-status-for-the-console).
 - **[Works with pi](#works-with-pi)**, through two extensions that show which account answered.
 
 ![A diagram. On the left, "Your tools": pi, Codex CLI, Claude Code, and any OpenAI-, Claude- or Gemini-format client. They point at the middle box, "Provimux, http://127.0.0.1:8317", which lists: which account serves each model, and which one answered; each login's own model list; OpenRouter caching, sessions and limits; the right context and output limits. Provimux points at "Your accounts" on the right: Claude subscription (oauth), Claude API key (apikey), Codex subscription (oauth), and OpenRouter key (apikey, openrouter.ai).](provimux/media/overview.png)
 
 Then: [Install](#install) · [The console](#the-console-provimux-ui) · [Versions and releases](#versions-and-releases) ·
 [Features in detail](#features-in-detail) · [Requests to providers](#requests-to-providers) ·
-[Built on CLIProxyAPI](#built-on-cliproxyapi) · [License](#license)
+[Support](#support) · [Built on CLIProxyAPI](#built-on-cliproxyapi) · [License](#license)
 
 ## Install
 
@@ -132,6 +147,17 @@ For logins and the configuration reference, CLIProxyAPI's
 [documentation](https://github.com/router-for-me/CLIProxyAPI#readme) applies; `config.example.yaml` in this
 repository includes the Provimux options.
 
+### Your accounts
+
+Add API keys under `api-keys` in your config: `claude`, `codex` (OpenAI), `gemini`, `vertex`, `xai`, `meta`, and
+`openai-compatibility` for OpenRouter and other OpenAI-compatible services. For a company, use API keys and cloud
+accounts (for example Vertex), billed to the company under its own agreement with the provider.
+
+Provimux also accepts subscription logins (`oauth`) for your own account, for your own use. Whether a provider allows
+a third-party tool to use its subscription login is that provider's decision: Anthropic's terms do not allow it, and
+OpenAI has not authorized it. Read your provider's terms before you add a login; the account is yours and so is the
+risk. Provimux is not affiliated with or endorsed by Anthropic or OpenAI.
+
 ## The console: provimux-ui
 
 Provimux's web console is [provimux-ui](https://github.com/ngvoicu/provimux-ui), the CLI Proxy API Management Center
@@ -172,9 +198,10 @@ client as with CLIProxyAPI.
 provider, whether it is a subscription login (`oauth`) or an API key (`apikey`), its priority, and for an API key the
 host it calls. Every response served by an account then says which kind of account answered it.
 
-**Why it matters.** The same model can be reached through a subscription and through a paid API key, and the two
-differ in limits, prompt-cache lifetime and price. A Claude login keeps the prompt cache for an hour, a Claude API key
-for five minutes by default. Without this, a client behind the proxy cannot tell which one it is using.
+**Why it matters.** The same model can be reached through more than one account, and accounts differ in limits,
+prompt-cache lifetime and price: a Claude API key keeps the prompt cache for five minutes unless the request asks for
+an hour, and an OpenRouter key bills at OpenRouter's prices. Without this, a client behind the proxy cannot tell which
+one it is using.
 
 ![A terminal. The first command is curl 'http://127.0.0.1:8317/v1/models?include=accounts' piped to jq, printing each model id and its accounts. claude-opus-5-5 has two: {"provider":"claude","kind":"oauth","priority":10}, highlighted as the one tried first, and {"provider":"claude","kind":"apikey","priority":0}. gpt-6.1-terra has one: {"provider":"codex","kind":"oauth","priority":0}. anthropic/claude-opus-5.5 has one: {"provider":"openai-compatible-openrouter","kind":"apikey","priority":0,"host":"openrouter.ai"}. The second command sends a chat completion with curl -si and greps the X-CPA-AUTH-KIND header: "X-Cpa-Auth-Kind: oauth", highlighted.](provimux/media/model-accounts.png)
 
@@ -201,8 +228,8 @@ curl -s 'http://127.0.0.1:8317/v1/models?include=accounts' -H "Authorization: Be
 ```
 
 Priorities are CLIProxyAPI's: set `priority` on an API-key entry, or in a login's file, and the higher value is tried
-first. For example a Claude subscription at `10` and a Claude API key at `0` uses the subscription and falls back to
-the key.
+first. For example a Claude API key at `10` and a second Claude API key at `0`: the first is tried first, and the
+second takes over while the first has a cooldown recorded.
 
 ### Live model lists for each login
 
@@ -441,6 +468,15 @@ The requests Provimux sends to providers are the same as CLIProxyAPI's, except w
 - with `models.live-lists: true`: each Claude, Codex and Meta login asks its provider for its model list (at startup
   and every 3 hours).
 
+## Support
+
+Provimux is free and stays open source (MIT). For companies that run it, providers.dev offers support plans:
+**Community** (free: GitHub issues and discussions, best effort) and **Team**, **Business** and **Priority** (paid),
+listed with prices and terms at [providers.dev/support](https://providers.dev/support/). A paid plan buys a private
+channel and a first reply within a stated number of business days: a reply, not a promised fix. Provimux has one
+maintainer, and we say so: announced holidays pause the clock, there is no 24/7 and no uptime promise for a service
+you host yourself, and the code stays MIT, so you can always fork it.
+
 ## Built on CLIProxyAPI
 
 Provimux is built on [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) by
@@ -449,6 +485,9 @@ everything Provimux does is CLIProxyAPI's work: the logins, the providers, the t
 routing. Its console, provimux-ui, is the
 [CLI Proxy API Management Center](https://github.com/router-for-me/Cli-Proxy-API-Management-Center), also by
 router-for-me. Provimux adds the features above on top of each CLIProxyAPI release.
+
+This repository's GitHub **Sponsor** button goes to router-for-me, for CLIProxyAPI; it will point to providers.dev's
+own GitHub Sponsors later.
 
 ## License
 
