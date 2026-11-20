@@ -9,7 +9,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/MoeForge/moego/json"
 	"github.com/MoeForge/moego/ojson"
@@ -66,28 +65,24 @@ func removeResponsesWebsocketAuthOrigin(payload []byte) []byte {
 	return payload
 }
 
-// setResponsesWebsocketAuthStatement puts on a response.created event the turn's credential statement, read once:
-// the kind, and the provider and host where they can be carried. A provider or host that a JSON string cannot carry
-// unchanged (not valid UTF-8) is not written, and without a provider no host is.
+// setResponsesWebsocketAuthStatement puts on a response.created event the turn's credential statement, read once
+// and sent as every transport sends it (logging.AuthStatement.OnTheWire): the same values as the response headers.
 func setResponsesWebsocketAuthStatement(payload []byte, authStatement func() logging.AuthStatement) []byte {
 	if authStatement == nil {
 		return payload
 	}
-	statement := authStatement()
-	set := func(field, value string) {
-		if named, errSet := ojson.SetBytes(payload, field, value); errSet == nil {
+	statement := authStatement().OnTheWire()
+	for _, field := range []struct{ name, value string }{
+		{responsesWebsocketAuthKindField, statement.Kind},
+		{responsesWebsocketAuthProviderField, statement.Provider},
+		{responsesWebsocketAuthHostField, statement.Host},
+	} {
+		if field.value == "" {
+			continue
+		}
+		if named, errSet := ojson.SetBytes(payload, field.name, field.value); errSet == nil {
 			payload = named
 		}
-	}
-	if statement.Kind != "" {
-		set(responsesWebsocketAuthKindField, statement.Kind)
-	}
-	if statement.Provider == "" || !utf8.ValidString(statement.Provider) {
-		return payload
-	}
-	set(responsesWebsocketAuthProviderField, statement.Provider)
-	if statement.Host != "" && utf8.ValidString(statement.Host) {
-		set(responsesWebsocketAuthHostField, statement.Host)
 	}
 	return payload
 }
