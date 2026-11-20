@@ -315,12 +315,16 @@ model and client key come in the same call. The console's Savings page reads it.
 what prompt caching was worth, what the paid keys really cost.
 
 **How to use it.** Nothing to turn on: recording starts with the management routes (a management key is
-configured) and needs the local store (`server.kv-store`, on by default) to survive a restart.
+configured) and needs the local store (`server.kv-store`, on by default) to survive a restart. Removing the
+management key later hides the endpoint (404) but recording continues: the totals stay in your own local store.
 
-- A request is one usage record: one attempt at one upstream; a retried request counts once per attempt.
+- A request is one usage record: one attempt at one upstream; a retried request counts once per attempt. It counts
+  under the provider of the account that served it (a Kimi login stays `kimi`, also on its Claude Messages route).
 - A day is the server's local calendar day (`TZ`; see [Docker](#docker)). The answer names the zone and the server's
   today.
-- Everything under `estimate` is an estimate at list prices: OpenRouter's public list
+- Everything under `estimate` is an estimate at base list prices (`prices.rates` says `base`): the higher rates some
+  models charge above a prompt size (long context) are not applied, so long prompts are valued below what they cost.
+  The lists are OpenRouter's public list
   (`https://openrouter.ai/api/v1/models`), and a small table of Provimux's own for models it does not list. The saving
   subtracts the cache-write premium and can be negative; a model without a published cache-read price claims none. A
   model without a price is counted and named, and left out of the amounts. The worth of caching includes

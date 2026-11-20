@@ -318,7 +318,7 @@ The claims a critical reader should try to break, each with where to look.
 
 **That it cannot slow or break a request**
 
-1. `HandleUsage` makes no store call and takes one mutex; the saver never holds that mutex across a store call (read `saver.go` for every `Lock`).
+1. `HandleUsage` makes no store call and takes one mutex; the saver never holds that mutex across a store call (read `saver.go` for every `Lock`). Before the mutex it reads the account's provider from the model registry (`registry.ProvimuxClientProvider`, a read lock, no I/O; T-116).
 2. A stuck disk stalls only the saver: the "no I/O" test, and the usage manager's queue does not grow because of Savings.
 3. A panic in the plugin is recovered by the manager (`manager.go:818-825`); the saver's goroutine recovers and logs its own.
 
@@ -346,8 +346,8 @@ The claims a critical reader should try to break, each with where to look.
 
 **That it stays a layer**
 
-17. `git diff <base of the layer>..HEAD --stat`: new files; `server_provimux.go` +2 and an import; one line each in `openrouter_models.go` and `kv_store.go`; nothing under a guarded path. The guard passes.
-18. Stock CLIProxyAPI still answers 404 on the path; with management off nothing is recorded and no goroutine is started.
+17. `git diff <base of the layer>..HEAD --stat`: new files; `server_provimux.go` +2 and an import; one line in `openrouter_models.go` and two in `kv_store.go` (the flush in `shutdownKVStore`, and since T-116 the flush in `applyKVStoreConfig` before a reload changes the store); nothing under a guarded path. The guard passes.
+18. Stock CLIProxyAPI still answers 404 on the path. A server started without management records nothing and starts no goroutine. Once started, recording continues while management is off (the chief's decision in T-116: the totals go to the user's own local store); only the endpoint is gated, and answers 404 then. A server started without management and given a key later starts recording then.
 19. A Provimux without an OpenRouter entry downloads the list from openrouter.ai at most once per 3 hours (after a failure, no sooner than a minute later), only while requests are recorded, and never under `--local-model` (count the requests against a test server).
 20. Nothing is written to Home's store.
 
