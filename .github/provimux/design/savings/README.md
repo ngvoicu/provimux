@@ -94,3 +94,22 @@ Not asked, but worth knowing: recorded days are kept forever and nothing prunes 
 The prototype, the scripts and the benchmark were scratch files and are in no commit. To repeat the contract check: `pip install openapi-spec-validator jsonschema pyyaml`, validate `openapi.yaml`, then validate an answer against `#/components/schemas/SavingsResponse` with `additionalProperties: false` added to every object schema (merge the `allOf` of `BreakdownRow` first).
 
 The owner's server on 127.0.0.1:8317 was not contacted.
+
+## What the build changed (T-107)
+
+The backend was built from this folder (commits "keep OpenRouter's list prices" to "savings endpoint for the console"). The chief decided the five open questions as their defaults: the copy line's X is the caching saving with its tail; days are the server's local days (the README's Docker part says to set `TZ` first); the new outbound request is taken and documented; the one line in `openrouter_models.go` and the one in `kv_store.go` are as designed; tails only for keys of 16 characters or more. Where the build had to depart from or complete the design:
+
+| Point | Design | Built | Why |
+|---|---|---|---|
+| Prices at `Start` | `ProvimuxOpenRouterPrices()` once at `Start` (`02` section 2) | not at `Start`; only in rounds with a day to write | Reviewer check 19 says the list is downloaded only while requests are recorded; the call at `Start` made every server with a management key, and every test binary that builds the API server, contact openrouter.ai with nothing recorded. So that the answer still knows `remote` and a list downloaded after the saver's last round, the registry file has one more function, `ProvimuxOpenRouterPricesKept()`: the same three values, without asking for a refresh; `Query` reads it |
+| Price id of a table `price` entry | not specified | `provimux:<provider>/<model>` | must be unique in a day's `prices` map beside OpenRouter ids; now in `02` section 3 |
+| "no `/api/v1` in the body" (`05` section 4, carries no secret) | absolute | holds except `prices.openrouter.url`, which the contract fixes as `https://openrouter.ai/api/v1/models` | the test removes that one URL before looking for `/api/v1` |
+| `costn` | 1 when `Cost` was present (`01` section 4) | 1 when `Cost` is present and not negative | a negative cost is ignored, so it is not counted as a reported cost either |
+| A local store that cannot be opened | saver: memory only (`01` section 5); 503 only for a read error (`03` section 3) | saver as designed; the endpoint answers 503 | it is "on and could not be read" in `openapi.yaml`'s words; the console keeps the page and shows the error |
+| Query before the saver reached the store | reads `meta` (`01` section 7) | reads `meta` and the saved OpenRouter list in one `KVMGet`, never writes | the answer then reports the saved list's `fetched_at` from the first request on |
+| `recording.persistent` | the last write, before it the last read | the same, and a failed read of the saver also makes it false until a write succeeds | |
+| Row limit at record time | new combinations beyond 2000 fold | `HandleUsage` cannot know key ids of pending rows, so it folds by the count of stored plus pending rows, and for a day already read it looks the row up by id first; the write applies the limit exactly | keeps `HandleUsage` free of I/O |
+| Cross-package tests | records published through the usage manager | `sdk/cliproxy`'s test hands its record to `savings.RecordForTest` | `kv_store_test.go` calls `Service.Shutdown`, which stops that binary's default usage manager; the end-to-end test in `test/provimux` still goes through `coreusage.PublishRecord` |
+| `prices.json` | entries where a public source exists | empty (`"models": []`, valid) | no entry was added without a source the reviewer can open; the candidates of `02` section 3 stay unpriced and are listed in the answer |
+
+Unchanged and checked by the tests: `examples/savings-month.json` and `savings-empty.json` are what the code answers for `examples/days.json` (except `observed_at`, `recording.saved_at` and `prices`), and every row of the matching table in `02` section 4 resolves as written against OpenRouter's list of 2026-11-20 (`internal/provimux/savings/testdata/openrouter-models.json`).
