@@ -1,0 +1,582 @@
+openapi: 3.1.0
+info:
+  title: Provimux Savings endpoint for the console
+  version: "1"
+  description: |
+    One read-only endpoint that exists only in Provimux (github.com/ngvoicu/provimux), under
+    /v8/management/provimux/. Stock CLIProxyAPI, and a Provimux older than this endpoint, answer 404;
+    the console (provimux-ui) hides the Savings page then.
+
+    It reports daily totals Provimux recorded from its own usage records, and values them with a
+    public price list. Rules of the contract (the first four are those of ../pui13/openapi.yaml):
+    - Every property listed as required is always present. A value that is not known is null.
+    - Times are RFC 3339 in UTC. Days are calendar days of the server's time zone, written YYYY-MM-DD.
+    - The server only adds properties. It never removes one or changes a type or a meaning.
+      Clients ignore properties and enum values they do not know.
+    - No response carries a client API key, a provider key, a token, an auth ID, an account email or a
+      base URL beyond its host. A client key appears as an id only this server can compute, and its
+      last 4 characters when the key is at least 16 characters long.
+    - Money is US dollars as a JSON number rounded to 6 decimals. Everything under `estimate` is an
+      estimate at list prices; only `reported_cost` is a charge an upstream reported.
+    - A request is one usage record: one attempt at one upstream. A client request that is retried on
+      another account counts once per attempt.
+servers:
+  - url: http://127.0.0.1:8317/v8/management
+security:
+  - managementKey: []
+  - managementKeyHeader: []
+paths:
+  /provimux/savings:
+    get:
+      operationId: provimuxSavings
+      summary: Recorded usage totals of a range of days, valued at list prices, with breakdowns
+      parameters:
+        - name: period
+          in: query
+          required: false
+          description: |
+            A range relative to the server's today. Default `month` when `period`, `from` and `to` are
+            all absent. Not allowed together with `from`/`to`.
+            `today`, `yesterday`; `7d` and `30d` = today and the 6 or 29 days before; `month` = the
+            1st of this month to today; `last_month` = the whole previous month; `year` = 1 January to
+            today; `all` = the first recorded day to today (today alone when nothing is recorded).
+          schema:
+            type: string
+            enum: [today, yesterday, 7d, 30d, month, last_month, year, all]
+        - name: from
+          in: query
+          required: false
+          description: First day, inclusive (server's time zone). Needs `to`.
+          schema:
+            $ref: "#/components/schemas/Day"
+        - name: to
+          in: query
+          required: false
+          description: Last day, inclusive. Needs `from`; not before it; at most 3660 days after it.
+          schema:
+            $ref: "#/components/schemas/Day"
+        - name: group
+          in: query
+          required: false
+          description: |
+            One breakdown per value, answered in `breakdowns` in the order asked. A value is 1 to 4
+            dimensions joined by commas: `day`, `month`, `kind`, `provider`, `host`, `model`, `key`.
+            `day` and `month` cannot be combined, and a dimension appears once. At most 8 values.
+            Without `group` the answer has `totals` only (`breakdowns` is empty): the console's
+            presence probe is `?period=today`.
+          schema:
+            type: array
+            maxItems: 8
+            items:
+              type: string
+          style: form
+          explode: true
+        - name: kind
+          in: query
+          required: false
+          description: Only rows of this account kind. Filters apply to totals, breakdowns and models.
+          schema:
+            type: string
+        - name: provider
+          in: query
+          required: false
+          description: Only rows of this provider (exact, lower case).
+          schema:
+            type: string
+        - name: host
+          in: query
+          required: false
+          description: Only rows of this host. An empty value selects rows without a host.
+          schema:
+            type: string
+        - name: model
+          in: query
+          required: false
+          description: Only rows of this model id (exact, lower case).
+          schema:
+            type: string
+        - name: key
+          in: query
+          required: false
+          description: Only rows of this client key id. An empty value selects requests without a client key.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The totals of the range.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SavingsResponse"
+        "400":
+          description: |
+            A parameter is wrong: an unknown `period`, `period` together with `from`/`to`, one of
+            `from`/`to` without the other, a day that is not YYYY-MM-DD or not a calendar day, `to`
+            before `from`, a range over 3660 days, an unknown or repeated dimension, `day` with `month`,
+            more than 4 dimensions in a value, or more than 8 `group` values.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/Absent"
+        "503":
+          description: |
+            The local store is on but could not be read. Not a sign of absence: the console keeps the
+            page and shows the error. A store that is switched off is not an error: the answer is 200
+            with `recording.persistent` false.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+components:
+  securitySchemes:
+    managementKey:
+      type: http
+      scheme: bearer
+      description: The management key, as for every /v8/management route.
+    managementKeyHeader:
+      type: apiKey
+      in: header
+      name: X-Management-Key
+  responses:
+    Unauthorized:
+      description: The management key is missing or wrong.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: Remote management is off for this client, no key is configured, or the address is banned after 5 failures.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Absent:
+      description: |
+        Empty body. Either management is not enabled (or home mode is on), or this server has no such
+        route: stock CLIProxyAPI, or a Provimux older than this endpoint. The console hides the page.
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+    Timestamp:
+      type: string
+      format: date-time
+      description: RFC 3339, UTC.
+    Day:
+      type: string
+      pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+      description: A calendar day of the server's time zone, e.g. 2026-11-20.
+    Money:
+      type: number
+      description: US dollars, rounded to 6 decimals. Under `estimate` it can be negative.
+    SavingsResponse:
+      type: object
+      required:
+        - observed_at
+        - timezone
+        - utc_offset_seconds
+        - today
+        - range
+        - recording
+        - prices
+        - totals
+        - breakdowns
+        - models
+        - models_truncated
+        - reported_cost_hosts
+      properties:
+        observed_at:
+          $ref: "#/components/schemas/Timestamp"
+        timezone:
+          type: string
+          description: |
+            The server's time zone, whose calendar days the totals are kept in: an IANA name when the
+            server knows it (e.g. Europe/Bucharest), else `Local` or `UTC`.
+        utc_offset_seconds:
+          type: integer
+          description: That zone's offset from UTC at observed_at, east positive.
+        today:
+          $ref: "#/components/schemas/Day"
+          description: The server's current day. The console takes "today" from here, never from the browser clock.
+        range:
+          $ref: "#/components/schemas/Range"
+        recording:
+          $ref: "#/components/schemas/Recording"
+        prices:
+          $ref: "#/components/schemas/Prices"
+        totals:
+          $ref: "#/components/schemas/Metrics"
+          description: Everything in the range that passes the filters.
+        breakdowns:
+          type: array
+          description: One per `group` value, in the order asked. Empty without `group`.
+          items:
+            $ref: "#/components/schemas/Breakdown"
+        models:
+          type: array
+          description: |
+            Each provider and model in the range (after the filters) with the price it is valued at, or
+            null when it has none. Most tokens first; at most 500.
+          items:
+            $ref: "#/components/schemas/ModelPrice"
+        models_truncated:
+          type: boolean
+          description: True when the range has more than 500 provider and model pairs.
+        reported_cost_hosts:
+          type: array
+          description: |
+            The hosts whose answers carried a cost in the range, e.g. ["openrouter.ai"]; "" for a
+            provider's own address. The console names them beside `reported_cost`.
+          items:
+            type: string
+    Range:
+      type: object
+      required: [period, from, to]
+      properties:
+        period:
+          type: [string, "null"]
+          description: The `period` asked for or defaulted; null when `from` and `to` were given.
+        from:
+          $ref: "#/components/schemas/Day"
+        to:
+          $ref: "#/components/schemas/Day"
+    Recording:
+      type: object
+      description: What is known about the record itself, so the page can say what its numbers cover.
+      required: [since, persistent, saved_at, folded_days]
+      properties:
+        since:
+          type: ["string", "null"]
+          pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+          description: The first day that has totals. Null when nothing was ever recorded.
+        persistent:
+          type: boolean
+          description: |
+            True when the local store is on and this process's last write to it (before the first
+            write: its last read) succeeded. False when the store is off (server.kv-store.disabled),
+            cannot be opened or refused the last write: what is not yet written then lives in memory
+            and ends with the process.
+        saved_at:
+          oneOf:
+            - $ref: "#/components/schemas/Timestamp"
+            - type: "null"
+          description: The last successful write to the store by this process. Null before the first one.
+        folded_days:
+          type: integer
+          minimum: 0
+          description: Days of the range that reached the row limit, so part of them is under model and key `~other`.
+    Prices:
+      type: object
+      description: Where the prices come from. Both sources are list prices in US dollars.
+      required: [currency, openrouter, provimux]
+      properties:
+        currency:
+          type: string
+          enum: [USD]
+        openrouter:
+          type: object
+          description: OpenRouter's public model list, https://openrouter.ai/api/v1/models.
+          required: [url, fetched_at, models, remote]
+          properties:
+            url:
+              type: string
+            fetched_at:
+              oneOf:
+                - $ref: "#/components/schemas/Timestamp"
+                - type: "null"
+              description: When the list in use was downloaded. Null when there is none.
+            models:
+              type: integer
+              minimum: 0
+              description: Models with a price in that list. 0 when there is none.
+            remote:
+              type: boolean
+              description: False under --local-model, where the list is never downloaded and a saved copy is used if there is one.
+        provimux:
+          type: object
+          description: Provimux's own table, for models OpenRouter does not list.
+          required: [updated, models]
+          properties:
+            updated:
+              $ref: "#/components/schemas/Day"
+            models:
+              type: integer
+              minimum: 0
+    InputTokens:
+      type: object
+      description: Mutually exclusive buckets; `total` is their sum.
+      required: [uncached, cache_read, cache_write, cache_write_5m, cache_write_1h, total]
+      properties:
+        uncached:
+          type: integer
+          minimum: 0
+        cache_read:
+          type: integer
+          minimum: 0
+        cache_write:
+          type: integer
+          minimum: 0
+          description: All cache writes, whatever their lifetime.
+        cache_write_5m:
+          type: integer
+          minimum: 0
+          description: The part of cache_write the upstream reported as 5 minute writes. 0 when it reported no split.
+        cache_write_1h:
+          type: integer
+          minimum: 0
+          description: The part reported as 1 hour writes.
+        total:
+          type: integer
+          minimum: 0
+    OutputTokens:
+      type: object
+      required: [total, reasoning]
+      properties:
+        total:
+          type: integer
+          minimum: 0
+          description: All output tokens, reasoning included.
+        reasoning:
+          type: integer
+          minimum: 0
+    Tokens:
+      type: object
+      required: [input, output, unclassified]
+      properties:
+        input:
+          $ref: "#/components/schemas/InputTokens"
+        output:
+          $ref: "#/components/schemas/OutputTokens"
+        unclassified:
+          type: integer
+          minimum: 0
+          description: Tokens an upstream reported without saying which bucket they belong to. Never priced.
+    Estimate:
+      type: object
+      description: |
+        Estimates at list prices, over the rows that have a price.
+        cost = uncached x input + cache_read x cache read + cache_write x cache write + output x output.
+        cost_without_cache = all input tokens x input + output x output.
+        saved_by_caching = cost_without_cache - cost; negative when cache writes cost more than reads saved.
+      required:
+        - cost_usd
+        - cost_without_cache_usd
+        - saved_by_caching_usd
+        - priced_requests
+        - unpriced_requests
+        - unpriced_tokens
+        - floating_requests
+      properties:
+        cost_usd:
+          $ref: "#/components/schemas/Money"
+        cost_without_cache_usd:
+          $ref: "#/components/schemas/Money"
+        saved_by_caching_usd:
+          $ref: "#/components/schemas/Money"
+        priced_requests:
+          type: integer
+          minimum: 0
+        unpriced_requests:
+          type: integer
+          minimum: 0
+          description: Requests of models without a price. They are counted, and left out of the three amounts.
+        unpriced_tokens:
+          type: integer
+          minimum: 0
+          description: All tokens of those requests.
+        floating_requests:
+          type: integer
+          minimum: 0
+          description: |
+            Priced requests of days that recorded no price for their model, valued with today's list
+            instead. While this is above 0 the amounts can still change when a list price changes.
+    ReportedCost:
+      type: object
+      description: |
+        What upstreams reported having charged (OpenRouter's usage.cost), summed. Not an estimate.
+        0 with requests 0 when no answer carried a cost.
+      required: [usd, byok_upstream_usd, requests]
+      properties:
+        usd:
+          $ref: "#/components/schemas/Money"
+          description: The charges, including byok_upstream_usd.
+        byok_upstream_usd:
+          $ref: "#/components/schemas/Money"
+          description: The part OpenRouter reported as the provider's own charge on a bring-your-own-key request.
+        requests:
+          type: integer
+          minimum: 0
+          description: Requests whose answer carried a cost.
+    Metrics:
+      type: object
+      required: [requests, failures, tokens, cache_hit_rate, estimate, reported_cost]
+      properties:
+        requests:
+          type: integer
+          minimum: 0
+        failures:
+          type: integer
+          minimum: 0
+          description: The requests among them that failed. Their tokens, if any, are counted.
+        tokens:
+          $ref: "#/components/schemas/Tokens"
+        cache_hit_rate:
+          type: [number, "null"]
+          minimum: 0
+          maximum: 1
+          description: tokens.input.cache_read / tokens.input.total, rounded to 4 decimals. Null when there are no input tokens.
+        estimate:
+          $ref: "#/components/schemas/Estimate"
+        reported_cost:
+          $ref: "#/components/schemas/ReportedCost"
+    ClientKey:
+      type: object
+      description: A client API key, never the key itself.
+      required: [id, tail, name]
+      properties:
+        id:
+          type: string
+          description: |
+            16 hex characters this server derives from the key with a secret of its own; the same key
+            always gives the same id on this server. "" for requests without a client key, `~other`
+            for the rows folded at the row limit.
+        tail:
+          type: [string, "null"]
+          description: The key's last 4 characters, only for a key of 16 characters or more. Null otherwise.
+        name:
+          type: [string, "null"]
+          description: Reserved for a name the owner gives the key. Always null in this version.
+    BreakdownRow:
+      description: The dimensions named in `by`, each as a property, and the metrics of the rows they select.
+      allOf:
+        - $ref: "#/components/schemas/Metrics"
+        - type: object
+          properties:
+            day:
+              $ref: "#/components/schemas/Day"
+            month:
+              type: string
+              pattern: "^[0-9]{4}-[0-9]{2}$"
+            kind:
+              type: string
+              description: |
+                `oauth` = a subscription login, `apikey` = an API key, `unknown` = the record named no
+                kind. Clients treat a value they do not know as unknown.
+            provider:
+              type: string
+              description: The executor that served it, lower case, e.g. claude, codex, gemini, devin, or the name of an OpenAI-compatible entry.
+            host:
+              type: string
+              description: Host of an API key's base URL, lower case, e.g. openrouter.ai. "" for a login and for a key on its provider's own address.
+            model:
+              type: string
+              description: The upstream model id, lower case, without a thinking suffix. `~other` for rows folded at the row limit.
+            key:
+              $ref: "#/components/schemas/ClientKey"
+    Breakdown:
+      type: object
+      required: [by, rows, truncated]
+      properties:
+        by:
+          type: array
+          description: The dimensions of this breakdown, as asked.
+          minItems: 1
+          maxItems: 4
+          items:
+            type: string
+            enum: [day, month, kind, provider, host, model, key]
+        rows:
+          type: array
+          description: |
+            Only combinations that have requests. With `day` or `month`: oldest first, then most
+            requests first. Otherwise most requests first. Ties in the order of the dimension values.
+          items:
+            $ref: "#/components/schemas/BreakdownRow"
+        truncated:
+          type: boolean
+          description: True when there were more than 2000 rows; the 2000 with the most requests are returned, in the order above.
+    PerMillion:
+      type: number
+      minimum: 0
+      description: US dollars per million tokens.
+    ModelPrice:
+      type: object
+      required: [provider, model, requests, tokens, price]
+      properties:
+        provider:
+          type: string
+        model:
+          type: string
+        requests:
+          type: integer
+          minimum: 0
+        tokens:
+          type: integer
+          minimum: 0
+          description: All tokens of the pair in the range.
+        price:
+          oneOf:
+            - $ref: "#/components/schemas/Price"
+            - type: "null"
+          description: Null for a model without a price (unpriced).
+    Price:
+      type: object
+      description: The price a model is valued at; of the latest day in the range when days differ.
+      required:
+        - source
+        - id
+        - match
+        - basis
+        - input_per_mtok
+        - output_per_mtok
+        - cache_read_per_mtok
+        - cache_write_per_mtok
+        - cache_write_1h_per_mtok
+      properties:
+        source:
+          type: string
+          description: |
+            `openrouter` = OpenRouter's public list, `provimux` = Provimux's own table. Clients treat
+            a value they do not know as another source.
+        id:
+          type: string
+          description: The entry the price was taken from, e.g. anthropic/claude-opus-5.5.
+        match:
+          type: string
+          description: |
+            How the model was matched to the entry: `exact` (the id is the entry's), `variant` (a
+            routing suffix after ":" was dropped), `normalized` (the documented rewriting of the id),
+            `table` (an entry of Provimux's table, a price or an alias).
+        basis:
+          type: string
+          description: |
+            `recorded` = every day used the price recorded on that day; `current` = valued with
+            today's list; `mixed` = both occur in the range.
+        input_per_mtok:
+          $ref: "#/components/schemas/PerMillion"
+        output_per_mtok:
+          $ref: "#/components/schemas/PerMillion"
+        cache_read_per_mtok:
+          oneOf:
+            - $ref: "#/components/schemas/PerMillion"
+            - type: "null"
+          description: Null when the source publishes none; cache reads are then valued at the input price, so no saving is claimed.
+        cache_write_per_mtok:
+          oneOf:
+            - $ref: "#/components/schemas/PerMillion"
+            - type: "null"
+          description: Null when the source publishes none; cache writes are then valued at the input price.
+        cache_write_1h_per_mtok:
+          oneOf:
+            - $ref: "#/components/schemas/PerMillion"
+            - type: "null"
+          description: Null when the source publishes none; 1 hour writes are then valued as cache_write_per_mtok.
