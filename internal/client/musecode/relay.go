@@ -95,11 +95,17 @@ type relayAttemptResponse struct {
 	statusCode int
 	headers    http.Header
 	body       []byte
+	// served is the credential whose upstream produced this response; it may be written after later attempts.
+	served *auth.Auth
 }
 
 func writeRelayAttemptResponse(c *gin.Context, resp *relayAttemptResponse) {
 	if c == nil || resp == nil {
 		return
+	}
+	if resp.served != nil {
+		logging.SetGinCPAAuthKind(c, resp.served.AuthKind())
+		logging.SetGinCPAAuthProvider(c, resp.served.Provider, resp.served.BaseURLHost())
 	}
 	writeRelayResponseHeaders(c.Writer.Header(), resp.headers)
 	c.Status(resp.statusCode)
@@ -218,8 +224,6 @@ func (h *Handler) Handle(c *gin.Context) {
 		}
 
 		logging.SetGinCPATraceID(c, selected.EnsureIndex())
-		logging.SetGinCPAAuthKind(c, selected.AuthKind())
-		logging.SetGinCPAAuthProvider(c, selected.Provider, selected.BaseURLHost())
 		respAttempt, action, okAction, errAttempt := h.forwardWithCredential(ctx, cfg, selected, c.Request.Method, c.Request.URL.Path, sanitizedQuery, reqBody, baseReqHeaders, c.Request.Header)
 		if errAttempt != nil {
 			if errCtx := ctx.Err(); errCtx != nil {
@@ -347,6 +351,7 @@ func (h *Handler) forwardWithCredential(
 			statusCode: resp.StatusCode,
 			headers:    resp.Header.Clone(),
 			body:       respBody,
+			served:     selected,
 		}, action, okAction, nil
 	}
 }

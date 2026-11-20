@@ -1496,6 +1496,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			m.MarkResult(execCtx, result)
 			attemptAliasResult := resolveAttemptAliasResult(routing, auth, routeModel, upstreamModel, aliasResult)
 			rewriteForceMappedResponse(&resp, attemptAliasResult)
+			publishAnsweredAuthMetadata(execOpts.Metadata, auth)
 			return resp, nil
 		}
 		if authErr != nil {
@@ -1803,6 +1804,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			m.MarkResult(execCtx, result)
 			attemptAliasResult := resolveAttemptAliasResult(routing, auth, routeModel, upstreamModel, aliasResult)
 			rewriteForceMappedResponse(&resp, attemptAliasResult)
+			publishAnsweredAuthMetadata(execOpts.Metadata, auth)
 			return resp, nil
 		}
 		if authErr != nil {
@@ -3319,14 +3321,30 @@ func publishSelectedAuthMetadata(meta map[string]any, auth *Auth) {
 			callback(authIndex)
 		}
 	}
+	// A selected credential has not answered yet: until one does, nothing names the credential behind the response.
+	publishAnsweredAuthMetadata(meta, nil)
+}
+
+// publishAnsweredAuthMetadata names, through the kind, provider and host callbacks, the credential whose response
+// the client receives. It is called where a credential has answered (an execution returned a response, a stream
+// passed its bootstrap); a selection calls it with nil, so headers committed before an answer, and an error after
+// the last selection, name no credential.
+func publishAnsweredAuthMetadata(meta map[string]any, auth *Auth) {
+	if len(meta) == 0 {
+		return
+	}
+	var kind, provider, host string
+	if auth != nil {
+		kind, provider, host = auth.AuthKind(), auth.Provider, auth.BaseURLHost()
+	}
 	if callback, ok := meta[cliproxyexecutor.SelectedAuthKindCallbackMetadataKey].(func(string)); ok && callback != nil {
-		callback(auth.AuthKind())
+		callback(kind)
 	}
 	if callback, ok := meta[cliproxyexecutor.SelectedAuthProviderCallbackMetadataKey].(func(string)); ok && callback != nil {
-		callback(auth.Provider)
+		callback(provider)
 	}
 	if callback, ok := meta[cliproxyexecutor.SelectedAuthHostCallbackMetadataKey].(func(string)); ok && callback != nil {
-		callback(auth.BaseURLHost())
+		callback(host)
 	}
 }
 
