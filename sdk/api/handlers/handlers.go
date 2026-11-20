@@ -373,6 +373,12 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 		if kindCallback := logging.GinCPAAuthKindCallback(ginCtx); kindCallback != nil {
 			meta[coreexecutor.SelectedAuthKindCallbackMetadataKey] = kindCallback
 		}
+		if providerCallback := logging.GinCPAAuthProviderCallback(ginCtx); providerCallback != nil {
+			meta[coreexecutor.SelectedAuthProviderCallbackMetadataKey] = providerCallback
+		}
+		if hostCallback := logging.GinCPAAuthHostCallback(ginCtx); hostCallback != nil {
+			meta[coreexecutor.SelectedAuthHostCallbackMetadataKey] = hostCallback
+		}
 	}
 	if executionSessionID := executionSessionIDFromContext(ctx); executionSessionID != "" {
 		meta[coreexecutor.ExecutionSessionMetadataKey] = executionSessionID
