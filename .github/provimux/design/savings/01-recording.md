@@ -21,7 +21,7 @@ A new package `internal/provimux/savings` holds everything. It registers one usa
 
 `Start` is idempotent and starts one goroutine, the saver (section 5). Recording then lasts as long as the process: removing the management key later stops the endpoint (404), not the recording, whose totals stay in the user's own local store (the chief's decision in T-116; `05` check 18).
 
-`HandleUsage` runs on the usage manager's goroutine. It reduces the record to the fields below, takes the package's mutex, adds the numbers to a map, and returns. It does no I/O and never waits for the disk: the saver never holds that mutex across a store call. The same shape measured 84 ns per record with no allocation in PUI-13 (`../pui13/README.md`, "What I ran").
+`HandleUsage` runs on the usage manager's goroutine. It reduces the record to the fields below, takes a small lock of its own (`inMu`, which guards only the incoming deltas and is never held across anything else), adds the numbers to a map, and returns. It does no I/O and never waits for the disk, not even while a save round is stuck in a write (section 5). It measures about 220 ns per record, one allocation of 16 bytes, the same with a save round blocked in a write and about 236 ns with rounds running back to back on a real bbolt file (T-122, `BenchmarkHandleUsage*`).
 
 ### What is taken from a record
 
@@ -119,43 +119,44 @@ Dates in a range are computed, so reading a range is one `KVMGet` of its day key
 
 **Only the local store.** The saver takes `kvstore.CurrentKVClient()` (`controller.go:102-126`) and uses it only when it is a `*kvstore.BoltStore`. In home mode that function returns Home's client (`:108-110`); Savings never writes there, and in home mode every management route is 404 anyway (`server_management.go:219-222`). It does not use the `KV...Required`/`BestEffort` helpers, which go wherever `CurrentKVClient` points.
 
-### Absolute totals, written whole
+### Deltas since the last save
 
-In memory, per day:
+Memory holds only what was recorded since the last successful write of each day: per day, counters per combination (kind, provider, host, model and **the client key itself**, section 7). Never a day's totals, never a copy of what the store holds; there is nothing in memory that describes a store, so nothing to bind to one or to invalidate when it changes (T-122).
 
-| Part | Holds |
-|---|---|
-| `stored` | the day's rows as they are in the store, keyed by (kind, provider, host, model, key id) |
-| `loaded` | whether `stored` has been read from the store in this process |
-| `pending` | what records added since, keyed by (kind, provider, host, model, **the client key itself**) |
-| `dirty` | `stored` differs from the store |
+| Lock | Guards | Held |
+|---|---|---|
+| `inMu` | `incoming`: the deltas `HandleUsage` adds | for a map update only |
+| `mu` | the deltas, every save round, every query | for the whole round or query, **store calls included**; `HandleUsage` never takes it |
 
-`HandleUsage` only adds to `pending`. Every 10 seconds, and on `FlushNow`, the saver first makes sure it has read `meta` (or written it, the first time on a store), then does, for each day with `pending` or `dirty`:
+A round or a query first moves `incoming` into the deltas (under `mu`, taking `inMu` for the swap). Every 10 seconds, and on `FlushNow`, a round then does, under `mu`:
 
-1. If not `loaded`: read the day's key (outside the mutex), then under the mutex put its rows into `stored` and set `loaded`. A read error leaves the day for the next round.
-2. Under the mutex: turn `pending` into rows keyed by key id (section 7), add them to `stored`, give rows without a price one if there is one (`02-prices.md` section 5), empty `pending`, set `dirty`, and take a copy of `stored`.
-3. Outside the mutex: encode the copy and `KVSet` it. On success clear `dirty` unless the day changed meanwhile; on failure it stays `dirty`.
+1. Read `meta` and the list copy of the store **in use now** (one `KVMGet`); on a store without `meta`, write it (`KVSetNX`, then `KVGet` for the value that won; section 7).
+2. Read every day that has deltas (one `KVMGet`).
+3. Per day: add the deltas to the rows read (by key id, with the secret of that store's `meta`), apply the row limit to the merged rows (a repeat of a row takes no slot), give rows without a price the one in use now (`02-prices.md` section 5), encode and `KVSet` the whole value.
+4. **Only after the write succeeded**, forget that day's deltas. A failed read or write keeps all of them for the next round; nothing is dropped. The error is logged once per streak of failures, and once more when writes succeed again.
+
+A query does the same reads under the same `mu`, adds the deltas to what it read and writes nothing (`03-endpoint.md` section 3). Because a round holds `mu` from its first read to the moment it forgets the deltas, a query sees either the store before the write plus the deltas, or the store after it without them: each request is counted exactly once, with no generation counter and no second read.
 
 Consequences:
 
 - **A write is one transaction of one value**: it happens entirely or not at all. There is no half-written day and no counter that is ahead of another.
-- **Nothing is counted twice.** The value is the total, not a difference; writing it again changes nothing. A day is read from the store once per process, before its first write.
-- **A crash or `kill -9` loses at most what was recorded since the last write**: up to 10 seconds of records. The page does not show that loss; it is the price of not touching the disk per request.
+- **Nothing is counted twice.** The value written is the stored total plus deltas that are forgotten in the same critical section; writing it again cannot happen, because the deltas are gone once written. Each round reads the day again, so another writer of the file (a second Provimux on it, not supported) would lose nothing either.
+- **A crash or `kill -9` loses at most what was recorded since the last write**: up to 10 seconds of records, more while the store is failing. The page does not show that loss; it is the price of not touching the disk per request.
 - **A clean stop loses nothing that reached the recorder.** `Service.Shutdown` stops the API server (`sdk/cliproxy/service_lifecycle.go:370`), then closes the store (`:396`), then stops the usage manager (`:404`). One added line calls `FlushNow` just before the store closes (`05`, section 2). A record still in the usage manager's queue at that instant is lost; the server has stopped accepting requests by then.
-- **Write volume**: at most one write of the changed days every 10 s while there is traffic, none when idle. bbolt reuses the pages of the replaced value, so the file grows with the days kept, not with the writes.
-
-Days more than 2 days old with nothing pending and nothing dirty leave memory; a late record for one starts a new `pending` and the day is read again before its write.
+- **Write volume**: at most one write of the days with deltas every 10 s while there is traffic, none when idle. bbolt reuses the pages of the replaced value, so the file grows with the days kept, not with the writes. Each such round also reads those days and `meta` (about 2 ms for a year of days, section "Why not one key per counter").
+- **A query waits for a round in progress**, and a round for a query: at most one store write (about 9 ms) or one range read. `HandleUsage` waits for neither.
+- **Prices.** A row read from the store keeps the price it was written with (`basis` `recorded`). A row that exists only in the deltas, or was stored without a price, is valued with the current list and counted in `floating_requests` (`basis` `current`) until a write records its price. A row whose write is in flight or failed is therefore never `recorded`.
 
 ### When the store is off or failing
 
 | Situation | Behaviour |
 |---|---|
-| `server.kv-store.disabled: true` (`internal/config/config_types.go:483-490`), or home mode | records stay in `pending`, in memory; the endpoint answers from memory with `recording.persistent: false`; at most 400 days are kept, the oldest dropped first |
-| the store cannot be opened (`CurrentKVClient` returns an error) | the same, retried every round; when it opens, `pending` is merged into what the store holds and written |
-| a write fails (disk full) | the day stays `dirty` and is retried every round; `recording.persistent` is false until a write succeeds |
-| the store is switched off at run time (config reload, `sdk/cliproxy/kv_store.go:18-22`) | as the first row from then on; days already in memory keep their totals |
-| `server.kv-store.path` changes at run time (config reload) | before the reload changes the store, `applyKVStoreConfig` flushes to the store in use (one line, `provimuxFlushSavings()`). The in-memory state is bound to the store it describes: on the first use of the new store, what memory held as stored is dropped, meta, the key secret and the saved list are read again from the new store, and each day is read from it before its next write, so the new store's history is extended, never replaced (T-116) |
-| a day's value cannot be decoded | it is not overwritten: the day is skipped by the saver and by reads, an error is logged once per day with the key, no value. `pending` for it is kept in memory |
+| `server.kv-store.disabled: true` (`internal/config/config_types.go:483-490`), or home mode | the deltas accumulate in memory, bounded per day by the row limit (beyond it new combinations fold into `~other`) and to 400 days (the oldest dropped first, logged once). The endpoint answers from them with `recording.persistent: false`, every amount `current`. **They are lost on restart** |
+| the store cannot be opened (`CurrentKVClient` returns an error) | the same, retried every round; when it opens, the deltas are added to what the store holds and written |
+| a read or a write fails (disk full) | the deltas stay in memory and are retried every round; `recording.persistent` is false until a round writes every day it has; logged once per failure streak |
+| the store is switched off at run time (config reload, `sdk/cliproxy/kv_store.go:18-22`) | the reload flushes first (`provimuxFlushSavings()`); from then on as the first row |
+| `server.kv-store.path` changes at run time (config reload) | nothing special. Before the reload changes the store, `applyKVStoreConfig` flushes to the store in use (`provimuxFlushSavings()`), so what was recorded before the switch normally lands in the old store. Whatever is not written by then (that flush failed or timed out, or a record arrived between the flush and the switch) is written to the store in use at the next round: **up to one save interval of usage made just before a switch can land in the new store**. Nothing is lost and nothing is counted twice; the old store is not touched again. Each store's days are read from that store, so its history is extended, never replaced, and its row limit is its own |
+| a day's value cannot be decoded | it is not overwritten: the day is skipped by the saver and by reads, an error is logged once per day with the key, no value. Its deltas are kept in memory (bounded as above) |
 
 ### Growth
 
@@ -169,7 +170,7 @@ A row is about 215 bytes of JSON [ran: 6,484 B for 30 rows, 38,434 B for 180]. A
 
 Nothing is ever deleted (the owner's decision). The price list copy adds about 30 KB once.
 
-**The row limit.** A day holds at most 2000 rows (`stored` and `pending` together). Once reached, a record whose combination is new is added to the row with its kind, provider and host, model `~other` and key `~other`, and the day is marked `folded`. Those `~other` rows come on top of the 2000, one per kind, provider and host, which the configuration bounds. This bounds the value against a client that sends many model names or keys; totals stay right, only their split by model and key is lost for the overflow.
+**The row limit.** A day holds at most 2000 rows. It is applied when the deltas are added to the rows read from the store: a repeat of a stored row takes no slot; once 2000 are reached, a combination that is new is added to the row with its kind, provider and host, model `~other` and key `~other`, and the day is marked `folded`. To bound memory, the deltas of one day also hold at most 2000 combinations; a new one beyond that is kept folded. So a record is folded before it meets the store only when one day sees more than 2000 distinct combinations between two successful writes (or, with the store off, at all). Those `~other` rows come on top of the 2000, one per kind, provider and host, which the configuration bounds. This bounds the value against a client that sends many model names or keys; totals stay right, only their split by model and key is lost for the overflow.
 
 ## 6. Which day
 
@@ -192,18 +193,33 @@ The clock and the zone are injected (`now func() time.Time`, `loc *time.Location
 
 The key is never written to the store, a log or a response.
 
-- **Id**: the first 16 hex characters of HMAC-SHA-256(`key_secret`, key). `key_secret` is 32 random bytes kept in `provimux:savings:v1:meta`. The process makes a random secret at `Start`; when it first reaches the store it takes the secret of `meta` if there is one, and otherwise writes its own as `meta` (`KVSetNX`, then `KVGet` for the value that won). The same key gives the same id for the life of the store; another installation gives another id.
+- **Id**: the first 16 hex characters of HMAC-SHA-256(`key_secret`, key). `key_secret` is 32 random bytes kept in `provimux:savings:v1:meta`. The process makes a random secret at `Start`. Every round that writes reads `meta` from the store in use and makes the ids with its secret; a store without `meta` gets the process's secret (`KVSetNX`, then `KVGet` for the value that won). The process's secret is never replaced by a store's, so a new store gets the process's own secret, not that of the store used before (but two new stores made by one process share it). The same key gives the same id for the life of the store; another installation gives another id.
 - **Tail**: the key's last 4 characters when the key has 16 or more, else none. It is kept per day in the value's `keys` map (id to tail).
 - **No key**: a request without a client key has id `""`.
 - **Names**: none in this version. The response's key object has `name: null`; a later version keeps id to name under `provimux:savings:v1:key-names` and fills it, without touching the days.
 
 Why a secret and not a plain SHA-256: the page is the proof the owner will show, so its screenshots travel. A plain hash of a short key is found by trying keys; with 4 of its characters beside it, in seconds. With the secret, an id tells nothing to anyone who does not hold `kv.db`. Why the 16 character floor: the last 4 of an 8 character key are half of it. The holder of the management key can read every client key in the configuration anyway (the console shows them, provimux-ui `src/features/config/components/blocks/ApiKeysCardEditor.tsx:137`); the floor is for what leaves the screen.
 
-Why `pending` is keyed by the key itself: an id can only be made with the stored secret, and the store may not be reachable when the first record arrives. Keeping the key in memory until the write (at most 10 s with the store on) means every id that is ever stored was made with the stored secret. A query that comes before the saver's first round reads `meta` itself (it never writes it), so the ids it shows for `pending` rows are already the stored ones. Without a store the process's own secret is used for the ids it shows.
+Why the deltas are keyed by the key itself: an id can only be made with the secret of the store it is written to, and that store may not be reachable when the record arrives, or may change before the write. Keeping the key in memory until the write (at most 10 s with the store on) means every id that is ever stored was made with that store's secret, also after a switch of `server.kv-store.path`. A query reads `meta` itself (it never writes it), so the ids it shows for deltas are the ones the round then writes. Without a store the process's own secret is used for the ids it shows.
 
-If the store's file is replaced at run time by one with another secret (the path is changed in the configuration), days already loaded are written with the ids they have; the same key can then appear under two ids for those days. Not handled further.
+## 8. Corrections from the reviews
 
-## 8. Corrections from the review (T-116)
+### T-122: deltas instead of totals (after the second review, T-121)
+
+Two reviews in a row found blockers in the in-memory totals, the saver's generation counter and the binding of memory to a store. They are replaced, not hardened: section 5, "Deltas since the last save".
+
+| Finding of T-121 | Now |
+|---|---|
+| 1. A failed flush before a store switch dropped the unsaved usage | deltas are forgotten only after their write succeeded; what the old store could not take goes to the store in use at the next good round (the old store is left as it was) |
+| 5. A query between Bolt's commit and the generation bump counted a request twice | a query and a round hold the same `mu` for their whole length; there is no generation |
+| 6. A row was `recorded` while its write was in flight or after it failed | prices are given only when a round writes; a query never gives one, so a row not on disk is `current`; a query waits for a write in flight |
+| 8. After a switch from a full A to an empty B, B's first request was folded | the row limit is applied against the rows read from the store being written, at write time |
+
+Removed: the in-memory day state (`stored`, `loaded`, `dirty`, versions, `broken`), `bindLocked` and the bound store, the write generation and the query's re-read loop, the saver-only lock, the cached `meta` and list copy, the eviction of old days. The one-line flush in `applyKVStoreConfig` stays: it is no longer needed for correctness, but it puts usage made before a reload into the store it was made under and writes it before a reload closes the store.
+
+### T-116 (after the first review, T-112)
+
+The T-116 rows of findings 1 and 5 are superseded by T-122 above; 6's rule (a price given while reading is not the day's) holds, now also for a write in flight or failed.
 
 | Finding of T-112 | Now |
 |---|---|
