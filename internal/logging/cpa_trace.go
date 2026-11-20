@@ -17,6 +17,15 @@ const CPATraceIDHeader = "X-CPA-TRACE-ID"
 // "oauth" for a subscription login, "apikey" for an API key.
 const CPAAuthKindHeader = "X-CPA-AUTH-KIND"
 
+// CPAAuthProviderHeader is the downstream response header naming the provider of the credential that served the
+// request, as the model accounts list gives it: two credentials of one kind serving one model (a Claude login and a
+// Devin login) are different services, with prompt caches that are not shared.
+const CPAAuthProviderHeader = "X-CPA-AUTH-PROVIDER"
+
+// CPAAuthHostHeader is the downstream response header naming the host of the base URL of the API key that served the
+// request, as the model accounts list gives it; absent for a login or a key without a base URL.
+const CPAAuthHostHeader = "X-CPA-AUTH-HOST"
+
 const ginCPATraceStateKey = "__cpa_trace_state__"
 
 // FormatCPATraceID builds a CPA trace ID from the selection time, auth index, and request ID.
@@ -33,6 +42,37 @@ type cpaTraceState struct {
 	mu       sync.RWMutex
 	traceID  string
 	authKind string
+	// authProvider and authHost name the same credential as authKind; each selection replaces all three.
+	authProvider string
+	authHost     string
+}
+
+func (s *cpaTraceState) setAuthProvider(provider string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.authProvider = strings.TrimSpace(provider)
+	s.mu.Unlock()
+}
+
+func (s *cpaTraceState) setAuthHost(host string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.authHost = strings.TrimSpace(host)
+	s.mu.Unlock()
+}
+
+func (s *cpaTraceState) getAuthProviderAndHost() (string, string) {
+	if s == nil {
+		return "", ""
+	}
+	s.mu.RLock()
+	provider, host := s.authProvider, s.authHost
+	s.mu.RUnlock()
+	return provider, host
 }
 
 func (s *cpaTraceState) setAuthKind(kind string) {
@@ -146,6 +186,51 @@ func GetGinCPAAuthKind(c *gin.Context) string {
 	return state.getAuthKind()
 }
 
+// GinCPAAuthProviderCallback returns a callback, safe to invoke after the Gin context is released, that stores the
+// provider of the selected credential. Like the kind, a later call replaces an earlier one.
+func GinCPAAuthProviderCallback(c *gin.Context) func(string) {
+	state := ginCPATraceState(c)
+	if state == nil {
+		return nil
+	}
+	return state.setAuthProvider
+}
+
+// GinCPAAuthHostCallback returns a callback, safe to invoke after the Gin context is released, that stores the base
+// URL host of the selected API key, "" for a login or a key without one. Like the kind, a later call replaces an
+// earlier one, so a retry on a login clears the host of a key tried before it.
+func GinCPAAuthHostCallback(c *gin.Context) func(string) {
+	state := ginCPATraceState(c)
+	if state == nil {
+		return nil
+	}
+	return state.setAuthHost
+}
+
+// SetGinCPAAuthProvider stores the selected credential's provider and base URL host ("" when it has none) until the
+// downstream response headers are committed.
+func SetGinCPAAuthProvider(c *gin.Context, provider, host string) {
+	if callback := GinCPAAuthProviderCallback(c); callback != nil {
+		callback(provider)
+	}
+	if callback := GinCPAAuthHostCallback(c); callback != nil {
+		callback(host)
+	}
+}
+
+// GetGinCPAAuthProvider returns the credential provider and base URL host stored for the current request.
+func GetGinCPAAuthProvider(c *gin.Context) (string, string) {
+	if c == nil {
+		return "", ""
+	}
+	value, exists := c.Get(ginCPATraceStateKey)
+	if !exists {
+		return "", ""
+	}
+	state, _ := value.(*cpaTraceState)
+	return state.getAuthProviderAndHost()
+}
+
 // GetGinCPATraceID returns the trace ID stored for the current request.
 func GetGinCPATraceID(c *gin.Context) string {
 	if c == nil {
@@ -219,5 +304,12 @@ func (w *cpaTraceResponseWriter) applyTraceHeader() {
 	}
 	if kind := w.state.getAuthKind(); kind != "" {
 		w.ResponseWriter.Header().Set(CPAAuthKindHeader, kind)
+	}
+	provider, host := w.state.getAuthProviderAndHost()
+	if provider != "" {
+		w.ResponseWriter.Header().Set(CPAAuthProviderHeader, provider)
+	}
+	if host != "" {
+		w.ResponseWriter.Header().Set(CPAAuthHostHeader, host)
 	}
 }

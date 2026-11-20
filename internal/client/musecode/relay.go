@@ -219,6 +219,7 @@ func (h *Handler) Handle(c *gin.Context) {
 
 		logging.SetGinCPATraceID(c, selected.EnsureIndex())
 		logging.SetGinCPAAuthKind(c, selected.AuthKind())
+		logging.SetGinCPAAuthProvider(c, selected.Provider, selected.BaseURLHost())
 		respAttempt, action, okAction, errAttempt := h.forwardWithCredential(ctx, cfg, selected, c.Request.Method, c.Request.URL.Path, sanitizedQuery, reqBody, baseReqHeaders, c.Request.Header)
 		if errAttempt != nil {
 			if errCtx := ctx.Err(); errCtx != nil {
