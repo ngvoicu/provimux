@@ -104,7 +104,7 @@ func writeRelayAttemptResponse(c *gin.Context, resp *relayAttemptResponse) {
 		return
 	}
 	if resp.served != nil {
-		logging.SetGinCPAAuthStatement(c, resp.served.AuthStatement())
+		logging.ConfirmGinCPAAuthStatement(c, resp.served.AuthStatement())
 	}
 	writeRelayResponseHeaders(c.Writer.Header(), resp.headers)
 	c.Status(resp.statusCode)

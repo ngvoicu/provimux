@@ -606,7 +606,7 @@ func handleSidebandDialError(c *gin.Context, ctx context.Context, cfg *config.Co
 	helps.RecordAPIWebsocketError(ctx, cfg, "dial", errDial)
 	if response != nil && response.StatusCode == http.StatusUnauthorized {
 		if served != nil {
-			logging.SetGinCPAAuthStatement(c, served.AuthStatement())
+			logging.ConfirmGinCPAAuthStatement(c, served.AuthStatement())
 		}
 		if contentType := response.Header.Get("Content-Type"); contentType != "" {
 			c.Header("Content-Type", contentType)
