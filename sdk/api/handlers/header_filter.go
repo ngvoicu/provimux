@@ -45,6 +45,8 @@ var cpaReservedResponseHeaders = map[string]struct{}{
 	"Access-Control-Max-Age":           {},
 	"X-Cpa-Trace-Id":                   {},
 	"X-Cpa-Auth-Kind":                  {},
+	"X-Cpa-Auth-Provider":              {},
+	"X-Cpa-Auth-Host":                  {},
 }
 
 // IsCPAReservedResponseHeader reports whether a downstream response header is managed by CPA.
