@@ -40,10 +40,13 @@
 #   - the tag does not descend from main's base: "fail";
 #   - otherwise: "check", and prepare goes on.
 # prepare: rebase main onto the tag's commit (committer date = author date, so the same
-# inputs give the same candidate), bundle <tag commit>..candidate, git range-diff of
-# <old base>..<old main> against <tag>..<candidate> (dropped and changed patches need the
-# owner's explicit consent in publish.sh), the paths under .github/workflows/ new in
-# the tag (publish.sh refuses them), guard.sh with the expected base. Status "test".
+# inputs give the same candidate; a stop at the README commit on the README paths only is
+# resolved once with that commit's paths, readme_resolve), bundle <tag commit>..candidate,
+# the range-diff of <old base>..<old main> against <tag>..<candidate>, by segments around
+# the README commit, which must be in normal form (stack_range_diff in common.sh; dropped
+# and changed patches need the owner's explicit consent in publish.sh), the paths under
+# .github/workflows/ new in the tag (publish.sh refuses them), guard.sh with the expected
+# base. Status "test".
 # verdict: go build ./... must pass on the candidate; go test ./... is compared with the
 # pristine tag by testcmp.jq (a failure counts unless the same test failed on the tag
 # or the package rerun has an explicit pass for it).
@@ -128,6 +131,7 @@ write_result() {
   [[ -s "$out/tests.json" ]] || echo 'null' >"$out/tests.json"
   [[ -s "$out/rebase.json" ]] || echo 'null' >"$out/rebase.json"
   [[ -s "$out/release.json" ]] || echo 'null' >"$out/release.json"
+  [[ -s "$out/readme.json" ]] || echo 'null' >"$out/readme.json"
   jq -n \
     --arg status "$s" --arg step "$step" --arg tag "$tag" --arg base "$base" \
     --arg upstream_repo "$PMX_UPSTREAM_REPO" --arg upstream_commit "$upstream_commit" \
@@ -140,7 +144,8 @@ write_result() {
     --rawfile wf_new "$out/wf-new.txt" --rawfile wf_removed "$out/wf-removed.txt" \
     --rawfile range_diff "$out/logs/range-diff.txt" --rawfile guard "$out/logs/guard.log" \
     --rawfile build "$out/logs/build.log" \
-    --slurpfile tests "$out/tests.json" --slurpfile rebase "$out/rebase.json" --slurpfile release "$out/release.json" '
+    --slurpfile tests "$out/tests.json" --slurpfile rebase "$out/rebase.json" --slurpfile release "$out/release.json" \
+    --slurpfile readme "$out/readme.json" '
     def lines: split("\n") | map(select(length > 0));
     def commits: lines | map(split("\t") | {commit: .[0], subject: (.[1:] | join("\t"))});
     def ok($v): if $v == "" then null else ($v == "true") end;
@@ -159,6 +164,7 @@ write_result() {
       added: ($added | commits),
       removed_workflows: ($wf_removed | lines),
       rebase: $rebase[0],
+      readme: $readme[0],
       build: {ok: ok($build_ok), tail: ($build | tail(40))},
       guard: {ok: ok($guard_ok), output: ($guard | tail(40))},
       tests: $tests[0],
@@ -242,8 +248,57 @@ do_select() {
 }
 
 # --- prepare (git only) ------------------------------------------------------------------
+# rgit: git with the rebase's options (identity, no hooks, no autostash, no ref updates).
+rgit() {
+  git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+    -c rebase.autoStash=false -c rebase.updateRefs=false -c core.hooksPath=/dev/null "$@"
+}
+
+# readme_resolve WT: the rebase in WT stopped. Resolves the stop only when all of these
+# hold, then continues the rebase (status 0 when it then ends); otherwise status 1 and
+# nothing is touched:
+#   - the old main has exactly one README commit R and the stop is at it (REBASE_HEAD);
+#   - it is the first stop of this rebase (at most one is resolved);
+#   - R has one parent and changes only paths of the set;
+#   - every unmerged path, and every path the index holds differently from HEAD, is a
+#     path of the set (NUL-delimited, whole names compared).
+# Each path of the set is then R's (git checkout R -- path), or removed when R has none;
+# no path may stay unmerged and the work tree must match the index. A second stop is a
+# failure. Sets readme_stop to R and lists the paths that conflicted in
+# $out/readme-conflicts.txt.
+readme_resolve() {
+  local wt=$1 r stop f p
+  [[ -z "$readme_stop" ]] || return 1
+  r="$(readme_commits "$old_base_commit..$old_main" git)"
+  [[ -n "$r" && "$(grep -c . <<<"$r")" == 1 ]] || return 1
+  stop="$(cd "$wt" && git rev-parse -q --verify REBASE_HEAD)" || return 1
+  [[ "$stop" == "$r" ]] || return 1
+  [[ "$(git rev-list --parents -n 1 "$r" | wc -w | tr -d ' ')" == 2 ]] || return 1
+  readme_only_set "$r^" "$r" git || return 1
+  (
+    cd "$wt" || exit 1
+    : >"$out/readme-conflicts.txt"
+    while IFS= read -r -d '' f; do
+      in_readme_set "$f" || exit 1
+      grep -qxF -- "$f" "$out/readme-conflicts.txt" || printf '%s\n' "$f" >>"$out/readme-conflicts.txt"
+    done < <(git diff --name-only -z --diff-filter=U)
+    while IFS= read -r -d '' f; do in_readme_set "$f" || exit 1; done < <(git diff --cached --name-only -z --no-renames HEAD)
+    for p in "${PMX_README_PATHS[@]}"; do
+      if [[ -n "$(readme_entry "$r" "$p" git)" ]]; then
+        git checkout -q "$r" -- ":(literal)$p" || exit 1
+      else
+        git rm -q -f --ignore-unmatch -- ":(literal)$p" >/dev/null || exit 1
+      fi
+    done
+    [[ -z "$(git ls-files -u)" ]] && git diff --quiet || exit 1
+  ) || { : >"$out/readme-conflicts.txt"; return 1; }
+  readme_stop=$r
+  log "the rebase stopped at the README commit ${r:0:8}; re-applied its paths ($(paste -sd ' ' "$out/readme-conflicts.txt"))"
+  (cd "$wt" && GIT_EDITOR=true rgit rebase --continue) >>"$out/logs/rebase.log" 2>&1
+}
+
 do_prepare() {
-  local wt stopped p op a b subj line
+  local wt stopped p op a b subj line pair
   load_state || { status=error step=prepare; reason "the select step's state is missing or invalid"; return; }
   [[ "$status" == check ]] || { log "nothing to prepare (status $status)"; return; }
   status=running
@@ -255,25 +310,30 @@ do_prepare() {
     { status=error; reason "$tag moved while checking: now $(git rev-parse --short "FETCH_HEAD^{commit}")"; return; }
   git update-ref refs/pmx-check/upstream "$upstream_commit"
 
-  # 1. Rebase, in a temporary worktree.
+  # 1. Rebase, in a temporary worktree. When it stops at the README commit on the README
+  # paths only, the check re-applies that commit's three paths and continues, once
+  # (readme_resolve); any other stop fails as before.
   step=rebase
   wt="$(mktemp -d "${TMPDIR:-/tmp}/provimux-check-wt.XXXXXX")"
   cleanup_paths+=("$wt")
   git worktree add -q --detach "$wt" "$old_main"
+  : >"$out/readme-conflicts.txt"
+  readme_stop=''
   log "git rebase $tag"
-  if ! (cd "$wt" && git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
-    -c rebase.autoStash=false -c rebase.updateRefs=false -c core.hooksPath=/dev/null \
-    rebase --committer-date-is-author-date "$upstream_commit") >"$out/logs/rebase.log" 2>&1; then
+  if ! (cd "$wt" && rgit rebase --committer-date-is-author-date "$upstream_commit") >"$out/logs/rebase.log" 2>&1 &&
+    ! readme_resolve "$wt"; then
     stopped="$(cd "$wt" && git rev-parse -q --verify REBASE_HEAD || true)"
     (
       cd "$wt"
       jq -n --arg stopped "$stopped" \
         --arg subject "$( [[ -n "$stopped" ]] && git log -1 --format=%s "$stopped" || true)" \
         --arg conflicts "$(git diff --name-only --diff-filter=U || true)" \
+        --arg readme "$readme_stop" --rawfile rconf "$out/readme-conflicts.txt" \
         --rawfile log "$out/logs/rebase.log" \
         '{ok: false, stopped_at: $stopped, subject: $subject,
           conflicts: ($conflicts | split("\n") | map(select(length > 0))),
-          log: ($log | split("\n") | .[-30:] | join("\n"))}' >"$out/rebase.json"
+          log: ($log | split("\n") | .[-30:] | join("\n"))}
+         + (if $readme == "" then {} else {readme: {commit: $readme, conflicts: ($rconf | split("\n") | map(select(length > 0)))}} end)' >"$out/rebase.json"
       git rebase --abort >/dev/null 2>&1 || true
     )
     status=fail
@@ -282,14 +342,26 @@ do_prepare() {
   fi
   candidate="$(cd "$wt" && git rev-parse HEAD)"
   commits="$(git rev-list --count "$upstream_commit..$candidate")"
-  echo '{"ok": true}' >"$out/rebase.json"
+  jq -n --arg readme "$readme_stop" --rawfile rconf "$out/readme-conflicts.txt" \
+    '{ok: true} + (if $readme == "" then {} else {readme: {commit: $readme, conflicts: ($rconf | split("\n") | map(select(length > 0)))}} end)' >"$out/rebase.json"
   git update-ref refs/pmx-check/candidate "$candidate"
   git bundle create -q "$out/candidate.bundle" refs/pmx-check/candidate "^$upstream_commit"
   log "candidate ${candidate:0:8}: $commits commits on $tag"
 
-  # 2. range-diff: which owner commits the rebase dropped or changed.
+  # 2. range-diff: which owner commits the rebase dropped or changed. By segments around
+  # the README commit, which is checked by its normal form instead (stack_range_diff).
   step=range-diff
-  git range-diff --no-color --no-notes "$old_base_commit..$old_main" "$upstream_commit..$candidate" >"$out/logs/range-diff.txt"
+  echo null >"$out/readme.json"
+  if pair="$(stack_range_diff "$old_base_commit" "$old_main" "$upstream_commit" "$candidate" "$out/logs/range-diff.txt" git 2>"$out/readme.err")"; then
+    if [[ -n "$pair" ]]; then
+      jq -n --arg old "${pair% *}" --arg new "${pair#* }" --arg reapplied "$([[ -n "$readme_stop" ]] && echo true || echo false)" \
+        --rawfile rconf "$out/readme-conflicts.txt" \
+        '{old: $old, new: $new, reapplied: ($reapplied == "true"), conflicts: ($rconf | split("\n") | map(select(length > 0)))}' >"$out/readme.json"
+      log "README commit ${pair% *} -> ${pair#* } (normal form)"
+    fi
+  else
+    reason "$(cat "$out/readme.err")"
+  fi
   # Header lines: "<n>:  <sha> <op> <n>:  <sha> <subject>", op one of = ! < >.
   : >"$out/dropped.tsv"; : >"$out/changed.tsv"; : >"$out/added.tsv"
   grep -E '^ *([0-9]+|-+): +([0-9a-f]+|-+) [=!<>] +([0-9]+|-+): +([0-9a-f]+|-+) ' "$out/logs/range-diff.txt" |
