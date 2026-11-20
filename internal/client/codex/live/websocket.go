@@ -96,8 +96,6 @@ func (h *Handler) HandleDirectWebsocket(c *gin.Context) {
 		defer selection.End("session_closed")
 	}
 	logging.SetGinCPATraceID(c, selected.EnsureIndex())
-	logging.SetGinCPAAuthKind(c, selected.AuthKind())
-	logging.SetGinCPAAuthProvider(c, selected.Provider, selected.BaseURLHost())
 
 	upstreamURL := h.directRealtimeURL(requestedModel)
 	dialUpstream := func(current *auth.Auth) (*websocket.Conn, *http.Response, error) {
@@ -156,6 +154,9 @@ func (h *Handler) HandleDirectWebsocket(c *gin.Context) {
 		}
 		helps.RecordAPIWebsocketError(ctx, helpConfig, "dial", errDial)
 		if handshakeResponse != nil && handshakeResponse.StatusCode == http.StatusUnauthorized {
+			// The upstream answered: name the credential whose response this is.
+			logging.SetGinCPAAuthKind(c, selected.AuthKind())
+			logging.SetGinCPAAuthProvider(c, selected.Provider, selected.BaseURLHost())
 			if contentType := handshakeResponse.Header.Get("Content-Type"); contentType != "" {
 				c.Header("Content-Type", contentType)
 			}
