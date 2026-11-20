@@ -421,6 +421,7 @@ func (h *Handler) HandleSideband(c *gin.Context) {
 	}
 	logging.SetGinCPATraceID(c, selected.EnsureIndex())
 	logging.SetGinCPAAuthKind(c, selected.AuthKind())
+	logging.SetGinCPAAuthProvider(c, selected.Provider, selected.BaseURLHost())
 
 	upstreamURL := buildSidebandURL(h.sidebandAPIBaseURL, style, callID)
 	upstreamHTTPURL := websocketHTTPURL(upstreamURL)

@@ -60,3 +60,35 @@ func TestPublishSelectedAuthMetadataReportsCredentialKind(t *testing.T) {
 		})
 	}
 }
+
+func TestPublishSelectedAuthMetadataReportsCredentialProviderAndHost(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		auth     *Auth
+		provider string
+		host     string
+	}{
+		{name: "api key with a base URL", auth: &Auth{ID: "key-1", Provider: "openai-compatible-lab", Attributes: map[string]string{AttributeAPIKey: "k", "base_url": "https://user:pass@API.Example.test:8443/acct-1/v1?token=t"}}, provider: "openai-compatible-lab", host: "api.example.test"},
+		{name: "api key without a base URL", auth: &Auth{ID: "key-2", Provider: "claude", Attributes: map[string]string{AttributeAPIKey: "k"}}, provider: "claude"},
+		{name: "login", auth: &Auth{ID: "login-1", Provider: "devin", Attributes: map[string]string{AttributeAuthKind: "oauth", "base_url": "https://login.example.test/acct-1"}}, provider: "devin"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			provider, host := "not called", "not called"
+			meta := map[string]any{
+				cliproxyexecutor.SelectedAuthProviderCallbackMetadataKey: func(value string) { provider = value },
+				cliproxyexecutor.SelectedAuthHostCallbackMetadataKey:     func(value string) { host = value },
+			}
+			publishSelectedAuthMetadata(meta, test.auth)
+			if provider != test.provider {
+				t.Fatalf("selected auth provider = %q, want %q", provider, test.provider)
+			}
+			// Called with "" when there is no host, so a retry clears the host of an earlier credential.
+			if host != test.host {
+				t.Fatalf("selected auth host = %q, want %q", host, test.host)
+			}
+			if got := test.auth.BaseURLHost(); got != test.host {
+				t.Fatalf("BaseURLHost() = %q, want %q", got, test.host)
+			}
+		})
+	}
+}
