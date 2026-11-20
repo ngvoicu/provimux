@@ -677,3 +677,90 @@ func TestFoldedKeysLeaveNoIDs(t *testing.T) {
 		}
 	}
 }
+
+// failListReadOnce fails the next read of meta and the list copy (the idle round's one call) once
+// armed; every other call reaches the store.
+type failListReadOnce struct {
+	rejectKey
+	armed, fired atomic.Bool
+}
+
+func (s *failListReadOnce) KVMGet(ctx context.Context, keys ...string) ([][]byte, []bool, error) {
+	if len(keys) == 2 && keys[0] == metaKey && keys[1] == openRouterListKey && s.armed.CompareAndSwap(true, false) {
+		s.fired.Store(true)
+		return nil, nil, errDiskFull
+	}
+	return s.rejectKey.KVMGet(ctx, keys...)
+}
+
+// T-127 7a: recording.persistent says only whether the days reach the store. A failed idle read of
+// the list copy, or a rejected write of it, is the list's own: with healthy reads afterwards
+// persistent is true without any day write. A rejected day write still makes it false.
+func TestPersistentFollowsOnlyTheDays(t *testing.T) {
+	cr := 0.1
+	list := map[string]registry.ProvimuxOpenRouterPrice{"anthropic/claude-opus-5.5": {Input: 2, Output: 10, CacheRead: &cr}}
+	store := openTestStore(t, "")
+	gate := &failListReadOnce{rejectKey: rejectKey{localStore: store}}
+	env := newTestEnv(t, store)
+	env.r.opts.store = func() (localStore, error) { return gate, nil }
+	env.prices.set(list, testNow)
+	env.record(claudeRecord("claude-opus-5-5", "client-key-persistent-01", 1000, 100000, 0, 200))
+	env.round()
+	if a := env.query(t, "period=today"); !a.Recording.Persistent || a.Totals.Requests != 1 {
+		t.Fatalf("premise: persistent %v, requests %d", a.Recording.Persistent, a.Totals.Requests)
+	}
+	day := store.raw(t, dayKey(today))
+	var logs bytes.Buffer
+	restore := captureLogs(&logs)
+	defer restore()
+
+	gate.armed.Store(true)
+	env.round() // idle: its one read of meta and the list fails
+	if !gate.fired.Load() {
+		t.Fatal("premise: the idle round did not read the list copy")
+	}
+	env.round()
+	env.r.flush(context.Background())
+	if a := env.query(t, "period=today"); !a.Recording.Persistent || a.Totals.Requests != 1 {
+		t.Fatalf("after one failed idle list read and healthy ones: persistent %v, requests %d", a.Recording.Persistent, a.Totals.Requests)
+	}
+
+	// A newer list whose write is rejected once, then saved by the next idle round.
+	gate.key = openRouterListKey
+	gate.fail.Store(true)
+	newer := map[string]registry.ProvimuxOpenRouterPrice{"anthropic/claude-opus-5.5": {Input: 3, Output: 10, CacheRead: &cr}}
+	env.prices.set(newer, testNow.Add(time.Hour))
+	env.round()
+	if a := env.query(t, "period=today"); !a.Recording.Persistent {
+		t.Fatal("a rejected list write made persistent false")
+	}
+	gate.fail.Store(false)
+	env.round()
+	if saved, at, err := decodeListCopy(store.raw(t, openRouterListKey)); err != nil || !at.Equal(testNow.Add(time.Hour)) || saved["anthropic/claude-opus-5.5"].Input != 3 {
+		t.Fatalf("the idle retry did not save the newer list: %v %v", at, err)
+	}
+	if a := env.query(t, "period=today"); !a.Recording.Persistent {
+		t.Fatal("persistent false after the list was saved")
+	}
+	if !bytes.Equal(day, store.raw(t, dayKey(today))) || len(env.waiting()) != 0 {
+		t.Fatal("premise: no day was written meanwhile")
+	}
+	if out := logs.String(); strings.Count(out, "price list copy could not be read or written") != 2 ||
+		strings.Count(out, "price list copy can be read and written again") != 2 || strings.Contains(out, "local store call failed") {
+		t.Fatalf("logs:\n%s", out)
+	}
+
+	// Control: a rejected day write is what makes persistent false, and a good one true again.
+	gate.key = dayKey(today)
+	gate.fail.Store(true)
+	env.record(claudeRecord("claude-opus-5-5", "client-key-persistent-01", 1000, 100000, 0, 200))
+	env.round()
+	if a := env.query(t, "period=today"); a.Recording.Persistent || a.Totals.Requests != 2 {
+		t.Fatalf("a rejected day write: persistent %v, requests %d", a.Recording.Persistent, a.Totals.Requests)
+	}
+	gate.fail.Store(false)
+	env.round()
+	if a := env.query(t, "period=today"); !a.Recording.Persistent || sumRows(storedDay(t, store, today)).Req != 2 {
+		t.Fatalf("after the day was written: persistent %v", a.Recording.Persistent)
+	}
+}
