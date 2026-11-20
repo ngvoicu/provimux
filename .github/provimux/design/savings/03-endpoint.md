@@ -69,9 +69,9 @@ Present with a value: only rows whose field equals it (`provider`, `host` and `m
 
 `savings.Query(ctx, q)` does, in this order:
 
-1. Under the mutex, copy the in-memory state of the days in the range (`stored`, `pending`, `loaded`). No store call under the mutex.
-2. One `KVMGet` of the keys of the days that are in range and not `loaded` in memory. A read error is `ErrStoreUnavailable` (the handler answers 503). A value that does not decode is skipped and logged once (`01-recording.md` section 5).
-3. Per day: the rows of the store (or of memory when `loaded`), plus `pending` turned into rows keyed by key id. This is exactly what the saver would write next, so the page is current to the last record without forcing a write.
+1. Take `mu`, the lock every save round holds for its whole length (`01-recording.md` section 5), and move the incoming deltas in. A query and a round never overlap, so each request is counted once.
+2. One `KVMGet` of `meta` and the list copy, one of the keys of the days in range. A read error is `ErrStoreUnavailable` (the handler answers 503). A value that does not decode is skipped and logged once (`01-recording.md` section 5).
+3. Per day: the rows of the store plus the deltas turned into rows keyed by key id (the stored secret). No price is given while reading: a row only in the deltas is valued with the current list and is floating. The page is current to the last record without forcing a write; the query writes nothing.
 4. Per row: apply the filters; find its price (`02-prices.md` section 5: the day's recorded price, else today's, else none); compute the three amounts (`02-prices.md` section 6); add counters and amounts into the totals, into each breakdown's bucket, and into the model list.
 5. Round money to 6 decimals and the hit rate to 4, at the end only.
 
