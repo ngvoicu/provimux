@@ -564,3 +564,116 @@ func BenchmarkHandleUsageWithSaves(b *testing.B) {
 	close(stop)
 	<-done
 }
+
+// rejectKey fails every write of one key while fail is set; the rest of the store works.
+type rejectKey struct {
+	localStore
+	key  string
+	fail atomic.Bool
+}
+
+func (s *rejectKey) KVSet(ctx context.Context, key string, value []byte, opts kvstore.KVSetOptions) (bool, error) {
+	if key == s.key && s.fail.Load() {
+		return false, errDiskFull
+	}
+	return s.localStore.KVSet(ctx, key, value, opts)
+}
+
+// T-124 finding 7: after a switch from A (which has the list copy) to a populated B without one, an
+// idle round and the clean flush save the list in B, so a restart on B still values its history.
+func TestListFollowsTheStoreInUse(t *testing.T) {
+	cr := 0.1
+	list := map[string]registry.ProvimuxOpenRouterPrice{"anthropic/claude-opus-5.5": {Input: 2, Output: 10, CacheRead: &cr}}
+	a, b := openTestStore(t, ""), openTestStore(t, "")
+	old := newTestEnv(t, b) // B: one request recorded without a price
+	old.record(claudeRecord("claude-opus-5-5", "client-key-old-on-b-001", 1000, 100000, 0, 200))
+	old.round()
+
+	env := newTestEnv(t, a)
+	env.prices.set(list, testNow)
+	env.record(claudeRecord("claude-opus-5-5", "client-key-on-a-0000001", 1000, 100000, 0, 200))
+	env.round()
+	if _, found, _ := a.inner.KVGet(context.Background(), openRouterListKey); !found {
+		t.Fatal("premise: A has the list copy")
+	}
+	env.r.flush(context.Background())
+	env.store = b
+	shown := env.query(t, "period=today")
+	env.round() // idle: no deltas
+	if _, found, err := b.inner.KVGet(context.Background(), openRouterListKey); err != nil || !found {
+		t.Fatalf("the idle round did not save the list in B: found=%v err=%v", found, err)
+	}
+	writes := b.writes.Load()
+	env.round()
+	env.r.flush(context.Background())
+	if b.writes.Load() != writes {
+		t.Fatal("a list already current in the store is written again")
+	}
+	restarted := newTestEnv(t, b).query(t, "period=today")
+	if shown.Totals.Estimate.PricedRequests != 1 || restarted.Totals.Estimate.PricedRequests != 1 ||
+		restarted.Totals.Estimate.SavedByCachingUSD != shown.Totals.Estimate.SavedByCachingUSD {
+		t.Fatalf("before the restart %+v, after %+v", shown.Totals.Estimate, restarted.Totals.Estimate)
+	}
+}
+
+// T-124 finding 14: first_day never lags the days. When moving it back fails, the earlier day is not
+// written either and its delta waits; once meta can be written, both are, and period=all and 7d agree.
+func TestFirstDayBeforeTheDay(t *testing.T) {
+	store := openTestStore(t, "")
+	gate := &rejectKey{localStore: store, key: metaKey}
+	env := newTestEnv(t, store)
+	env.r.opts.store = func() (localStore, error) { return gate, nil }
+	env.record(claudeRecord("claude-opus-5-5", "client-key-first-day-01", 42, 0, 0, 1))
+	env.round()
+	late := claudeRecord("claude-opus-5-5", "client-key-first-day-01", 12, 0, 0, 1)
+	late.RequestedAt = testNow.AddDate(0, 0, -1) // began before midnight, recorded after today was saved
+	yesterday := late.RequestedAt.In(bucharest).Format(time.DateOnly)
+	env.record(late)
+	gate.fail.Store(true)
+	env.round()
+	if _, found, _ := store.inner.KVGet(context.Background(), dayKey(yesterday)); found {
+		t.Fatal("the earlier day was written while first_day could not move back")
+	}
+	if d := env.waiting()[yesterday]; d == nil || d.requests() != 1 {
+		t.Fatal("its delta waits in memory")
+	}
+	if a := env.query(t, "period=all"); a.Totals.Requests != 2 || a.Recording.Persistent {
+		t.Fatalf("during the failure: all=%d persistent=%v", a.Totals.Requests, a.Recording.Persistent)
+	}
+	gate.fail.Store(false)
+	env.round()
+	if got := readMeta(t, store).FirstDay; got != yesterday {
+		t.Fatalf("first_day %s, want %s", got, yesterday)
+	}
+	fresh := newTestEnv(t, store)
+	all, week := fresh.query(t, "period=all"), fresh.query(t, "period=7d")
+	if all.Totals.Requests != 2 || week.Totals.Requests != 2 || all.Recording.Since == nil || *all.Recording.Since != yesterday {
+		t.Fatalf("after recovery and a restart: all=%d 7d=%d since=%v", all.Totals.Requests, week.Totals.Requests, all.Recording.Since)
+	}
+}
+
+// T-124 finding 15: a folded key leaves no id or tail in the day.
+func TestFoldedKeysLeaveNoIDs(t *testing.T) {
+	store := openTestStore(t, "")
+	env := newTestEnv(t, store)
+	for i := range maxRows {
+		env.record(claudeRecord("fixed-model", fmt.Sprintf("client-key-regular-%05d", i), 1, 0, 0, 1))
+	}
+	env.round()
+	for i := range 50 {
+		env.record(claudeRecord("fixed-model", fmt.Sprintf("client-key-folded-%06d", i), 1, 0, 0, 1))
+	}
+	env.round()
+	d := storedDay(t, store, today)
+	if !d.folded || d.regular != maxRows || sumRows(d).Req != maxRows+50 {
+		t.Fatalf("premise: regular %d, folded %v, requests %d", d.regular, d.folded, sumRows(d).Req)
+	}
+	if len(d.keys) != maxRows {
+		t.Fatalf("%d key ids for %d regular rows", len(d.keys), d.regular)
+	}
+	for id := range d.keys {
+		if _, ok := d.rows[rowKey{k: "oauth", p: "claude", m: "fixed-model", c: id}]; !ok {
+			t.Fatalf("key id %s has no row", id)
+		}
+	}
+}
