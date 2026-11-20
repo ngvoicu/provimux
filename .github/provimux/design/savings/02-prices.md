@@ -237,7 +237,7 @@ cost = 2.84 + 27.68 + 0 + 48.80 + 66.00 = **145.32**; without the cache = 580.84
 
 | # | The owner asked for | Field |
 |---|---|---|
-| 1 | money saved by caching | `totals.estimate.saved_by_caching_usd` |
+| 1 | worth of prompt caching (the headline; not money saved, it includes subscription requests at list price) | `totals.estimate.saved_by_caching_usd` |
 | 2 | subscription against API key | `group=kind`: `requests` of the `oauth` and the `apikey` row |
 | 3 | estimated cost of subscription requests at API list price | the `oauth` row's `estimate.cost_usd` |
 | 4 | real API-key cost through OpenRouter | the `apikey` row's `reported_cost.usd`, with `reported_cost_hosts` |
