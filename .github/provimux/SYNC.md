@@ -304,7 +304,7 @@ In the owner's credentialed shell this procedure runs only `git`, `gh` and `jq`:
 5. Push only `main`, with the literal lease:
 
    ```sh
-   git push --atomic --force-with-lease=refs/heads/main:$lease https://github.com/ngvoicu/provimux "$cand:refs/heads/main"
+   git push --atomic --force-with-lease=refs/heads/main:$lease https://github.com/ngvoicu/provimux "${cand}:refs/heads/main"
    ```
 6. Disable each new workflow and check that it shows `disabled_manually`. If a workflow is not listed, don't go on; leave Actions off and investigate.
 
@@ -323,10 +323,10 @@ In the owner's credentialed shell this procedure runs only `git`, `gh` and `jq`:
    gh release view v<base> -R router-for-me/CLIProxyAPI --json isDraft,isPrerelease --jq '[.isDraft, .isPrerelease]'   # [false,false]
    git ls-remote https://github.com/router-for-me/CLIProxyAPI "refs/tags/v<base>" "refs/tags/v<base>^{}"           # still $up
    [ "$(git ls-remote https://github.com/ngvoicu/provimux refs/heads/main | cut -f1)" = "$cand" ] &&
-     git push --atomic https://github.com/ngvoicu/provimux "$up:refs/tags/v<base>" "$cand:refs/tags/v<base>-pmx.1"
+     git push --atomic https://github.com/ngvoicu/provimux "${up}:refs/tags/v<base>" "${cand}:refs/tags/v<base>-pmx.1"
    ```
 
-   Leave out `$up:refs/tags/v<base>` if Provimux already has that tag (at `$up`).
+   Leave out `${up}:refs/tags/v<base>` if Provimux already has that tag (at `$up`).
 9. Check the release ("Check a release"). The next check closes the issue once it is complete.
 10. Add a row for each new workflow to `upstream-workflows.md` (a layer commit, `Provimux-Layer: branding`).
 
