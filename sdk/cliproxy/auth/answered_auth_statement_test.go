@@ -35,7 +35,9 @@ func TestAnsweredAuthStatementIsCommittedWholeOrNotAtAll(t *testing.T) {
 	engine := gin.New()
 	engine.Use(logging.CPATraceIDMiddleware())
 	engine.GET("/", func(c *gin.Context) {
-		meta := map[string]any{cliproxyexecutor.AnsweredAuthCallbackMetadataKey: logging.GinCPAAuthStatementCallback(c)}
+		meta := map[string]any{cliproxyexecutor.AnsweredAuthCallbackMetadataKey: func(kind, provider, host string) {
+			logging.ConfirmGinCPAAuthStatement(c, logging.AuthStatement{Kind: kind, Provider: provider, Host: host})
+		}}
 		mode := iteration % 4
 		started := make(chan struct{})
 		done := make(chan struct{})

@@ -184,27 +184,6 @@ func SetGinCPATraceID(c *gin.Context, authIndex string) {
 	}
 }
 
-// GinCPAAuthStatementCallback returns a callback, safe to invoke after the Gin context is released, that confirms in
-// one step the statement of the credential whose upstream produced the response: kind, provider and host. A later
-// call replaces an earlier one; a call with three empty values withdraws it.
-func GinCPAAuthStatementCallback(c *gin.Context) func(kind, provider, host string) {
-	state := ginCPATraceState(c)
-	if state == nil {
-		return nil
-	}
-	return func(kind, provider, host string) {
-		state.confirm(AuthStatement{Kind: kind, Provider: provider, Host: host})
-	}
-}
-
-// SetGinCPAAuthStatement confirms the statement of the credential whose upstream produced the response until the
-// downstream response headers are committed.
-func SetGinCPAAuthStatement(c *gin.Context, statement AuthStatement) {
-	if callback := GinCPAAuthStatementCallback(c); callback != nil {
-		callback(statement.Kind, statement.Provider, statement.Host)
-	}
-}
-
 // OfferGinCPAAuthStatement hands over the statement of the result the execution layer returns on this request (an
 // empty statement withdraws an earlier one). An offer names nothing: it withdraws any confirmed statement, and the
 // response headers carry it only once a route confirms it with ConfirmGinCPAAuthOffer.
