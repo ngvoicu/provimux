@@ -54,7 +54,7 @@ The owner's goal is "every AI request costs as little as it can, and you always 
 | D14 | One call answers totals and every breakdown the page needs; `group` names them. Responses only grow | One consistent snapshot per page load; the compatibility rule of PUI-13 (D9 there) |
 | D15 | Only the local bbolt store is written, never Home's. With the store off the totals live in memory and the answer says so | In home mode every management route is 404; Home's store is not Savings' to fill |
 | D16 | A day holds at most 2000 rows; beyond that, new combinations fold into model and key `~other` | Bounds a day at about 430 KB against a client that invents model names or keys; totals stay right |
-| D17 | Recording starts only when a management key is configured | Without one nobody can read the page; it is also the rule of upstream's usage queue (`internal/api/server.go:285`) |
+| D17 | Recording starts only when a management key is configured; once started it continues while management is off, only the endpoint is gated (T-116) | Without one nobody can read the page; it is also the rule of upstream's usage queue (`internal/api/server.go:285`) |
 
 ## Premises corrected
 
