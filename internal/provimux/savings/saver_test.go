@@ -36,12 +36,15 @@ func TestTotalsAreAbsolute(t *testing.T) {
 		t.Fatalf("after 5: %+v", got)
 	}
 	first := store.raw(t, dayKey(today))
-	env.r.mu.Lock()
-	env.r.days[today].dirty = true // the same round again
-	env.r.mu.Unlock()
-	env.round()
-	if second := store.raw(t, dayKey(today)); !bytes.Equal(first, second) {
-		t.Fatalf("the same totals must write identical bytes:\n%s\n%s", first, second)
+	again, err := storedDay(t, store, today).encode(today)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(first, again) {
+		t.Fatalf("the same totals must encode identical bytes:\n%s\n%s", first, again)
+	}
+	if len(env.waiting()) != 0 {
+		t.Fatal("after a successful write memory holds nothing for the day")
 	}
 }
 
@@ -77,8 +80,8 @@ func TestRestart(t *testing.T) {
 	if got := sumRows(storedDay(t, store, today)); got.Req != 4 || got.In != 40 {
 		t.Fatalf("old totals plus new: %+v", got)
 	}
-	if reads := store.getCount(dayKey(today)) - before; reads != 1 {
-		t.Fatalf("the day was read %d times, want once", reads)
+	if reads := store.getCount(dayKey(today)) - before; reads != 2 {
+		t.Fatalf("the day was read %d times, want once per round that writes it", reads)
 	}
 	if d := storedDay(t, store, today); len(d.rows) != 1 {
 		t.Fatalf("the same key must keep its id across a restart: %d rows", len(d.rows))
@@ -129,10 +132,7 @@ func TestStoreOff(t *testing.T) {
 	env := newTestEnv(t, nil)
 	env.record(claudeRecord("claude-opus-5-5", "key-a", 10, 0, 0, 1))
 	env.round()
-	env.r.mu.Lock()
-	inMemory := len(env.r.days[today].pending)
-	env.r.mu.Unlock()
-	if inMemory != 1 {
+	if inMemory := env.waiting()[today]; inMemory == nil || len(inMemory.rows) != 1 {
 		t.Fatal("with the store off the totals stay in memory")
 	}
 	env.r.opts.maxMemoryDays = 400
@@ -143,10 +143,9 @@ func TestStoreOff(t *testing.T) {
 		env.record(rec)
 	}
 	env.round()
-	env.r.mu.Lock()
-	kept := len(env.r.days)
-	_, oldest := env.r.days["2025-01-01"]
-	env.r.mu.Unlock()
+	waiting := env.waiting()
+	kept := len(waiting)
+	_, oldest := waiting["2025-01-01"]
 	if kept != 400 || oldest {
 		t.Fatalf("at most 400 days are kept, the oldest dropped first: %d (oldest kept: %v)", kept, oldest)
 	}
@@ -180,13 +179,13 @@ func TestWriteFails(t *testing.T) {
 	env.record(claudeRecord("claude-opus-5-5", "", 1, 0, 0, 1))
 	env.round()
 	env.r.mu.Lock()
-	dirty, ok := env.r.days[today].dirty, env.r.lastWriteOK
+	ok := env.r.lastWriteOK
 	env.r.mu.Unlock()
 	if ok {
 		t.Fatal("the last write failed")
 	}
-	if !dirty {
-		t.Fatal("the day must stay dirty")
+	if d := env.waiting()[today]; d == nil || d.requests() != 1 {
+		t.Fatal("the delta of a failed write must stay in memory")
 	}
 	store.mu.Lock()
 	store.failSet = nil
@@ -226,11 +225,8 @@ func TestAValueThatDoesNotDecode(t *testing.T) {
 	if strings.Contains(logs.String(), "secret-value-marker") {
 		t.Fatal("the log line carries the value")
 	}
-	env.r.mu.Lock()
-	pending := len(env.r.days[today].pending)
-	env.r.mu.Unlock()
-	if pending == 0 {
-		t.Fatal("pending for the day is kept in memory")
+	if d := env.waiting()[today]; d == nil || d.requests() != 2 {
+		t.Fatal("the deltas for the day are kept in memory")
 	}
 }
 
@@ -299,12 +295,8 @@ func TestOldDaysLeaveMemory(t *testing.T) {
 	env.record(old)
 	env.record(claudeRecord("claude-opus-5-5", "", 1, 0, 0, 1))
 	env.round()
-	env.r.mu.Lock()
-	_, oldKept := env.r.days["2026-11-15"]
-	_, todayKept := env.r.days[today]
-	env.r.mu.Unlock()
-	if oldKept || !todayKept {
-		t.Fatalf("a clean day older than 2 days is dropped: old=%v today=%v", oldKept, todayKept)
+	if waiting := env.waiting(); len(waiting) != 0 {
+		t.Fatalf("written days leave memory, whatever their age: %d kept", len(waiting))
 	}
 	env.record(old)
 	env.round()
@@ -349,8 +341,8 @@ func TestMeta(t *testing.T) {
 	restarted := newTestEnv(t, store)
 	restarted.record(claudeRecord("claude-opus-5-5", "client-key-aaaaaaaaaaaa", 1, 0, 0, 1))
 	restarted.round()
-	if keyID(restarted.r.secret, "client-key-aaaaaaaaaaaa") != idBefore {
-		t.Fatal("key ids must be the same after a restart")
+	if d := storedDay(t, store, today); len(d.keys) != 1 || d.keys[idBefore] == "" {
+		t.Fatalf("key ids must be the same after a restart: %+v", d.keys)
 	}
 }
 
@@ -472,20 +464,15 @@ func TestThePriceListCopy(t *testing.T) {
 	restarted := newTestEnv(t, store)
 	restarted.record(claudeRecord("claude-opus-5-5", "", 1, 0, 0, 1))
 	restarted.round()
-	restarted.r.mu.Lock()
-	book := restarted.r.bookLocked()
-	restarted.r.mu.Unlock()
-	if book.openRouter["anthropic/claude-opus-5.5"].Input != 4 || !book.fetchedAt.Equal(testNow) {
-		t.Fatalf("read at start: %+v", book)
+	if a := restarted.query(t, "period=today"); a.Prices.OpenRouter.FetchedAt == nil || *a.Prices.OpenRouter.FetchedAt != formatTime(testNow) ||
+		a.Models[0].Price == nil || a.Models[0].Price.InputPerMTok != 4 {
+		t.Fatalf("read from the store: %+v", a.Prices.OpenRouter)
 	}
 	// The later fetched_at wins: an older download does not replace the copy.
 	restarted.prices.set(map[string]registry.ProvimuxOpenRouterPrice{"anthropic/claude-opus-5.5": {Input: 1, Output: 1}}, testNow.Add(-time.Hour))
 	restarted.record(claudeRecord("claude-opus-5-5", "", 1, 0, 0, 1))
 	restarted.round()
-	restarted.r.mu.Lock()
-	book = restarted.r.bookLocked()
-	restarted.r.mu.Unlock()
-	if book.openRouter["anthropic/claude-opus-5.5"].Input != 4 {
+	if saved, at, _ := decodeListCopy(store.raw(t, openRouterListKey)); saved["anthropic/claude-opus-5.5"].Input != 4 || !at.Equal(testNow) {
 		t.Fatal("the later fetched_at wins")
 	}
 	// A newer, different list is written.
@@ -551,13 +538,9 @@ func TestStartTwice(t *testing.T) {
 	r.opts.now = func() time.Time { return testNow }
 	r.opts.location = bucharest
 	recorded := func() int64 {
-		r.mu.Lock()
-		defer r.mu.Unlock()
 		var n int64
-		for _, st := range r.days {
-			for _, c := range st.pending {
-				n += c.Req
-			}
+		for _, d := range (&testEnv{r: r}).waiting() {
+			n += d.requests()
 		}
 		return n
 	}
