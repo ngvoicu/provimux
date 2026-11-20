@@ -195,6 +195,7 @@ func fetchOpenRouterModels(ctx context.Context) (map[string]OpenRouterModel, err
 	if len(data) > maxOpenRouterModelsSize {
 		return nil, fmt.Errorf("OpenRouter catalog exceeds size limit")
 	}
+	provimuxKeepOpenRouterPrices(data)
 	return parseOpenRouterModels(data)
 }
 
