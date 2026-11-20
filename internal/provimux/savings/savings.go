@@ -57,24 +57,28 @@ type options struct {
 	openRouter func() (map[string]registry.ProvimuxOpenRouterPrice, time.Time, bool)
 	// openRouterKept is registry.ProvimuxOpenRouterPricesKept: the same, never asking for a download.
 	openRouterKept func() (map[string]registry.ProvimuxOpenRouterPrice, time.Time, bool)
-	interval       time.Duration // 10 s
-	flushTimeout   time.Duration // 2 s
-	table          *priceTable
+	// accountProvider is registry.ProvimuxClientProvider: the provider of the account (auth ID) a
+	// record was served by; "" when unknown, and the executor's provider is kept.
+	accountProvider func(authID string) string
+	interval        time.Duration // 10 s
+	flushTimeout    time.Duration // 2 s
+	table           *priceTable
 	// maxMemoryDays bounds the days kept in memory while the store is off.
 	maxMemoryDays int
 }
 
 func defaultOptions() options {
 	return options{
-		now:            time.Now,
-		location:       serverLocation(),
-		store:          currentLocalStore,
-		openRouter:     registry.ProvimuxOpenRouterPrices,
-		openRouterKept: registry.ProvimuxOpenRouterPricesKept,
-		interval:       10 * time.Second,
-		flushTimeout:   2 * time.Second,
-		table:          defaultTable,
-		maxMemoryDays:  400,
+		now:             time.Now,
+		location:        serverLocation(),
+		store:           currentLocalStore,
+		openRouter:      registry.ProvimuxOpenRouterPrices,
+		openRouterKept:  registry.ProvimuxOpenRouterPricesKept,
+		accountProvider: registry.ProvimuxClientProvider,
+		interval:        10 * time.Second,
+		flushTimeout:    2 * time.Second,
+		table:           defaultTable,
+		maxMemoryDays:   400,
 	}
 }
 
@@ -127,6 +131,12 @@ type recorder struct {
 	storeWasOn  bool
 	logged      map[string]bool // keys whose value did not decode, logged once
 
+	// bound is the store the in-memory state describes (bindLocked).
+	bound localStore
+	// generation changes with every successful day write and every store switch: a query whose
+	// reads straddled one reads again.
+	generation uint64
+
 	savers atomic.Int32
 }
 
@@ -145,6 +155,9 @@ func newRecorder(opts options) *recorder {
 	}
 	if opts.table == nil {
 		opts.table = defaultTable
+	}
+	if opts.accountProvider == nil {
+		opts.accountProvider = func(string) string { return "" }
 	}
 	if opts.interval <= 0 {
 		opts.interval = 10 * time.Second
