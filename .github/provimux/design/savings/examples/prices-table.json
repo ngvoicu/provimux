@@ -1,0 +1,19 @@
+{
+  "v": 1,
+  "updated": "2026-11-20",
+  "models": [
+    {
+      "provider": "devin",
+      "model": "example-coder-1",
+      "price": { "in": 1.5, "out": 6, "cr": 0.15 },
+      "source": "https://example.com/pricing",
+      "note": "Format only: example-coder-1 is not a real model and these are not real prices."
+    },
+    {
+      "provider": "*",
+      "model": "example-coder-1-preview",
+      "same_as": "example/example-coder-1",
+      "source": "https://example.com/models/example-coder-1"
+    }
+  ]
+}
