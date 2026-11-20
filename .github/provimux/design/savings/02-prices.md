@@ -77,7 +77,7 @@ func ProvimuxSetOpenRouterPricesForTest(prices map[string]ProvimuxOpenRouterPric
 
 ### When Provimux asks for it
 
-The saver calls `ProvimuxOpenRouterPrices()` in every round in which it has a day to write, and once at `Start`. So the list is downloaded at most every 3 hours, and only while requests are being recorded; after a failed download the catalog tries again no sooner than a minute later (`:114`). This makes a Provimux without an OpenRouter entry contact openrouter.ai, which it does not do today: a public list, no key, nothing about the installation in the request. It is what the owner's decision asks for, and it is new behaviour; open question 3 in `README.md`.
+The saver calls `ProvimuxOpenRouterPrices()` in every round in which it has a day to write (not at `Start`: the build dropped that call, see `README.md`, "What the build changed"). So the list is downloaded at most every 3 hours, and only while requests are being recorded; after a failed download the catalog tries again no sooner than a minute later (`:114`). This makes a Provimux without an OpenRouter entry contact openrouter.ai, which it does not do today: a public list, no key, nothing about the installation in the request. It is what the owner's decision asks for, and it is new behaviour; open question 3 in `README.md`.
 
 ### The saved copy
 
@@ -117,6 +117,7 @@ Unpriced is not lost: requests and tokens are recorded all the same, and a day's
 - `provider` is a provider as recorded, or `*`. An entry naming the provider wins over `*`. A provider and model pair appears once.
 - **`source` is required**: the public page that states the price, or that states the model is the one in `same_as`. No source, no entry: a model nobody publishes a price for stays unpriced, and the page says so.
 - A change of the table ships with a release. `updated` is the day it was last checked.
+- The price id of an entry with a `price` (a row's `pm`, `models[].price.id`) is `provimux:<provider>/<model>` of the entry, e.g. `provimux:devin/swe-2`; OpenRouter ids never start with `provimux:`. An entry with `same_as` has the OpenRouter id as its price id.
 
 **What goes in at first.** No price is invented in this design. The worker fills entries only where a public source exists, and the reviewer opens each `source`. [ran] Against the live list, these ids of the static catalogs find no price by section 4 and are the candidates:
 
