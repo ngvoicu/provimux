@@ -52,6 +52,13 @@ const (
 	SelectedAuthIndexMetadataKey = "selected_auth_index"
 	// SelectedAuthIndexCallbackMetadataKey carries an optional callback invoked with the selected auth index.
 	SelectedAuthIndexCallbackMetadataKey = "selected_auth_index_callback"
+	// SelectedAuthKindCallbackMetadataKey carries an optional callback invoked with the selected auth's kind
+	// ("oauth" or "apikey"), so a client can tell a subscription login from an API key. It is called at every
+	// selection, also for a credential that then fails, before any upstream answers.
+	//
+	// Deprecated: a selected credential is not necessarily the one that answered. Use
+	// AnsweredAuthCallbackMetadataKey, which states who produced the response that is returned.
+	SelectedAuthKindCallbackMetadataKey = "selected_auth_kind_callback"
 	// AnsweredAuthCallbackMetadataKey carries an optional func(kind, provider, host string), called once per
 	// Manager.Execute, ExecuteCount or ExecuteStream call that returns a response, at that return: with the statement
 	// of the credential whose upstream produced the response (its kind, "oauth" or "apikey"; its provider; the host of
