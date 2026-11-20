@@ -1,6 +1,7 @@
 package logging
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -204,6 +205,63 @@ func TestCPAAuthProviderAndHostHeadersNameTheCredentialThatServedTheResponse(t *
 			}
 			if got := recorder.Header().Get(CPAAuthHostHeader); got != test.host {
 				t.Fatalf("%s = %q, want %q", CPAAuthHostHeader, got, test.host)
+			}
+		})
+	}
+}
+
+// A provider or host that is not a valid header field value is not written, and without a provider no host is: an
+// HTTP/1.1 client otherwise rejects the whole response. The kind and the trace ID are unaffected.
+func TestCPAAuthProviderAndHostHeadersSkipInvalidValues(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, test := range []struct {
+		name         string
+		provider     string
+		host         string
+		wantProvider string
+		wantHost     string
+	}{
+		{name: "control character in the provider", provider: "openai-compatible-study\x7fteam", host: "api.example.test"},
+		{name: "line break in the provider", provider: "claude\r\nX-Injected: 1", host: "api.example.test"},
+		{name: "control character in the host", provider: "openai-compatible-lab", host: "api.example\x01.test", wantProvider: "openai-compatible-lab"},
+		{name: "valid values", provider: "openai-compatible-lab", host: "api.example.test", wantProvider: "openai-compatible-lab", wantHost: "api.example.test"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			engine := gin.New()
+			engine.Use(CPATraceIDMiddleware())
+			engine.GET("/", func(c *gin.Context) {
+				SetGinRequestID(c, "1234abcd")
+				SetGinCPATraceID(c, "auth-index")
+				SetGinCPAAuthKind(c, "apikey")
+				SetGinCPAAuthProvider(c, test.provider, test.host)
+				c.String(http.StatusOK, "fixture body")
+			})
+			// A real HTTP/1.1 server and client: the recorder would not show the client rejecting the response.
+			server := httptest.NewServer(engine)
+			defer server.Close()
+			response, errGet := server.Client().Get(server.URL)
+			if errGet != nil {
+				t.Fatalf("HTTP/1.1 client rejected the response: %v", errGet)
+			}
+			defer func() { _ = response.Body.Close() }()
+			body, _ := io.ReadAll(response.Body)
+			if response.StatusCode != http.StatusOK || string(body) != "fixture body" {
+				t.Fatalf("status=%d body=%q", response.StatusCode, body)
+			}
+			if got := response.Header.Get(CPAAuthKindHeader); got != "apikey" {
+				t.Fatalf("%s = %q, want apikey", CPAAuthKindHeader, got)
+			}
+			if got := response.Header.Get(CPATraceIDHeader); got == "" {
+				t.Fatalf("%s missing", CPATraceIDHeader)
+			}
+			if got := response.Header.Get("X-Injected"); got != "" {
+				t.Fatalf("X-Injected = %q", got)
+			}
+			for name, want := range map[string]string{CPAAuthProviderHeader: test.wantProvider, CPAAuthHostHeader: test.wantHost} {
+				values, present := response.Header[http.CanonicalHeaderKey(name)]
+				if present != (want != "") || (present && values[0] != want) {
+					t.Fatalf("%s = %q (present %v), want %q", name, values, present, want)
+				}
 			}
 		})
 	}
