@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+	"golang.org/x/net/idna"
 )
 
 const (
@@ -54,27 +55,72 @@ func (a *Auth) AuthKind() string {
 	return ""
 }
 
-// BaseURLHost returns the lowercased host of an API key's base URL, or "" for a login or a key without one. Only the
-// host: no credentials, port, path or query, since a path can carry an account ID. The model accounts list and the
-// X-CPA-AUTH-HOST response header both use it, so they cannot disagree.
-func (a *Auth) BaseURLHost() string {
+// baseURLHost returns the host of an API key's base URL in ASCII, lower case: only the host (no credentials, port,
+// path or query, since a path can carry an account ID); an internationalised host in its IDNA form
+// (bücher.example: xn--bcher-kva.example). ok is false when there is a base URL whose host cannot be given: it does
+// not parse, has no host (a URL without a scheme), or does not convert. A login, or a key without a base URL, has no
+// host and ok is true.
+func (a *Auth) baseURLHost() (host string, ok bool) {
 	if a == nil || a.Attributes == nil || a.AuthKind() != AuthKindAPIKey {
-		return ""
+		return "", true
 	}
-	parsed, errParse := url.Parse(strings.TrimSpace(a.Attributes["base_url"]))
+	raw := strings.TrimSpace(a.Attributes["base_url"])
+	if raw == "" {
+		return "", true
+	}
+	parsed, errParse := url.Parse(raw)
 	if errParse != nil {
-		return ""
+		return "", false
 	}
-	return strings.ToLower(parsed.Hostname())
+	host = strings.ToLower(parsed.Hostname())
+	if host == "" {
+		return "", false
+	}
+	if !isASCII(host) {
+		// An ASCII host is not passed through IDNA: its strict profile rejects valid names (my_gateway.internal, ::1).
+		converted, errConvert := idna.Lookup.ToASCII(host)
+		if errConvert != nil {
+			return "", false
+		}
+		host = converted
+	}
+	for i := 0; i < len(host); i++ {
+		if host[i] < 0x21 || host[i] > 0x7e {
+			return "", false
+		}
+	}
+	return host, true
+}
+
+func isASCII(value string) bool {
+	for i := 0; i < len(value); i++ {
+		if value[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
+// BaseURLHost returns the host of an API key's base URL in ASCII (see baseURLHost), or "" for a login, a key without
+// one, or a base URL whose host cannot be given. The model accounts list and the X-CPA-AUTH-HOST response header both
+// use it, so they cannot disagree.
+func (a *Auth) BaseURLHost() string {
+	host, _ := a.baseURLHost()
+	return host
 }
 
 // AuthStatement returns, as one statement, what names this credential to a client: its kind, its provider and, for
-// an API key with a base URL, the host (BaseURLHost).
+// an API key with a base URL, the host (BaseURLHost). It is the zero statement for a key whose base URL has no host
+// that can be given: such a key is never stated as a key without a base URL.
 func (a *Auth) AuthStatement() logging.AuthStatement {
 	if a == nil {
 		return logging.AuthStatement{}
 	}
-	return logging.AuthStatement{Kind: a.AuthKind(), Provider: a.Provider, Host: a.BaseURLHost()}
+	host, ok := a.baseURLHost()
+	if !ok {
+		return logging.AuthStatement{}
+	}
+	return logging.AuthStatement{Kind: a.AuthKind(), Provider: a.Provider, Host: host}
 }
 
 // AuthSourceKind returns where the Auth entry came from at runtime.

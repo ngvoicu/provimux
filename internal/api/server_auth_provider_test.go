@@ -261,25 +261,22 @@ func TestMessagesResponseNamesTheCredentialARetryLandedOn(t *testing.T) {
 	}
 }
 
-// A key whose base URL has an internationalized host is named by its kind alone in the headers, as on the
-// websocket; the model accounts list is unchanged and still lists the host.
-func TestMessagesResponseSendsOnlyTheKindForAnInternationalizedHost(t *testing.T) {
+// A key whose base URL has an internationalised host is named with the host's IDNA form in the headers, as on the
+// websocket and in the model accounts list.
+func TestMessagesResponseNamesAnInternationalizedHostInItsIDNAForm(t *testing.T) {
 	credential := &auth.Auth{ID: "auth-provider-idn-key", Provider: "claude", Status: auth.StatusActive, Attributes: map[string]string{auth.AttributeAPIKey: "sk-made-up", "base_url": "https://bücher.example/v1"}}
 	server, served := authProviderServer(t, []*auth.Auth{credential}, nil)
 	headers := authProviderMessage(t, server)
 	if len(*served) != 1 {
 		t.Fatalf("served by %v", *served)
 	}
-	if got := headers.Get(internallogging.CPAAuthKindHeader); got != "apikey" {
-		t.Fatalf("%s = %q, want apikey", internallogging.CPAAuthKindHeader, got)
-	}
-	for _, name := range []string{internallogging.CPAAuthProviderHeader, internallogging.CPAAuthHostHeader} {
-		if values, present := headers[http.CanonicalHeaderKey(name)]; present {
-			t.Fatalf("%s = %q, want absent", name, values)
+	for name, want := range map[string]string{internallogging.CPAAuthKindHeader: "apikey", internallogging.CPAAuthProviderHeader: "claude", internallogging.CPAAuthHostHeader: "xn--bcher-kva.example"} {
+		if got := headers.Get(name); got != want {
+			t.Fatalf("%s = %q, want %q", name, got, want)
 		}
 	}
 	accounts := authProviderAccounts(t, server)
-	if len(accounts) != 1 || accounts[0]["host"] != "bücher.example" || accounts[0]["provider"] != "claude" {
-		t.Fatalf("accounts = %v, want the key listed with its host", accounts)
+	if len(accounts) != 1 || accounts[0]["host"] != "xn--bcher-kva.example" || accounts[0]["provider"] != "claude" {
+		t.Fatalf("accounts = %v, want the key listed with its host in IDNA form", accounts)
 	}
 }

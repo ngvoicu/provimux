@@ -20,9 +20,9 @@ import (
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 )
 
-// On response.created the provider and the host are sent only as plain printable ASCII, both or neither; the kind is
-// sent either way.
-func TestResponsesWebsocketAuthProviderSkipsInvalidValues(t *testing.T) {
+// On response.created a statement is sent as in the headers: whole, with a provider outside printable ASCII
+// percent-encoded, or none of the three fields.
+func TestResponsesWebsocketAuthStatementIsWholeOrAbsent(t *testing.T) {
 	for _, test := range []struct {
 		name         string
 		provider     string
@@ -30,10 +30,10 @@ func TestResponsesWebsocketAuthProviderSkipsInvalidValues(t *testing.T) {
 		wantProvider string
 		wantHost     string
 	}{
-		{name: "provider not valid UTF-8", provider: "openai-compatible-\xff", host: "api.example.test"},
+		{name: "provider not valid UTF-8", provider: "openai-compatible-\xff", host: "api.example.test", wantProvider: "openai-compatible-%FF", wantHost: "api.example.test"},
 		{name: "host not valid UTF-8", provider: "openai-compatible-lab", host: "api.example\xfe.test"},
-		{name: "control character in the provider", provider: "openai-compatible-study\x7fteam\x01", host: "api.example.test"},
-		{name: "internationalized host", provider: "claude", host: "bücher.example"},
+		{name: "control character in the provider", provider: "openai-compatible-study\x7fteam\x01", host: "api.example.test", wantProvider: "openai-compatible-study%7Fteam%01", wantHost: "api.example.test"},
+		{name: "host outside ASCII", provider: "claude", host: "bücher.example"},
 		{name: "host without provider", host: "api.example.test"},
 		{name: "login without a host", provider: "devin", wantProvider: "devin"},
 		{name: "valid values", provider: "openai-compatible-lab", host: "api.example.test", wantProvider: "openai-compatible-lab", wantHost: "api.example.test"},
@@ -47,10 +47,11 @@ func TestResponsesWebsocketAuthProviderSkipsInvalidValues(t *testing.T) {
 			if errDecode := json.Unmarshal(payload, &event); errDecode != nil {
 				t.Fatalf("response.created is not valid JSON: %v (%q)", errDecode, payload)
 			}
-			if event["cpa_auth_kind"] != "apikey" {
-				t.Fatalf("cpa_auth_kind = %v, want apikey: %s", event["cpa_auth_kind"], payload)
+			wantKind := ""
+			if test.wantProvider != "" {
+				wantKind = "apikey"
 			}
-			for field, want := range map[string]string{"cpa_auth_provider": test.wantProvider, "cpa_auth_host": test.wantHost} {
+			for field, want := range map[string]string{"cpa_auth_kind": wantKind, "cpa_auth_provider": test.wantProvider, "cpa_auth_host": test.wantHost} {
 				got, present := event[field]
 				if present != (want != "") || (present && got != want) {
 					t.Fatalf("%s = %q (present %v), want %q: %s", field, got, present, want, payload)
@@ -102,9 +103,9 @@ func responsesWebsocketCreatedFor(t *testing.T, model string, executor coreauth.
 	}
 }
 
-// Through a real socket: a key whose base URL has an internationalized host is sent as its kind alone, as in the
-// response headers, so one credential is not two services depending on the transport.
-func TestResponsesWebsocketSendsOnlyTheKindForAnInternationalizedHost(t *testing.T) {
+// Through a real socket: a key whose base URL has an internationalised host is named with the host's IDNA form, as
+// in the response headers, so one credential is one service on every transport.
+func TestResponsesWebsocketNamesAnInternationalizedHostInItsIDNAForm(t *testing.T) {
 	credential := &coreauth.Auth{
 		ID:         "auth-origin-idn-key",
 		Provider:   "claude",
@@ -112,12 +113,9 @@ func TestResponsesWebsocketSendsOnlyTheKindForAnInternationalizedHost(t *testing
 		Attributes: map[string]string{coreauth.AttributeAPIKey: "made-up-key", "base_url": "https://bücher.example/v1"},
 	}
 	created := responsesWebsocketCreatedFor(t, "auth-origin-idn-model", websocketCreatedProviderExecutor{provider: "claude"}, credential)
-	if got := ojson.GetBytesNoCopy(created, "cpa_auth_kind").String(); got != "apikey" {
-		t.Fatalf("cpa_auth_kind = %q, want apikey: %s", got, created)
-	}
-	for _, field := range []string{"cpa_auth_provider", "cpa_auth_host"} {
-		if value := ojson.GetBytesNoCopy(created, field); value.Exists() {
-			t.Fatalf("%s = %q, want absent: %s", field, value.String(), created)
+	for field, want := range map[string]string{"cpa_auth_kind": "apikey", "cpa_auth_provider": "claude", "cpa_auth_host": "xn--bcher-kva.example"} {
+		if got := ojson.GetBytesNoCopy(created, field).String(); got != want {
+			t.Fatalf("%s = %q, want %q: %s", field, got, want, created)
 		}
 	}
 }
