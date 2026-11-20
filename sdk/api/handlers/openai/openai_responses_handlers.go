@@ -1066,6 +1066,7 @@ func (h *OpenAIResponsesAPIHandler) Compact(c *gin.Context) {
 		return
 	}
 	handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
+	handlers.ConfirmAnswer(c)
 	_, _ = c.Writer.Write(resp)
 	cliCancel()
 }
@@ -1092,6 +1093,7 @@ func (h *OpenAIResponsesAPIHandler) handleNonStreamingResponse(c *gin.Context, r
 		return
 	}
 	handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
+	handlers.ConfirmAnswer(c)
 	_, _ = c.Writer.Write(resp)
 	cliCancel()
 }
@@ -1193,6 +1195,7 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 				safeErrMsg := sanitizeResponsesStreamErrorMessage(errMsg)
 				commitSSE()
 				if initialOutput.Len() > 0 {
+					handlers.ConfirmAnswer(c)
 					if errWrite := writeResponsesSSEChunk(c.Writer, initialOutput.Bytes()); errWrite != nil {
 						cliCancel(errWrite)
 						return
@@ -1244,6 +1247,7 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 					stopWaitKeepAlive()
 					commitSSE()
 					if initialOutput.Len() > 0 {
+						handlers.ConfirmAnswer(c)
 						if errWrite := writeResponsesSSEChunk(c.Writer, initialOutput.Bytes()); errWrite != nil {
 							cliCancel(errWrite)
 							return
@@ -1287,6 +1291,7 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 			stopKeepAlive()
 			stopWaitKeepAlive()
 			commitSSE()
+			handlers.ConfirmAnswer(c)
 			if errWrite := writeResponsesSSEChunk(c.Writer, initialOutput.Bytes()); errWrite != nil {
 				cliCancel(errWrite)
 				return
