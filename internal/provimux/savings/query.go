@@ -293,20 +293,16 @@ func Query(ctx context.Context, request Request) (*Response, error) {
 	return defaultRecorder.query(ctx, request)
 }
 
-// queryDay is one day of the range as the answer sees it: what the saver would write next.
+// queryDay is one day of the range as the answer sees it: what the store holds plus the deltas.
 type queryDay struct {
 	day  string
 	rows *dayRows
 }
 
-// memoryDay is a copy of a day's in-memory state taken under the mutex.
-type memoryDay struct {
-	rows    *dayRows
-	loaded  bool
-	pending map[pendingKey]*counters
-	broken  bool
-}
-
+// query answers under mu, the lock every save round holds for its whole length: the store is read
+// and the deltas added with no write in between, so each request is counted once. Rows read from the
+// store keep their recorded prices; a row only in the deltas, or stored without a price, is valued
+// with the current list and is floating (basis current).
 func (r *recorder) query(ctx context.Context, req Request) (*Response, error) {
 	now := r.opts.now()
 	loc := r.location()
@@ -314,58 +310,42 @@ func (r *recorder) query(ctx context.Context, req Request) (*Response, error) {
 	todayDate := civil(local.Year(), local.Month(), local.Day())
 	_, offset := local.Zone()
 
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.drainLocked()
+
 	store, errStore := r.opts.store()
 	if errStore != nil {
 		return nil, ErrStoreUnavailable
 	}
 
-	// What the process knows, under the mutex. No store call under it.
-	r.mu.Lock()
-	r.bindLocked(store)
-	memEarliest := ""
-	for day := range r.days {
-		if memEarliest == "" || day < memEarliest {
-			memEarliest = day
+	// The list as the catalog keeps it now, without asking for a download, and whether it may be
+	// downloaded; never written to r: a query changes nothing.
+	downloaded, downloadedAt, remote := r.downloaded, r.downloadedAt, r.remote
+	if list, fetchedAt, keptRemote := r.opts.openRouterKept(); list != nil || keptRemote != remote {
+		remote = keptRemote
+		if list != nil && (downloaded == nil || fetchedAt.After(downloadedAt)) {
+			downloaded, downloadedAt = list, fetchedAt
 		}
 	}
-	metaKnown, meta, metaOK, secret := r.metaKnown, r.meta, r.metaOK, slices.Clone(r.secret)
-	savedKnown := r.savedKnown
-	book := r.bookLocked()
-	wroteOnce, lastWriteOK, lastSavedAt := r.wroteOnce, r.lastWriteOK, r.lastSavedAt
-	r.mu.Unlock()
 
-	// The list as the catalog keeps it now, and whether it may be downloaded: read without asking
-	// for a download, so a list downloaded after the saver's last round is used too.
-	if list, fetchedAt, remote := r.opts.openRouterKept(); list != nil || remote != book.remote {
-		next := *book
-		next.remote = remote
-		if list != nil && (next.openRouter == nil || fetchedAt.After(next.fetchedAt)) {
-			next.openRouter, next.fetchedAt = list, fetchedAt
-		}
-		book = &next
-	}
-
-	// Before the saver reached the store, read meta and the saved list itself; never write them.
-	if store != nil && (!metaKnown || !savedKnown) {
-		values, found, errGet := store.KVMGet(ctx, metaKey, openRouterListKey)
-		if errGet != nil || len(values) != 2 || len(found) != 2 {
+	state := storeState{secret: r.secret}
+	if store != nil {
+		var errState error
+		if state, errState = r.readState(ctx, store, false, ""); errState != nil {
 			return nil, ErrStoreUnavailable
 		}
-		if !metaKnown && found[0] {
-			if decoded, storedSecret, errMeta := decodeMeta(values[0]); errMeta == nil {
-				meta, metaOK, secret = decoded, true, storedSecret
-			}
-		}
-		if !savedKnown && found[1] {
-			if list, at, errList := decodeListCopy(values[1]); errList == nil &&
-				(book.openRouter == nil || at.After(book.fetchedAt)) {
-				book = &priceBook{openRouter: list, fetchedAt: at, remote: book.remote, table: book.table}
-			}
+	}
+	book := bookOf(downloaded, downloadedAt, remote, state.saved, state.savedAt, r.opts.table)
+
+	since := ""
+	for day := range r.deltas {
+		if since == "" || day < since {
+			since = day
 		}
 	}
-	since := memEarliest
-	if metaOK && meta.FirstDay != "" && (since == "" || meta.FirstDay < since) {
-		since = meta.FirstDay
+	if state.metaOK && state.meta.FirstDay != "" && (since == "" || state.meta.FirstDay < since) {
+		since = state.meta.FirstDay
 	}
 
 	from, to := resolveRange(req, todayDate, since)
@@ -374,33 +354,30 @@ func (r *recorder) query(ctx context.Context, req Request) (*Response, error) {
 		days = append(days, d.Format(time.DateOnly))
 	}
 
-	memory, fromStore, errRead := r.readRange(ctx, store, days)
-	if errRead != nil {
-		return nil, errRead
+	stored := map[string]*dayRows{}
+	if store != nil {
+		var errRead error
+		if stored, errRead = r.readDays(ctx, store, days); errRead != nil {
+			return nil, ErrStoreUnavailable
+		}
 	}
 
 	var assembled []queryDay
 	for _, day := range days {
-		m, inMemory := memory[day]
-		stored, read := fromStore[day]
-		if (inMemory && m.broken) || (read && stored == nil) {
+		rows, inStore := stored[day]
+		if inStore && rows == nil {
 			continue // a value that does not decode: reads skip the day
 		}
-		var rows *dayRows
-		switch {
-		case inMemory && m.loaded:
-			rows = m.rows
-		case read:
-			rows = stored
-		case inMemory:
-			rows = m.rows
-		default:
-			continue
+		deltas := r.deltas[day]
+		if rows == nil {
+			if deltas == nil {
+				continue
+			}
+			rows = newDayRows(loc.String(), offset)
 		}
-		if inMemory && len(m.pending) > 0 {
-			// Not assignPrices: a price given while reading is not the day's. Rows without one are
-			// valued with today's list and counted as floating until the saver records a price.
-			rows.mergePending(m.pending, secret)
+		if deltas != nil {
+			// Not assignPrices: a price given while reading is not the day's.
+			rows.mergePending(deltas.rows, state.secret)
 		}
 		if len(rows.rows) > 0 {
 			assembled = append(assembled, queryDay{day: day, rows: rows})
@@ -420,9 +397,9 @@ func (r *recorder) query(ctx context.Context, req Request) (*Response, error) {
 	if since != "" {
 		answer.Recording.Since = &since
 	}
-	answer.Recording.Persistent = store != nil && (!wroteOnce || lastWriteOK)
-	if !lastSavedAt.IsZero() {
-		saved := formatTime(lastSavedAt)
+	answer.Recording.Persistent = store != nil && (!r.wroteOnce || r.lastWriteOK)
+	if !r.lastSavedAt.IsZero() {
+		saved := formatTime(r.lastSavedAt)
 		answer.Recording.SavedAt = &saved
 	}
 	answer.Prices = Prices{
@@ -436,94 +413,6 @@ func (r *recorder) query(ctx context.Context, req Request) (*Response, error) {
 		answer.Prices.OpenRouter.FetchedAt = &fetched
 	}
 	return answer, nil
-}
-
-// readRange copies the in-memory state of the days and reads the days memory does not hold as stored.
-// A day written by the saver between the copy and the read would count its pending records twice,
-// so when a write happened in between (the generation moved) it reads again; the last attempt holds
-// the saver's lock, so no write can happen in between.
-func (r *recorder) readRange(ctx context.Context, store localStore, days []string) (map[string]memoryDay, map[string]*dayRows, error) {
-	const attempts = 3
-	for attempt := 1; ; attempt++ {
-		last := attempt == attempts
-		if last {
-			r.saveMu.Lock()
-		}
-		memory, generation := r.copyDays(days)
-		fromStore, errRead := r.readStoredDays(ctx, store, days, memory)
-		r.mu.Lock()
-		same := r.generation == generation
-		r.mu.Unlock()
-		if last {
-			r.saveMu.Unlock()
-		}
-		if errRead != nil {
-			return nil, nil, errRead
-		}
-		if same || last {
-			return memory, fromStore, nil
-		}
-	}
-}
-
-// copyDays copies the in-memory state of the days, under the mutex, with the generation it is of.
-func (r *recorder) copyDays(days []string) (map[string]memoryDay, uint64) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	memory := make(map[string]memoryDay)
-	for _, day := range days {
-		st, ok := r.days[day]
-		if !ok {
-			continue
-		}
-		m := memoryDay{loaded: st.loaded, broken: st.broken, pending: make(map[pendingKey]*counters, len(st.pending))}
-		if st.loaded {
-			m.rows = st.rows.clone()
-		} else {
-			m.rows = newDayRows(st.rows.tz, st.rows.offset)
-		}
-		for k, c := range st.pending {
-			copied := *c
-			m.pending[k] = &copied
-		}
-		memory[day] = m
-	}
-	return memory, r.generation
-}
-
-// readStoredDays is one read of the days in range that memory does not hold as stored.
-func (r *recorder) readStoredDays(ctx context.Context, store localStore, days []string, memory map[string]memoryDay) (map[string]*dayRows, error) {
-	var toRead []string
-	for _, day := range days {
-		if m, ok := memory[day]; !ok || (!m.loaded && !m.broken) {
-			toRead = append(toRead, day)
-		}
-	}
-	fromStore := make(map[string]*dayRows)
-	if store == nil || len(toRead) == 0 {
-		return fromStore, nil
-	}
-	keys := make([]string, len(toRead))
-	for i, day := range toRead {
-		keys[i] = dayKey(day)
-	}
-	values, found, errGet := store.KVMGet(ctx, keys...)
-	if errGet != nil || len(values) != len(keys) || len(found) != len(keys) {
-		return nil, ErrStoreUnavailable
-	}
-	for i, day := range toRead {
-		if !found[i] {
-			continue
-		}
-		decoded, errDecode := decodeDay(values[i])
-		if errDecode != nil {
-			r.logOnce(dayKey(day), "savings: %s does not decode; it is kept as it is and skipped", dayKey(day))
-			fromStore[day] = nil
-			continue
-		}
-		fromStore[day] = decoded
-	}
-	return fromStore, nil
 }
 
 // resolveRange is 03-endpoint.md section 2, on calendar dates of the server's zone.
