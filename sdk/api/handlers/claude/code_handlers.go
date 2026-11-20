@@ -134,6 +134,7 @@ func (h *ClaudeCodeAPIHandler) ClaudeCountTokens(c *gin.Context) {
 		return
 	}
 	handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
+	handlers.ConfirmAnswer(c)
 	_, _ = c.Writer.Write(resp)
 	cliCancel()
 }
@@ -211,6 +212,7 @@ func (h *ClaudeCodeAPIHandler) handleNonStreamingResponse(c *gin.Context, rawJSO
 	}
 
 	handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
+	handlers.ConfirmAnswer(c)
 	_, _ = c.Writer.Write(resp)
 	cliCancel()
 }
@@ -346,6 +348,7 @@ func (h *ClaudeCodeAPIHandler) handleStreamingResponse(c *gin.Context, rawJSON [
 				streamState.loggedTerminalError = true
 			}
 			if len(chunk) > 0 {
+				handlers.ConfirmAnswer(c)
 				_, _ = c.Writer.Write(chunk)
 				flusher.Flush()
 			}
