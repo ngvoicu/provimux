@@ -1194,7 +1194,7 @@ prep() {
   jq -n --arg t "$t" --arg u "$(up_c "$t")" --arg m "$m" --arg ob "$OB" '{status: "check", step: "select", tag: $t,
     base: ($t | ltrimstr("v")), upstream_commit: $u, old_main: $m, old_base_tag: "v1.0.0", old_base_commit: $ob,
     candidate: "", commits: "", guard_ok: ""}' >"$d/state.json"
-  (cd "$rp" && PMX_UPSTREAM_URL="$ru" PMX_UPSTREAM_REPO=test/up PMX_CHECK_OUT="$d" bash "$here/check.sh" prepare) >"$d/prep.log" 2>&1 || true
+  (cd "$rp" && PATH="${PREP_PATH:-}$PATH" PMX_UPSTREAM_URL="$ru" PMX_UPSTREAM_REPO=test/up PMX_CHECK_OUT="$d" bash "$here/check.sh" prepare) >"$d/prep.log" 2>&1 || true
   jq -r .status "$d/state.json"
 }
 pj() { jq -r "$2" "$tmp/prep-$1/$3"; }
@@ -1232,6 +1232,14 @@ rg range-diff --no-color --no-notes "$OB..$OM" "$(up_c v1.2.0)..$c2" >"$tmp/plai
 contains "  ... a plain whole-range range-diff drops the README commit (<)" "$tmp/plain-v1.2.0.txt" "$(rg rev-parse --short "$R") < -:"
 contains "  ... and shows R' as not in the old main (>)" "$tmp/plain-v1.2.0.txt" "> 3:  $(rg rev-parse --short "$c2~2")"
 
+# T-115: the header parser tolerates grep's "no match" (1) only; a read error (2) is an error.
+mkdir -p "$tmp/fgrepbin"
+# shellcheck disable=SC2016 # the wrapper's own text
+printf '#!/usr/bin/env bash\nfor a in "$@"; do case "$a" in */logs/range-diff.txt) echo "grep: injected read error" >&2; exit 2 ;; esac; done\nexec %s "$@"\n' "$(command -v grep)" >"$tmp/fgrepbin/grep"
+chmod +x "$tmp/fgrepbin/grep"
+expect "T-115: grep cannot read logs/range-diff.txt (exit 2): error, not an empty list" error "$(PREP_PATH="$tmp/fgrepbin:" prep v1.1.0)"
+contains "  ... says so" "$tmp/prep-v1.1.0/reasons.txt" "cannot read the range-diff"
+prep v1.1.0 >/dev/null
 expect "upstream changes no README: status test" test "$(prep v1.3.0)"
 expect "  ... no stop recorded" "null" "$(pj v1.3.0 .readme rebase.json)"
 expect "  ... readme: not reapplied" false "$(pj v1.3.0 .reapplied readme.json)"
