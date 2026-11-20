@@ -39,7 +39,8 @@ func TestPublishSelectedAuthMetadataIncludesStableIndex(t *testing.T) {
 	}
 }
 
-func TestPublishSelectedAuthMetadataReportsCredentialKind(t *testing.T) {
+// The kind is published once a credential has answered; selecting one clears it.
+func TestPublishAnsweredAuthMetadataReportsCredentialKind(t *testing.T) {
 	for _, test := range []struct {
 		name string
 		auth *Auth
@@ -54,14 +55,19 @@ func TestPublishSelectedAuthMetadataReportsCredentialKind(t *testing.T) {
 				cliproxyexecutor.SelectedAuthKindCallbackMetadataKey: func(value string) { kind = value },
 			}
 			publishSelectedAuthMetadata(meta, test.auth)
+			if kind != "" {
+				t.Fatalf("kind after selection = %q, want none until the credential answers", kind)
+			}
+			publishAnsweredAuthMetadata(meta, test.auth)
 			if kind != test.want {
-				t.Fatalf("selected auth kind = %q, want %q", kind, test.want)
+				t.Fatalf("answered auth kind = %q, want %q", kind, test.want)
 			}
 		})
 	}
 }
 
-func TestPublishSelectedAuthMetadataReportsCredentialProviderAndHost(t *testing.T) {
+// The provider and host are published once a credential has answered; selecting one clears them.
+func TestPublishAnsweredAuthMetadataReportsCredentialProviderAndHost(t *testing.T) {
 	for _, test := range []struct {
 		name     string
 		auth     *Auth
@@ -79,12 +85,16 @@ func TestPublishSelectedAuthMetadataReportsCredentialProviderAndHost(t *testing.
 				cliproxyexecutor.SelectedAuthHostCallbackMetadataKey:     func(value string) { host = value },
 			}
 			publishSelectedAuthMetadata(meta, test.auth)
+			if provider != "" || host != "" {
+				t.Fatalf("provider, host after selection = %q, %q, want none until the credential answers", provider, host)
+			}
+			publishAnsweredAuthMetadata(meta, test.auth)
 			if provider != test.provider {
-				t.Fatalf("selected auth provider = %q, want %q", provider, test.provider)
+				t.Fatalf("answered auth provider = %q, want %q", provider, test.provider)
 			}
 			// Called with "" when there is no host, so a retry clears the host of an earlier credential.
 			if host != test.host {
-				t.Fatalf("selected auth host = %q, want %q", host, test.host)
+				t.Fatalf("answered auth host = %q, want %q", host, test.host)
 			}
 			if got := test.auth.BaseURLHost(); got != test.host {
 				t.Fatalf("BaseURLHost() = %q, want %q", got, test.host)
