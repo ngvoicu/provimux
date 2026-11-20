@@ -4,16 +4,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	proxyconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
@@ -48,6 +51,8 @@ func (e *answeredExecutor) attempt(ctx context.Context, a *auth.Auth) error {
 		return errors.New("local fixture preflight stopped")
 	}
 	if !e.upstreamFail[a.ID] {
+		// Like a real executor's transport: the response comes from an upstream exchange.
+		coreexecutor.MarkUpstreamAttempt(ctx)
 		return nil
 	}
 	if e.wait != nil {
@@ -265,6 +270,78 @@ func TestCodexAlphaSearchNamesTheCredentialOnlyOnTheUpstreamAnswer(t *testing.T)
 				return
 			}
 			for name, want := range map[string]string{internallogging.CPAAuthKindHeader: "oauth", internallogging.CPAAuthProviderHeader: "codex"} {
+				if got := rr.Header().Get(name); got != want {
+					t.Fatalf("%s = %q, want %q", name, got, want)
+				}
+			}
+		})
+	}
+}
+
+// countingTransport answers every upstream count request in memory and counts them.
+type countingTransport struct{ calls *atomic.Int32 }
+
+func (rt countingTransport) RoundTripperFor(*auth.Auth) http.RoundTripper { return rt }
+
+func (rt countingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	rt.calls.Add(1)
+	return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"input_tokens":8}`)), Request: req}, nil
+}
+
+// A token count the proxy computes itself names no credential; one an upstream answered names it. Production
+// executors: Claude counts upstream for its own API, locally for a key with another base URL; Devin estimates.
+func TestTokenCountNamesACredentialOnlyWhenAnUpstreamCounted(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		credential *auth.Auth
+		executor   func(cfg *proxyconfig.Config) auth.ProviderExecutor
+		upstream   int32
+		want       map[string]string
+	}{
+		{
+			name:       "claude key counted upstream",
+			credential: &auth.Auth{ID: "count-native", Provider: "claude", Status: auth.StatusActive, Attributes: map[string]string{auth.AttributeAPIKey: "sk-made-up"}},
+			executor:   func(cfg *proxyconfig.Config) auth.ProviderExecutor { return runtimeexecutor.NewClaudeExecutor(cfg) },
+			upstream:   1,
+			want:       map[string]string{internallogging.CPAAuthKindHeader: "apikey", internallogging.CPAAuthProviderHeader: "claude"},
+		},
+		{
+			name:       "claude key on another base URL, counted locally",
+			credential: &auth.Auth{ID: "count-hosted", Provider: "claude", Status: auth.StatusActive, Attributes: map[string]string{auth.AttributeAPIKey: "sk-made-up", "base_url": "https://openrouter.example.test/api/v1"}},
+			executor:   func(cfg *proxyconfig.Config) auth.ProviderExecutor { return runtimeexecutor.NewClaudeExecutor(cfg) },
+		},
+		{
+			name:       "devin login, estimated locally",
+			credential: &auth.Auth{ID: "count-devin", Provider: "devin", Status: auth.StatusActive, Attributes: map[string]string{auth.AttributeAuthKind: "oauth"}, Metadata: map[string]any{"access_token": "made-up-token"}},
+			executor:   func(cfg *proxyconfig.Config) auth.ProviderExecutor { return runtimeexecutor.NewDevinExecutor(cfg) },
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := &proxyconfig.Config{}
+			cfg.APIKeys = []string{"test-key"}
+			server := newTestServerWithConfig(t, cfg)
+			var calls atomic.Int32
+			server.handlers.AuthManager.SetRoundTripperProvider(countingTransport{calls: &calls})
+			server.handlers.AuthManager.RegisterExecutor(test.executor(cfg))
+			if _, errRegister := server.handlers.AuthManager.Register(context.Background(), test.credential); errRegister != nil {
+				t.Fatalf("register: %v", errRegister)
+			}
+			registry.GetGlobalRegistry().RegisterClient(test.credential.ID, test.credential.Provider, []*registry.ModelInfo{{ID: answeredTestModel, OwnedBy: "anthropic"}})
+			t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(test.credential.ID) })
+
+			req := httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", strings.NewReader(fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"hi"}]}`, answeredTestModel)))
+			req.Header.Set("Authorization", "Bearer test-key")
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+			server.engine.ServeHTTP(rr, req)
+			if rr.Code != http.StatusOK || calls.Load() != test.upstream {
+				t.Fatalf("status=%d upstream calls=%d (want %d) body=%s", rr.Code, calls.Load(), test.upstream, rr.Body.String())
+			}
+			if test.want == nil {
+				assertNoAuthOrigin(t, rr.Header())
+				return
+			}
+			for name, want := range test.want {
 				if got := rr.Header().Get(name); got != want {
 					t.Fatalf("%s = %q, want %q", name, got, want)
 				}

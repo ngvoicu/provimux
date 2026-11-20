@@ -58,7 +58,7 @@ func TestPublishAnsweredAuthMetadataReportsCredentialKind(t *testing.T) {
 			if kind != "" {
 				t.Fatalf("kind after selection = %q, want none until the credential answers", kind)
 			}
-			publishAnsweredAuthMetadata(meta, test.auth)
+			publishAnsweredAuthMetadata(upstreamAnswered(), meta, test.auth)
 			if kind != test.want {
 				t.Fatalf("answered auth kind = %q, want %q", kind, test.want)
 			}
@@ -87,7 +87,7 @@ func TestPublishAnsweredAuthMetadataReportsCredentialProviderAndHost(t *testing.
 			if provider != "" || host != "" {
 				t.Fatalf("provider, host after selection = %q, %q, want none until the credential answers", provider, host)
 			}
-			publishAnsweredAuthMetadata(meta, test.auth)
+			publishAnsweredAuthMetadata(upstreamAnswered(), meta, test.auth)
 			if provider != test.provider {
 				t.Fatalf("answered auth provider = %q, want %q", provider, test.provider)
 			}
