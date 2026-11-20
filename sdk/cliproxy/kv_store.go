@@ -29,5 +29,6 @@ func (s *Service) shutdownKVStore() error {
 		return nil
 	}
 	s.kvStoreManaged.Store(false)
+	provimuxFlushSavings()
 	return kvstore.ShutdownLocal()
 }
