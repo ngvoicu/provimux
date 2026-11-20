@@ -1005,7 +1005,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 		}
 
 		attemptAliasResult := resolveAttemptAliasResult(routing, auth, routeModel, execModel, aliasResult)
-		publishAnsweredAuthMetadata(execOpts.Metadata, auth)
+		publishAnsweredAuthMetadata(execCtx, execOpts.Metadata, auth)
 		handoffCancel := cancelAttempt
 		cancelAttempt = nil
 		return m.wrapStreamResultWithCancel(execCtx, auth.Clone(), provider, resultModel, routeModel, streamResult.Headers, buffered, streamResult.Chunks, attemptAliasResult, ephemeralResult, execOpts, executionSeq, handoffCancel), nil

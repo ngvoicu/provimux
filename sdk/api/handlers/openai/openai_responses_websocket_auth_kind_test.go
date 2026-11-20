@@ -28,7 +28,9 @@ func (websocketCreatedExecutor) Execute(context.Context, *coreauth.Auth, coreexe
 	return coreexecutor.Response{}, errors.New("not implemented")
 }
 
-func (websocketCreatedExecutor) ExecuteStream(_ context.Context, auth *coreauth.Auth, _ coreexecutor.Request, _ coreexecutor.Options) (*coreexecutor.StreamResult, error) {
+func (websocketCreatedExecutor) ExecuteStream(ctx context.Context, auth *coreauth.Auth, _ coreexecutor.Request, _ coreexecutor.Options) (*coreexecutor.StreamResult, error) {
+	// Like a real executor's transport: the response comes from an upstream exchange.
+	coreexecutor.MarkUpstreamAttempt(ctx)
 	chunks := make(chan coreexecutor.StreamChunk, 2)
 	responseID := "resp-" + auth.ID
 	chunks <- coreexecutor.StreamChunk{Payload: []byte(fmt.Sprintf(`{"type":"response.created","response":{"id":%q}}`, responseID))}
