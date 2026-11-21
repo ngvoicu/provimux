@@ -33,6 +33,9 @@ func (a *answeredAuthCapture) get() logging.AuthStatement {
 // or the request's response state, where it names nothing until the route confirms it (ConfirmAnswer). Every return
 // of an execution offers: the empty statement for an error or a result no upstream produced.
 func offerAnsweredAuth(ctx context.Context, internalSource bool, s logging.AuthStatement) {
+	if ctx == nil { // nobody to offer to; the execution returns its result or its error as it is
+		return
+	}
 	if internalSource { // a plugin's own model call: it answers the plugin, not the client
 		return
 	}
