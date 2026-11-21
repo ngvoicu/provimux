@@ -1164,6 +1164,9 @@ func (a *executorAdapter) executeWithAttribution(ctx context.Context, auth *core
 		}
 		return coreexecutor.Response{}, nil, errAvailable
 	}
+	if auth != nil { // an attempt of the conductor; a routed executor runs without a credential and without an attempt
+		coreexecutor.MarkPluginBytes(ctx)
+	}
 
 	reporter := a.newUsageReporter(ctx, auth, req.Model)
 
@@ -1243,6 +1246,9 @@ func (a *executorAdapter) executeStreamWithAttribution(ctx context.Context, auth
 			errAvailable = a.homeExecutorUnavailableError()
 		}
 		return nil, nil, errAvailable
+	}
+	if auth != nil { // an attempt of the conductor; a routed executor runs without a credential and without an attempt
+		coreexecutor.MarkPluginBytes(ctx)
 	}
 
 	reporter := a.newUsageReporter(ctx, auth, req.Model)
@@ -1511,6 +1517,9 @@ func (a *executorAdapter) CountTokens(ctx context.Context, auth *coreauth.Auth, 
 			errAvailable = a.homeExecutorUnavailableError()
 		}
 		return coreexecutor.Response{}, errAvailable
+	}
+	if auth != nil { // an attempt of the conductor; a routed executor runs without a credential and without an attempt
+		coreexecutor.MarkPluginBytes(ctx)
 	}
 	defer func() {
 		if recovered := recover(); recovered != nil {

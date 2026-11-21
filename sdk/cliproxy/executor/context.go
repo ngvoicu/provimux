@@ -20,6 +20,8 @@ type ContinuityWaitObserver interface {
 type upstreamAttemptTracker struct {
 	attempted atomic.Bool
 	model     atomic.Pointer[string]
+	// pluginBytes: the bytes the attempt returns came out of plugin code.
+	pluginBytes atomic.Bool
 }
 
 type localWebsocketTurnTracker struct {
@@ -80,6 +82,29 @@ func MarkUpstreamAttempt(ctx context.Context) {
 		return
 	}
 	tracker.attempted.Store(true)
+}
+
+// MarkPluginBytes records that the bytes this attempt returns came out of plugin code: a plugin executes the attempt,
+// or the attempt's response was handed to a plugin's response translator or normalizer. It is called before the
+// plugin runs, so nothing the plugin does afterwards can make the attempt nameable. Without a tracker on ctx it does
+// nothing.
+func MarkPluginBytes(ctx context.Context) {
+	if ctx == nil {
+		return
+	}
+	if tracker, ok := ctx.Value(upstreamAttemptTrackerContextKey{}).(*upstreamAttemptTracker); ok && tracker != nil {
+		tracker.pluginBytes.Store(true)
+	}
+}
+
+// UpstreamAnswered reports whether the attempt's response can be stated as its credential's: the attempt reached its
+// upstream, and its bytes did not come out of plugin code (MarkPluginBytes). Bytes that did name nobody.
+func UpstreamAnswered(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	tracker, ok := ctx.Value(upstreamAttemptTrackerContextKey{}).(*upstreamAttemptTracker)
+	return ok && tracker != nil && tracker.attempted.Load() && !tracker.pluginBytes.Load()
 }
 
 // UpstreamAttempted reports whether the tracked provider execution reached an upstream transport boundary.
