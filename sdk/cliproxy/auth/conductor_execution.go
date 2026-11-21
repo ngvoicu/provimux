@@ -3320,9 +3320,11 @@ func publishSelectedAuthMetadata(meta map[string]any, auth *Auth) {
 // Execute, ExecuteCount or ExecuteStream call returns: it is called once per call that returns a response, at that
 // return (an execution or count returned, a stream passed its bootstrap), and never at a selection or for a call that
 // returns an error. auth must be the credential the attempt went out with (prepared, where preparation replaced it),
-// and attemptCtx the attempt's context. Only a response an upstream produced names a credential: when the attempt's
-// tracker records no upstream exchange (a count the proxy estimated itself), the callback receives three empty
-// values.
+// and attemptCtx the attempt's context. Only a response an upstream produced, and whose bytes did not come out of
+// plugin code, names a credential: when the attempt's tracker records no upstream exchange (a count the proxy
+// estimated itself), or records that plugin code produced or was handed the attempt's bytes (a provider plugin
+// executed the attempt, or a plugin response translator or normalizer was handed its response:
+// cliproxyexecutor.MarkPluginBytes), the callback receives three empty values.
 func publishAnsweredAuthMetadata(attemptCtx context.Context, meta map[string]any, auth *Auth) {
 	if len(meta) == 0 {
 		return
@@ -3332,7 +3334,7 @@ func publishAnsweredAuthMetadata(attemptCtx context.Context, meta map[string]any
 		return
 	}
 	var statement logging.AuthStatement
-	if auth != nil && cliproxyexecutor.UpstreamAttempted(attemptCtx) {
+	if auth != nil && cliproxyexecutor.UpstreamAnswered(attemptCtx) {
 		statement = auth.AuthStatement()
 	}
 	callback(statement.Kind, statement.Provider, statement.Host)
