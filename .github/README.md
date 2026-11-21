@@ -571,8 +571,8 @@ routing. Its console, provimux-ui, is the
 [CLI Proxy API Management Center](https://github.com/router-for-me/Cli-Proxy-API-Management-Center), also by
 router-for-me. Provimux adds the features above on top of each CLIProxyAPI release.
 
-This repository's GitHub **Sponsor** button goes to router-for-me, for CLIProxyAPI; it will point to providers.dev's
-own GitHub Sponsors later.
+This repository's GitHub **Sponsor** button goes to [the owner's GitHub Sponsors](https://github.com/sponsors/ngvoicu).
+Sponsorships support Provimux and the owner's other open-source tools.
 
 ## License
 
