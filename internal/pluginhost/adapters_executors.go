@@ -1060,6 +1060,9 @@ func (a *executorAdapter) executeWithAttribution(ctx context.Context, auth *core
 	if errAvailable := a.executionAvailabilityError(auth); errAvailable != nil {
 		return coreexecutor.Response{}, nil, errAvailable
 	}
+	if auth != nil { // an attempt of the conductor; a routed executor runs without a credential and without an attempt
+		coreexecutor.MarkPluginBytes(ctx)
+	}
 
 	reporter := a.newUsageReporter(ctx, auth, req.Model)
 
@@ -1131,6 +1134,9 @@ func (a *executorAdapter) ExecuteStream(ctx context.Context, auth *coreauth.Auth
 func (a *executorAdapter) executeStreamWithAttribution(ctx context.Context, auth *coreauth.Auth, req coreexecutor.Request, opts coreexecutor.Options) (result *coreexecutor.StreamResult, attribution *pluginapi.UsageAttribution, err error) {
 	if errAvailable := a.executionAvailabilityError(auth); errAvailable != nil {
 		return nil, nil, errAvailable
+	}
+	if auth != nil { // an attempt of the conductor; a routed executor runs without a credential and without an attempt
+		coreexecutor.MarkPluginBytes(ctx)
 	}
 
 	reporter := a.newUsageReporter(ctx, auth, req.Model)
@@ -1391,6 +1397,9 @@ func (a *executorAdapter) Refresh(ctx context.Context, auth *coreauth.Auth) (ref
 func (a *executorAdapter) CountTokens(ctx context.Context, auth *coreauth.Auth, req coreexecutor.Request, opts coreexecutor.Options) (resp coreexecutor.Response, err error) {
 	if errAvailable := a.executionAvailabilityError(auth); errAvailable != nil {
 		return coreexecutor.Response{}, errAvailable
+	}
+	if auth != nil { // an attempt of the conductor; a routed executor runs without a credential and without an attempt
+		coreexecutor.MarkPluginBytes(ctx)
 	}
 	defer func() {
 		if recovered := recover(); recovered != nil {
