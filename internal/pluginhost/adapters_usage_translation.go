@@ -11,6 +11,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
+	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
@@ -803,6 +804,7 @@ func (h *Host) callResponseNormalizer(ctx context.Context, record capabilityReco
 	if h == nil || normalizer == nil || h.isPluginFused(record.id) || !h.recordCurrent(record) {
 		return nil, false
 	}
+	coreexecutor.MarkPluginBytes(ctx) // the attempt's response is handed to plugin code, which returns it
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			h.fusePlugin(record.id, method, recovered)
@@ -829,6 +831,7 @@ func (h *Host) callResponseTranslator(ctx context.Context, record capabilityReco
 	if h == nil || translator == nil || h.isPluginFused(record.id) || !h.recordCurrent(record) {
 		return nil, false
 	}
+	coreexecutor.MarkPluginBytes(ctx) // the attempt's response is handed to plugin code, which returns it
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			h.fusePlugin(record.id, "ResponseTranslator.TranslateResponse", recovered)

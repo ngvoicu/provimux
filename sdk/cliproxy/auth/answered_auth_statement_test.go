@@ -335,3 +335,128 @@ func TestAnsweredAuthCallbackIsCalledOncePerReturnedResponse(t *testing.T) {
 		}
 	}
 }
+
+// pluginAttemptExecutor stands for a provider plugin: plugin code executes the attempt (MarkPluginBytes, as the plugin
+// host's executor adapter does before the plugin runs) and reaches its upstream. A credential in fail then fails.
+type pluginAttemptExecutor struct {
+	answeredOnceExecutor
+}
+
+func (e *pluginAttemptExecutor) Execute(ctx context.Context, a *Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	cliproxyexecutor.MarkPluginBytes(ctx)
+	return e.answeredOnceExecutor.Execute(ctx, a, req, opts)
+}
+
+func (e *pluginAttemptExecutor) CountTokens(ctx context.Context, a *Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	return e.Execute(ctx, a, req, opts)
+}
+
+func (e *pluginAttemptExecutor) ExecuteStream(ctx context.Context, a *Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+	resp, errExec := e.Execute(ctx, a, req, opts)
+	if errExec != nil {
+		return nil, errExec
+	}
+	chunks := make(chan cliproxyexecutor.StreamChunk, 1)
+	chunks <- cliproxyexecutor.StreamChunk{Payload: resp.Payload}
+	close(chunks)
+	return &cliproxyexecutor.StreamResult{Chunks: chunks}, nil
+}
+
+// An attempt marked MarkPluginBytes (a provider plugin executed it, or a plugin response translator or normalizer was
+// handed its response) states nobody, in three empty values; the mark belongs to that attempt alone, so a later attempt
+// of the same call is stated as its own credential's. (DESIGN.md 12.4, test 5.)
+func TestAnsweredAuthStatementOfAnAttemptWhoseBytesCameOutOfPluginCode(t *testing.T) {
+	key := &Auth{ID: "plugin-key", Provider: "plugin-provider", Status: StatusActive, Attributes: map[string]string{AttributeAPIKey: "made-up-key", "base_url": "https://plugin-upstream.example.test/v1", "priority": "10"}}
+	login := &Auth{ID: "plugin-login", Provider: "devin", Status: StatusActive, Attributes: map[string]string{AttributeAuthKind: "oauth", "priority": "0"}}
+	keyStatement := logging.AuthStatement{Kind: "apikey", Provider: "plugin-provider", Host: "plugin-upstream.example.test"}
+	loginStatement := logging.AuthStatement{Kind: "oauth", Provider: "devin"}
+
+	t.Run("publication", func(t *testing.T) {
+		for _, test := range []struct {
+			name   string
+			marks  []func(context.Context)
+			stated bool
+		}{
+			{name: "built-in executor", stated: true},
+			{name: "plugin bytes", marks: []func(context.Context){cliproxyexecutor.MarkPluginBytes}},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				got := logging.AuthStatement{Kind: "not called"}
+				meta := map[string]any{cliproxyexecutor.AnsweredAuthCallbackMetadataKey: func(kind, provider, host string) {
+					got = logging.AuthStatement{Kind: kind, Provider: provider, Host: host}
+				}}
+				ctx := upstreamAnswered()
+				for _, mark := range test.marks {
+					mark(ctx)
+				}
+				publishAnsweredAuthMetadata(ctx, meta, key)
+				want := logging.AuthStatement{}
+				if test.stated {
+					want = keyStatement
+				}
+				if got != want {
+					t.Fatalf("statement %+v, want %+v", got, want)
+				}
+			})
+		}
+	})
+
+	const model = "plugin-attempt-model"
+	for _, operation := range []string{"plain", "count", "stream"} {
+		for _, test := range []struct {
+			name string
+			fail map[string]bool
+			want logging.AuthStatement
+			body string
+		}{
+			{name: "the provider plugin answers", body: "served-by-plugin-key"},
+			{name: "the provider plugin fails, a later attempt answers", fail: map[string]bool{"plugin-key": true}, want: loginStatement, body: "served-by-plugin-login"},
+		} {
+			t.Run(operation+"/"+test.name, func(t *testing.T) {
+				manager := NewManager(nil, &FillFirstSelector{}, nil)
+				manager.SetRetryConfig(0, 0, 3)
+				manager.RegisterExecutor(&pluginAttemptExecutor{answeredOnceExecutor: answeredOnceExecutor{provider: key.Provider, fail: test.fail}})
+				manager.RegisterExecutor(&answeredOnceExecutor{provider: login.Provider, fail: test.fail})
+				for _, credential := range []*Auth{key, login} {
+					if _, err := manager.Register(context.Background(), credential.Clone()); err != nil {
+						t.Fatal(err)
+					}
+					registry.GetGlobalRegistry().RegisterClient(credential.ID, credential.Provider, []*registry.ModelInfo{{ID: model}})
+					id := credential.ID
+					t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(id) })
+				}
+				var statements []logging.AuthStatement
+				opts := cliproxyexecutor.Options{Metadata: map[string]any{cliproxyexecutor.AnsweredAuthCallbackMetadataKey: func(kind, provider, host string) {
+					statements = append(statements, logging.AuthStatement{Kind: kind, Provider: provider, Host: host})
+				}}}
+				providers, req := []string{key.Provider, login.Provider}, cliproxyexecutor.Request{Model: model}
+				var body string
+				var errExec error
+				switch operation {
+				case "plain":
+					var resp cliproxyexecutor.Response
+					resp, errExec = manager.Execute(context.Background(), providers, req, opts)
+					body = string(resp.Payload)
+				case "count":
+					var resp cliproxyexecutor.Response
+					resp, errExec = manager.ExecuteCount(context.Background(), providers, req, opts)
+					body = string(resp.Payload)
+				default:
+					var stream *cliproxyexecutor.StreamResult
+					stream, errExec = manager.ExecuteStream(context.Background(), providers, req, opts)
+					if errExec == nil {
+						for chunk := range stream.Chunks {
+							body += string(chunk.Payload)
+						}
+					}
+				}
+				if errExec != nil || body != test.body {
+					t.Fatalf("result %q, %v; want %q", body, errExec, test.body)
+				}
+				if len(statements) != 1 || statements[0] != test.want {
+					t.Fatalf("statements %+v, want one %+v", statements, test.want)
+				}
+			})
+		}
+	}
+}

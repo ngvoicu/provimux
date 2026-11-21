@@ -62,8 +62,10 @@ const (
 	// AnsweredAuthCallbackMetadataKey carries an optional func(kind, provider, host string), called once per
 	// Manager.Execute, ExecuteCount or ExecuteStream call that returns a response, at that return: with the statement
 	// of the credential whose upstream produced the response (its kind, "oauth" or "apikey"; its provider; the host of
-	// an API key's base URL, or ""), or with three empty values when no upstream exchange produced it. It is not
-	// called at a selection, and not called when the call returns an error.
+	// an API key's base URL, or ""), or with three empty values when no upstream exchange produced it or its bytes
+	// came out of plugin code (a provider plugin executed the attempt, or a plugin response translator or normalizer
+	// was handed its response: MarkPluginBytes). It is not called at a selection, and not called when the call
+	// returns an error.
 	AnsweredAuthCallbackMetadataKey = "answered_auth_callback"
 	// FinalizedResponseFormatCallbackMetadataKey carries an optional callback invoked with the effective response_format after payload rules.
 	FinalizedResponseFormatCallbackMetadataKey = "finalized_response_format_callback"
