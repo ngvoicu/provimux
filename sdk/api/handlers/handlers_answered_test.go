@@ -289,3 +289,48 @@ func TestRequestExecutionMetadataHandsTheConductorNoStatementCallback(t *testing
 		})
 	}
 }
+
+// An execution called with a nil context returns its error as it did before the statement was offered: the deferred
+// offer has nobody to offer to and must not turn an ordinary error return into a panic.
+func TestExecutionWithANilContextReturnsItsError(t *testing.T) {
+	h := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, coreauth.NewManager(nil, nil, nil))
+	const model = "answered-offer-unregistered-model"
+	for _, op := range []string{"plain", "count", "stream"} {
+		t.Run(op, func(t *testing.T) {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					t.Fatalf("panic: %v", recovered)
+				}
+			}()
+			var status int
+			switch op {
+			case "plain":
+				_, _, errMsg := h.ExecuteWithAuthManager(nil, "claude", model, []byte("{}"), "")
+				if errMsg == nil {
+					t.Fatal("no error")
+				}
+				status = errMsg.StatusCode
+			case "count":
+				_, _, errMsg := h.ExecuteCountWithAuthManager(nil, "claude", model, []byte("{}"), "")
+				if errMsg == nil {
+					t.Fatal("no error")
+				}
+				status = errMsg.StatusCode
+			default:
+				data, _, errs := h.ExecuteStreamWithAuthManager(nil, "claude", model, []byte("{}"), "")
+				if data != nil {
+					for range data {
+					}
+				}
+				errMsg := <-errs
+				if errMsg == nil {
+					t.Fatal("no error")
+				}
+				status = errMsg.StatusCode
+			}
+			if status != http.StatusBadRequest {
+				t.Fatalf("status %d, want %d", status, http.StatusBadRequest)
+			}
+		})
+	}
+}
