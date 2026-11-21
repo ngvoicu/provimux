@@ -323,6 +323,7 @@ func firstByteProtocolPaths() []firstBytePath {
 // upstream puts its credential's marker in what it emits. Scenarios: the first answers; the first fails upstream and
 // the second answers; the first stream is held then fails and the second answers (one bootstrap retry); all fail. On
 // the default configuration and with every keep-alive at one second, the fixture then waiting for the first flush.
+// Row 9 has two more cells: a first data line without its blank line, then a failure or a close.
 func TestHeadersNameACredentialOnlyAtItsOwnFirstByte(t *testing.T) {
 	cells := 0
 	t.Run("protocols", func(t *testing.T) {
@@ -399,7 +400,81 @@ func TestHeadersNameACredentialOnlyAtItsOwnFirstByte(t *testing.T) {
 			})
 		}
 	})
+	t.Run("row 9 a Responses stream that ends inside its first frame", func(t *testing.T) {
+		// The upstream's first chunk is a data line without its closing blank line: the route holds it until the frame
+		// is whole. When the stream then fails (openai_responses_handlers.go, the write after the bootstrap error) or
+		// closes (the write at the end of the stream), Flush completes the frame and is the first answer byte written.
+		for _, test := range []struct {
+			name    string
+			closeOK bool
+			event   string
+		}{
+			{name: "then the upstream fails", event: "fixture temporarily unavailable"},
+			{name: "then the upstream closes", closeOK: true, event: "upstream stream closed before a terminal event"},
+		} {
+			cells++
+			t.Run(test.name, func(t *testing.T) {
+				hostedKey, _ := answeredCredentials()
+				server := newTestServerWithConfig(t, firstByteConfig(firstByteConfigurations[0]))
+				server.handlers.AuthManager.RegisterExecutor(&firstByteHeldFrameExecutor{provider: hostedKey.Provider, closeOK: test.closeOK})
+				if _, err := server.handlers.AuthManager.Register(context.Background(), hostedKey); err != nil {
+					t.Fatal(err)
+				}
+				registry.GetGlobalRegistry().RegisterClient(hostedKey.ID, hostedKey.Provider, []*registry.ModelInfo{{ID: answeredTestModel, OwnedBy: "anthropic"}})
+				t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(hostedKey.ID) })
+				recorder := newFirstCommitRecorder()
+				req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(fmt.Sprintf(`{"model":%q,"stream":true,"input":"hi"}`, answeredTestModel)))
+				req.Header.Set("Authorization", "Bearer test-key")
+				req.Header.Set("Content-Type", "application/json")
+				server.engine.ServeHTTP(recorder, req)
+				credentials := []firstByteCredential{{auth: hostedKey, statement: internallogging.AuthStatement{Kind: "apikey", Provider: "claude", Host: "openrouter.example.test"}, marker: "served-by-" + hostedKey.ID}}
+				if named := assertFirstCommit(t, recorder, credentials, http.StatusOK, true); named == nil {
+					t.Fatalf("the upstream's data frame is unnamed; body %q", recorder.Body.String())
+				}
+				body := recorder.Body.String()
+				frame := fmt.Sprintf("data: {\"type\":\"response.output_text.delta\",\"delta\":\"served-by-%s\"}\n\n", hostedKey.ID)
+				if recorder.Code != http.StatusOK || !strings.HasPrefix(body, frame) || !strings.Contains(body, "event: error\n") || !strings.Contains(body, test.event) {
+					t.Fatalf("fixture: status %d, body %q; want the data frame, then the proxy's error event %q", recorder.Code, body, test.event)
+				}
+			})
+		}
+	})
 	t.Logf("matrix: %d cells on this engine", cells)
+}
+
+// firstByteHeldFrameExecutor's upstream sends one data line without its closing blank line, then fails or closes.
+type firstByteHeldFrameExecutor struct {
+	provider string
+	closeOK  bool
+}
+
+func (e *firstByteHeldFrameExecutor) Identifier() string { return e.provider }
+
+func (e *firstByteHeldFrameExecutor) Execute(context.Context, *auth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+	return coreexecutor.Response{}, errors.New("not used")
+}
+
+func (e *firstByteHeldFrameExecutor) ExecuteStream(ctx context.Context, a *auth.Auth, _ coreexecutor.Request, _ coreexecutor.Options) (*coreexecutor.StreamResult, error) {
+	coreexecutor.MarkUpstreamAttempt(ctx)
+	chunks := make(chan coreexecutor.StreamChunk, 2)
+	chunks <- coreexecutor.StreamChunk{Payload: []byte(fmt.Sprintf("data: {\"type\":\"response.output_text.delta\",\"delta\":\"served-by-%s\"}\n", a.ID))}
+	if !e.closeOK {
+		chunks <- coreexecutor.StreamChunk{Err: answeredUnavailableError{}}
+	}
+	close(chunks)
+	return &coreexecutor.StreamResult{Chunks: chunks}, nil
+}
+
+func (e *firstByteHeldFrameExecutor) Refresh(_ context.Context, a *auth.Auth) (*auth.Auth, error) {
+	return a, nil
+}
+
+func (e *firstByteHeldFrameExecutor) CountTokens(context.Context, *auth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+	return coreexecutor.Response{}, errors.New("not used")
+}
+
+func (e *firstByteHeldFrameExecutor) HttpRequest(context.Context, *auth.Auth, *http.Request) (*http.Response, error) {
+	return nil, errors.New("not used")
 }
 
 func runProtocolFirstByteCell(t *testing.T, path firstBytePath, scenario firstByteScenario, configuration firstByteConfiguration) {
