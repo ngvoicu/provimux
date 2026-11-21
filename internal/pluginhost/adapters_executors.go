@@ -1003,6 +1003,9 @@ func (a *executorAdapter) executeWithAttribution(ctx context.Context, auth *core
 	if a == nil || a.executor == nil || a.host.isPluginFused(a.pluginID) || !a.host.pluginIdentityCurrent(a.pluginID, a.path, a.version) {
 		return coreexecutor.Response{}, nil, fmt.Errorf("plugin executor %s is unavailable", a.Identifier())
 	}
+	if auth != nil { // an attempt of the conductor; a routed executor runs without a credential and without an attempt
+		coreexecutor.MarkPluginBytes(ctx)
+	}
 
 	var reporter *helps.UsageReporter
 	if auth != nil {
@@ -1067,6 +1070,9 @@ func (a *executorAdapter) ExecuteStream(ctx context.Context, auth *coreauth.Auth
 func (a *executorAdapter) executeStreamWithAttribution(ctx context.Context, auth *coreauth.Auth, req coreexecutor.Request, opts coreexecutor.Options) (result *coreexecutor.StreamResult, attribution *pluginapi.UsageAttribution, err error) {
 	if a == nil || a.executor == nil || a.host.isPluginFused(a.pluginID) || !a.host.pluginIdentityCurrent(a.pluginID, a.path, a.version) {
 		return nil, nil, fmt.Errorf("plugin executor %s is unavailable", a.Identifier())
+	}
+	if auth != nil { // an attempt of the conductor; a routed executor runs without a credential and without an attempt
+		coreexecutor.MarkPluginBytes(ctx)
 	}
 
 	var reporter *helps.UsageReporter
@@ -1320,6 +1326,9 @@ func (a *executorAdapter) Refresh(ctx context.Context, auth *coreauth.Auth) (ref
 func (a *executorAdapter) CountTokens(ctx context.Context, auth *coreauth.Auth, req coreexecutor.Request, opts coreexecutor.Options) (resp coreexecutor.Response, err error) {
 	if a == nil || a.executor == nil || a.host.isPluginFused(a.pluginID) || !a.host.pluginIdentityCurrent(a.pluginID, a.path, a.version) {
 		return coreexecutor.Response{}, fmt.Errorf("plugin executor %s is unavailable", a.Identifier())
+	}
+	if auth != nil { // an attempt of the conductor; a routed executor runs without a credential and without an attempt
+		coreexecutor.MarkPluginBytes(ctx)
 	}
 	defer func() {
 		if recovered := recover(); recovered != nil {
