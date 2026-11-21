@@ -114,9 +114,9 @@ func WithExcludedAuthIDs(ctx context.Context, authIDs []string) context.Context 
 
 // WithAnsweredAuthCallback installs a callback that the execution layer calls each time it returns to its caller: in
 // one call, the statement (kind, provider, host) of the credential whose upstream produced the result it returns, or
-// three empty values (an error, a result no upstream produced, or a result whose bytes the response interceptor chain
-// changed: the body, or a stream chunk up to and including the first deliverable payload). A plugin's own model call
-// does not call it. A websocket turn uses it in place of response headers.
+// three empty values (an error, a result no upstream produced, a non-stream body the response interceptor chain
+// changed, or a stream that passes through the stream-chunk interceptor chain, whatever the chain does). A plugin's own
+// model call does not call it. A websocket turn uses it in place of response headers.
 func WithAnsweredAuthCallback(ctx context.Context, callback func(kind, provider, host string)) context.Context {
 	if callback == nil {
 		return ctx
