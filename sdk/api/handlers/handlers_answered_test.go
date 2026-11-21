@@ -208,8 +208,10 @@ func TestExecutionOffersTheStatementOfTheResultItReturns(t *testing.T) {
 		}
 	})
 
-	// A body the response interceptor chain changed came out of plugin code: the execution that returns it offers the
-	// empty statement. A body the chain returned as given, also with headers of its own, keeps the credential's.
+	// A plain or count body the response interceptor chain changed came out of plugin code: the execution that returns
+	// it offers the empty statement; a body the chain returned as given, also with headers of its own, keeps the
+	// credential's. A stream that passes through the stream-chunk interceptor chain offers the empty statement whatever
+	// the chain does; a stream with no stream-chunk interceptor in its path keeps the credential's.
 	for _, mode := range []string{"plain", "count", "stream"} {
 		for _, edit := range []bool{false, true} {
 			name := fmt.Sprintf("interceptor chain %s, body returned as given", mode)
@@ -218,7 +220,7 @@ func TestExecutionOffersTheStatementOfTheResultItReturns(t *testing.T) {
 			}
 			t.Run(name, func(t *testing.T) {
 				h := newAnsweredOfferHandler(t, &sdkconfig.SDKConfig{}, nil, nil)
-				h.SetPluginHost(&answeredOfferInterceptor{edit: edit})
+				h.SetPluginHost(&answeredOfferInterceptor{edit: edit, streams: true})
 				c, ctx := answeredOfferRequest(t)
 				ctx = WithPinnedAuthID(ctx, "key")
 				var body string
@@ -235,7 +237,7 @@ func TestExecutionOffersTheStatementOfTheResultItReturns(t *testing.T) {
 					t.Fatalf("result = %q (success %v), want the key's body, edited: %v", body, ok, edit)
 				}
 				want := answeredOfferKey
-				if edit {
+				if edit || mode == "stream" {
 					want = logging.AuthStatement{}
 				}
 				if got := offered(c); got != want {
@@ -244,6 +246,18 @@ func TestExecutionOffersTheStatementOfTheResultItReturns(t *testing.T) {
 			})
 		}
 	}
+	t.Run("stream with interceptors but none for stream chunks", func(t *testing.T) {
+		h := newAnsweredOfferHandler(t, &sdkconfig.SDKConfig{}, nil, nil)
+		h.SetPluginHost(&answeredOfferInterceptor{})
+		c, ctx := answeredOfferRequest(t)
+		ctx = WithPinnedAuthID(ctx, "key")
+		if body, ok := stream(h, ctx); !ok || !strings.Contains(body, "served-by-key") {
+			t.Fatalf("result = %q (success %v)", body, ok)
+		}
+		if got := offered(c); got != answeredOfferKey {
+			t.Fatalf("offered %+v, want %+v", got, answeredOfferKey)
+		}
+	})
 
 	for _, mode := range []string{"plain", "count", "stream"} {
 		t.Run("plugin executor route "+mode, func(t *testing.T) {
@@ -275,8 +289,11 @@ func TestExecutionOffersTheStatementOfTheResultItReturns(t *testing.T) {
 }
 
 // answeredOfferInterceptor is a response and stream-chunk interceptor that returns every body with a header of its
-// own: as given, or, with edit, changed.
-type answeredOfferInterceptor struct{ edit bool }
+// own: as given, or, with edit, changed. Without streams it reports no stream-chunk interceptor, as the plugin host does
+// when no plugin has the capability.
+type answeredOfferInterceptor struct{ edit, streams bool }
+
+func (a *answeredOfferInterceptor) HasStreamInterceptors() bool { return a.streams }
 
 func (a *answeredOfferInterceptor) body(in []byte) []byte {
 	if !a.edit {
