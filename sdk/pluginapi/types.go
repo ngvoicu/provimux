@@ -108,7 +108,8 @@ type Capabilities struct {
 	// ModelRouter routes matching requests to a plugin executor, the router's own executor,
 	// or a built-in provider before model-to-provider resolution and auth selection.
 	ModelRouter ModelRouter
-	// Executor sends requests to an upstream provider or local backend.
+	// Executor sends requests to an upstream provider or local backend. A response it returns carries no
+	// X-CPA-AUTH-* fields: the host names no credential for bytes that came out of plugin code.
 	Executor ProviderExecutor
 	// ExecutorModelScope declares whether Executor serves static models, OAuth auth models, or both.
 	// Empty defaults to ExecutorModelScopeOAuth when AuthProvider/AuthProviders is declared,
@@ -124,11 +125,14 @@ type Capabilities struct {
 	RequestTranslator RequestTranslator
 	// RequestNormalizer converts provider-specific requests into canonical payloads.
 	RequestNormalizer RequestNormalizer
-	// ResponseTranslator converts canonical responses into provider-specific payloads.
+	// ResponseTranslator converts canonical responses into provider-specific payloads. A response it is handed
+	// carries no X-CPA-AUTH-* fields, also when it returns it unchanged.
 	ResponseTranslator ResponseTranslator
-	// ResponseBeforeTranslator normalizes upstream responses before native translation.
+	// ResponseBeforeTranslator normalizes upstream responses before native translation. A response it is handed
+	// carries no X-CPA-AUTH-* fields, also when it returns it unchanged.
 	ResponseBeforeTranslator ResponseNormalizer
-	// ResponseAfterTranslator normalizes translated responses before delivery.
+	// ResponseAfterTranslator normalizes translated responses before delivery. A response it is handed carries no
+	// X-CPA-AUTH-* fields, also when it returns it unchanged.
 	ResponseAfterTranslator ResponseNormalizer
 	// RequestInterceptor rewrites execution requests before and after credential selection.
 	RequestInterceptor RequestInterceptor
@@ -1588,7 +1592,8 @@ type ResponseInterceptRequest struct {
 type ResponseInterceptResponse struct {
 	// Headers replaces matching current response headers and preserves headers not mentioned here.
 	Headers http.Header
-	// Body replaces the current response body only when non-empty.
+	// Body replaces the current response body only when non-empty. A response whose body this changes carries no
+	// X-CPA-AUTH-* fields.
 	Body []byte
 	// ClearHeaders explicitly removes current response headers before Headers is applied.
 	ClearHeaders []string
@@ -1631,7 +1636,8 @@ type StreamChunkInterceptRequest struct {
 type StreamChunkInterceptResponse struct {
 	// Headers replaces matching current stream headers and preserves headers not mentioned here.
 	Headers http.Header
-	// Body replaces the current stream chunk body only when non-empty.
+	// Body replaces the current stream chunk body only when non-empty. A stream in which this changes a chunk up to
+	// and including its first delivered payload, or drops one (DropChunk), carries no X-CPA-AUTH-* fields.
 	Body []byte
 	// ClearHeaders explicitly removes current stream headers before Headers is applied.
 	ClearHeaders []string
