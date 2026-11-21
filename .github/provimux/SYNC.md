@@ -398,6 +398,10 @@ gh run list -R ngvoicu/provimux -w provimux-release -b v<base>-pmx.<n>
 
 If the release run failed, rerun its failed jobs (`gh run rerun <id> --failed -R ngvoicu/provimux`). Until every release of the base is complete, each check reports "release incomplete". The next check after completion closes the issue.
 
+## The NAS mirror
+
+The owner's Forgejo server keeps a copy, `ssh://git@zeenas:2222/ngvoicu/provimux.git`: `main` and the `v<X.Y.Z>-pmx.<n>` tags of `ngvoicu/provimux`, nothing else. GitHub is the truth; nobody pushes to the NAS. Its workflow `Follow GitHub` (`.forgejo/workflows/follow-github.yml`, a layer file) runs there every hour at minute 07 (UTC), and by hand: it fast-forwards the NAS's `main` to GitHub's and adds GitHub's new `-pmx` tags, running only `git`. It never forces, never merges and never moves a tag: if the NAS has a `main` commit GitHub lacks, or a tag at another commit, the run fails and its log is at `http://zeenas:3000/ngvoicu/provimux/actions`. GitHub never reads `.forgejo/`; Forgejo, while `.forgejo/workflows/` exists, ignores `.github/workflows/`, so none of the workflows above runs on the NAS. Keep `.forgejo/workflows/` in the layer: without it a push of `main` or of a tag to the NAS would start them there. It has followed when `git ls-remote origin refs/heads/main` and `git ls-remote provimux refs/heads/main` agree.
+
 ## Testing the scripts
 
 - `bash .github/provimux/selftest.sh` runs the fixture tests offline (local repositories, a stub `gh`): the test gate's waivers, the guard and `release-meta.sh` with a base only upstream or withdrawn or moved, `report.sh` with a release run for the wrong commit and with a failure, `archive_matches` (`export-ignore`, `export-subst`, executables, symlinks, a file name with a newline), the inline verifier of `provimux-publish.yml` (run from the workflow file), `autopublish.sh` (which artifact publishes, the issue text for each remote state) and `publish.sh --ci`. Run it after changing any of these scripts.
