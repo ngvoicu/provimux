@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"maps"
 	"net/http"
 	"strings"
@@ -668,10 +669,13 @@ func (h *BaseAPIHandler) applyRequestInterceptorsAfterAuth(ctx context.Context, 
 	}
 }
 
-func (h *BaseAPIHandler) applyResponseInterceptors(ctx context.Context, kind, requestID, handlerType, normalizedModel, requestedModel string, opts coreexecutor.Options, rawResponseHeaders, responseHeaders http.Header, originalRequest, requestBody, body []byte, statusCode int, skipPluginID string, passthrough bool) ([]byte, http.Header) {
+// applyResponseInterceptors returns the body and headers after the interceptor chain, and whether the chain changed
+// the body: true when the body returned is not byte for byte the body given. A body the chain changed came out of
+// plugin code, and the execution that returns it names nobody.
+func (h *BaseAPIHandler) applyResponseInterceptors(ctx context.Context, kind, requestID, handlerType, normalizedModel, requestedModel string, opts coreexecutor.Options, rawResponseHeaders, responseHeaders http.Header, originalRequest, requestBody, body []byte, statusCode int, skipPluginID string, passthrough bool) ([]byte, http.Header, bool) {
 	host := h.interceptorHost()
 	if host == nil {
-		return body, responseHeaders
+		return body, responseHeaders, false
 	}
 	resp := interceptResponse(ctx, host, pluginapi.ResponseInterceptRequest{
 		Kind:            kind,
@@ -689,10 +693,12 @@ func (h *BaseAPIHandler) applyResponseInterceptors(ctx context.Context, kind, re
 		Metadata:        opts.Metadata,
 	}, skipPluginID)
 	responseHeaders = downstreamHeadersAfterInterceptors(rawResponseHeaders, finalInterceptorHeaders(rawResponseHeaders, resp.Headers), passthrough)
+	changed := false
 	if len(resp.Body) > 0 {
+		changed = !bytes.Equal(resp.Body, body)
 		body = cloneBytes(resp.Body)
 	}
-	return body, responseHeaders
+	return body, responseHeaders, changed
 }
 
 // ModelDetailIDContextKey requests selection from the final, plugin-filtered catalog.
