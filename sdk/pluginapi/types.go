@@ -162,7 +162,8 @@ type Capabilities struct {
 	RequestLifecyclePlugin RequestLifecyclePlugin
 	// ResponseInterceptor rewrites successful non-streaming HTTP responses (execution, count_tokens, and model-directory responses) before downstream delivery.
 	ResponseInterceptor ResponseInterceptor
-	// StreamChunkInterceptor rewrites successful HTTP stream chunks before downstream delivery.
+	// StreamChunkInterceptor rewrites successful HTTP stream chunks before downstream delivery. A stream that passes
+	// through it carries no X-CPA-AUTH-* fields, also when it returns every chunk unchanged.
 	StreamChunkInterceptor StreamChunkInterceptor
 	// WebSocketResponseObserver receives upstream WebSocket response events during execution.
 	WebSocketResponseObserver WebSocketResponseObserver
@@ -1636,8 +1637,7 @@ type StreamChunkInterceptRequest struct {
 type StreamChunkInterceptResponse struct {
 	// Headers replaces matching current stream headers and preserves headers not mentioned here.
 	Headers http.Header
-	// Body replaces the current stream chunk body only when non-empty. A stream in which this changes a chunk up to
-	// and including its first delivered payload, or drops one (DropChunk), carries no X-CPA-AUTH-* fields.
+	// Body replaces the current stream chunk body only when non-empty.
 	Body []byte
 	// ClearHeaders explicitly removes current stream headers before Headers is applied.
 	ClearHeaders []string
