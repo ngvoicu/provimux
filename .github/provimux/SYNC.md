@@ -238,17 +238,17 @@ Every push below uses `--force-with-lease=refs/heads/main:<that SHA>`. It is ref
 
 ### The rebase stops: upstream took a patch in another form
 
-The issue says the rebase stopped at a commit of the owner's PR #N, which upstream squashed or reworked. Remove that PR's commits from `main` **on the old base**, push that `main`, and let the check rebase it:
+The issue says the rebase stopped at a commit of one of the owner's patches, which upstream took in another form (squashed or reworked). Remove that patch's commits from `main` **on the old base**, push that `main`, and let the check rebase it:
 
 ```sh
-git log --oneline v<old base>..HEAD             # find PR #N's commits (all of them)
+git log --oneline v<old base>..HEAD             # find the patch's commits (all of them)
 git rebase -i v<old base>                       # delete their lines; keep the rest in order
 bash .github/provimux/guard.sh                  # still a valid stack
 git push --force-with-lease=refs/heads/main:$lease provimux HEAD:refs/heads/main
 gh workflow run provimux-check -R ngvoicu/provimux -f tag=v<base>
 ```
 
-If upstream's version covers only part of the PR, keep the remaining commits and resolve their conflicts during the `rebase -i`. The check's range-diff compares against the `main` you pushed. Record what was dropped and why in the issue.
+If upstream's version covers only part of the patch, keep the remaining commits and resolve their conflicts during the `rebase -i`. The check's range-diff compares against the `main` you pushed. Record what was dropped and why in the issue.
 
 **Every hand rebase onto a new base**, when it stops at the README commit (`Provimux-Readme: root`), resolves it to that commit's paths, exactly as the check does:
 
@@ -340,27 +340,27 @@ When a manual procedure needs `go test` or `go build`, run it in a throwaway con
 git archive <commit> | docker run --rm -i golang:<go version> sh -c 'mkdir /src && tar -x -C /src && cd /src && go build ./... && go test ./...'
 ```
 
-Or push the stack to a branch of a fork and let CI run it. Never in the shell that holds the owner's `git` and `gh` credentials.
+Never in the shell that holds the owner's `git` and `gh` credentials.
 
-### Move a changed patch from the fork `ngvoicu/CLIProxyAPI` onto `main`
+### Change a patch in the stack on `main`
 
-The owner's patches live as PR branches in the fork `ngvoicu/CLIProxyAPI` (remote `github` in the owner's clone). When a PR branch changes after review, `main` must get the new commits in place of the old ones, below the layer. Start from the scratch worktree at `$lease` (above):
+The owner's patches live only in the patch stack on `main`: the commits between the base tag and the first layer commit. There is no other copy of them (no fork, no pull-request branch). To fix, change, add or remove a patch, rewrite the stack in place, below the layer, then put the layer back on top. Start from the scratch worktree at `$lease` (above):
 
 ```sh
-git fetch github <pr-branch>
 base=v<base>                                               # main's current base
 layer=$(git log --reverse --format=%H --grep='^Provimux-Layer: branding$' "$base..$lease" | head -n 1)
+git log --oneline "$base..$layer^"                         # the patch stack
 git checkout --detach "$layer^"                            # the top of the patch stack
-git rebase -i "$base"                                      # delete the PR's old commits
-git cherry-pick <first>^..<last>                           # the PR branch's commits (rebase the branch onto $base first if it is based elsewhere)
+git rebase -i "$base"                                      # 'edit' a patch's commit (amend it, then git rebase --continue), 'drop' one, reorder
+git commit ...                                             # a new patch: its commits go here, on top of the stack
 git cherry-pick "$layer^..$lease"                          # the layer back on top
 git show "$lease:.github/provimux/guard.sh" >"${TMPDIR:-/tmp}/guard.sh" && bash "${TMPDIR:-/tmp}/guard.sh"   # main's guard, not the branch's
 git archive HEAD | docker run --rm -i golang:<go version> sh -c 'mkdir /src && tar -x -C /src && cd /src && go build ./... && go test ./...'   # "Run the tests without credentials"
-git range-diff "$base..$lease" "$base..HEAD"               # only the PR's commits differ
+git range-diff "$base..$lease" "$base..HEAD"               # only the patch commits you meant to change differ
 git push --force-with-lease=refs/heads/main:$lease provimux HEAD:refs/heads/main
 ```
 
-Leave the fork's branches as they are. To release the change, cut the next `-pmx.<n>` (next section).
+A patch commit carries no `Provimux-Layer` trailer: the first commit with it starts the layer, every later commit must carry it, and no layer commit may change a protected path (guard rules 2 and 3). To release the change, cut the next `-pmx.<n>` (next section).
 
 ### Cut `-pmx.2` on the same base (a Provimux-only fix)
 
