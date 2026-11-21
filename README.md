@@ -1,6 +1,7 @@
 # Provimux
 
-**Provimux**, by [providers.dev](https://providers.dev), is one local endpoint for your AI subscriptions and API keys.
+**Provimux**, by [providers.dev](https://providers.dev), is a self-hosted AI gateway for you or your
+whole team: your subscriptions and API keys behind one endpoint, open to everyone you choose.
 
 Its README is [`.github/README.md`](.github/README.md), the page GitHub shows at
 <https://github.com/ngvoicu/provimux>. In a release archive it is `README_PROVIMUX.md`.
