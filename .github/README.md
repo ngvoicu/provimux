@@ -16,11 +16,12 @@
 A self-hosted AI gateway: one OpenAI-, Claude- and Gemini-compatible endpoint for your API keys and accounts, with the
 prompt cache kept in use and the account behind every answer shown.
 
-**Provimux**, by [providers.dev](https://providers.dev), is one local endpoint for your AI accounts. Add your API keys
-(API key, `apikey`) and an OpenRouter key, then point your tools at `http://127.0.0.1:8317`. Provimux keeps your prompt
-cache in use: it adds cache markers on OpenRouter, keeps each conversation on one upstream, and forwards the longer
-cache lifetime on OpenAI API keys. It tells you which accounts serve each model and which one answered, and its
-console shows why a route is paused. Provimux is an open-source (MIT) distribution of
+**Provimux**, by [providers.dev](https://providers.dev), is a self-hosted AI gateway for you or your whole team. Your
+subscriptions and API keys behind one endpoint, open to everyone you choose. Pools of models from every provider, with
+the prompt cache kept in use. Run it on your own machine or on a server your team shares, give each person their own
+client key, and point their tools at it. To keep the prompt cache in use, Provimux adds cache markers on OpenRouter,
+keeps each conversation on one upstream, and forwards the longer cache lifetime on OpenAI API keys. It tells
+you which accounts serve each model and which one answered, and its console shows why a route is paused. Provimux is an open-source (MIT) distribution of
 [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) by router-for-me, tested against each CLIProxyAPI release.
 
 **Provimux** · the endpoint (this repository) &nbsp;·&nbsp; **[provimux-ui](https://github.com/ngvoicu/provimux-ui)** · its
@@ -31,7 +32,8 @@ brew install ngvoicu/tap/provimux
 brew services start provimux
 ```
 
-Then open the console at `http://127.0.0.1:8317/management.html`. Docker, release archives and building from source:
+Then open the console at `http://127.0.0.1:8317/management.html` (on the same machine; from another machine, use the
+server's address, see [For a team](#for-a-team)). Docker, release archives and building from source:
 [Install](#install). An existing CLIProxyAPI setup works as it is.
 
 ## What Provimux adds
@@ -63,10 +65,10 @@ Then open the console at `http://127.0.0.1:8317/management.html`. Docker, releas
   at OpenRouter's list prices: what prompt caching was worth, subscription against API key, what the paid keys cost.
 - **[Works with pi](#works-with-pi)**, through two extensions that show which account answered.
 
-![A diagram. On the left, "Your tools": pi, Codex CLI, Claude Code, and any OpenAI-, Claude- or Gemini-format client. They point at the middle box, "Provimux, http://127.0.0.1:8317", which lists: which account serves each model, and which one answered; each login's own model list; OpenRouter caching, sessions and limits; the right context and output limits. Provimux points at "Your accounts" on the right: Claude subscription (oauth), Claude API key (apikey), Codex subscription (oauth), and OpenRouter key (apikey, openrouter.ai).](provimux/media/overview.png)
+![A diagram. On the left, "Your tools": pi, Codex CLI, Claude Code, and any OpenAI-, Claude- or Gemini-format client. They point at the middle box, Provimux, on your own machine or on a server your team shares, which lists: which account serves each model, and which one answered; each login's own model list; OpenRouter caching, sessions and limits; the right context and output limits. Provimux points at "Your accounts" on the right: Claude subscription (oauth), Claude API key (apikey), Codex subscription (oauth), and OpenRouter key (apikey, openrouter.ai).](provimux/media/overview.png)
 
-Then: [Install](#install) · [The console](#the-console-provimux-ui) · [Versions and releases](#versions-and-releases) ·
-[Features in detail](#features-in-detail) · [Requests to providers](#requests-to-providers) ·
+Then: [Install](#install) · [For a team](#for-a-team) · [The console](#the-console-provimux-ui) ·
+[Versions and releases](#versions-and-releases) · [Features in detail](#features-in-detail) · [Requests to providers](#requests-to-providers) ·
 [Support](#support) · [Built on CLIProxyAPI](#built-on-cliproxyapi) · [License](#license)
 
 ## Install
@@ -164,6 +166,38 @@ a third-party tool to use its subscription login is that provider's decision: An
 OpenAI has not authorized it. Read your provider's terms before you add a login; the account is yours and so is the
 risk. Provimux is not affiliated with or endorsed by Anthropic or OpenAI.
 
+## For a team
+
+Your subscriptions and API keys behind one endpoint, open to everyone you choose. Run Provimux on a server the team can
+reach, with [Homebrew](#homebrew), a [release archive](#release-archives) or the [Docker image](#docker) each release
+publishes (`ghcr.io/ngvoicu/provimux`), and point everyone's tools at `http://<your-server>:8317`. It listens on every
+interface by default (`server.host: ""`); `server.host: "127.0.0.1"` keeps it to the machine itself.
+
+- **One client key per person**, under `access.api-keys`. Each person's tools send their key as
+  `Authorization: Bearer <key>`, and removing it from the list shuts out only that person.
+  [Savings](#savings-what-prompt-caching-was-worth-and-what-each-key-cost) shows each key by its last 4 characters
+  (for keys of 16 characters or more), so give every key a different ending.
+
+  ```yaml
+  access:
+    api-keys:
+      - "replace-with-a-long-random-key-1"
+      - "replace-with-a-long-random-key-2"
+  ```
+
+- **The console from other machines.** Until `management.allow-remote: true`, the management API and the console
+  answer only requests from the server itself. Every request, local or remote, needs the management key,
+  `management.secret-key` (hashed on startup; while it is empty the management API is off), and five wrong keys from
+  one address block that address for 30 minutes. Give the management key only to whoever runs the server: it can
+  read and change the whole config, every client key included.
+- **TLS.** Client keys and the management key travel with every request, so outside a network you trust, serve
+  HTTPS: either Provimux's own `server.tls` (`enable: true`, with `cert` and `key` as paths to PEM files), or a
+  reverse proxy in front of it. Behind a reverse proxy on the same machine, every request reaches Provimux from
+  127.0.0.1 and the console would count it as local: set `server.trusted-proxies` to the proxy's address so that
+  Provimux uses the client's real address.
+
+The curl examples below use `$PROVIMUX` for the server's address (`http://127.0.0.1:8317` on the same machine).
+
 ## The console: provimux-ui
 
 Provimux's web console is [provimux-ui](https://github.com/ngvoicu/provimux-ui), the CLI Proxy API Management Center
@@ -178,7 +212,8 @@ list, with a refresh.
 
 Nothing to install: Provimux downloads the latest provimux-ui release by itself, at startup and every 3 hours, and
 installs it only when it matches the release's `checksums.txt`. A config that still names the original console
-(`management.panel-github-repository`) gets provimux-ui too. Open `http://127.0.0.1:8317/management.html` and sign in
+(`management.panel-github-repository`) gets provimux-ui too. Open `http://127.0.0.1:8317/management.html` (on the
+same machine; from another machine, use the server's address once [the console is open to it](#for-a-team)) and sign in
 with your management key (`management.secret-key` in your config; while it is empty, the management API is off). To keep a
 console version, turn the updates off with `management.disable-auto-update-panel: true`.
 
@@ -230,7 +265,8 @@ one it is using.
   `response.created` event carries `"cpa_auth_kind": "oauth"` or `"apikey"`.
 
 ```bash
-curl -s 'http://127.0.0.1:8317/v1/models?include=accounts' -H "Authorization: Bearer $KEY"
+PROVIMUX=http://127.0.0.1:8317   # on the same machine; from another machine, use the server's address
+curl -s "$PROVIMUX/v1/models?include=accounts" -H "Authorization: Bearer $KEY"
 ```
 
 Priorities are CLIProxyAPI's: set `priority` on an API-key entry, or in a login's file, and the higher value is tried
@@ -299,7 +335,7 @@ current or failing, without reading the log.
 The contract is [`openapi.yaml`](provimux/design/pui13/openapi.yaml), with example responses next to it.
 
 ```bash
-curl -s http://127.0.0.1:8317/v8/management/provimux/model-routes -H "Authorization: Bearer $MANAGEMENT_KEY"
+curl -s "$PROVIMUX/v8/management/provimux/model-routes" -H "Authorization: Bearer $MANAGEMENT_KEY"
 ```
 
 ### Savings: what prompt caching was worth, and what each key cost
@@ -341,7 +377,7 @@ management key later hides the endpoint (404) but recording continues: the total
 The contract is [`openapi.yaml`](provimux/design/savings/openapi.yaml), with example answers next to it.
 
 ```bash
-curl -s "http://127.0.0.1:8317/v8/management/provimux/savings?period=month&group=kind&group=key" \
+curl -s "$PROVIMUX/v8/management/provimux/savings?period=month&group=kind&group=key" \
   -H "Authorization: Bearer $MANAGEMENT_KEY"
 ```
 
