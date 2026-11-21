@@ -19,10 +19,13 @@ import (
 )
 
 // nestedCallHost is a plugin that makes its own model call through the host, with another credential, from its
-// response interceptor (a plain answer) or from its stream-chunk interceptor at the first chunk (a stream).
+// response interceptor (a plain answer) or, for a stream, from its after-auth request interceptor. A stream that passes
+// through a stream-chunk interceptor names nobody (DESIGN.md 12, after the third review), so for a stream the plugin has
+// none in the stream's path.
 type nestedCallHost struct {
 	h      *sdkhandlers.BaseAPIHandler
 	authID string
+	stream bool
 	called atomic.Int32
 	nested atomic.Value
 }
@@ -44,17 +47,23 @@ func (p *nestedCallHost) InterceptRequestBeforeAuth(context.Context, pluginapi.R
 	return pluginapi.RequestInterceptResponse{}
 }
 
-func (p *nestedCallHost) InterceptRequestAfterAuth(context.Context, pluginapi.RequestInterceptRequest) pluginapi.RequestInterceptResponse {
+func (p *nestedCallHost) InterceptRequestAfterAuth(ctx context.Context, _ pluginapi.RequestInterceptRequest) pluginapi.RequestInterceptResponse {
+	if p.stream {
+		p.call(ctx)
+	}
 	return pluginapi.RequestInterceptResponse{}
 }
 
+func (p *nestedCallHost) HasStreamInterceptors() bool { return false }
+
 func (p *nestedCallHost) InterceptResponse(ctx context.Context, _ pluginapi.ResponseInterceptRequest) pluginapi.ResponseInterceptResponse {
-	p.call(ctx)
+	if !p.stream {
+		p.call(ctx)
+	}
 	return pluginapi.ResponseInterceptResponse{}
 }
 
-func (p *nestedCallHost) InterceptStreamChunk(ctx context.Context, _ pluginapi.StreamChunkInterceptRequest) pluginapi.StreamChunkInterceptResponse {
-	p.call(ctx)
+func (p *nestedCallHost) InterceptStreamChunk(context.Context, pluginapi.StreamChunkInterceptRequest) pluginapi.StreamChunkInterceptResponse {
 	return pluginapi.StreamChunkInterceptResponse{}
 }
 
@@ -78,7 +87,7 @@ func TestNestedPluginExecutionDoesNotRenameTheResponse(t *testing.T) {
 				id := credential.ID
 				t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(id) })
 			}
-			host := &nestedCallHost{h: server.handlers, authID: devinLogin.ID}
+			host := &nestedCallHost{h: server.handlers, authID: devinLogin.ID, stream: stream}
 			server.handlers.SetPluginHost(host)
 			recorder := httptest.NewRecorder()
 			req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(fmt.Sprintf(`{"model":%q,"max_tokens":8,"stream":%t,"messages":[{"role":"user","content":"hi"}]}`, answeredTestModel, stream)))
@@ -87,10 +96,14 @@ func TestNestedPluginExecutionDoesNotRenameTheResponse(t *testing.T) {
 			server.engine.ServeHTTP(recorder, req)
 
 			nested, _ := host.nested.Load().(string)
+			wantCalls := "[answered-hosted-key answered-devin-login]"
+			if stream { // the after-auth request interceptor runs inside the outer attempt, before its exchange
+				wantCalls = "[answered-devin-login answered-hosted-key]"
+			}
 			mu.Lock()
 			calls := fmt.Sprint(attempts)
 			mu.Unlock()
-			if recorder.Code != http.StatusOK || calls != "[answered-hosted-key answered-devin-login]" ||
+			if recorder.Code != http.StatusOK || calls != wantCalls ||
 				!strings.Contains(recorder.Body.String(), "served-by-answered-hosted-key") || !strings.Contains(nested, "served-by-answered-devin-login") {
 				t.Fatalf("fixture: status=%d attempts=%s outer=%q nested=%q", recorder.Code, calls, recorder.Body.String(), nested)
 			}

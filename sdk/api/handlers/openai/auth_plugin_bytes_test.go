@@ -61,6 +61,7 @@ type pluginBytesWebsocketHost struct {
 	mode        string
 	withHeaders bool
 	mu          sync.Mutex
+	watched     int
 	nested      []byte
 }
 
@@ -109,8 +110,14 @@ func (p *pluginBytesWebsocketHost) InterceptStreamChunk(ctx context.Context, req
 	if ctx.Value(pluginBytesWebsocketInner{}) != nil || p.mode == "delegate" || req.ChunkIndex < 0 {
 		return pluginapi.StreamChunkInterceptResponse{}
 	}
-	if p.mode == "drop-first" {
+	switch p.mode {
+	case "drop-first":
 		return pluginapi.StreamChunkInterceptResponse{DropChunk: req.ChunkIndex == 0}
+	case "watch", "none":
+		p.mu.Lock()
+		p.watched++
+		p.mu.Unlock()
+		return pluginapi.StreamChunkInterceptResponse{Body: req.Body}
 	}
 	if req.ChunkIndex == 0 {
 		body, headers := p.inner(ctx, req.RequestBody)
@@ -124,6 +131,12 @@ func (p *pluginBytesWebsocketHost) InterceptStreamChunk(ctx context.Context, req
 }
 
 func (p *pluginBytesWebsocketHost) HasModelRouters() bool { return p.mode == "delegate" }
+
+// HasStreamInterceptors reports whether the plugin's stream-chunk interceptor is in the turn's path: not for a routed
+// executor's turn, and not in mode none, where the plugin has no such capability.
+func (p *pluginBytesWebsocketHost) HasStreamInterceptors() bool {
+	return p.mode != "delegate" && p.mode != "none"
+}
 
 func (p *pluginBytesWebsocketHost) RouteModel(ctx context.Context, _ pluginapi.ModelRouteRequest) (pluginapi.ModelRouteResponse, bool) {
 	if p.mode != "delegate" || ctx.Value(pluginBytesWebsocketInner{}) != nil {
@@ -150,9 +163,10 @@ func (p *pluginBytesWebsocketHost) CountPluginExecutor(context.Context, string, 
 
 const pluginBytesWebsocketModel = "plugin-bytes-websocket-model"
 
-// On a websocket turn, response.created names the credential only when the proxy carried the turn's bytes unchanged:
-// a nested call the plugin keeps to itself leaves the name; a nested answer put in place of the outer one, a routed
-// executor's answer, or a dropped first chunk name nobody, whatever headers the plugin returns. (DESIGN.md 12.4, test 2.)
+// On a websocket turn, response.created names the credential only when the proxy carried the turn's bytes and no
+// stream-chunk interceptor was in their path: a turn that passes through one names nobody whatever it does (it watches,
+// makes a nested call it keeps to itself, replaces the answer, drops the first chunk; after the third review), and so
+// does a routed executor's answer, whatever headers the plugin returns. (DESIGN.md 12.4, test 2.)
 func TestWebsocketTurnNamesNobodyForBytesFromPluginCode(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	outer := logging.AuthStatement{Kind: "apikey", Provider: "claude", Host: "outer-gateway.example.test"}
@@ -162,7 +176,9 @@ func TestWebsocketTurnNamesNobodyForBytesFromPluginCode(t *testing.T) {
 		created     string // the response.created frame's id
 		want        logging.AuthStatement
 	}{
-		{mode: "side-call", created: "resp-ws-outer", want: outer},
+		{mode: "none", created: "resp-ws-outer", want: outer},
+		{mode: "watch", created: "resp-ws-outer"},
+		{mode: "side-call", created: "resp-ws-outer"},
 		{mode: "replace", created: "resp-ws-inner"},
 		{mode: "replace", withHeaders: true, created: "resp-ws-inner"},
 		{mode: "delegate", created: "resp-ws-inner"},
@@ -233,9 +249,15 @@ func TestWebsocketTurnNamesNobodyForBytesFromPluginCode(t *testing.T) {
 			plugin.mu.Lock()
 			nested := string(plugin.nested)
 			plugin.mu.Unlock()
-			if cell.mode == "drop-first" {
+			plugin.mu.Lock()
+			watched := plugin.watched
+			plugin.mu.Unlock()
+			if (cell.mode == "watch") != (watched > 0) {
+				t.Fatalf("fixture: the interceptor watched %d chunks in mode %s", watched, cell.mode)
+			}
+			if cell.mode == "drop-first" || cell.mode == "watch" || cell.mode == "none" {
 				if created == nil || nested != "" {
-					t.Fatalf("fixture: created %q, nested %q, want the first chunk dropped and no nested call", created, nested)
+					t.Fatalf("fixture: created %q, nested %q, want no nested call", created, nested)
 				}
 				return
 			}
