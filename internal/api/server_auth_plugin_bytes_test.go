@@ -129,6 +129,16 @@ func (p *pluginBytesHost) call(ctx context.Context, body []byte, stream bool) ([
 
 func (p *pluginBytesHost) routed() bool { return p.mode == "delegate" || p.mode == "own" }
 
+// HasStreamInterceptors reports whether this plugin's stream-chunk interceptor is in a stream's path: in every mode but
+// those whose plugin code is a request interceptor or a routed executor.
+func (p *pluginBytesHost) HasStreamInterceptors() bool {
+	switch p.mode {
+	case "before-auth-side-call", "after-auth-side-call", "delegate", "own":
+		return false
+	}
+	return true
+}
+
 func (p *pluginBytesHost) madeNestedCall() bool {
 	switch p.mode {
 	case "edit", "keep+headers", "drop-first", "edit-later", "drop-prelude", "edit-retry":
@@ -302,36 +312,38 @@ const (
 )
 
 // The proxy names a credential only for bytes its own code carried, unchanged, from that credential's exchange. Where
-// the response interceptor chain changed the body, or a stream chunk up to and including the first deliverable
-// payload, or the bytes came from a routed executor, the response names nobody. Plugin code that only looks, makes a
-// nested call it does not return, or acts on the request leaves the name alone; headers a plugin returns (an
-// X-CPA-ANSWER of its own, forged X-CPA-AUTH-* values) select nothing. (DESIGN.md 12.4, test 1.)
+// the response interceptor chain changed a plain or count body, or the bytes came from a routed executor, the response
+// names nobody; a stream that passes through the stream-chunk interceptor chain names nobody whatever the chain does
+// (after the third review). Plugin code that only looks at a plain body, makes a nested call it does not return, or
+// acts on the request leaves the name alone; headers a plugin returns (an X-CPA-ANSWER of its own, forged X-CPA-AUTH-*
+// values) select nothing. (DESIGN.md 12.4, test 1.)
 func TestBytesFromPluginCodeNameNobody(t *testing.T) {
 	outer, inner := answeredCredentials()
 	outerStatement := internallogging.AuthStatement{Kind: "apikey", Provider: "claude", Host: "openrouter.example.test"}
-	innerStatement := internallogging.AuthStatement{Kind: "oauth", Provider: "devin"}
 	nobody := internallogging.AuthStatement{}
 	both := []bool{false, true}
 	sse := []bool{true}
 	plain := []bool{false}
 	const count = "/v1/messages/count_tokens"
 	cells := []pluginBytesCell{
-		{mode: "side-call", streams: both, body: pluginBytesOuter, want: outerStatement},
+		{mode: "side-call", streams: plain, body: pluginBytesOuter, want: outerStatement},
+		// A stream-chunk interceptor is in the stream's path: nobody, whatever it does (after the third review).
+		{mode: "side-call", streams: sse, body: pluginBytesOuter, want: nobody},
 		{mode: "replace", streams: both, body: pluginBytesNested, want: nobody},
 		{mode: "replace+headers", streams: both, body: pluginBytesNested, want: nobody},
 		{mode: "edit", streams: both, body: pluginBytesEdited, want: nobody},
 		{mode: "edit+side-call", streams: both, body: pluginBytesEdited, want: nobody},
-		{mode: "keep+headers", streams: both, body: pluginBytesOuter, want: outerStatement},
+		{mode: "keep+headers", streams: plain, body: pluginBytesOuter, want: outerStatement},
+		{mode: "keep+headers", streams: sse, body: pluginBytesOuter, want: nobody},
 		{mode: "delegate", streams: both, body: pluginBytesNested, want: nobody},
 		{mode: "own", streams: both, body: pluginBytesPlugin, want: nobody},
 		{mode: "before-auth-side-call", streams: both, body: pluginBytesOuter, want: outerStatement},
 		{mode: "after-auth-side-call", streams: both, body: pluginBytesOuter, want: outerStatement},
 		{mode: "drop-first", streams: sse, body: pluginBytesFromSecond, want: nobody},
-		// The stated limit (DESIGN.md 12.1, limit 1): a stream is named by its first deliverable payload. Pinned so that
-		// nobody takes the later chunks for covered.
-		{mode: "edit-later", streams: sse, body: pluginBytesThenPlugin, want: outerStatement},
-		{mode: "drop-prelude", streams: sse, body: pluginBytesRetry, want: innerStatement, retry: 1},
-		{mode: "drop-prelude", streams: sse, body: pluginBytesRetry, want: innerStatement, retry: 3},
+		// Formerly the stated limit (a stream named by its first deliverable payload); since the third review, nobody.
+		{mode: "edit-later", streams: sse, body: pluginBytesThenPlugin, want: nobody},
+		{mode: "drop-prelude", streams: sse, body: pluginBytesRetry, want: nobody, retry: 1},
+		{mode: "drop-prelude", streams: sse, body: pluginBytesRetry, want: nobody, retry: 3},
 		{mode: "edit-retry", streams: sse, body: pluginBytesRetryEd, want: nobody, retry: 1},
 		{mode: "edit-retry", streams: sse, body: pluginBytesRetryEd, want: nobody, retry: 3},
 		{mode: "side-call", path: count, streams: plain, body: pluginBytesCount, want: outerStatement},
