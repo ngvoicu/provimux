@@ -208,6 +208,43 @@ func TestExecutionOffersTheStatementOfTheResultItReturns(t *testing.T) {
 		}
 	})
 
+	// A body the response interceptor chain changed came out of plugin code: the execution that returns it offers the
+	// empty statement. A body the chain returned as given, also with headers of its own, keeps the credential's.
+	for _, mode := range []string{"plain", "count", "stream"} {
+		for _, edit := range []bool{false, true} {
+			name := fmt.Sprintf("interceptor chain %s, body returned as given", mode)
+			if edit {
+				name = fmt.Sprintf("interceptor chain %s, body changed", mode)
+			}
+			t.Run(name, func(t *testing.T) {
+				h := newAnsweredOfferHandler(t, &sdkconfig.SDKConfig{}, nil, nil)
+				h.SetPluginHost(&answeredOfferInterceptor{edit: edit})
+				c, ctx := answeredOfferRequest(t)
+				ctx = WithPinnedAuthID(ctx, "key")
+				var body string
+				var ok bool
+				switch mode {
+				case "plain":
+					body, ok = plain(h, ctx)
+				case "count":
+					body, ok = count(h, ctx)
+				default:
+					body, ok = stream(h, ctx)
+				}
+				if !ok || !strings.Contains(body, "served-by-key") || strings.Contains(body, "edited-") != edit {
+					t.Fatalf("result = %q (success %v), want the key's body, edited: %v", body, ok, edit)
+				}
+				want := answeredOfferKey
+				if edit {
+					want = logging.AuthStatement{}
+				}
+				if got := offered(c); got != want {
+					t.Fatalf("offered %+v, want %+v", got, want)
+				}
+			})
+		}
+	}
+
 	for _, mode := range []string{"plain", "count", "stream"} {
 		t.Run("plugin executor route "+mode, func(t *testing.T) {
 			host := &handlerDirectExecutorRouteHost{}
@@ -235,6 +272,36 @@ func TestExecutionOffersTheStatementOfTheResultItReturns(t *testing.T) {
 			}
 		})
 	}
+}
+
+// answeredOfferInterceptor is a response and stream-chunk interceptor that returns every body with a header of its
+// own: as given, or, with edit, changed.
+type answeredOfferInterceptor struct{ edit bool }
+
+func (a *answeredOfferInterceptor) body(in []byte) []byte {
+	if !a.edit {
+		return append([]byte(nil), in...)
+	}
+	return []byte(strings.ReplaceAll(string(in), "served-by-", "edited-served-by-"))
+}
+
+func (a *answeredOfferInterceptor) InterceptRequestBeforeAuth(context.Context, pluginapi.RequestInterceptRequest) pluginapi.RequestInterceptResponse {
+	return pluginapi.RequestInterceptResponse{}
+}
+
+func (a *answeredOfferInterceptor) InterceptRequestAfterAuth(context.Context, pluginapi.RequestInterceptRequest) pluginapi.RequestInterceptResponse {
+	return pluginapi.RequestInterceptResponse{}
+}
+
+func (a *answeredOfferInterceptor) InterceptResponse(_ context.Context, req pluginapi.ResponseInterceptRequest) pluginapi.ResponseInterceptResponse {
+	return pluginapi.ResponseInterceptResponse{Body: a.body(req.Body), Headers: http.Header{"X-Fixture-Plugin": {"seen"}}}
+}
+
+func (a *answeredOfferInterceptor) InterceptStreamChunk(_ context.Context, req pluginapi.StreamChunkInterceptRequest) pluginapi.StreamChunkInterceptResponse {
+	if req.ChunkIndex < 0 {
+		return pluginapi.StreamChunkInterceptResponse{}
+	}
+	return pluginapi.StreamChunkInterceptResponse{Body: a.body(req.Body), Headers: http.Header{"X-Fixture-Plugin": {"seen"}}}
 }
 
 // The conductor gets no way to the request's response state or a turn's sink: it reports to the execution call that

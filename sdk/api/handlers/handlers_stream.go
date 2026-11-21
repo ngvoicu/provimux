@@ -536,8 +536,12 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 		responseSSEValidator = &sseJSONValidationState{}
 	}
 
+	// pluginBytes: the interceptor chain changed or dropped a chunk of the stream being read. It is read once, when
+	// the first deliverable payload is settled.
+	pluginBytes := false
 	transformStreamPayload := func(payload []byte, chunkIndex *int, historyChunks [][]byte) ([]byte, bool, *interfaces.ErrorMessage) {
 		applyStreamHeaderInit()
+		given := payload // the chunk as the executor produced it; the chain is handed a copy
 		payload = cloneBytes(payload)
 		if streamInterceptorsActive {
 			chunkReq := pluginapi.StreamChunkInterceptRequest{
@@ -563,6 +567,9 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 			}
 			intercepted := interceptStreamChunk(ctx, interceptorHost, chunkReq, execOptions.SkipInterceptorPluginID)
 			applyStreamHeaders(intercepted.Headers)
+			if intercepted.DropChunk || (len(intercepted.Body) > 0 && !bytes.Equal(intercepted.Body, given)) {
+				pluginBytes = true
+			}
 			if len(intercepted.Body) > 0 {
 				payload = cloneBytes(intercepted.Body)
 			}
@@ -687,6 +694,7 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 		baseStreamHeaders = cloneHeader(retryResult.Headers)
 		streamHeaderInitialized = false
 		streamClosedBeforeRead = false
+		pluginBytes = false
 		bootstrapStreamErr = nil
 		bootstrapPayload = nil
 		bootstrapChunkIndex = 0
@@ -702,8 +710,9 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 		}
 	}
 
-	// The bootstrap retry reuses opts, so the capture holds the statement of the stream that is returned.
-	if !streamCanceledBeforeRead && bootstrapErr == nil && bootstrapPayload != nil {
+	// The bootstrap retry reuses opts, so the capture holds the statement of the stream that is returned. A stream
+	// whose chunks the interceptor chain changed or dropped, up to its first deliverable payload, names nobody.
+	if !streamCanceledBeforeRead && bootstrapErr == nil && bootstrapPayload != nil && !pluginBytes {
 		offer = answered.get()
 	}
 	upstreamHeaders := downstreamHeadersAfterInterceptors(baseStreamHeaders, rawStreamHeaders, passthroughHeadersEnabled)
