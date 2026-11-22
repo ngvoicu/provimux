@@ -149,7 +149,7 @@ func provimuxLiveLogLine(provider string, auth *coreauth.Auth, list liveModelLis
 				names = append(names, "…")
 				break
 			}
-			names = append(names, model.ID)
+			names = append(names, provimuxPublicModelID(provider, model.ID))
 		}
 		line += fmt.Sprintf(", %d not in the catalog yet (%s)", len(learned), strings.Join(names, ", "))
 	}
@@ -172,4 +172,24 @@ func provimuxLiveKeptText(authID, identity string) string {
 		return "keeping the list of " + list.fetchedAt.UTC().Format(time.DateOnly)
 	}
 	return "the catalog stays in use"
+}
+
+// provimuxPublicModelID is the id under which a login of the provider registers a model of its catalog
+// or live list. Since 8.1.1 the Devin catalog, Devin's live lists and its learned models hold bare ids
+// (swe-2), and the registration adds the devin/ namespace (applyModelNamespace in service_models.go).
+func provimuxPublicModelID(provider, id string) string {
+	if provider == "devin" && id != "" && !strings.HasPrefix(strings.ToLower(id), "devin/") {
+		return "devin/" + id
+	}
+	return id
+}
+
+// provimuxListKeyOfRegistered is the key a registered model is matched by against its login's catalog,
+// live list and Provimux's own models: lower case, and for Devin without the devin/ namespace.
+func provimuxListKeyOfRegistered(provider, id string) string {
+	key := strings.ToLower(strings.TrimSpace(id))
+	if provider == "devin" {
+		key = strings.TrimPrefix(key, "devin/")
+	}
+	return key
 }
