@@ -21,8 +21,8 @@ models:
   devin-catalog: ""
   # On unless set to false. Ask each Claude, Codex, Meta and Devin login, and each Gemini API key on
   # Google's own host, for its own model list (at startup, every 3 hours and on
-  # POST /v8/management/models/refresh). The login offers exactly the models its list names; per field
-  # the provider's value wins and the catalog fills the rest; models the catalog lacks are added.
+  # POST /v8/management/models/refresh). The login offers exactly the models its list names; a model the
+  # catalog has keeps the catalog's values (the provider fills only empty ones); models it lacks are added.
   # Copilot and Antigravity logins also offer listed models the catalog lacks. A failed or partial fetch
   # changes nothing (Kimi and xAI logins are not asked yet); lists are kept on disk (model-lists/ beside the console's static folder) for the next
   # start, and a list not refreshed for 7 days gives way to the catalog. Other API keys keep the catalog.
