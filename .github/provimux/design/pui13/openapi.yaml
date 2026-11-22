@@ -529,7 +529,7 @@ components:
           description: The account's last fetch, when it failed. Not reported for Copilot and Antigravity.
     ModelListFieldSource:
       type: [string, "null"]
-      description: '"live" (the vendor''s list stated it) or "built-in" (the catalog did); null when no source states it.'
+      description: '"built-in" (the catalog gave the value) or "live" (the vendor''s list did: for a model the catalog lacks, or a field the catalog leaves empty; a model the catalog has keeps every value the catalog states); null when no source states it.'
     ModelListModel:
       type: object
       required: [id, display_name, source, learned, limits, modalities, reasoning_levels, sources]

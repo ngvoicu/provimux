@@ -280,9 +280,9 @@ its own account lists, not only the shared catalog. Copilot and Antigravity logi
 reads, also offer the models the catalog doesn't have yet. Models the provider has retired, or doesn't offer to your
 account, disappear from the list, and new models appear on the day the provider lists them.
 
-The shared catalog is router-for-me's, and it stays Provimux's base list: a login's own live list comes first, the
-catalog fills what the live list doesn't state, and a login without a live list (Kimi and xAI for now, API keys, or
-before the first fetch) uses the catalog.
+The shared catalog is router-for-me's, and it stays Provimux's base list: a login's own live list decides which
+models it offers, the catalog gives the values of every model it has, and a login without a live list (Kimi and xAI
+for now, API keys, or before the first fetch) offers the catalog.
 
 **Why it matters.** The shared catalog is edited by hand. It can list a model a day late, keep a retired model that
 then answers 404, or list a model your plan is refused.
@@ -299,13 +299,13 @@ models:
 - Provimux fetches each login's list in the background: at startup, every 3 hours, on
   `POST /v8/management/models/refresh`, and when a login is added or replaced. Requests never wait for it.
 - A login registers exactly the models its list names, plus the image, video and speech models CLIProxyAPI adds
-  itself. Per field, the provider's value wins; the catalog fills what the provider's list doesn't state; a value no
-  source states stays unknown. Models the catalog doesn't have yet are added from the provider's own description:
-  Claude gives the context window, output limit, reasoning levels and image input; Codex the context window,
-  reasoning levels and input types; Devin the context window, output limit, image input and, through its variant ids,
-  the reasoning levels; Gemini keys the input and output limits. Meta lists only model ids. Hidden Codex entries are
-  never added. A value counts only where the provider's answer states it: a field its answer lacks (Claude's
-  "thinking can be turned off", for one) keeps the catalog's value.
+  itself. For a model the catalog has, the catalog's values stay, as before: window, output limit, reasoning levels,
+  input types. The provider's description only fills a field the catalog leaves empty (never the reasoning settings),
+  and a value no source states stays unknown. Models the catalog doesn't have yet are added from the provider's own
+  description: Claude gives the context window, output limit, reasoning levels and image input; Codex the context
+  window, reasoning levels and input types; Devin the context window, output limit, image input and, through its
+  variant ids, the reasoning levels; Gemini keys the input and output limits. Meta lists only model ids. Hidden Codex
+  entries are never added.
 - Kimi and xAI logins are not asked yet: they keep the catalog exactly as before. Their lists will be asked once one
   real answer from each has been recorded and checked against the ids their requests use.
 - A fetch replaces a list only when it is complete (every page) and names at least one model, within 30 seconds; a
@@ -315,8 +315,9 @@ models:
   account never keeps the old list.
 - Lists are kept on disk, in `model-lists/` beside the console's `static/` folder (mode 0600: model ids and values,
   the fetch time and a hash of the account, no token, email or file name), so a start without network serves the
-  lists of the last run. A list that could not be refreshed for 7 days gives way to the catalog, with one log line;
-  its file is deleted at the next start, and a login whose account or credential changed leaves no old file behind.
+  lists of the last run. A list that could not be refreshed for 7 days (by its own fetch time) gives way to the
+  catalog, with one log line. Files are never deleted, also those of removed logins: each is small, one per account,
+  two logins of one account share it, and a file of another account or login type is ignored when read.
 - API keys keep the catalog, except a Gemini key on Google's own host; a key with its own base URL is never asked.
   Changing `live-lists` in a running instance applies at once.
 
