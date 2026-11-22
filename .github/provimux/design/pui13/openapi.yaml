@@ -84,6 +84,10 @@ paths:
     get:
       operationId: provimuxModelLists
       summary: Per login, which source decides its models (its vendor's live list, the published list, the built-in list or none)
+      description: |
+        Every row names its login (login.name, login.email, login.label), as GET /credentials does: the answer is
+        for the operator, behind the management key. Whoever reads it to publish anything (groundtruth's
+        discovery) must drop `login` and `auth_index` from every row before the data leaves the machine.
       parameters:
         - name: auth_index
           in: query
