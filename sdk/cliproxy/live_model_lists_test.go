@@ -233,6 +233,7 @@ type liveListExecutor struct {
 	provider    string
 	calls       atomic.Int32
 	hadDeadline atomic.Bool
+	deadlineIn  atomic.Int64
 	codexClient atomic.Bool
 	accountID   atomic.Value
 }
@@ -245,8 +246,11 @@ func (e *liveListExecutor) Execute(context.Context, *coreauth.Auth, cliproxyexec
 
 func (e *liveListExecutor) HttpRequest(ctx context.Context, auth *coreauth.Auth, req *http.Request) (*http.Response, error) {
 	e.calls.Add(1)
-	_, deadline := ctx.Deadline()
+	at, deadline := ctx.Deadline()
 	e.hadDeadline.Store(deadline)
+	if deadline {
+		e.deadlineIn.Store(int64(time.Until(at)))
+	}
 	e.codexClient.Store(coreauth.IsCodexClientRequest(ctx))
 	e.accountID.Store(req.Header.Get("Chatgpt-Account-Id"))
 	if e.during != nil {
@@ -302,8 +306,9 @@ func TestRefreshLiveModelListsRegistersCodexLogin(t *testing.T) {
 	if executor.calls.Load() != 1 || version.Load() != codexLiveModelListClientVersion {
 		t.Fatalf("calls=%d client_version=%v", executor.calls.Load(), version.Load())
 	}
-	if executor.hadDeadline.Load() {
-		t.Fatal("the fetch must not carry a deadline")
+	// Every fetch has its own deadline, 30 s, so a vendor that never answers cannot hold the login.
+	if in := time.Duration(executor.deadlineIn.Load()); !executor.hadDeadline.Load() || in <= 0 || in > liveModelListFetchTimeout {
+		t.Fatalf("the fetch must carry a deadline of at most %s: %v %s", liveModelListFetchTimeout, executor.hadDeadline.Load(), in)
 	}
 	if !executor.codexClient.Load() || executor.accountID.Load() != "acct-1" {
 		t.Fatalf("codex fetch must use the outer ChatGPT login: codex client=%v account=%v", executor.codexClient.Load(), executor.accountID.Load())
