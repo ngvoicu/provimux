@@ -251,7 +251,7 @@ func (r *copilotCatalogRefresher) fetch(job *copilotCatalogJob) error {
 	}
 	ctx := r.service.coreManager.WithAuthTransport(job.ctx, job.auth)
 	client := helps.NewProxyAwareHTTPClient(ctx, r.service.currentConfig(), job.auth, 0)
-	catalog, errFetch := copilot.FetchCatalog(ctx, client, job.identity.base, job.identity.token)
+	catalog, errFetch := provimuxFetchCopilotCatalog(ctx, client, job.identity.base, job.identity.token, job.auth.ID)
 	var status copilot.HTTPError
 	if errFetch != nil && !(errors.As(errFetch, &status) && (status.Code == http.StatusUnauthorized || status.Code == http.StatusForbidden)) {
 		// Retain the previous snapshot only until its original hard TTL. Failed

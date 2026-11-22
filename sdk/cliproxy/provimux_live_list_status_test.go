@@ -47,9 +47,18 @@ func TestProvimuxLiveListStateCovered(t *testing.T) {
 	provimuxLiveTestReset(t)
 	source := provimuxLiveListSource{}
 	for _, provider := range source.Providers() {
-		if !source.State(provimuxLiveLogin("pmx-"+provider, provider)).Covered {
-			t.Fatalf("%s login not covered", provider)
+		auth := provimuxLiveLogin("pmx-"+provider, provider)
+		if provider == "gemini" {
+			// Gemini has no login here: a key on Google's own host is asked.
+			auth = &coreauth.Auth{ID: "pmx-gemini-key", Provider: "gemini", Attributes: map[string]string{"api_key": "k"}}
 		}
+		if !source.State(auth).Covered {
+			t.Fatalf("%s not covered", provider)
+		}
+	}
+	ownHost := &coreauth.Auth{ID: "pmx-gemini-own", Provider: "gemini", Attributes: map[string]string{"api_key": "k", "base_url": "https://gemini.internal.example"}}
+	if source.State(ownHost).Covered {
+		t.Fatal("a Gemini key with its own base URL must never be asked")
 	}
 	key := &coreauth.Auth{ID: "pmx-key", Provider: "claude", Attributes: map[string]string{"api_key": "k"}}
 	for name, auth := range map[string]*coreauth.Auth{"claude api key": key, "gemini login": provimuxLiveLogin("pmx-gemini", "gemini")} {
@@ -250,7 +259,7 @@ func TestProvimuxLiveListFetcherRecordsFailure(t *testing.T) {
 	}))
 	defer server.Close()
 	cfg := &config.Config{}
-	cfg.Models.LiveLists = true
+	cfg.Models.LiveLists = new(true)
 	svc := &Service{cfg: cfg, coreManager: coreauth.NewManager(nil, nil, nil)}
 	executor := &liveListExecutor{provider: "claude"}
 	svc.coreManager.RegisterExecutor(executor)
@@ -292,7 +301,7 @@ func TestProvimuxLiveListRefreshLaterThanClick(t *testing.T) {
 			liveModelListNow = func() time.Time { return done }
 			t.Cleanup(func() { liveModelListNow = prevNow })
 			cfg := &config.Config{}
-			cfg.Models.LiveLists = true
+			cfg.Models.LiveLists = new(true)
 			svc := &Service{cfg: cfg, coreManager: coreauth.NewManager(nil, nil, nil)}
 			svc.coreManager.RegisterExecutor(provimuxStatusExecutor{status: status})
 			auth, errRegister := svc.coreManager.Register(t.Context(), provimuxLiveLogin("pmx-click", "claude"))
