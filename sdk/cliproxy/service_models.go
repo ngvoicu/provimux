@@ -94,6 +94,9 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 	switch provider {
 	case constant.Gemini:
 		models = registry.GetGeminiModels()
+		if entry := resolveConfigGeminiKeyForConfig(cfg, a); entry == nil || len(entry.Models) == 0 {
+			models = s.applyLiveModelList(cfg, a, models)
+		}
 		if entry := resolveConfigGeminiKeyForConfig(cfg, a); entry != nil {
 			if len(entry.Models) > 0 {
 				models = buildGeminiConfigModels(entry)
@@ -153,7 +156,7 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 				excluded = entry.ExcludedModels
 			}
 		}
-		models = applyLiveModelList(cfg, a, models)
+		models = s.applyLiveModelList(cfg, a, models)
 	case "codex":
 		if authKind == "apikey" {
 			if entry := resolveConfigCodexKeyForConfig(cfg, a); entry != nil {
@@ -179,9 +182,10 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 		default:
 			models = registry.GetCodexProModels()
 		}
-		models = applyLiveModelList(cfg, a, models)
+		models = s.applyLiveModelList(cfg, a, models)
 	case "kimi", "kimi-ai", "kimi.ai", "kimi.com":
 		models = registry.GetKimiModels()
+		models = s.applyLiveModelList(cfg, a, models)
 	case "xai":
 		models = registry.GetXAIModels()
 		if entry := resolveConfigXAIKeyForConfig(cfg, a); entry != nil {
@@ -192,14 +196,17 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 				excluded = entry.ExcludedModels
 			}
 		}
+		models = s.applyLiveModelList(cfg, a, models)
 	case "copilot", "devin":
 		if provider == "copilot" {
-			for _, route := range a.ActiveCopilotCatalog(time.Now()).Routes() {
+			for _, route := range provimuxCopilotRoutes(cfg, a.ActiveCopilotCatalog(time.Now())) {
 				setCopilotModelDisplayName(route.Info, route.Info.ID)
 				models = append(models, route.Info)
 			}
 		} else {
+			// The live list is matched on the catalog's bare ids, before the devin/ namespace.
 			models = registry.GetDevinModels()
+			models = s.applyLiveModelList(cfg, a, models)
 		}
 		for _, model := range models {
 			if model != nil {
@@ -216,7 +223,7 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 				excluded = entry.ExcludedModels
 			}
 		}
-		models = applyLiveModelList(cfg, a, models)
+		models = s.applyLiveModelList(cfg, a, models)
 	default:
 		// Handle OpenAI-compatibility providers by name using config
 		if cfg != nil {
