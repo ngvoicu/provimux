@@ -280,6 +280,10 @@ its own account lists, not only the shared catalog. Copilot and Antigravity logi
 reads, also offer the models the catalog doesn't have yet. Models the provider has retired, or doesn't offer to your
 account, disappear from the list, and new models appear on the day the provider lists them.
 
+The shared catalog is router-for-me's, and it stays Provimux's base list: a login's own live list comes first, the
+catalog fills what the live list doesn't state, and a login without a live list (Kimi and xAI for now, API keys, or
+before the first fetch) uses the catalog.
+
 **Why it matters.** The shared catalog is edited by hand. It can list a model a day late, keep a retired model that
 then answers 404, or list a model your plan is refused.
 

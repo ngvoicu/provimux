@@ -4,6 +4,8 @@ Design, 2026-11-22. This is the design only: no code exists yet. Section 9 was a
 
 **The owner's decision (2026-11-22).** Provimux takes no model list from router-for-me, and nothing of router-for-me's model lists stays in it. A login's list comes first from its vendor, through the login Provimux already holds; else from providers.dev; else from a list built into the release from our own sources. The plugin store stays as it is.
 
+**Changed by the owner, later on 2026-11-22.** router-for-me's catalog stays, permanently, as Provimux's base list. Ours go on top of it: the vendor's live list first, then providers.dev (P3), then router-for-me's catalog. Steps P1 and P5 are dropped. Sections 1 and 6.2 carry a note; section 13 says what this means for the code as built. Where the text below says "never from router-for-me" or "built from our own sources", this decision replaces it.
+
 **Read from.**
 
 | Project | Commit |
@@ -17,6 +19,8 @@ Every `file:line` of Provimux below is in that commit.
 **Tags.** **[read]** in code. **[ran]** executed by me. **[docs]** in a vendor's public documentation or its own open-source client, read on 2026-11-22. **[infer]** reasoned, not verified. I sent no request with any login and never contacted port 8317.
 
 ## 1. The design in one page
+
+> **Note (owner, 2026-11-22, after this design).** The "built-in" list below is router-for-me's catalog, kept permanently as the base: the vendor's live list first, then providers.dev, then router-for-me's catalog. The rows "Built-in lists" and "Removed" of the table are dropped with steps P1 and P5 (section 13).
 
 A login's list answers two questions, and the design answers them apart.
 
@@ -452,6 +456,8 @@ Counts are `git log -L` on `v8.1.0` and `git log v8.0.60..v8.1.0` [ran]. A rebas
 
 ### 6.2 What is removed
 
+> **Note (owner, 2026-11-22, after this design).** Nothing in this section is removed: step P1 is dropped. router-for-me's addresses, the three embedded files, `staticDevinModels` and the release's fetch of `router-for-me/models` all stay, and router-for-me's catalog is Provimux's base list for good (section 13).
+
 | Removed | How |
 |---|---|
 | The six addresses of `router-for-me/models` and `models.router-for.me` | the edits above. The binary then holds neither string |
@@ -842,7 +848,9 @@ The test runs' result files (the 144 names, and the two runs as `go test -json`)
 
 ## 13. Steps P2 and P4 as built
 
-Built on branch `model-lists-live`, on top of this document's two commits, from `e5cf5a2d5`. P1, P3, P5 and P6 are not built: until they are, "the published list" and "the built-in list" of section 5 are one and the same thing, **the catalog** (router-for-me's lists, embedded and refreshed by upstream's updater). The tests' vendor answers are fixtures in the shape each vendor documents or its own client reads (`sdk/cliproxy/testdata/provimux-live/`); none was recorded with a login, and no request was sent with one.
+Built on branch `model-lists-live`, on top of this document's two commits, from `e5cf5a2d5`.
+
+**The base list is router-for-me's catalog, for good (owner, 2026-11-22).** Steps P1 (removing router-for-me's lists and hosts, a built-in list from our data) and P5 (the release building lists from providers.dev) are dropped. What this branch calls "built-in", **the catalog** (router-for-me's lists, embedded and refreshed by upstream's updater), is the final shape, not a stage. The order is: the vendor's live list first, then providers.dev's published list once P3 is built, then router-for-me's catalog as the base. P3 and P6 are still to come; until P3, "published" is off and the catalog follows the live list directly. Kimi and xAI logins stay on the catalog until P6 records a real answer from each (13.4). The tests' vendor answers are fixtures in the shape each vendor documents or its own client reads (`sdk/cliproxy/testdata/provimux-live/`); none was recorded with a login, and no request was sent with one.
 
 ### 13.1 Section 5.1, row by row
 
@@ -872,7 +880,7 @@ Built on branch `model-lists-live`, on top of this document's two commits, from 
 | The live requests go through each executor's `HttpRequest` (6.1) | Not for Devin: its `PrepareRequest` sets `application/connect+proto` on every request, and `GetCliModelConfigs` is a unary call. It is sent as upstream's own tool sends it (`application/proto`), through the executor's proxy-aware Devin client |
 | The patch's existing tests still pass (P2) | Two encoded rules this design changes and were updated: "catalog values win" (`TestFilterByLiveModelList`, now per field the vendor's) and a Gemini login being uncovered (Gemini keys are). Configs in them now set the key, which became a pointer so that `live-lists: false` survives a config save |
 | Section 6.1's list of upstream lines | Also edited, one line each unless said: `LookupStaticModelInfoByChannel` (2), `LookupDevinModel`, `GetCopilotModels`, the Copilot refresher's fetch, the Antigravity model filter, `sdk/auth`'s Antigravity fetch (the answer's names and limits, which upstream's runtime drops), the Gemini key registration (3 lines), the watcher's change check, and the management refresh |
-| The status endpoint's shape (5.5) | As designed, plus `login_types`, `live.expired`, and per-model `limits`, `modalities`, `reasoning_levels` and `sources` for six fields. `?auth_index=` returns that login only. Until P3 and P1, `published.state` is `off` and `built_in` is an object whose two fields (`dataset_version`, `generated_at`) are null. Rows carry the login's name, e-mail and label for the operator, as `GET /credentials` does; a reader that publishes (groundtruth's discovery) drops `login` and `auth_index`, which the OpenAPI says |
+| The status endpoint's shape (5.5) | As designed, plus `login_types`, `live.expired`, and per-model `limits`, `modalities`, `reasoning_levels` and `sources` for six fields. `?auth_index=` returns that login only. Until P3, `published.state` is `off`. `built_in` is an object whose two fields (`dataset_version`, `generated_at`) are null: the base is router-for-me's catalog, which has no providers.dev dataset version, and with P1 dropped they stay null unless the catalog's own version is reported there later. Rows carry the login's name, e-mail and label for the operator, as `GET /credentials` does; a reader that publishes (groundtruth's discovery) drops `login` and `auth_index`, which the OpenAPI says |
 | Live lists for Kimi and xAI (P2) | Not asked in this version (13.4) |
 | Gemini's answer | Only `generateContent` models are listed: the answer also has embedding and other models |
 | No deadline on a fetch (the patch's rule, "as for other upstream traffic") | A vendor that never answered left its login "fetching" until restart. Every fetch now has a 30-second deadline; the patch's test that asserted no deadline now asserts this one |
