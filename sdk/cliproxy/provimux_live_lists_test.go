@@ -212,16 +212,16 @@ func TestProvimuxDevinParser(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(provimuxSortedKeys(list.ids), ","); got != "devin/gemini-4-neon,devin/kimi-k9,devin/swe-2" {
+	if got := strings.Join(provimuxSortedKeys(list.ids), ","); got != "gemini-4-neon,kimi-k9,swe-2" {
 		t.Fatalf("ids = %s", got)
 	}
-	neon := hasLiveID(list.extra, "devin/gemini-4-neon")
+	neon := hasLiveID(list.extra, "gemini-4-neon")
 	if neon == nil || neon.ContextLength != 1048576 || neon.MaxCompletionTokens != 65536 || neon.OwnedBy != "google" ||
 		neon.Thinking == nil || strings.Join(neon.Thinking.Levels, ",") != "low,medium,high" ||
 		strings.Join(neon.SupportedInputModalities, ",") != "text,image" || neon.DisplayName != "Gemini 4 Neon" {
 		t.Fatalf("neon = %+v thinking=%+v", neon, neon.Thinking)
 	}
-	if k9 := hasLiveID(list.extra, "devin/kimi-k9"); k9 == nil || k9.MaxCompletionTokens != 0 || k9.Thinking != nil {
+	if k9 := hasLiveID(list.extra, "kimi-k9"); k9 == nil || k9.MaxCompletionTokens != 0 || k9.Thinking != nil {
 		t.Fatalf("no output limit is assumed where the answer states none: %+v", k9)
 	}
 	if _, errEmpty := parseDevinLiveModelList(nil, time.Now()); errEmpty == nil {
@@ -293,6 +293,56 @@ func TestProvimuxDevinFetchRegistersLearnedModel(t *testing.T) {
 	}
 	if model := registry.LookupDevinModel("gemini-4-neon-high"); model == nil {
 		t.Fatal("a learned model's variant id must resolve to it")
+	}
+
+	// 8.1.1: the Devin catalog and the list hold bare ids; the login registers them as devin/<id>.
+	if model := registry.LookupStaticModelInfoByChannel("devin/gemini-4-neon", "devin"); model == nil || model.ID != "devin/gemini-4-neon" {
+		t.Fatalf("a channel-qualified id finds the learned model, qualified: %+v", model)
+	}
+	if model := registry.LookupStaticModelInfoByChannel("gemini-4-neon", "devin"); model == nil || model.ID != "gemini-4-neon" {
+		t.Fatalf("a bare id finds the learned model: %+v", model)
+	}
+	for _, model := range registry.GetGlobalRegistry().GetModelsForClient(auth.ID) {
+		if strings.HasPrefix(model.ID, "devin/devin/") {
+			t.Fatalf("namespaced twice: %s", model.ID)
+		}
+	}
+	state, _ := provimuxLiveListSource{}.ModelListLogin(auth, true, true, true)
+	if state.Source != "live" || state.Listed != 3 || state.Learned != 2 || len(state.Models) != 4 {
+		t.Fatalf("status = %+v", state)
+	}
+	sources := map[string]string{}
+	for _, model := range state.Models {
+		sources[model.ID] = model.Source
+		if learned := model.ID == "devin/gemini-4-neon" || model.ID == "devin/kimi-k9"; model.Learned != learned {
+			t.Fatalf("learned %s = %v", model.ID, model.Learned)
+		}
+	}
+	if sources["devin/swe-2"] != "live" || sources["devin/gemini-4-neon"] != "live" || sources["devin/swe-1-6-slow"] != "provimux" {
+		t.Fatalf("status sources = %v", sources)
+	}
+	for _, vendor := range state.Live {
+		if !strings.HasPrefix(vendor.ID, "devin/") || strings.HasPrefix(vendor.ID, "devin/devin/") {
+			t.Fatalf("the vendor's list shows the ids the login registers: %s", vendor.ID)
+		}
+	}
+}
+
+// A cache file written by 8.1.0-pmx.2 holds Devin ids with the devin/ namespace; 8.1.1's catalog has
+// bare ids. The file still applies, and nothing is namespaced twice.
+func TestProvimuxDevinCacheOf810(t *testing.T) {
+	provimuxLiveReset(t)
+	store := modellists.NewStore(t.TempDir())
+	liveModelLists.cache.Store(store)
+	auth := &coreauth.Auth{ID: "devin-cache-810", Provider: "devin", Attributes: map[string]string{"auth_kind": "oauth"},
+		Metadata: map[string]any{"api_key": "devin-session", "email": "office@providers.dev"}}
+	if err := store.WriteLive("devin", liveModelListIdentity(auth), time.Now(), []string{"devin/gemini-4-neon", "devin/swe-2"},
+		[]*ModelInfo{{ID: "devin/gemini-4-neon", DisplayName: "Gemini 4 Neon"}, {ID: "devin/swe-2", DisplayName: "SWE-2"}}); err != nil {
+		t.Fatal(err)
+	}
+	got := applyLiveModelList(provimuxOn(), auth, []*ModelInfo{{ID: "swe-2"}, {ID: "swe-1-5"}, {ID: "swe-1-6-slow"}})
+	if ids := strings.Join(liveIDs(got), ","); ids != "swe-2,swe-1-6-slow,gemini-4-neon" {
+		t.Fatalf("ids = %s", ids)
 	}
 }
 

@@ -140,7 +140,9 @@ func (source provimuxLiveListSource) ModelListLogin(auth *coreauth.Auth, liveLis
 				}
 			}
 			for id := range list.ids {
-				vendorOut = append(vendorOut, provimuxVendorModelOf(id, live[id]))
+				vendor := provimuxVendorModelOf(id, live[id])
+				vendor.ID = provimuxPublicModelID(section, vendor.ID)
+				vendorOut = append(vendorOut, vendor)
 			}
 		}
 		if state.Held && liveListsOn {
@@ -158,7 +160,7 @@ func (source provimuxLiveListSource) ModelListLogin(auth *coreauth.Auth, liveLis
 		if model == nil {
 			continue
 		}
-		key := strings.ToLower(strings.TrimSpace(model.ID))
+		key := provimuxListKeyOfRegistered(section, model.ID)
 		_, listed := liveIDs[key]
 		_, known := catalogByID[key]
 		learned := decides && listed && !known
