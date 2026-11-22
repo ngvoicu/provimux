@@ -97,7 +97,7 @@ func (h *Handler) ProvimuxLiveLists(c *gin.Context) {
 	now := provimuxNow().UTC()
 	enabled := false
 	if cfg := h.configSnapshot(); cfg != nil {
-		enabled = cfg.Models.LiveLists
+		enabled = cfg.Models.LiveListsOn()
 	}
 	response := provimuxLiveListsResponse{
 		ObservedAt: provimuxTime(now),

@@ -12,7 +12,7 @@ func TestConfigChangeForcesAuthRefresh(t *testing.T) {
 		t.Fatal("no change must not force a refresh")
 	}
 	for name, change := range map[string]func(*config.Config){
-		"live lists":   func(c *config.Config) { c.Models.LiveLists = true },
+		"live lists":   func(c *config.Config) { c.Models.LiveLists = new(!c.Models.LiveListsOn()) },
 		"model prefix": func(c *config.Config) { c.ForceModelPrefix = true },
 		"retry":        func(c *config.Config) { c.RequestRetry = 3 },
 	} {
