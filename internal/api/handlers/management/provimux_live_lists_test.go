@@ -34,7 +34,7 @@ func provimuxUseLiveSource(t *testing.T, source ProvimuxLiveListSource) {
 
 func provimuxLiveHandler(manager *coreauth.Manager, enabled bool) *Handler {
 	cfg := &config.Config{}
-	cfg.Models.LiveLists = enabled
+	cfg.Models.LiveLists = new(enabled)
 	return &Handler{cfg: cfg, authManager: manager}
 }
 
