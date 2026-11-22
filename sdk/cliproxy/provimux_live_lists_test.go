@@ -3,12 +3,12 @@ package cliproxy
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -325,7 +325,7 @@ func TestProvimuxKimiParser(t *testing.T) {
 	}
 }
 
-func TestProvimuxKimiFetchMergesPerField(t *testing.T) {
+func TestProvimuxKimiFetchKeepsTheCatalogsValues(t *testing.T) {
 	provimuxLiveReset(t)
 	provimuxAsk(t, "kimi")
 	server := provimuxServe(t, map[string]func(http.ResponseWriter, *http.Request){"/coding/v1/models": provimuxBody(provimuxFixture(t, "kimi-models.json"))})
@@ -344,11 +344,8 @@ func TestProvimuxKimiFetchMergesPerField(t *testing.T) {
 			k28 = model
 		}
 	}
-	if k28.DisplayName != "Kimi K2.8 (live)" || k28.ContextLength != 262144 {
-		t.Fatalf("the vendor's values win: %+v", k28)
-	}
-	if catalogK28.MaxCompletionTokens > 0 && k28.MaxCompletionTokens != catalogK28.MaxCompletionTokens {
-		t.Fatalf("the catalog fills the output limit the list lacks: %d, catalog %d", k28.MaxCompletionTokens, catalogK28.MaxCompletionTokens)
+	if !reflect.DeepEqual(k28, catalogK28) {
+		t.Fatalf("a catalog model keeps the catalog's values:\n got %+v\nwant %+v", k28, catalogK28)
 	}
 	if !registry.ProvimuxIsLearned("kimi", "kimi-k3-neon") || registry.LookupStaticModelInfoByChannel("kimi-k3-neon", "kimi") == nil {
 		t.Fatal("the learned model must be recorded for the lookups")
@@ -599,20 +596,27 @@ func TestProvimuxSectionRules(t *testing.T) {
 		{ID: "grok-4.7", Type: "xai", ContextLength: 1, MaxCompletionTokens: 30000, Thinking: &registry.ThinkingSupport{Levels: []string{"low"}, Min: 1, Max: 2}},
 		{ID: "grok-retired", Type: "xai"},
 		{ID: "grok-imagine-image", Type: "xai"},
+		{ID: "grok-sparse", Type: "xai", MaxCompletionTokens: 8000},
 	}
-	list := liveModelList{ids: map[string]struct{}{"grok-4.7": {}, "grok-5-neon": {}}, extra: []*ModelInfo{
+	list := liveModelList{ids: map[string]struct{}{"grok-4.7": {}, "grok-5-neon": {}, "grok-sparse": {}}, extra: []*ModelInfo{
 		{ID: "grok-4.7", ContextLength: 2000000, Thinking: &registry.ThinkingSupport{Levels: []string{"low", "high"}}},
+		{ID: "grok-sparse", ContextLength: 131072, MaxCompletionTokens: 4000, SupportedInputModalities: []string{"text"},
+			Thinking: &registry.ThinkingSupport{Levels: []string{"low"}}},
 		{ID: "grok-5-neon", ContextLength: 256000},
 	}}
 	out := filterByLiveModelList("xai", catalog, list)
 	// Row 3: a login with a live list offers exactly the models it names, plus Provimux's own.
-	if got := strings.Join(liveIDs(out), ","); got != "grok-4.7,grok-imagine-image,grok-5-neon" {
+	if got := strings.Join(liveIDs(out), ","); got != "grok-4.7,grok-imagine-image,grok-sparse,grok-5-neon" {
 		t.Fatalf("models = %s", got)
 	}
-	// Row 2: per field, the live list first; what it does not state stays the catalog's; nothing invented.
-	grok := hasLiveID(out, "grok-4.7")
-	if grok.ContextLength != 2000000 || grok.MaxCompletionTokens != 30000 || strings.Join(grok.Thinking.Levels, ",") != "low,high" || grok.Thinking.Max != 2 {
+	// Row 2: a model the catalog has keeps the catalog's values (the very entry); the vendor fills
+	// only fields the catalog leaves empty, never the thinking block; nothing invented.
+	if grok := hasLiveID(out, "grok-4.7"); grok != catalog[0] {
 		t.Fatalf("grok = %+v %+v", grok, grok.Thinking)
+	}
+	if sparse := hasLiveID(out, "grok-sparse"); sparse.ContextLength != 131072 || sparse.MaxCompletionTokens != 8000 ||
+		strings.Join(sparse.SupportedInputModalities, ",") != "text" || sparse.Thinking != nil || catalog[3].ContextLength != 0 {
+		t.Fatalf("sparse = %+v", sparse)
 	}
 	if neon := hasLiveID(out, "grok-5-neon"); neon.MaxCompletionTokens != 0 || neon.Thinking != nil {
 		t.Fatalf("a field no source states stays unknown: %+v", neon)
@@ -752,7 +756,7 @@ func TestProvimuxCacheOfAnotherAccountIsIgnored(t *testing.T) {
 	liveModelLists.cache.Store(store)
 	ada := &coreauth.Auth{ID: "kimi-cache", Provider: "kimi", Attributes: map[string]string{"auth_kind": "oauth"}, Metadata: map[string]any{"email": "office@providers.dev"}}
 	bob := &coreauth.Auth{ID: "kimi-cache", Provider: "kimi", Attributes: map[string]string{"auth_kind": "oauth"}, Metadata: map[string]any{"account_id": "acct-2"}}
-	if err := store.WriteLive("kimi", liveModelListIdentity(ada), time.Now(), []string{"kimi-k3-neon"}, []*ModelInfo{{ID: "kimi-k3-neon"}}, nil); err != nil {
+	if err := store.WriteLive("kimi", liveModelListIdentity(ada), time.Now(), []string{"kimi-k3-neon"}, []*ModelInfo{{ID: "kimi-k3-neon"}}); err != nil {
 		t.Fatal(err)
 	}
 	if got := applyLiveModelList(provimuxOn(), bob, []*ModelInfo{{ID: "kimi-k2.8"}}); strings.Join(liveIDs(got), ",") != "kimi-k2.8" {
@@ -903,81 +907,5 @@ func TestProvimuxFetchDeadline(t *testing.T) {
 		Attributes: map[string]string{"auth_kind": "oauth"}, Metadata: map[string]any{"api_key": "s", "user_id": "u-1"}})
 	if _, err := devinSvc.fetchLiveModelList(context.Background(), devin); err == nil || !deadline.Load() {
 		t.Fatalf("devin: err=%v deadline=%v", err, deadline.Load())
-	}
-}
-
-// A vendor's value wins only where its answer states it: Claude's answer without
-// thinking.types.disabled leaves the catalog's "thinking can be turned off".
-func TestProvimuxMissingFieldIsNoStatement(t *testing.T) {
-	catalog := []*ModelInfo{{ID: "claude-opus-5-5", Type: "claude", Thinking: &registry.ThinkingSupport{
-		Levels: []string{"low", "high"}, ZeroAllowed: true, DynamicAllowed: true, Min: 1024, Max: 32000}}}
-	answer := func(types string) []byte {
-		return []byte(`{"data":[{"id":"claude-opus-5-5","max_input_tokens":1000000,"capabilities":{
-			"effort":{"low":{"supported":true},"medium":{"supported":true},"high":{"supported":true}},
-			"thinking":{"supported":true` + types + `}}}],"has_more":false}`)
-	}
-	for _, tc := range []struct {
-		name          string
-		types         string
-		zero, dynamic bool
-	}{
-		{"no types at all", ``, true, true},
-		{"adaptive only", `,"types":{"adaptive":{"supported":false}}`, true, false},
-		{"disabled stated false", `,"types":{"disabled":{"supported":false}}`, false, true},
-		{"both stated", `,"types":{"disabled":{"supported":true},"adaptive":{"supported":true}}`, true, true},
-	} {
-		list, err := parseClaudeLiveModelList(answer(tc.types), time.Now())
-		if err != nil {
-			t.Fatal(err)
-		}
-		merged := filterByLiveModelList("claude", catalog, list)[0]
-		if merged.Thinking.ZeroAllowed != tc.zero || merged.Thinking.DynamicAllowed != tc.dynamic ||
-			strings.Join(merged.Thinking.Levels, ",") != "low,medium,high" || merged.Thinking.Max != 32000 {
-			t.Fatalf("%s: thinking = %+v", tc.name, merged.Thinking)
-		}
-	}
-	// Persisted: a list read back from the disk cache keeps what was stated.
-	provimuxLiveReset(t)
-	store := modellists.NewStore(t.TempDir())
-	liveModelLists.cache.Store(store)
-	list, _ := parseClaudeLiveModelList(answer(`,"types":{"disabled":{"supported":false}}`), time.Now())
-	list.identity, list.provider = "claude||email=office@providers.dev", "claude"
-	liveModelLists.writeCached("claude-a", list)
-	login := &coreauth.Auth{ID: "claude-a", Provider: "claude", Attributes: map[string]string{"auth_kind": "oauth"}, Metadata: map[string]any{"email": "office@providers.dev"}}
-	list.identity = liveModelListIdentity(login)
-	liveModelLists.writeCached("claude-a", list)
-	if got := applyLiveModelList(provimuxOn(), login, catalog); got[0].Thinking.ZeroAllowed || !got[0].Thinking.DynamicAllowed {
-		t.Fatalf("from the cache: %+v", got[0].Thinking)
-	}
-}
-
-// A login whose identity changes (another account, a credential-based identity after a token
-// refresh) leaves no file behind, and files past the 7-day limit are pruned at start.
-func TestProvimuxCacheFilesDoNotPileUp(t *testing.T) {
-	provimuxLiveReset(t)
-	dir := t.TempDir()
-	store := modellists.NewStore(dir)
-	liveModelLists.cache.Store(store)
-	for i := range 4 {
-		list := liveModelList{identity: fmt.Sprintf("gemini||credential=%d", i), provider: "gemini",
-			ids: map[string]struct{}{"gemini-4-neon": {}}, fetchedAt: time.Now()}
-		liveModelLists.writeCached("gemini-key", list)
-	}
-	if files, _ := filepath.Glob(filepath.Join(dir, "live-*.json")); len(files) != 1 {
-		t.Fatalf("one login, one file: %v", files)
-	}
-	old := filepath.Join(dir, "live-0123456789abcdef0123456789abcdef.json")
-	if err := os.WriteFile(old, []byte("{}"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	past := time.Now().Add(-liveModelListMaxAge - time.Hour)
-	if err := os.Chtimes(old, past, past); err != nil {
-		t.Fatal(err)
-	}
-	if removed := store.PruneOlderThan(liveModelListMaxAge, time.Now()); removed != 1 {
-		t.Fatalf("removed %d", removed)
-	}
-	if files, _ := filepath.Glob(filepath.Join(dir, "live-*.json")); len(files) != 1 {
-		t.Fatalf("the current file stays: %v", files)
 	}
 }

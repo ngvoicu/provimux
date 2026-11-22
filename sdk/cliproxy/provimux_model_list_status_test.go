@@ -34,7 +34,13 @@ func TestProvimuxModelListSource(t *testing.T) {
 				t.Fatalf("neon = %+v", model)
 			}
 		case "kimi-k2.8":
-			if model.Learned || model.Sources["display_name"] != "live" {
+			// a model the catalog has: every value, and so every source, is the catalog's
+			for field, from := range model.Sources {
+				if from != "built-in" {
+					t.Fatalf("k2.8 %s from %s: %+v", field, from, model)
+				}
+			}
+			if model.Learned || len(model.Sources) == 0 {
 				t.Fatalf("k2.8 = %+v", model)
 			}
 		}
