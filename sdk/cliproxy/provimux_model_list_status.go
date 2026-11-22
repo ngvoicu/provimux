@@ -30,7 +30,7 @@ func provimuxModelListType(auth *coreauth.Auth) string {
 	if auth == nil {
 		return ""
 	}
-	if provider := liveModelListProvider(auth); provider != "" {
+	if provider := liveModelListType(auth); provider != "" && (liveModelListAsked[provider] || auth.AuthKind() != coreauth.AuthKindAPIKey) {
 		return provider
 	}
 	if auth.AuthKind() == coreauth.AuthKindAPIKey {
@@ -116,6 +116,9 @@ func (source provimuxLiveListSource) ModelListLogin(auth *coreauth.Auth, liveLis
 		}
 	case "vertex", "aistudio":
 	default:
+		if liveModelListProvider(auth) == "" {
+			break // a type whose fetcher is switched off (Kimi, xAI): the catalog, as before
+		}
 		state.Supported = true
 		held := source.State(auth)
 		state.Fetching = held.Fetching
