@@ -124,7 +124,7 @@ func provimuxLiveListFailureOf(err error) (string, int) {
 type provimuxLiveListSource struct{}
 
 func (provimuxLiveListSource) Providers() []string {
-	return append([]string(nil), liveModelListProviders...)
+	return liveModelListProviders()
 }
 
 // State reads the store and the failure note under both locks, so a failure recorded meanwhile is
