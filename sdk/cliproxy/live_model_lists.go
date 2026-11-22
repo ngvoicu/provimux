@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -30,10 +31,10 @@ import (
 // edited by hand and lags them: it can keep retired models and miss new ones for days. CPA fetches
 // every such login's list in the background (at startup, every ModelsRefreshInterval, on
 // POST /models/refresh, and when a login is added or replaced) and registers exactly the models the
-// list names, plus the models CPA adds itself (image, video, speech). Per field, the vendor's value
-// wins; the catalog fills what the vendor's list does not state, and nothing else is invented. A
-// model the catalog lacks is added from the vendor's description ("learned", model-lists.md 5.1)
-// and recorded in the registry so lookups find it too.
+// list names, plus the models CPA adds itself (image, video, speech). A model the catalog has
+// keeps the catalog's values (the vendor fills only fields the catalog leaves empty; nothing is
+// invented); a model the catalog lacks is added from the vendor's description ("learned",
+// model-lists.md 13.1) and recorded in the registry so lookups find it too.
 //
 // A fetch replaces the held list only when it is complete and names at least one model; anything
 // else keeps the held list and schedules a retry. Lists are kept on disk (modellists.Store), so a
@@ -89,60 +90,28 @@ type liveModelList struct {
 	extra     []*ModelInfo        // provider descriptions, one per model the provider describes
 	fetchedAt time.Time
 	fromCache bool // read from the disk cache at start, not fetched by this process yet
-	// stated names, per lower-case id, the boolean fields the vendor's answer states (a false
-	// value counts only then). Other fields count when the answer gives a value.
-	stated map[string][]string
-}
-
-const (
-	liveStatedZeroAllowed    = "zero_allowed"
-	liveStatedDynamicAllowed = "dynamic_allowed"
-)
-
-// noteStated records boolean fields an answer states for a model.
-func (l *liveModelList) noteStated(id string, fields ...string) {
-	if len(fields) == 0 {
-		return
-	}
-	if l.stated == nil {
-		l.stated = map[string][]string{}
-	}
-	key := strings.ToLower(strings.TrimSpace(id))
-	l.stated[key] = append(l.stated[key], fields...)
-}
-
-func (l liveModelList) states(id, field string) bool {
-	for _, stated := range l.stated[strings.ToLower(strings.TrimSpace(id))] {
-		if stated == field {
-			return true
-		}
-	}
-	return false
 }
 
 type liveModelListStore struct {
-	mu         sync.Mutex
-	lists      map[string]liveModelList // by auth ID
-	nextRetry  map[string]time.Time     // by auth ID, after a failed fetch
-	inFlight   map[string]struct{}      // by auth ID
-	cacheTried map[string]string        // by auth ID: the identity whose disk file was read
-	// cachedIdentity is, by auth ID, the identity whose file this process wrote or read last.
-	cachedIdentity map[string]string
-	expiredNoted   map[string]time.Time // by auth ID: fetchedAt of a list announced as expired
-	wake           chan struct{}
-	force          atomic.Bool
-	fetches        sync.WaitGroup
-	cache          atomic.Pointer[modellists.Store]
+	mu           sync.Mutex
+	lists        map[string]liveModelList // by auth ID
+	nextRetry    map[string]time.Time     // by auth ID, after a failed fetch
+	inFlight     map[string]struct{}      // by auth ID
+	cacheTried   map[string]string        // by auth ID: the identity whose disk file was read
+	expiredNoted map[string]time.Time     // by auth ID: fetchedAt of a list announced as expired
+	wake         chan struct{}
+	force        atomic.Bool
+	fetches      sync.WaitGroup
+	cache        atomic.Pointer[modellists.Store]
 }
 
 var liveModelLists = &liveModelListStore{
-	lists:          make(map[string]liveModelList),
-	nextRetry:      make(map[string]time.Time),
-	inFlight:       make(map[string]struct{}),
-	cacheTried:     make(map[string]string),
-	cachedIdentity: make(map[string]string),
-	expiredNoted:   make(map[string]time.Time),
-	wake:           make(chan struct{}, 1),
+	lists:        make(map[string]liveModelList),
+	nextRetry:    make(map[string]time.Time),
+	inFlight:     make(map[string]struct{}),
+	cacheTried:   make(map[string]string),
+	expiredNoted: make(map[string]time.Time),
+	wake:         make(chan struct{}, 1),
 }
 
 // liveModelListIdentity names the account behind a login. An auth file can be overwritten with
@@ -310,7 +279,7 @@ func (st *liveModelListStore) loadCached(authID, identity, provider string) bool
 		return false
 	}
 	list := liveModelList{identity: identity, provider: provider, ids: make(map[string]struct{}, len(file.IDs)),
-		extra: file.Models, fetchedAt: file.FetchedAt, fromCache: true, stated: file.Stated}
+		extra: file.Models, fetchedAt: file.FetchedAt, fromCache: true}
 	for _, id := range file.IDs {
 		if id = strings.ToLower(strings.TrimSpace(id)); id != "" {
 			list.ids[id] = struct{}{}
@@ -325,29 +294,21 @@ func (st *liveModelListStore) loadCached(authID, identity, provider string) bool
 		return false // a fetch finished meanwhile
 	}
 	st.lists[authID] = list
-	st.cachedIdentity[authID] = identity
 	return true
 }
 
 // writeCached stores a fetched list on disk. A failure is logged by the cache, once.
-func (st *liveModelListStore) writeCached(authID string, list liveModelList) {
+func (st *liveModelListStore) writeCached(list liveModelList) {
 	cache := st.cache.Load()
 	if cache == nil {
 		return
-	}
-	st.mu.Lock()
-	previous := st.cachedIdentity[authID]
-	st.cachedIdentity[authID] = list.identity
-	st.mu.Unlock()
-	if previous != "" && previous != list.identity {
-		cache.RemoveLive(previous)
 	}
 	ids := make([]string, 0, len(list.ids))
 	for id := range list.ids {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
-	_ = cache.WriteLive(list.provider, list.identity, list.fetchedAt, ids, list.extra, list.stated)
+	_ = cache.WriteLive(list.provider, list.identity, list.fetchedAt, ids, list.extra)
 }
 
 // newlyExpired returns the logins whose list just passed liveModelListMaxAge, once per list.
@@ -372,8 +333,7 @@ func (st *liveModelListStore) newlyExpired(now time.Time) []string {
 // sameLiveModelList compares everything a list publishes: its account, ids and every field of the
 // models it may add.
 func sameLiveModelList(a, b liveModelList) bool {
-	return a.identity == b.identity && reflect.DeepEqual(a.ids, b.ids) && reflect.DeepEqual(a.extra, b.extra) &&
-		reflect.DeepEqual(a.stated, b.stated)
+	return a.identity == b.identity && reflect.DeepEqual(a.ids, b.ids) && reflect.DeepEqual(a.extra, b.extra)
 }
 
 // liveModelListProvider returns the provider whose live list applies to auth, or "" (also for a
@@ -445,15 +405,11 @@ func (s *Service) openLiveModelListCache() {
 	if s == nil || liveModelLists.cache.Load() != nil {
 		return
 	}
-	store := modellists.NewStore(modellists.Dir(s.configPath))
-	if liveModelLists.cache.CompareAndSwap(nil, store) {
-		// Files of lists past the 7-day limit are never used again: their logins changed or left.
-		store.PruneOlderThan(liveModelListMaxAge, liveModelListNow())
-	}
+	liveModelLists.cache.CompareAndSwap(nil, modellists.NewStore(modellists.Dir(s.configPath)))
 }
 
-// filterByLiveModelList keeps the catalog models the list names, with the vendor's value for every
-// field the vendor states, and appends the listed models the catalog lacks.
+// filterByLiveModelList keeps the catalog models the list names, with the catalog's values (only
+// empty fields filled from the vendor, fillLiveModel), and appends the listed models the catalog lacks.
 func filterByLiveModelList(provider string, models []*ModelInfo, list liveModelList) []*ModelInfo {
 	keep := liveModelListBuiltins(provider)
 	described := make(map[string]*ModelInfo, len(list.extra))
@@ -475,7 +431,7 @@ func filterByLiveModelList(provider string, models []*ModelInfo, list liveModelL
 			continue
 		}
 		if live := described[id]; live != nil && listed && !builtin {
-			model = mergeLiveModel(model, live, list.states(id, liveStatedZeroAllowed), list.states(id, liveStatedDynamicAllowed))
+			model = fillLiveModel(model, live)
 		}
 		out = append(out, model)
 		seen[id] = struct{}{}
@@ -516,70 +472,54 @@ func cloneLiveModel(model *ModelInfo) *ModelInfo {
 	return &clone
 }
 
-// mergeLiveModel returns a copy of the catalog model with every field the vendor's list states
-// taken from the list (model-lists.md 5.1: per field, the live list first). The catalog keeps the
-// fields the list does not state, and the routing fields (type, owner, object, name, the router's
-// own settings). A value counts only where the answer states it: a number or list it gives, and a
-// thinking flag (off allowed, dynamic budget) only when the answer has the field (zeroStated,
-// dynamicStated); a missing field is no statement, so the catalog's value stays.
-func mergeLiveModel(catalog, live *ModelInfo, zeroStated, dynamicStated bool) *ModelInfo {
+// fillLiveModel returns the catalog model with the fields the catalog leaves empty filled from the
+// vendor's description (model-lists.md 13.1). For a model the catalog has, the vendor's list decides
+// only whether the login offers it: every value the catalog states stays the catalog's, as on
+// 8.1.0-pmx.1. Empty means a zero number (the window and the output limit each as one field: either
+// of their two numbers counts), an empty string or an empty list. The thinking block is the
+// catalog's whole: a catalog model without one is a model whose thinking the router does not
+// handle, and its levels, budgets and flags are read together.
+func fillLiveModel(catalog, live *ModelInfo) *ModelInfo {
+	fillName := catalog.DisplayName == "" && live.DisplayName != ""
+	fillDescription := catalog.Description == "" && live.Description != ""
+	fillCreated := catalog.Created == 0 && live.Created != 0
+	fillContext := catalog.ContextLength == 0 && catalog.InputTokenLimit == 0 && (live.ContextLength > 0 || live.InputTokenLimit > 0)
+	fillOutput := catalog.MaxCompletionTokens == 0 && catalog.OutputTokenLimit == 0 &&
+		(live.MaxCompletionTokens > 0 || live.OutputTokenLimit > 0)
+	fillInputs := len(catalog.SupportedInputModalities) == 0 && len(live.SupportedInputModalities) > 0
+	fillOutputs := len(catalog.SupportedOutputModalities) == 0 && len(live.SupportedOutputModalities) > 0
+	fillMethods := len(catalog.SupportedGenerationMethods) == 0 && len(live.SupportedGenerationMethods) > 0
+	if !fillName && !fillDescription && !fillCreated && !fillContext && !fillOutput && !fillInputs && !fillOutputs && !fillMethods {
+		return catalog // nothing to fill: the catalog's own entry, as 8.1.0-pmx.1 registers it
+	}
 	merged := cloneLiveModel(catalog)
 	if catalog.NativeCapabilities != nil {
 		capabilities := *catalog.NativeCapabilities
 		merged.NativeCapabilities = &capabilities
 	}
-	if live.DisplayName != "" {
+	if fillName {
 		merged.DisplayName = live.DisplayName
 	}
-	if live.Description != "" {
+	if fillDescription {
 		merged.Description = live.Description
 	}
-	if live.Created > 0 {
+	if fillCreated {
 		merged.Created = live.Created
 	}
-	if live.ContextLength > 0 {
-		merged.ContextLength = live.ContextLength
+	if fillContext {
+		merged.ContextLength, merged.InputTokenLimit = live.ContextLength, live.InputTokenLimit
 	}
-	if live.MaxCompletionTokens > 0 {
-		merged.MaxCompletionTokens = live.MaxCompletionTokens
+	if fillOutput {
+		merged.MaxCompletionTokens, merged.OutputTokenLimit = live.MaxCompletionTokens, live.OutputTokenLimit
 	}
-	if live.InputTokenLimit > 0 {
-		merged.InputTokenLimit = live.InputTokenLimit
-	}
-	if live.OutputTokenLimit > 0 {
-		merged.OutputTokenLimit = live.OutputTokenLimit
-	}
-	if len(live.SupportedInputModalities) > 0 {
+	if fillInputs {
 		merged.SupportedInputModalities = append([]string(nil), live.SupportedInputModalities...)
 	}
-	if len(live.SupportedOutputModalities) > 0 {
+	if fillOutputs {
 		merged.SupportedOutputModalities = append([]string(nil), live.SupportedOutputModalities...)
 	}
-	if len(live.SupportedGenerationMethods) > 0 {
+	if fillMethods {
 		merged.SupportedGenerationMethods = append([]string(nil), live.SupportedGenerationMethods...)
-	}
-	if live.SupportsWebSearch {
-		merged.SupportsWebSearch = true
-	}
-	if live.Thinking != nil {
-		if merged.Thinking == nil {
-			merged.Thinking = &registry.ThinkingSupport{}
-		}
-		if len(live.Thinking.Levels) > 0 {
-			merged.Thinking.Levels = append([]string(nil), live.Thinking.Levels...)
-		}
-		if live.Thinking.Min > 0 {
-			merged.Thinking.Min = live.Thinking.Min
-		}
-		if live.Thinking.Max > 0 {
-			merged.Thinking.Max = live.Thinking.Max
-		}
-		if zeroStated {
-			merged.Thinking.ZeroAllowed = live.Thinking.ZeroAllowed
-		}
-		if dynamicStated {
-			merged.Thinking.DynamicAllowed = live.Thinking.DynamicAllowed
-		}
 	}
 	return merged
 }
@@ -712,7 +652,7 @@ func (s *Service) fetchAndRegisterLiveModelList(ctx context.Context, snapshot *c
 	list.identity = identity
 	list.provider = provider
 	changed := liveModelLists.put(snapshot.ID, list)
-	liveModelLists.writeCached(snapshot.ID, list)
+	liveModelLists.writeCached(list)
 	if changed {
 		provimuxUpdateLearnedModels(provider)
 		if !current.Disabled {
@@ -727,6 +667,19 @@ func (s *Service) fetchLiveModelList(ctx context.Context, auth *coreauth.Auth) (
 	// vendor that never answers fails the fetch, the held list stays and the retry is scheduled.
 	ctx, cancel := context.WithTimeout(ctx, liveModelListFetchTimeout)
 	defer cancel()
+	list, err := s.fetchLiveModelListWithin(ctx, auth)
+	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		// Whatever step was running (minting Meta's key, a request, reading an answer), the vendor
+		// did not answer in time: a network failure, as model-lists.md 13.2 says.
+		return liveModelList{}, fmt.Errorf("%w: %w", errLiveModelListTimeout, err)
+	}
+	return list, err
+}
+
+// errLiveModelListTimeout marks a fetch that ran past liveModelListFetchTimeout.
+var errLiveModelListTimeout = errors.New("model list: no answer within the deadline")
+
+func (s *Service) fetchLiveModelListWithin(ctx context.Context, auth *coreauth.Auth) (liveModelList, error) {
 	provider := liveModelListProvider(auth)
 	executor, ok := s.coreManager.Executor(provider)
 	if !ok || executor == nil {
@@ -893,15 +846,6 @@ func parseClaudeLiveModelList(body []byte, now time.Time) (liveModelList, error)
 			model.Thinking = &registry.ThinkingSupport{Levels: levels,
 				ZeroAllowed:    caps.Get("thinking.types.disabled.supported").Bool(),
 				DynamicAllowed: caps.Get("thinking.types.adaptive.supported").Bool()}
-			// Only what the answer states counts: a missing flag leaves the catalog's value.
-			var stated []string
-			if caps.Get("thinking.types.disabled.supported").Exists() {
-				stated = append(stated, liveStatedZeroAllowed)
-			}
-			if caps.Get("thinking.types.adaptive.supported").Exists() {
-				stated = append(stated, liveStatedDynamicAllowed)
-			}
-			list.noteStated(id, stated...)
 		}
 		list.extra = append(list.extra, model)
 	}

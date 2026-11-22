@@ -97,6 +97,9 @@ func provimuxRunNotePruner(tick <-chan time.Time) {
 // provimuxLiveListFailureOf classifies a fetch error by the fetcher's own messages. The status is
 // read only from the fetcher's own top-level "HTTP <status> from <path>" error.
 func provimuxLiveListFailureOf(err error) (string, int) {
+	if errors.Is(err, errLiveModelListTimeout) {
+		return provimuxLiveFailureNetwork, 0
+	}
 	message := err.Error()
 	switch {
 	case strings.HasPrefix(message, "HTTP "):
