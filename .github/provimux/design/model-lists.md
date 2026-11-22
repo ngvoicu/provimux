@@ -1,6 +1,6 @@
 # Model lists: live from the vendors, else from providers.dev, never from router-for-me
 
-Design, 2026-11-22. This is the design only: no code exists yet.
+Design, 2026-11-22. This is the design only: no code exists yet. Section 9 was added the same day for the owner's later decisions: groundtruth discovers every login's models daily and measures every Monday night, unattended.
 
 **The owner's decision (2026-11-22).** Provimux takes no model list from router-for-me, and nothing of router-for-me's model lists stays in it. A login's list comes first from its vendor, through the login Provimux already holds; else from providers.dev; else from a list built into the release from our own sources. The plugin store stays as it is.
 
@@ -10,7 +10,7 @@ Design, 2026-11-22. This is the design only: no code exists yet.
 |---|---|
 | Provimux | `provimux/main` at `e5cf5a2d5` (CLIProxyAPI `v8.1.0` + 146 commits, last tag `v8.1.0-pmx.1`) |
 | providers.dev | `main` at `73f87b4`; branch `sources-side-by-side` at `36ef758` |
-| groundtruth | `main` at `ffdc85d` |
+| groundtruth | `main` at `ffdc85d`; branch `own-clients` at `60e65ba` |
 
 Every `file:line` of Provimux below is in that commit.
 
@@ -30,7 +30,8 @@ A login's list answers two questions, and the design answers them apart.
 |---|---|---|
 | Live lists | Provimux, the owner's existing `models.live-lists` patch, widened | Asks each login's vendor for its list. Today: Claude, Codex, Meta. Added: Devin, Kimi, xAI, Gemini keys. Copilot and Antigravity already ask (upstream code) and now also add models nobody has described yet |
 | Published lists | providers.dev, new resource `/api/v1/listings` | One list per provider and access method, with each value's source |
-| The capture | groundtruth, new file `listed.json` | The owner's Provimux hands over what each vendor's list said; providers.dev imports it daily |
+| Discovery | groundtruth, daily, new file `listed.json` | The owner's Provimux hands over what each vendor's list said; providers.dev imports it daily and lists every offered model, measured or not |
+| The Monday night | groundtruth, weekly, unattended | Measures what is new or in doubt, inside a cap of runs per login and a cap of money (section 9) |
 | Built-in lists | Provimux release workflow, job `catalogs` | Fetches providers.dev's listings once per release instead of `router-for-me/models` |
 | Removed | Provimux | The three fetchers' URLs, the three embedded files, the release's fetch of `router-for-me/models` |
 
@@ -114,14 +115,14 @@ A **listing** is the model list of one provider and access method: what the vend
 
 | Provimux login | Listing (provider id) | Provider exists today | The listing's models come from |
 |---|---|---|---|
-| Claude login | `claude-subscription` | yes, authored | the capture |
-| Codex login | `openai-codex` | yes, models.dev (2 models) | the capture, else models.dev |
-| Copilot | `github-copilot` | yes, models.dev (44 models) | the capture, else models.dev |
-| Antigravity | `antigravity` | yes, authored | the capture |
-| Devin | `devin` | yes, authored | the capture |
-| Meta login | `meta-subscription` | yes, authored | the capture (ids), fields authored |
-| Kimi login | `kimi-code-plan-global` or `-cn` | yes, models.dev | the capture, else models.dev |
-| xAI | `xai` | yes, models.dev | models.dev; the capture if the login's list differs |
+| Claude login | `claude-subscription` | yes, authored | discovery |
+| Codex login | `openai-codex` | yes, models.dev (2 models) | discovery, else models.dev |
+| Copilot | `github-copilot` | yes, models.dev (44 models) | discovery, else models.dev |
+| Antigravity | `antigravity` | yes, authored | discovery |
+| Devin | `devin` | yes, authored | discovery |
+| Meta login | `meta-subscription` | yes, authored | discovery (ids), fields authored |
+| Kimi login | `kimi-code-plan-global` or `-cn` | yes, models.dev | discovery, else models.dev |
+| xAI | `xai` | yes, models.dev | models.dev; discovery if the login's list differs |
 | Gemini key, AI Studio | `google` | yes, models.dev | models.dev |
 | Vertex | `google-vertex` | yes, models.dev | models.dev |
 | Claude key, Codex key | `anthropic`, `openai` | yes, models.dev | models.dev |
@@ -130,7 +131,7 @@ Provider ids are from `data/upstream/providers/` and `data/authored/providers/` 
 
 **Sources of a listing, in one fixed order**, the same order `sources-side-by-side` uses for a value:
 
-1. `listed`: the capture (section 4.3).
+1. `listed`: groundtruth's discovery (section 4.3).
 2. `providers.dev`: an authored list or field, with `reason` and `evidence` as every authored statement has.
 3. `models.dev`: the imported models of the same provider.
 4. `pi.dev`: pi's models of the same provider.
@@ -179,12 +180,13 @@ Provimux makes one request, `GET /api/v1/listings?view=full&limit=<max>`, and ge
       },
       "web_search": null,
       "aliases": [],
+      "variants": ["gemini-4-neon-low", "gemini-4-neon-medium", "gemini-4-neon-high"],
       "plans": [],
       "hidden": false,
       "sources": {
         "context_window": "listed", "max_input": null, "max_output": "listed",
         "input_modalities": "listed", "output_modalities": "listed", "reasoning": "listed",
-        "web_search": null, "aliases": null, "plans": null
+        "web_search": null, "aliases": null, "variants": "listed", "plans": null
       }
     }
   ]
@@ -199,40 +201,35 @@ The figures in the example are placeholders.
 | `entry` | `{provider, model}` of the catalog entry for this model on this provider, or `null`: listed, not evaluated |
 | `reasoning` | `null` when no source says anything. `can_disable`: thinking can be turned off. `dynamic`: the model may choose its own budget. `disable_with`: the vendor's word for "off" where it is not the usual one |
 | `web_search` | the access method runs the vendor's own web search for this model |
+| `variants` | the vendor's own ids where it has one id per reasoning level (Devin); `[]` where `id` itself is what a request names |
 | `plans` | plan names the vendor's list itself attaches to the model (Codex: `available_in_plans`); `[]` when the list names none |
 | `hidden` | the vendor's list marks the model as not shown in pickers |
 | `sources` | per field, the source that gave it: `listed`, `providers.dev`, `models.dev`, `pi.dev`, or `null` |
 | `basis`, `listed_at`, `client` | of the listing: the source of its models, the date that source was read, and for `listed` the client that read it |
 
-New components: `Listing`, `ListingModel`, `ListingReasoning`, `ListingSources`. `/api/v1/meta` grows a `listings` object (`count`, `fetched_at`, the capture's date). The version takes the next minor step at the time it lands.
+New components: `Listing`, `ListingModel`, `ListingReasoning`, `ListingSources`. `/api/v1/meta` grows a `listings` object (`count`, `fetched_at`, the date of the discovery file). The version takes the next minor step at the time it lands.
 
 **Freshness.**
 
 | Basis | As fresh as |
 |---|---|
-| `listed` | the last capture: one day old with a daily capture (section 4.3) |
+| `listed` | the last discovery: one day old at most (section 9.1) |
 | `models.dev`, `pi.dev` | the daily import, 04:17 UTC |
 | `providers.dev` | the last edit, dated in its evidence |
 
 Every response keeps its existing freshness headers (`ETag`, `X-Dataset-Version`, `X-Dataset-Generated-At`), and a `listed` listing older than `stale_after_days` is marked by the existing stale rule.
 
-### 4.3 The capture: how a login's list gets to a site with no logins
+### 4.3 Discovery: how a login's list gets to a site with no logins
 
-providers.dev's CI has no logins. The owner's Provimux has them and already asks the vendors every 3 hours. So the capture reads Provimux, not the vendors:
+providers.dev's CI has no logins. groundtruth discovers each login's offered models every day and publishes them in `listed.json`, at the repository root beside `observed.json`. Section 9.1 says how it reads them and why that way.
 
-1. Provimux's new management endpoint returns, per login, **exactly what the vendor's list said**, before any merge (section 5.5, `view=live`).
-2. A new script in groundtruth, `scripts/capture_listed.py`, reads it from the owner's Provimux with the management key and writes `listed.json` at the repository root, beside `observed.json`.
-3. providers.dev's daily sync fetches `listed.json` as it fetches `observed.json` (`scripts/lib/sync.ts:15`, `:243-260`), into `data/sources/listed.json`. A missing file is "no capture yet", not an error.
+providers.dev's daily sync fetches `listed.json` as it fetches `observed.json` (`scripts/lib/sync.ts:15`, `:243-260`), into `data/sources/listed.json`. A missing file is "no discovery yet", not an error. Every model of the file is listed, measured or not; the page says which (4.5).
 
-**No circle.** Only rows whose source is `live` are exported. A list Provimux took from providers.dev or from its built-in copy is never captured, so providers.dev never reads back its own data.
+**Why a file of its own, not a part of `observed.json`.** `observed.json` is built from audited raw results, and CI fails when it does not match them (groundtruth's `ci.yml`: `build_observed.py --check` and `--audit-gate`). A list is not a measurement, changes daily and must not wait for Tuesday's audit.
 
-**What the file holds.** Per provider: the date, the client (`provimux`, a new id in `data/authored/measurement-labels.yaml`), and the models with the fields the vendor stated. It holds no account, email, token, auth file name or login count. Where the owner has several logins of one type, the list is their union.
+**What the file holds.** Per provider: the date, the client that read the list (`provimux`, a new id in `data/authored/measurement-labels.yaml`, of kind `proxy`), and the models with the fields the vendor stated. It holds no account, email, token, auth file name or login count. Where the owner has several logins of one type, the list is their union.
 
-**It sends nothing to a vendor.** The script makes one local request. Provimux has already made the vendor requests on its own schedule.
-
-**Cadence.** groundtruth's nights are started by hand, in bursts (measuring days 4, 6 to 13 and 15 to 18 November, none since) [read: groundtruth's history]. A capture tied to nights would be days or weeks old. I recommend a daily job on the owner's Mac (`launchd`) that runs the script and pushes the file when it changed. It spends no quota. It is the owner's decision (section 10).
-
-**Before the new Provimux exists.** The first capture is made with a Provimux built from the branch of step P2, run by the owner. Upstream's four `cmd/fetch_*_models` tools are a second way for Devin, Antigravity, Copilot and Codex.
+**No circle.** Only what a vendor's list said is written. A list Provimux took from providers.dev or from its built-in copy is never discovered, so providers.dev never reads back its own data.
 
 ### 4.4 The fields a live list lacks
 
@@ -292,7 +289,7 @@ Per login type Provimux keeps a **section**: every model it knows for that type,
 | A login **without** a live list | offers the published list (else built-in), without learned models |
 | On top, unchanged | the user's `excluded-models`, `oauth-model-alias`, model prefixes, and models from the config and from plugins (`sdk/cliproxy/service_models.go:337-350`) |
 
-**A change from today.** The patch lets the catalog's value win for a model both have (`live_model_lists.go:31`). This design lets the vendor's value win per field, which is what "first, live" means. Step P6 lists every value this changes on the owner's logins before anything is removed. Keeping "published wins for a model both have" is the alternative (section 10).
+**A change from today.** The patch lets the catalog's value win for a model both have (`live_model_lists.go:31`). This design lets the vendor's value win per field, which is what "first, live" means. Step P6 lists every value this changes on the owner's logins before anything is removed. Keeping "published wins for a model both have" is the alternative (section 11).
 
 ### 5.2 How often
 
@@ -385,7 +382,7 @@ model list for kimi login 0b7e…: fetch failed (http_status 401); keeping the l
 | `live.supported` | the vendor has a list and this login is asked |
 | `learned_models` | models this login offers that the published list lacks |
 | `models` | `null`, unless the request names one login (`?auth_index=`): then one row per model with its `id`, its `source` and, per field, the source that gave it |
-| `?view=live` | adds, per login, the vendor's list as it arrived, unmerged. This is what the capture reads (section 4.3) |
+| `?view=live` | adds, per login, the vendor's list as it arrived, unmerged. This is what groundtruth's discovery reads (section 9.1) |
 | `last_failure` | `{at, category, http_status}`: codes only |
 
 Rules kept from PUI-13: `auth_index` identifies a login; names follow `GET /v8/management/credentials`; responses only grow.
@@ -412,7 +409,7 @@ Provimux is released with every CLIProxyAPI release, and upstream made 21 in the
 
 1. Live: the Codex login's own answer is this catalog. The patch already fetches it (`live_model_lists.go:445`) and throws most of it away.
 2. Not providers.dev: it publishes model facts, not a client's prompts.
-3. Built in: OpenAI's own public file, `codex-rs/models-manager/models.json` of `openai/codex` (Apache-2.0), fetched at one commit by the same job. It has 14 models in the same shape, and upstream's validator rejects it for one reason only: it has no `base_instructions` [ran: `go run ./cmd/validate_codex_models` on the file]. Step P5 fills that field from the same repository at the same commit, or the owner chooses the capture instead (section 10).
+3. Built in: OpenAI's own public file, `codex-rs/models-manager/models.json` of `openai/codex` (Apache-2.0), fetched at one commit by the same job. It has 14 models in the same shape, and upstream's validator rejects it for one reason only: it has no `base_instructions` [ran: `go run ./cmd/validate_codex_models` on the file]. Step P5 fills that field from the same repository at the same commit, or the owner chooses his own Codex login's answer instead (section 11).
 
 **A copy in the repository.** `internal/registry/provimux_lists/` holds a committed copy so that a build from source works. It is as old as its commit; a release replaces it at build time, as releases replace the catalogs today.
 
@@ -470,7 +467,7 @@ Counts are `git log -L` on `v8.1.0` and `git log v8.0.60..v8.1.0` [ran]. A rebas
 | The plugin store's address (`internal/pluginstore/registry.go:17`) | the owner's decision |
 | `.github/scripts/refresh-model-catalogs.sh` | upstream's script, called only by two of upstream's workflows, both disabled in this repository (`.github/provimux/upstream-workflows.md:9`, `:12`). It never runs here |
 | The three files in `internal/registry/models/`, in the source tree | section 6.4 |
-| Models written into upstream's code: Codex image models, xAI image, video and speech models, `devin/swe-1-6-slow`, Copilot's `compat.json` | they are how an executor behaves for a model the vendor's list never names, not a fetched list; `compat.json` is on a protected path. The owner decides (section 10) |
+| Models written into upstream's code: Codex image models, xAI image, video and speech models, `devin/swe-1-6-slow`, Copilot's `compat.json` | they are how an executor behaves for a model the vendor's list never names, not a fetched list; `compat.json` is on a protected path. The owner decides (section 11) |
 
 ### 6.3 How much of upstream's registry stays untouched
 
@@ -487,7 +484,7 @@ I ran upstream's tests twice on `e5cf5a2d5`, over `internal/registry`, `internal
 | Failing only without the lists | | **144**, in 14 packages (`sdk/cliproxy` 63, `internal/runtime/executor` 33, `internal/registry` 15, `internal/thinking` 11, others 22) |
 | No result at all | | **711**: the executor package stopped |
 
-The names are in the scratch file given in section 11.
+The names are in the scratch file given in section 12.
 
 The sync check passes a release only if it is "no worse than upstream" (`SYNC.md`, "The check"). Upstream's tests assume router-for-me's lists; with our lists in their place, every difference between the two would be a failing test at some sync, and a failing test needs the owner.
 
@@ -526,7 +523,7 @@ The release notes of the first release without the lists say these five lines.
 - **The request goes through the configured proxy.** Upstream's catalog fetch uses Go's default client (`catalog_sources.go:254`); the new client uses the proxy setting.
 - **Hosts.** Every live request goes to the host the login's requests already go to, with one exception to verify: the xAI login's chat goes to `cli-chat-proxy.grok.com` and its list would go to `api.x.ai` (section 3).
 - **A list call the vendor's own client also makes:** Codex, Kimi and Copilot [docs]; Devin, by upstream's comment (`devin_executor.go:109`). Not verified for Claude Code, Antigravity and Meta. Claude's and Meta's are in the released patch already.
-- **The capture publishes** model ids and fields per provider, from the owner's logins, in groundtruth's public repository. It names no account. It does show which login types the owner holds, which groundtruth's routes already show, and a Codex list hints at the plan of the account it came from.
+- **Discovery publishes** model ids and fields per provider, from the owner's logins, in groundtruth's public repository. It names no account. It does show which login types the owner holds, which groundtruth's routes already show, and a Codex list hints at the plan of the account it came from.
 
 ## 8. The Neon case
 
@@ -542,7 +539,7 @@ Devin starts offering Gemini 4 Neon on day 0.
 | 6 | The registry is refreshed for Devin logins. `GET /v1/models` shows `devin/gemini-4-neon` | upstream's refresh callback |
 | 7 | The log says `live, 53 models, 1 not on providers.dev yet (gemini-4-neon)`; the console shows the model with the tag "from Devin's list" | 5.5 |
 | 8 | A request for it is routed to Devin with the effort as the id's suffix | as for every Devin model today [infer: the new id follows the suffix scheme] |
-| 9 | That night the capture writes the Devin list, with Neon, into `listed.json` | 4.3 |
+| 9 | That evening groundtruth's discovery writes the Devin list, with Neon, into `listed.json`. The next Monday night measures it first, as a new model | 9.1, 9.2 |
 | 10 | At 04:17 UTC providers.dev imports it. The listing `devin` has Neon; the Devin page shows it as "Listed, not evaluated" | 4.1, 4.5 |
 | 11 | Another user's Provimux gets Neon from their own Devin login at step 1. If their fetch fails, they get it from providers.dev within 6 hours of step 10 | 5.2 |
 | 12 | The next release has it built in | 5.6 |
@@ -551,9 +548,204 @@ Devin starts offering Gemini 4 Neon on day 0.
 
 **What does not help:** if the Devin request fails that day, the login keeps yesterday's list and has no Neon until a fetch succeeds or step 10 has happened. If Devin's answer lacks a field, the field stays unknown; Provimux does not assume the 64,000 output limit upstream's tool assumes (`cmd/fetch_devin_models/main.go:49`).
 
-## 9. The steps
+## 9. groundtruth: daily discovery and the Monday night
 
-Order: providers.dev, then Provimux, then review and release. Each row is one task.
+**The owner's decisions (2026-11-22, passed on by the chief).**
+
+- Every login's offered models are discovered automatically, every day, without measuring. providers.dev lists all of them, measured or not.
+- Measuring runs every Monday night, from 23:00 Europe/Bucharest to Tuesday morning, unattended, on the owner's Mac.
+- No hand-picked list of models. New models first, on every route; then the order of 9.2.
+- A cap of runs per login and a cap of money per week.
+- When access or quota is missing, nothing is skipped silently or worked around: that part stops, the owner is asked at once, the rest goes on.
+- Publication waits for an audit, done by a reviewer without the owner.
+
+Read from groundtruth's branch `own-clients` at `60e65ba`; `RUN.md` below is its `docs/own-clients-RUN.md`, `own-clients.md` its design.
+
+### 9.1 Discovery
+
+Three ways to read what a login offers.
+
+| Way | Covers | Sends | Limits |
+|---|---|---|---|
+| **A. Ask the owner's Provimux** (`view=live`, section 5.5) | every login Provimux holds: nine types | one local request. No vendor request (Provimux has asked already) and no token in groundtruth | needs steps P2 and P4 running as the owner's proxy (a build from the branch is enough). The list is read by a proxy |
+| **B. Read it from the vendor's own client**, in the night's folders | only the clients the night drives: Codex and Devin today | nothing, where the client keeps its list in its folder | not established for either client [not verified]: Codex's CLI fetches its list (section 3), but where it keeps it, and whether the Devin CLI shows a list at all, are open |
+| **C. groundtruth asks the vendor itself**, with the night's login files | Codex and Devin today | one vendor request per login | groundtruth would read tokens, which the night never does today (`harness/night.py`: "No key is read"). It would rebuild each vendor's request (Devin's is protobuf) and must leave the token's refresh to the client |
+
+**Recommendation: A.** It is the only way that covers every login, and it sends nothing new. It is also the list Provimux's users get, which is what providers.dev's list stands in for.
+
+- **What A costs:** discovery waits for Provimux's steps P2 and P4. They come first in Provimux's order for that reason (section 10).
+- **B later:** where a smoke run shows that a client leaves its list in its folder, it becomes a second reader. The listing then names `codex-cli` instead of `provimux`, by the rule that already ranks an own client before a proxy (`own-clients.md` section 3).
+- **C** I do not recommend.
+
+**The command**, `python3 harness/discover.py` (new):
+
+1. Reads `GET /v8/management/provimux/model-lists?view=live` from the owner's Provimux. The management key is found as `harness/pool.py` finds it today (`CPA_MGMT_KEY`, or `~/.cli-proxy-api/keys.txt`; never printed).
+2. Keeps, per login type, only what the vendor's list said. Drops every identity field. Joins several logins of one type.
+3. Writes `listed.json` (`schema: 1`). Its schema has no free text beyond a model's id, name and description, so nothing else can get in.
+4. A provider whose logins had no live list that day keeps yesterday's part, with yesterday's date.
+5. Commits and pushes the file when it changed, after `harness/scan_secrets.py` passes.
+
+It runs daily at 22:30 from a launchd agent on the owner's Mac, and as the first step of the Monday night. It sends nothing to a vendor and spends nothing. If the Mac sleeps at 22:30, launchd runs it when the Mac next wakes; no wake is scheduled for it.
+
+**When Provimux cannot be reached, or holds no list for a login:** the file keeps its last content, and `$G/discovery.log` says which provider is how many days old. A provider older than 3 days is an ask (9.5).
+
+### 9.2 What a night measures
+
+A **value** is one quantity of one model on one route: its cache lifetime, its input window, its output limit.
+
+The night measures a value only where the harness has a method on that route. A value without one is named in the plan as "no method yet", never left out without a word. Today that is: cache lifetimes on every route the night drives; windows on API-key routes (one refused request); no window through the own clients yet (`own-clients.md` 4.4).
+
+For every value the plan (`harness/plan.py`, new) knows four things.
+
+| What | From |
+|---|---|
+| How often we measured it, when, and our value | `observed.json`, counting the runs of the clients that count for the route, plus the runs of nights still waiting for their audit |
+| What models.dev and pi.dev state now, and whether our value agrees | providers.dev's API. Agreement is providers.dev's verdict, worked out once there and never a second time in groundtruth: today `providers_dev.limits.input_window` and `providers_dev.pi.values`, after 1.4.0 the safe values |
+| What models.dev and pi.dev stated on the day we measured | `plan/values.json` (new), written at each publication: per value the count, the date and the two sources' values of that day |
+| Which models are offered | logins: `listed.json`. API keys: providers.dev's entries of `openrouter`, `openai` and `anthropic`, which are what models.dev and pi.dev list after the catalog's rules |
+
+**The order.**
+
+| Order | State | Rule |
+|---|---|---|
+| 1 | New | offered and never measured. First the models first seen since the last night, then the rest |
+| 2 | In doubt | measured once, and our value disagrees with models.dev or pi.dev: measured a second time, to confirm or correct |
+| 3 | Source moved | models.dev or pi.dev states another value than on the day of our last measurement: measured on the next night, however often before |
+| 4 | Ours alone | no source states the value (cache lifetimes; most subscription entries), and our last measurement is older than 90 days |
+| never | Agreeing | our value agrees with the sources. It comes back only through 3 |
+| never | Settled | measured at least twice, our measurements agree with each other, and they disagree with a source. Our value stands, and providers.dev shows the disagreement. It comes back only through 3 |
+
+- **Within a state:** logins in the vendor's own list order; API keys cheapest first. Ties: the oldest measurement first.
+- **Two measurements that disagree with each other:** a third, in state 2. If no two of three agree, the value is unsteady: no further run, and an ask (9.5).
+- **A value whose only measurements an audit excluded** counts as never measured.
+- **The count.** `plan/values.json` is public and committed with each build. It holds, per value, how often it was measured; the night's report prints each value's state from it.
+- **The first time.** For the measurements that exist today, the sources' values of the day the file is first written are recorded as "stated on the day we measured". Without that, every old value would look moved.
+- **Before providers.dev 1.4.0 is live,** agreement on the output limit is not published. The plan then says "agreement not available" for those values and orders them by states 1 and 4 only.
+
+### 9.3 The caps
+
+**Logins: a cap of runs.**
+
+| | |
+|---|---|
+| Cap | 6 cache runs per login per night, plus one smoke run per client |
+| What that is | a `std` run is 93 requests and about 2.7 million input tokens, two thirds of them read from cache. Six are about 560 requests and 16 million tokens (`own-clients.md` 2.2). It is what Codex's part of the first own-client night uses |
+| Length | `std`: 2 h 10 min, all runs side by side. A model still warm at 2 hours gets a `long` run (12 h 10 min) the next Monday; it is one of the six and is started first |
+| The backlog | router-for-me's files list 52 Devin models and 14 Codex models today; the first night measures 17 and 6. The rest takes about 6 Mondays for Devin and 2 for Codex |
+| A plan's limit reached | that login's part stops at once and asks (9.5). The runs left are first next Monday |
+
+**API keys: a cap of money.**
+
+| | |
+|---|---|
+| Cap | 10 US dollars per week, for all API-key routes together |
+| What that buys | the 88 direct OpenRouter runs of 18 November cost 16.31 dollars: 0.19 per run on average, from 0.02 to 1.25 (`own-clients.md` 2.2; groundtruth's history). A refused window request costs nothing |
+| How it is kept | the night's own ledger, as on 18 November (`results/openrouter-2026-11-18/ledger.py`): prices read again before each run; a run starts only when its estimate fits what is left; the part stops when the provider's own figure reaches the cap |
+| One run | estimated above 2 dollars: not started, and an ask |
+| Behind the ledger | a key made for the night, with the provider's own limit where it has one |
+| A window request answered instead of refused | it was billed for over a million tokens: the window list ends, and an ask |
+
+The money is one pot, spent in the order of 9.2: new models on all three routes first, cheapest first, then states 2, 3 and 4.
+
+A night that runs out of candidates ends early. It never fills a cap with repeats.
+
+### 9.4 The night, unattended
+
+| When (Europe/Bucharest) | What |
+|---|---|
+| Once, the owner | `sudo pmset repeat wakeorpoweron M 22:55:00`. The logins, in the night's own folder (`night.py login codex`, `login devin`). The API keys, in a file of mode 600 there |
+| Once, staff with his OK | two launchd agents in `~/Library/LaunchAgents`: discovery, daily at 22:30; the night, Mondays at 23:00 |
+| Mon 23:00 | the night starts: one lock per night, then the snapshot of the everyday state (`untouched --save`) |
+| | discovery (9.1), then the plan (9.2), written to `results/night-<date>/PLAN.md` |
+| | the checks before anything is spent: each login's own status command (`RUN.md`, step 2); each key by a request that costs nothing. A login that is not logged in, or a refused key: that part is not started, and an ask |
+| | one smoke run per client, judged by the automatic checks (`RUN.md`, step 3). A failed check: that client's part is not started, and an ask |
+| Mon 23:15 | the runs, staggered as today. Each keeps the Mac awake (`caffeinate -i -w`) |
+| Tue, about 01:30 | the `std` runs have ended |
+| Tue 11:30 at the latest | the `long` runs have ended. A run still alive gets its stop mark |
+| At the end | `untouched --report`; the mechanical audit (9.6); `REPORT.md` and `state.json`; one notification: runs done, parts stopped, asks open |
+
+- **What changes from the first night:** the hand review between smoke and go is replaced by the automatic checks. Everything else of its isolation stays: the folders, the sandbox, the stop marks, no client error text in a public file.
+- **The logins stay** in the night's folder between weeks. The owner logs in again only when a check says one expired.
+- **A late start.** launchd runs a missed job when the Mac wakes. After 01:00 no `long` run is started. After 03:00 the night does not start: it writes its state and asks.
+- **A closed lid.** A laptop with its lid closed sleeps whatever `caffeinate` asks [not verified for the owner's Mac]. The lid stays open, on power.
+- **`--dry-run` stays** on every command, and nothing is sent without `--go`. The launchd agent is the one caller that passes it.
+
+### 9.5 Asking the owner
+
+Each case stops its own part only. The rest of the night goes on.
+
+| Case | Seen as | Stops | The ask says |
+|---|---|---|---|
+| A login expired | the client's status command, before the runs or between two | that login's part | which login, and the command: `python3 harness/night.py login devin` (2 minutes, a browser opens) |
+| A key refused | HTTP 401 or 403 on the free request or on a run | that route's part | which key, where its file is, and the command that checks it |
+| A plan's limit reached | the client's quota refusal, as `probe.py` records it | that login's part | how many of the six ran; that the rest is first next Monday; the command to run them sooner |
+| The week's money spent | the ledger | the API-key part | what was spent, what is left unmeasured, and the command with a higher cap for this week |
+| A run over 2 dollars | its estimate | that run | the model, the estimate, and the command that runs it with his go |
+| A vendor refuses | a refusal that is neither quota nor login, twice in a row on one route | that route's part | the route, the kind of refusal, and that the account needs a look |
+| A window request answered | the reply | the window list | what it cost |
+| Discovery stale | a provider's list older than 3 days | nothing | which login Provimux has no list for, and what its status page says |
+| The night did not start, or woke after 03:00 | the state file | the night | when the Mac woke, and the command to start the night by hand |
+| An unsteady value | three measurements, no two agree | that value | the three values |
+
+**How he is asked.**
+
+- At once: a macOS notification with the ask's first line.
+- In full: `$G/asks/open/<id>.md`, with what happened, the exact command and what was not done.
+- Until it is solved: every open ask stands at the top of the night's report and of every later report. The check that failed closes it when it passes again; nobody closes one by hand.
+
+A notification at night is easily missed, so the report is what holds: Tuesday's reviewer passes every open ask to the chief, who asks the owner on the board.
+
+### 9.6 Tuesday: the audit without the owner, and the report
+
+Nothing of a night enters `observed.json` before an audit of its raw results (`RUN.md`, "The morning", item 3). That gate stays: the builder, the commit hook and CI refuse the night's folder without `AUDIT.md`.
+
+| Step | Who | Does |
+|---|---|---|
+| 1 | the night, at its end | `python3 harness/night.py --date <date> audit` (new): every item of the checklist that is a mechanical check. Each public line against its schema. No client version, path, address, account or client text in a public file. Every check's model and, for Codex, `own-turn`. The last `model-scan` line. Codex's session files, listed for any other model and any reroute (the checklist's item B, two `grep`s by hand today). `git status`. Both scans. It writes `$G/night-<date>/audit-draft.md`: per item passed or failed, with counts and no private text |
+| 2 | a reviewer, Tuesday morning | on the owner's Mac, reading only. Reads every public line. Judges the `check-invalid`, `retry` and `stop` lines. Reads the console logs and the everyday report for anything private. Looks at each failed item of the draft. Writes `results/night-<date>/AUDIT.md`: the first line as the gate wants it, the date, the role that audited, the runs excluded and why, one line per item |
+| 3 | a worker, after the audit | `night.py manifest` (new) writes the manifest entries from the plan and the results, so nothing is typed by hand. Then `build_observed.py` and its `--check`, `plan/values.json`, the commit and the push. providers.dev imports it at 04:17 UTC |
+
+- **The reviewer** is not who wrote the code the night ran that week.
+- **Not the reviewer's to decide alone**, and nothing is committed: something private in a public file; a Keychain item a client added or changed; an unsteady value. Each is an ask.
+- **The Tuesday task starts whether or not the night ran.** Its first question is whether `state.json` exists.
+
+**The report**, `results/night-<date>/REPORT.md`, committed with the audit; `state.json` stays with the private files.
+
+| Part | Says |
+|---|---|
+| Open asks | first, each with its command |
+| Per part (each login, the API keys) | `done`, `stopped: <case>` or `not started: <case>`; runs planned, run and excluded |
+| Per value measured | its state before, the new value, its state now |
+| Not measured | the values the caps left for next week, in order; the values with no method yet |
+| Spent | requests per login; dollars per route |
+
+**No state file on Tuesday morning** means the night did not start. The reviewer reports that, with the launchd agent's log and the Mac's wake log (`pmset -g log`), and the chief asks the owner.
+
+### 9.7 Where the API-key part runs
+
+| | On the owner's Mac, in the night | In GitHub Actions |
+|---|---|---|
+| The keys | in the night's folder, mode 600 | in the repository's secrets; groundtruth is public |
+| The money cap | one ledger, one process | a second ledger |
+| Asking the owner | the same notification and report | a GitHub issue; no macOS notification |
+| The audit | the same Tuesday audit | results arrive as a branch: a second path |
+| Depends on the Mac waking | yes | no |
+| Length of a run | no limit | 6 hours per job: `std` fits, `long` does not |
+
+**Recommendation: on the Mac.** One night, one ledger, one report and one way to ask, and the money keys stay off GitHub. The cost: a Mac that does not wake loses the API-key part too, and Tuesday's task reports that the same day. Moving it to Actions later changes no result, since the probe and its files are the same.
+
+## 10. The steps
+
+Each row is one task. The order:
+
+1. providers.dev, D0 to D4.
+2. Provimux's live lists and its status endpoint, P2 and P4, built on the branch and run as the owner's proxy.
+3. groundtruth's discovery, G1. From here providers.dev lists every offered model.
+4. groundtruth's plan and the unattended night, G2 to G5.
+5. The rest of Provimux, P1, P3, P5 and P6.
+6. Review and release.
+
+Steps 4 and 5 do not wait for each other.
 
 ### providers.dev
 
@@ -562,9 +754,21 @@ Order: providers.dev, then Provimux, then review and release. Each row is one ta
 | D0 | The owner's word on the two rules (4.5) and on the order beside `sources-side-by-side` | `AGENTS.md` and the README say the amended rules | `tests/api-structure.test.ts` still finds the stability wording |
 | D1 | The contract: the listing schemas, the two paths, `meta.listings`, the version step, `npm run structure:update` | `/api/v1/listings` answers with an empty page when there is no data; the structure only grew from 1.0.0 | `api-structure`, `api` (the served OpenAPI equals `openapi()`), `contract` (two listings have the same keys) |
 | D2 | The sources: models.dev's and pi's providers as lists; `data/authored/listings/` with its schema; the order of 4.1 | every provider of 4.1's table that has an imported or authored list has a listing; each field names its source; a statement without evidence fails the build | unit tests of `listings.ts`: the whole list from the first source, each field from the first that states it, fixed keys |
-| D3 | The capture's reader: `listed.json` in the sync, with a schema; the client id `provimux` in `measurement-labels.yaml` | a missing file changes nothing; a malformed one keeps the last good copy and raises a sync issue; a `listed` list replaces the lower sources for that provider | sync tests with a fixture file, a missing file and a malformed file |
+| D3 | The reader of `listed.json`: the file in the sync, with a schema; the client id `provimux` in `measurement-labels.yaml` | a missing file changes nothing; a malformed one keeps the last good copy and raises a sync issue; a `listed` list replaces the lower sources for that provider | sync tests with a fixture file, a missing file and a malformed file |
 | D4 | The page section and the methodology paragraph | the provider page prints the listing from the API and works nothing out; a listed model without an entry is not a link | `pages`, `render` |
-| D5 | groundtruth: `scripts/capture_listed.py`, the schema of `listed.json`, CI's check of the file, the optional daily job | the file names no account, email or token (the existing credential scan passes); a run with no live list for a provider leaves that provider's part unchanged | a test with a recorded Provimux answer; the scan |
+
+### groundtruth
+
+After the first own-client night, which is in its last checks today.
+
+| Step | Does | Must hold afterwards | Tests |
+|---|---|---|---|
+| G1 | Discovery (9.1): `harness/discover.py`, the schema of `listed.json`, CI's check of the file, the daily launchd agent | the file names no account, email or token and has no field outside its schema; a day with no live list for a provider leaves that provider's part and date unchanged; a provider older than 3 days is an ask; nothing is sent to a vendor | a recorded Provimux answer with two logins of one type, with identity fields, and with a login that has no list; the credential scan on the result; CI refuses a file that fails the schema |
+| G2 | The plan (9.2): `harness/plan.py`, `plan/values.json` with its first-time record | every value is in exactly one state; the order is the table of 9.2; a settled or agreeing value is never planned; a value with no method is named; the same inputs give the same plan | one fixture per state, and for: two measurements that disagree, three of which no two agree, a value excluded by an audit, a night waiting for its audit, a source that moved, agreement not available |
+| G3 | The night, unattended (9.3, 9.4): the weekly command, the lock, the checks before spending, the automatic smoke, the two caps and the ledger, the late start, `state.json` and `REPORT.md`, the launchd agent | a login's part never starts a seventh run; the API-key part never starts a run that does not fit the money left; an expired login or a refused key stops only its part; `--dry-run` sends nothing; a second start for the same night is refused | fake clients and a fake ledger for: each cap reached, each row of 9.5's table, a start after 01:00 and after 03:00, a run still alive at the end. The first night's tests still pass |
+| G4 | Asking the owner (9.5): the open asks, the notification, their place in every report | every row of 9.5's table gives an ask with its exact command; an ask closes only when its check passes again; an open ask is at the top of every later report | one test per row; an ask that stays open over two nights; an ask closed by its check |
+| G5 | Tuesday (9.6): `night.py audit` and `night.py manifest`; the audit gate for `results/night-*`; the reviewer's checklist | nothing of a night is committed or built without its `AUDIT.md`; the draft holds no private text; the manifest entries are generated, not typed | the gate's tests on the new folder name; the mechanical audit on a night with a reroute, a private string in a public line, and a clean night |
+| G6 | One Monday as a dry run, started by launchd with `--dry-run`, then the first real Monday | the dry run's report names every run it would start, inside both caps; after the real night the Tuesday task finds a state file, an audit draft and a report | the dry run's report, read by the chief |
 
 ### Provimux
 
@@ -577,7 +781,7 @@ Order: providers.dev, then Provimux, then review and release. Each row is one ta
 | P5 | The release workflow: `catalogs` from providers.dev; the Codex client catalog from `openai/codex`; the fallback to the last release's file | a dry run builds every archive with the same lists; the notes name the dataset version; a build with providers.dev unreachable uses the last release's file and says so | a dry run (`workflow_dispatch`); the existing "Check the model catalogs" step on the new files; `cmd/validate_codex_models` passes on the built-in Codex catalog |
 | P6 | The comparison, once, on the owner's machine, run by the owner: for every login, the models and fields before the change and after it | a written list of every difference, each accepted by the owner or fixed. Nothing of router-for-me's file is copied to fix one | the report itself; it is the gate for the release |
 
-**Gate between the two.** P1 and P5 are not released before providers.dev has a non-empty listing for every login type of Provimux's map. P2 to P4 can be built and run from the branch earlier; the first capture needs them (4.3).
+**The gate.** P1 and P5 are not released before providers.dev has a non-empty listing for every login type of Provimux's map. P2 and P4 are built first and run from the branch, because discovery needs them (9.1).
 
 ### Review and release
 
@@ -585,22 +789,27 @@ Order: providers.dev, then Provimux, then review and release. Each row is one ta
 |---|---|---|
 | R1 | A critical review of the providers.dev change against sections 4 and 7 | findings fixed or accepted by the chief |
 | R2 | A critical review of the Provimux change against sections 5, 6 and 7, and of P6's report | the same; `guard.sh` passes; the sync check passes on the candidate |
-| R3 | Release: providers.dev first (a push to `main` deploys), then the capture, then the Provimux `-pmx` release; the release notes carry the five lines of 6.6 | on the owner's machine after the upgrade: no request to a router-for-me host for a model list in 24 hours of the log; every login's source is `live` or `published` on the status page; the Neon model is offered |
+| R3 | Release: providers.dev first (a push to `main` deploys), then discovery running daily, then the Provimux `-pmx` release; the release notes carry the five lines of 6.6 | on the owner's machine after the upgrade: no request to a router-for-me host for a model list in 24 hours of the log; every login's source is `live` or `published` on the status page; the Neon model is offered |
 
-## 10. Decisions that are the owner's
+## 11. Decisions that are the owner's
 
 | # | Decision | Recommendation | The other way costs |
 |---|---|---|---|
 | 1 | The three files of router-for-me stay in the source tree as fixtures for upstream's tests, and are in no binary | **Keep them** (6.4) | Deleting them fails 144 of upstream's tests and stops the executor package's 711; every sync would then need a waiver or the owner |
 | 2 | The two rules of providers.dev (4.5): a listing as its own resource, and plan names on a row | **Amend both** | Without the first there is no providers.dev part. Without the second, `plans` is not built and a Codex login without a live list is offered every plan's models |
-| 3 | How often the capture runs | **A daily job on the owner's Mac**; it spends no quota | Tied to measuring nights, a captured list is days or weeks old |
-| 4 | For a model both sources know, whose field value wins | **The vendor's**, per field (5.1) | "Published wins" is what the patch does today; it changes nothing on the owner's logins, and a value the vendor raised arrives only with the next capture |
+| 3 | How discovery reads a login's models (9.1) | **From the owner's Provimux.** It covers every login and sends nothing new | Through the vendors' own clients it covers Codex and Devin only, and it is not established that either shows its list without a model request. With groundtruth asking the vendors itself, groundtruth reads tokens |
+| 4 | For a model both sources know, whose field value wins | **The vendor's**, per field (5.1) | "Published wins" is what the patch does today; it changes nothing on the owner's logins, and a value the vendor raised arrives only through providers.dev |
 | 5 | Models written into upstream's code (image, video and speech models, `devin/swe-1-6-slow`, Copilot's `compat.json`) | **Leave them**: they are executor behaviour, compiled in, fetched from nowhere | Moving them to our lists means edits in upstream files, one of them on a protected path |
 | 6 | The three router settings of 6.5 | **Do not carry them over**; set again only what P6 shows is needed, from our own evidence | Copying them keeps today's behaviour for those Codex models and keeps a piece of router-for-me's list |
-| 7 | The built-in Codex client catalog | **OpenAI's own public file**, with the one missing field filled from the same repository (5.6) | The capture of the owner's Codex login would publish OpenAI's 1 MB answer in groundtruth |
+| 7 | The built-in Codex client catalog | **OpenAI's own public file**, with the one missing field filled from the same repository (5.6) | The owner's Codex login's answer, published in groundtruth, would put OpenAI's 1 MB text there |
 | 8 | The order beside `sources-side-by-side` | **Listings first**: it is small, touches none of the code that redesign rewrites, and Provimux waits for it | Landing second costs only the version line and the structure record |
+| 9 | The cap of runs per login per night (9.3) | **6**: what Codex's part of the first own-client night uses | Devin's backlog of about 35 models takes 6 Mondays. With 12 it takes 3 and uses twice the plan's allowance each Monday |
+| 10 | The cap of money per week, and per run (9.3) | **10 dollars a week, 2 dollars a run** | 10 dollars is about 50 average runs. A lower cap stretches the backlog of the API-key routes; a higher one is the owner's money |
+| 11 | Where the API-key part runs (9.7) | **On the Mac, in the night** | In GitHub Actions it does not depend on the Mac waking, and costs a second ledger, a second way to ask and money keys in a public repository's secrets |
+| 12 | The quarterly check of values only we state (9.2, state 4) | **Keep it, at 90 days** | Without it a cache lifetime, which no other source states, is measured once and never again |
+| 13 | On unattended nights the automatic checks replace the hand review between smoke and go (9.4) | **Yes**: a night nobody watches has nobody to review | Keeping the hand review means someone is awake on Monday at 23:10 |
 
-## 11. What I ran, and what I did not verify
+## 12. What I ran, and what I did not verify
 
 | Check | Result |
 |---|---|
@@ -611,6 +820,7 @@ Order: providers.dev, then Provimux, then review and release. Each row is one ta
 | Upstream's tests, as is and with the two lists emptied (90 packages) | section 6.4 |
 | `go run ./cmd/validate_codex_models` on `openai/codex`'s `codex-rs/models-manager/models.json` | rejected: `field "base_instructions" must be a non-empty string`; no other complaint reached |
 | The vendors' public pages and open-source clients | section 3, the rows tagged [docs] |
+| groundtruth's branch `own-clients` at `60e65ba`, read with `git show`: `docs/own-clients.md`, `docs/own-clients-RUN.md`, `harness/night.py`, `harness/pool.py`, `ci.yml`; `observed.json` on `main` | section 9: the run sizes, the costs, the audit gate, the 218 cache runs and 36 limit rows published today |
 
 The test runs' result files (the 144 names, and the two runs as `go test -json`) stayed in the session's scratch folder, outside the repository, and are not kept; the two runs take about 10 minutes to repeat.
 
@@ -623,5 +833,9 @@ The test runs' result files (the 144 names, and the two runs as `go test -json`)
 | Whether Claude Code, Antigravity's client and Meta's client make the same list call | not needed for the build; stated in section 7 as unverified |
 | That a new Devin id always follows the effort-suffix scheme | P2; a variant that does not is offered as its own model, which is safe |
 | Homebrew's cleanup of the old version on the owner's machine | the owner, at R3 |
+| Whether Codex's or Devin's own client shows its model list without a model request (9.1, way B) | a smoke run, if way B is wanted |
+| That launchd runs the missed night when the Mac wakes late, and that the owner's Mac stays awake with its lid as it is | G6's dry-run Monday |
+| Which providers let a key carry its own spending limit | G3; the ledger holds without it |
+| How the chief's Tuesday task is started each week | the chief; it must not depend on the night having run |
 | Which Kimi host is models.dev's "global" | D2 |
 | The one test that fails on `e5cf5a2d5` as is, `TestScheduler_InterleavedMarkResult_DoesNotTriggerRebuild` in `sdk/cliproxy/auth`: not part of this design | |
