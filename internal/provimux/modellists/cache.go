@@ -69,6 +69,8 @@ type LiveFile struct {
 	FetchedAt time.Time             `json:"fetched_at"`
 	IDs       []string              `json:"ids"`
 	Models    []*registry.ModelInfo `json:"models"`
+	// Stated names, per lower-case id, the boolean fields the vendor's answer stated.
+	Stated map[string][]string `json:"stated,omitempty"`
 }
 
 func liveFileName(identityHash string) string { return "live-" + identityHash + ".json" }
@@ -167,7 +169,7 @@ func (f LiveFile) check(provider, hash string) error {
 }
 
 // WriteLive stores a login's list: mode 0600, a temporary file renamed over the old one.
-func (s *Store) WriteLive(provider, identity string, fetchedAt time.Time, ids []string, models []*registry.ModelInfo) error {
+func (s *Store) WriteLive(provider, identity string, fetchedAt time.Time, ids []string, models []*registry.ModelInfo, stated map[string][]string) error {
 	if s == nil || s.dir == "" {
 		return nil
 	}
@@ -177,7 +179,7 @@ func (s *Store) WriteLive(provider, identity string, fetchedAt time.Time, ids []
 		models = []*registry.ModelInfo{}
 	}
 	data, err := json.Marshal(LiveFile{Schema: Schema, Provider: strings.ToLower(provider), Identity: hash,
-		FetchedAt: fetchedAt.UTC(), IDs: ids, Models: models})
+		FetchedAt: fetchedAt.UTC(), IDs: ids, Models: models, Stated: stated})
 	if err == nil {
 		err = writeFileAtomic(s.dir, name, data)
 	}
@@ -220,4 +222,42 @@ func writeFileAtomic(dir, name string, data []byte) (err error) {
 		return err
 	}
 	return os.Rename(tmpName, filepath.Join(dir, name))
+}
+
+// RemoveLive deletes the file of an identity, if any: the login now belongs to another identity
+// (another account, or a credential that changed), so the old file would never be read again.
+func (s *Store) RemoveLive(identity string) {
+	if s == nil || s.dir == "" || identity == "" {
+		return
+	}
+	if err := os.Remove(filepath.Join(s.dir, liveFileName(IdentityHash(identity)))); err != nil && !errors.Is(err, os.ErrNotExist) {
+		log.Debugf("model lists cache: cannot remove an old file: %v", err)
+	}
+}
+
+// PruneOlderThan deletes live files last written more than maxAge ago: a list that old is no
+// longer used, and its login may be gone. It returns how many it deleted.
+func (s *Store) PruneOlderThan(maxAge time.Duration, now time.Time) int {
+	if s == nil || s.dir == "" {
+		return 0
+	}
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return 0
+	}
+	removed := 0
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasPrefix(name, "live-") || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		info, errInfo := entry.Info()
+		if errInfo != nil || now.Sub(info.ModTime()) <= maxAge {
+			continue
+		}
+		if os.Remove(filepath.Join(s.dir, name)) == nil {
+			removed++
+		}
+	}
+	return removed
 }
