@@ -3,9 +3,10 @@ info:
   title: Provimux management endpoints for the console
   version: "1"
   description: |
-    Two read-only endpoints that exist only in Provimux (github.com/ngvoicu/provimux), under
-    /v8/management/provimux/. Stock CLIProxyAPI answers 404 on both paths; the console (provimux-ui)
-    hides the matching page then.
+    Read-only endpoints that exist only in Provimux (github.com/ngvoicu/provimux), under
+    /v8/management/provimux/. Stock CLIProxyAPI answers 404 on these paths, and so does a Provimux older
+    than an endpoint; the console (provimux-ui) hides the matching page then, or falls back to an older
+    endpoint (model-lists, then live-lists).
 
     Rules of the contract:
     - Every property listed as required is always present. A value that is not known is null.
@@ -13,7 +14,7 @@ info:
       none when it is zero), e.g. 2026-11-19T18:04:11.482Z. Compare them as times, not as strings.
     - The server only adds properties. It never removes one or changes a type or a meaning.
       Clients ignore properties and enum values they do not know.
-    - Both report state Provimux has recorded. They do not predict what the router will do: which route
+    - They report state Provimux has recorded. They do not predict what the router will do: which route
       a request gets, whether a route is selectable now, or when a fetch is retried.
     - No response carries an API key, a token, an auth ID, a base URL beyond its host, or a
       provider's error text. A live-list failure is a category code and an HTTP status, never error text.
@@ -56,7 +57,10 @@ paths:
   /provimux/live-lists:
     get:
       operationId: provimuxLiveLists
-      summary: Per Claude, Codex and Meta login, whether its model list is live or the catalog
+      summary: Per login whose vendor list Provimux fetches, whether its model list is live or the catalog
+      description: |
+        Kept for consoles released before /provimux/model-lists. Its providers list grows as Provimux fetches
+        more vendors' lists (claude, codex, meta; since model-lists P2 also devin, kimi, xai, gemini).
       responses:
         "200":
           description: The state of the live model lists.
@@ -72,6 +76,47 @@ paths:
           $ref: "#/components/responses/Absent"
         "503":
           description: The live-list fetcher's state is not available in this binary. Not a sign of absence.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /provimux/model-lists:
+    get:
+      operationId: provimuxModelLists
+      summary: Per login, which source decides its models (its vendor's live list, the published list, the built-in list or none)
+      parameters:
+        - name: auth_index
+          in: query
+          required: false
+          description: |
+            Return only this login, with models filled: one row per model it registers, with the source of each
+            field. A value no login has returns an empty logins list.
+          schema:
+            type: string
+        - name: view
+          in: query
+          required: false
+          description: |
+            "live": every row carries live_list, the vendor's list as it arrived, unmerged (null without one).
+            What groundtruth's daily discovery reads. Other values are ignored.
+          schema:
+            type: string
+            enum: [live]
+      responses:
+        "200":
+          description: The state of the model lists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModelListsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/Absent"
+        "503":
+          description: The model-list state is not available in this binary. Not a sign of absence.
           content:
             application/json:
               schema:
@@ -372,3 +417,221 @@ components:
           description: Sorted by provider, login name, auth_index. Disabled logins included.
           items:
             $ref: "#/components/schemas/LiveListLogin"
+    ModelListSource:
+      type: string
+      description: |
+        Which source decides the login's models now. "live": the list its vendor returned for this account.
+        "published": providers.dev's list of the login type (not in this build: step P3). "built-in": the
+        catalog built into the binary (until step P1 also refreshed by upstream's catalog updater). "none":
+        no list at all; the login offers only models from the config and plugins (an Antigravity account
+        that has not answered yet; a Copilot account without a usable answer). Clients treat other values
+        as unknown.
+      example: live
+    ModelListsResponse:
+      type: object
+      required: [observed_at, options, built_in, published, login_types, logins]
+      properties:
+        observed_at:
+          $ref: "#/components/schemas/Timestamp"
+        options:
+          type: object
+          required: [live_lists, published_lists]
+          properties:
+            live_lists:
+              type: boolean
+              description: The models.live-lists option (on unless set to false).
+            published_lists:
+              type: boolean
+              description: The models.published-lists option. Always false in a build without the providers.dev client.
+        built_in:
+          type: object
+          description: The built-in lists' providers.dev dataset. Both null while the built-in lists are the catalog (before step P1).
+          required: [dataset_version, generated_at]
+          properties:
+            dataset_version:
+              type: [string, "null"]
+            generated_at:
+              oneOf:
+                - $ref: "#/components/schemas/Timestamp"
+                - type: "null"
+        published:
+          type: object
+          required: [state, dataset_version, generated_at, fetched_at, from_cache, last_failure]
+          properties:
+            state:
+              type: string
+              description: |
+                "held": a providers.dev document is held. "none": never fetched and nothing cached. "off": the
+                option is off, or this build has no providers.dev client. Clients treat other values as unknown.
+              example: "off"
+            dataset_version:
+              type: [string, "null"]
+            generated_at:
+              oneOf:
+                - $ref: "#/components/schemas/Timestamp"
+                - type: "null"
+            fetched_at:
+              oneOf:
+                - $ref: "#/components/schemas/Timestamp"
+                - type: "null"
+            from_cache:
+              type: boolean
+            last_failure:
+              oneOf:
+                - $ref: "#/components/schemas/LiveListFailure"
+                - type: "null"
+        login_types:
+          type: array
+          description: Providers whose credentials get a row. API keys get none, except Gemini keys on Google's own host.
+          items:
+            type: string
+        logins:
+          type: array
+          description: Sorted by provider, login name, auth_index. Disabled logins included.
+          items:
+            $ref: "#/components/schemas/ModelListLogin"
+    ModelListLive:
+      type: object
+      description: The login's live list. For a login type without one, supported is false and the rest false or null.
+      required: [supported, held, expired, fetched_at, from_cache, fetching, listed_models, last_failure]
+      properties:
+        supported:
+          type: boolean
+          description: The vendor has a list and this login is asked.
+        held:
+          type: boolean
+          description: A list of this account is held and not older than 7 days.
+        expired:
+          type: boolean
+          description: A list of this account is held but was not refreshed for 7 days, so the login no longer uses it.
+        fetched_at:
+          oneOf:
+            - $ref: "#/components/schemas/Timestamp"
+            - type: "null"
+          description: When the newest list of this account arrived from the vendor. Null without one.
+        from_cache:
+          type: boolean
+          description: That list was read from the disk cache at start and has not been fetched again by this process.
+        fetching:
+          type: boolean
+          description: A fetch for this login is running now. Always false for Copilot and Antigravity, whose fetches upstream runs.
+        listed_models:
+          type: [integer, "null"]
+          description: How many models the vendor's list named. Null without a list.
+        last_failure:
+          oneOf:
+            - $ref: "#/components/schemas/LiveListFailure"
+            - type: "null"
+          description: The account's last fetch, when it failed. Not reported for Copilot and Antigravity.
+    ModelListFieldSource:
+      type: [string, "null"]
+      description: '"live" (the vendor''s list stated it) or "built-in" (the catalog did); null when no source states it.'
+    ModelListModel:
+      type: object
+      required: [id, display_name, source, learned, limits, modalities, reasoning_levels, sources]
+      properties:
+        id:
+          type: string
+        display_name:
+          type: [string, "null"]
+        source:
+          type: string
+          description: |
+            "live": the vendor's list names it. "built-in": from the catalog. "provimux": a model Provimux adds itself
+            (image, video and speech models). "other": from the config, a plugin or an alias. Clients treat other values
+            as unknown.
+        learned:
+          type: boolean
+          description: The vendor's list names it and the catalog lacks it.
+        limits:
+          $ref: "#/components/schemas/Limits"
+        modalities:
+          type: object
+          required: [input, output]
+          properties:
+            input:
+              type: array
+              items:
+                type: string
+            output:
+              type: array
+              items:
+                type: string
+        reasoning_levels:
+          type: array
+          items:
+            type: string
+        sources:
+          type: object
+          required: [display_name, context, output, input_modalities, output_modalities, reasoning_levels]
+          properties:
+            display_name:
+              $ref: "#/components/schemas/ModelListFieldSource"
+            context:
+              $ref: "#/components/schemas/ModelListFieldSource"
+            output:
+              $ref: "#/components/schemas/ModelListFieldSource"
+            input_modalities:
+              $ref: "#/components/schemas/ModelListFieldSource"
+            output_modalities:
+              $ref: "#/components/schemas/ModelListFieldSource"
+            reasoning_levels:
+              $ref: "#/components/schemas/ModelListFieldSource"
+    VendorModel:
+      type: object
+      description: One entry of a vendor's list as it arrived. Null or empty where the vendor stated nothing.
+      required: [id, display_name, context, output, input_modalities, output_modalities, reasoning_levels]
+      properties:
+        id:
+          type: string
+        display_name:
+          type: [string, "null"]
+        context:
+          type: [integer, "null"]
+        output:
+          type: [integer, "null"]
+        input_modalities:
+          type: array
+          items:
+            type: string
+        output_modalities:
+          type: array
+          items:
+            type: string
+        reasoning_levels:
+          type: array
+          items:
+            type: string
+    ModelListLogin:
+      type: object
+      required: [auth_index, provider, login, disabled, source, live, registered_models, learned_models, models]
+      properties:
+        auth_index:
+          type: [string, "null"]
+        provider:
+          type: string
+          example: devin
+        login:
+          $ref: "#/components/schemas/Login"
+        disabled:
+          type: boolean
+        source:
+          $ref: "#/components/schemas/ModelListSource"
+        live:
+          $ref: "#/components/schemas/ModelListLive"
+        registered_models:
+          type: integer
+          description: How many models the login serves now.
+        learned_models:
+          type: integer
+          description: How many of them the catalog lacks (named by the vendor's list only).
+        models:
+          type: [array, "null"]
+          description: Null unless the request names this login with auth_index.
+          items:
+            $ref: "#/components/schemas/ModelListModel"
+        live_list:
+          type: [array, "null"]
+          description: Only with view=live, and then on every row. The vendor's list as it arrived; null without one.
+          items:
+            $ref: "#/components/schemas/VendorModel"
