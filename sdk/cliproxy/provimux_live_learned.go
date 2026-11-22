@@ -185,11 +185,16 @@ func provimuxPublicModelID(provider, id string) string {
 }
 
 // provimuxListKeyOfRegistered is the key a registered model is matched by against its login's catalog,
-// live list and Provimux's own models: lower case, and for Devin without the devin/ namespace.
+// live list and Provimux's own models: lower case, and for Devin without the devin/ namespace. A Devin
+// id without that namespace (a configured alias, a plugin's model) is no native id: "" matches nothing.
 func provimuxListKeyOfRegistered(provider, id string) string {
 	key := strings.ToLower(strings.TrimSpace(id))
 	if provider == "devin" {
-		key = strings.TrimPrefix(key, "devin/")
+		native, ok := strings.CutPrefix(key, "devin/")
+		if !ok {
+			return ""
+		}
+		key = native
 	}
 	return key
 }
