@@ -97,6 +97,8 @@ func parseXAILiveModelList(languageModels, models []byte, now time.Time) (liveMo
 					model.Thinking.ZeroAllowed = true
 				}
 			}
+			// The effort list says whether "none" (off) is accepted: a stated value either way.
+			list.noteStated(id, liveStatedZeroAllowed)
 		}
 		list.extra = append(list.extra, model)
 	}
