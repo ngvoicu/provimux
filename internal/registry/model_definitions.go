@@ -449,7 +449,11 @@ func cloneModelInfos(models []*ModelInfo) []*ModelInfo {
 //   - copilot
 //   - meta
 func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
-	return cloneModelInfos(staticModelDefinitionsByChannel(strings.ToLower(strings.TrimSpace(channel))))
+	channel = strings.ToLower(strings.TrimSpace(channel))
+	if channel == "copilot" {
+		return GetCopilotModels() // Provimux: with the learned Copilot models, as before 8.1.1
+	}
+	return cloneModelInfos(staticModelDefinitionsByChannel(channel))
 }
 
 // staticModelDefinitionsByChannel returns read-only catalog entries for a normalized channel.

@@ -328,6 +328,72 @@ func TestProvimuxDevinFetchRegistersLearnedModel(t *testing.T) {
 	}
 }
 
+// A configured alias of a Devin model is never one of the vendor's or the catalog's ids, whatever its
+// name: the status endpoint reports it as "other" and never counts it as learned (OpenAPI
+// ModelListModel.source), as 8.1.0-pmx.2 did. On 8.1.1 the alias's bare name equals a native id
+// without its devin/ namespace, so it must be classified before native ids are matched.
+func TestProvimuxDevinAliasStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name, from, alias string
+		fork, live        bool
+		learned           int
+		registered        []string
+	}{
+		{"catalog, fork under the bare name", "devin/swe-2", "swe-2", true, false, 0, nil},
+		{"live, fork a learned model under its bare name", "devin/gemini-4-neon", "gemini-4-neon", true, true, 2,
+			[]string{"devin/gemini-4-neon", "devin/kimi-k9", "devin/swe-1-6-slow", "devin/swe-2", "gemini-4-neon"}},
+		{"live, fork an unrelated model under a listed bare name", "devin/swe-2", "gemini-4-neon", true, true, 2,
+			[]string{"devin/gemini-4-neon", "devin/kimi-k9", "devin/swe-1-6-slow", "devin/swe-2", "gemini-4-neon"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			provimuxLiveReset(t)
+			previous := devinLiveModelListDo
+			devinLiveModelListDo = func(_ context.Context, _ *config.Config, _ *coreauth.Auth, _ *http.Request) (*http.Response, error) {
+				recorder := httptest.NewRecorder()
+				_, _ = recorder.Write(provimuxDevinRecorded)
+				return recorder.Result(), nil
+			}
+			t.Cleanup(func() { devinLiveModelListDo = previous })
+			cfg := provimuxOn()
+			cfg.OAuthModelAlias = map[string][]config.OAuthModelAlias{"devin": {{Name: tc.from, Alias: tc.alias, Fork: tc.fork}}}
+			executor := &liveListExecutor{provider: "devin"}
+			svc, auth := provimuxService(t, cfg, executor, &coreauth.Auth{ID: "devin-alias-" + strings.ReplaceAll(tc.name, " ", "-"), Provider: "devin",
+				Attributes: map[string]string{"auth_kind": "oauth"}, Metadata: map[string]any{"api_key": "devin-session", "email": "office@providers.dev"}})
+			svc.registerModelsForAuth(t.Context(), auth)
+			if tc.live {
+				provimuxRefresh(svc, executor, false)
+				if got := provimuxRegistered(auth); !slices.Equal(got, tc.registered) {
+					t.Fatalf("registered = %v, want %v", got, tc.registered)
+				}
+			}
+			state, _ := provimuxLiveListSource{}.ModelListLogin(auth, true, true, true)
+			if state.Learned != tc.learned {
+				t.Fatalf("learned_models = %d, want %d (an alias is never vendor-listed): %+v", state.Learned, tc.learned, state)
+			}
+			found := false
+			for _, model := range state.Models {
+				if model.ID != tc.alias {
+					continue
+				}
+				found = true
+				if model.Source != "other" || model.Learned || len(model.Sources) != 0 {
+					t.Fatalf("the alias %s must be other, not learned, without field sources: %+v", tc.alias, model)
+				}
+			}
+			if !found {
+				t.Fatalf("no row for the alias %s: %+v", tc.alias, state.Models)
+			}
+			if tc.live {
+				for _, vendor := range state.Live {
+					if vendor.ID == tc.alias {
+						t.Fatalf("the vendor's list never shows an alias: %+v", state.Live)
+					}
+				}
+			}
+		})
+	}
+}
+
 // A cache file written by 8.1.0-pmx.2 holds Devin ids with the devin/ namespace; 8.1.1's catalog has
 // bare ids. The file still applies, and nothing is namespaced twice.
 func TestProvimuxDevinCacheOf810(t *testing.T) {
@@ -595,6 +661,13 @@ func TestProvimuxCopilotLearnsOfferedModels(t *testing.T) {
 		if route.Info.ID == "gpt-copilot-neon" {
 			t.Fatal("with live lists off no learned model is offered")
 		}
+	}
+	// GET /v8/management/routing/model-definitions/copilot lists the learned model, as on 8.1.0-pmx.2.
+	if !slices.Contains(liveIDs(registry.GetStaticModelDefinitionsByChannel("copilot")), "gpt-copilot-neon") {
+		t.Fatal("the copilot section's definitions must include learned models")
+	}
+	if slices.Contains(liveIDs(registry.ProvimuxCatalogModels("copilot")), "gpt-copilot-neon") {
+		t.Fatal("the catalog alone has no learned model")
 	}
 	provimuxForgetForeignLists(func(string) bool { return false })
 	if len(registry.ProvimuxLearnedModels("copilot")) != 0 {
