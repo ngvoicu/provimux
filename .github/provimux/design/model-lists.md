@@ -1,0 +1,627 @@
+# Model lists: live from the vendors, else from providers.dev, never from router-for-me
+
+Design, 2026-11-22. This is the design only: no code exists yet.
+
+**The owner's decision (2026-11-22).** Provimux takes no model list from router-for-me, and nothing of router-for-me's model lists stays in it. A login's list comes first from its vendor, through the login Provimux already holds; else from providers.dev; else from a list built into the release from our own sources. The plugin store stays as it is.
+
+**Read from.**
+
+| Project | Commit |
+|---|---|
+| Provimux | `provimux/main` at `e5cf5a2d5` (CLIProxyAPI `v8.1.0` + 146 commits, last tag `v8.1.0-pmx.1`) |
+| providers.dev | `main` at `73f87b4`; branch `sources-side-by-side` at `36ef758` |
+| groundtruth | `main` at `ffdc85d` |
+
+Every `file:line` of Provimux below is in that commit.
+
+**Tags.** **[read]** in code. **[ran]** executed by me. **[docs]** in a vendor's public documentation or its own open-source client, read on 2026-11-22. **[infer]** reasoned, not verified. I sent no request with any login and never contacted port 8317.
+
+## 1. The design in one page
+
+A login's list answers two questions, and the design answers them apart.
+
+1. **Which models does this login offer?** One source answers, whole, never mixed:
+   - the login's own **live** list, when one is held;
+   - else the **published** list of its login type, from providers.dev;
+   - else the **built-in** list, a copy of the published lists taken when the release was built.
+2. **What are a model's fields** (window, output limit, thinking levels and budgets, modalities, aliases)? Per field, the first of the same three sources that states it.
+
+| Piece | Where | What it does |
+|---|---|---|
+| Live lists | Provimux, the owner's existing `models.live-lists` patch, widened | Asks each login's vendor for its list. Today: Claude, Codex, Meta. Added: Devin, Kimi, xAI, Gemini keys. Copilot and Antigravity already ask (upstream code) and now also add models nobody has described yet |
+| Published lists | providers.dev, new resource `/api/v1/listings` | One list per provider and access method, with each value's source |
+| The capture | groundtruth, new file `listed.json` | The owner's Provimux hands over what each vendor's list said; providers.dev imports it daily |
+| Built-in lists | Provimux release workflow, job `catalogs` | Fetches providers.dev's listings once per release instead of `router-for-me/models` |
+| Removed | Provimux | The three fetchers' URLs, the three embedded files, the release's fetch of `router-for-me/models` |
+
+Three findings shaped it.
+
+- **Much of "live" already exists.** Upstream's own tools `cmd/fetch_{devin,antigravity,copilot,codex}_models` build router-for-me's lists from the vendors' live answers [read]. The owner's patch asks Claude, Codex and Meta. Upstream's runtime asks Copilot and Antigravity. What is missing is Devin, Kimi, xAI and Gemini, and that a model only the vendor knows becomes visible.
+- **144 of upstream's tests need the content of router-for-me's lists** [ran, section 7]. So the three files cannot simply leave the source tree: they stay as test fixtures and are never compiled into a binary.
+- **Two rules of providers.dev forbid part of this** (section 4.5). They need the owner's word before providers.dev is built.
+
+## 2. Today
+
+### 2.1 What router-for-me feeds
+
+| What | Where | Evidence |
+|---|---|---|
+| `models.json`, fetched at start and every 3 h | `internal/registry/model_updater.go:19-22`, cadence `:17` | [read] |
+| `devin_models.json`, same | `internal/registry/devin_models_updater.go:11-14` | [read] |
+| `codex_client_models.json`, same | `internal/registry/codex_client_models_updater.go:11-14` | [read] |
+| The three files embedded as the fallback | `model_updater.go:24-25`, `devin_models.go:16-17`, `codex_client_models.go:15-16`; files in `internal/registry/models/` (160 KB, 25 KB, 1 MB) | [read] |
+| A fourth list, in Go: 11 Devin models | `staticDevinModels`, `internal/registry/model_definitions.go:102` | [read] |
+| **Every release fetches `router-for-me/models` and bakes it in** | `.github/workflows/provimux-release.yml:89-171` (job `catalogs`), checked in each build `:225-240`, named in the release notes `:841` | [read] |
+
+The last row means an installed Provimux carries router-for-me's lists of its release day, not the files in the repository.
+
+**On disk.** Provimux writes no copy of these files to disk. A fetched catalog replaces a value in memory (`catalog_sources.go:336-338`), and `internal/registry` has no file write outside tests [ran: grep]. Section 6.6 says where copies do exist and how an upgrade removes them.
+
+### 2.2 What `models.json` holds per login type
+
+Counts and fields of the embedded file [ran: a script over it].
+
+| Section | Models | Thinking fields used |
+|---|---|---|
+| `claude` | 20 | `levels`, `min`, `max`, `zero_allowed`, `dynamic_allowed`, `disable_type` |
+| `codex-free` / `-team` / `-plus` / `-pro` | 6 / 12 / 12 / 12 | `levels` |
+| `copilot` | 30 | `levels`, `min`, `max`, `zero_allowed` |
+| `gemini`, `vertex`, `aistudio` | 15, 24, 19 | `min`, `max`, `dynamic_allowed`, `zero_allowed`, `levels` |
+| `antigravity` | 15 | all five |
+| `kimi`, `xai`, `meta` | 12, 18, 10 | `levels`, `zero_allowed` |
+| `devin` (own file) | 52 | `levels` |
+
+Every model also has an id, a display name, an owner, a context window, an output limit and input and output modalities (`ModelInfo`, `internal/registry/model_registry.go:40-120`). Some carry `native_capabilities.web_search` (117 models), and a few Codex models carry three router settings: `supported_parameters`, `support_configuration_update` and `config.override_header`.
+
+The file's `gemini-cli` section (7 models) is read by nothing: the struct has no such field (`model_definitions.go:30-45`) [read].
+
+### 2.3 What already asks a vendor
+
+| Login | Who asks | What happens to a model the catalog lacks |
+|---|---|---|
+| Claude, Codex, Meta | the owner's patch, `sdk/cliproxy/live_model_lists.go`, off unless `models.live-lists: true` (`catalog_config.go:15-17`) | Claude and Codex: added from the vendor's description (`:246-261`). Meta: nothing, its list has ids only (`:582-583`) |
+| Copilot | upstream, every 2 h (`sdk/cliproxy/copilot_catalogs.go:254`, `internal/auth/copilot/catalog.go:24`) | **Dropped**: only ids in the `copilot` section are offered (`catalog.go:155-165`) |
+| Antigravity | upstream (`sdk/cliproxy/antigravity_models.go:642`) | **Dropped**: the catalog is filtered by the vendor's ids (`:773-783`) |
+| Devin, Kimi, xAI, Gemini, Vertex, AI Studio | nobody | The catalog is the whole list |
+
+## 3. Per login type: does the vendor offer a list?
+
+"Needs" are the fields of section 2.2. "From the published list" means the vendor's answer lacks the field and providers.dev carries it (section 4.4).
+
+| Login | Request | The answer has | The answer lacks | Verified |
+|---|---|---|---|---|
+| **Claude** login | `GET https://api.anthropic.com/v1/models?limit=1000` | id, name, date, `max_input_tokens`, `max_tokens`, per effort level `supported`, thinking types (`adaptive`, `between_tools`, `disabled`, `enabled`), image input, `server_tools.web_search` | thinking budgets in tokens, aliases | Fields [docs]. Built and released in the patch (`live_model_lists.go:416-431`). The docs show an API key; that a login's token is accepted is the patch's own claim [infer] |
+| **Codex** login | `GET https://chatgpt.com/backend-api/codex/models?client_version=99.0.0` | slug, name, description, window, input modalities, reasoning levels, visibility, `available_in_plans`, and the whole Codex client record | an output limit | Built in the patch (`:432-449`). OpenAI's own CLI makes this call [docs: `openai/codex`, `codex-rs/codex-api/src/endpoint/models.rs`] |
+| **Meta** login | `GET https://api.meta.ai/v1/models` | ids | everything else | Built in the patch (`:450-455`). No public page found |
+| **Copilot** | `GET <account's API host>/models` | id, name, windows (context, prompt, output), vision, thinking budgets, reasoning efforts, adaptive mode, endpoints, policy, picker flag | nothing Provimux needs | Upstream's runtime (`internal/auth/copilot/catalog.go:56-84`). No official page; Microsoft's own client defines the same fields [docs: `microsoft/vscode-copilot-chat`, `endpointProvider.ts`] |
+| **Antigravity** | `POST <cloudcode host>/v1internal:fetchAvailableModels` with the project | per id: `displayName`, `maxTokens`, `maxOutputTokens`; `webSearchModelIds` | thinking levels and budgets, modalities | Request: upstream's runtime (`sdk/auth/antigravity_models.go:26`, `:88-125`). Fields: upstream's tool (`cmd/fetch_antigravity_models/main.go:300-320`). The runtime keeps the ids only (`sdk/auth/antigravity_models.go:258-274`). No public page |
+| **Devin** | `POST https://server.codeium.com/exa.api_server_pb.ApiServerService/GetCliModelConfigs`, protobuf | per variant: label, multimodal flag, vendor, context window, output limit, and the id, whose suffix names the effort (`-low`, `-high`, `-max-fast`, …) | nothing Provimux needs | Upstream's tool only (`cmd/fetch_devin_models/main.go:46`, `:222-268`, fields `:300-377`). The executor already knows the path (`internal/runtime/executor/devin_executor.go:110`). The registry already joins variants into one model with levels (`devin_models.go:341`). No public page. Not run |
+| **Kimi** login | `GET https://api.kimi.com/coding/v1/models` | id, `display_name`, `context_length`, `supports_reasoning`, `supports_image_in`, `supports_video_in` | an output limit; reasoning levels (a yes or no only) | Provimux calls nothing today. Kimi's own CLI makes this call and reads these fields [docs: `MoonshotAI/kimi-cli`, `src/kimi_cli/auth/platforms.py`]. Provimux's base is `https://api.kimi.com/coding` (`internal/auth/kimi/kimi.go:48`). Not run |
+| **xAI** | `GET https://api.x.ai/v1/models` and `/v1/language-models` | id, aliases, `context_length`, reasoning efforts, input and output modalities | an output limit | Fields [docs: docs.x.ai]. The login's requests go to `cli-chat-proxy.grok.com` (`internal/auth/xai/types.go:13`); its scope includes `api:access` (`:21`), so `api.x.ai` may accept its token [infer]. **Not verified for the login** |
+| **Gemini** API key | `GET https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000`, pages until no `nextPageToken` | id, name, description, `inputTokenLimit`, `outputTokenLimit`, methods, `thinking` (a yes or no) | thinking budgets and levels, modalities | Fields [docs: ai.google.dev]. Provimux's base is the same host (`internal/runtime/executor/gemini_executor.go:33`) |
+| **Vertex** | `GET https://aiplatform.googleapis.com/v1beta1/publishers/google/models` | ids, versions, launch stage | every limit; and it exists in the beta API only | [docs: the discovery documents of `v1` and `v1beta1`] |
+| **AI Studio** | none | | | Requests go through a websocket to a browser (`internal/runtime/executor/aistudio_executor.go:1-3`); there is no list call [read] |
+
+**So:** nine login types get a live list (Claude, Codex, Meta, Copilot, Antigravity, Devin, Kimi, xAI, Gemini keys). Vertex and AI Studio take the published list. I recommend not using Vertex's beta list: it states no limit, so it could only hide models.
+
+**API keys.** The patch gives API keys no live list (`live_model_lists.go:203-205`). This design keeps that, with one exception: a Gemini key, where the key is the only credential. Keys of Claude, Codex and xAI use the published list of the vendor's API provider. A key with its own `base-url` is never asked: Provimux sends no list request to a host the user configured for something else.
+
+## 4. providers.dev's part
+
+### 4.1 A new resource: the listing
+
+A **listing** is the model list of one provider and access method: what the vendor's own list said, read on a date through a named client, completed by sourced statements. It belongs to a provider that already exists in the catalog. It is not a set of entries: an entry stays "a model evaluated or imported", and a listed model need not have one.
+
+| Provimux login | Listing (provider id) | Provider exists today | The listing's models come from |
+|---|---|---|---|
+| Claude login | `claude-subscription` | yes, authored | the capture |
+| Codex login | `openai-codex` | yes, models.dev (2 models) | the capture, else models.dev |
+| Copilot | `github-copilot` | yes, models.dev (44 models) | the capture, else models.dev |
+| Antigravity | `antigravity` | yes, authored | the capture |
+| Devin | `devin` | yes, authored | the capture |
+| Meta login | `meta-subscription` | yes, authored | the capture (ids), fields authored |
+| Kimi login | `kimi-code-plan-global` or `-cn` | yes, models.dev | the capture, else models.dev |
+| xAI | `xai` | yes, models.dev | models.dev; the capture if the login's list differs |
+| Gemini key, AI Studio | `google` | yes, models.dev | models.dev |
+| Vertex | `google-vertex` | yes, models.dev | models.dev |
+| Claude key, Codex key | `anthropic`, `openai` | yes, models.dev | models.dev |
+
+Provider ids are from `data/upstream/providers/` and `data/authored/providers/` [read]. Which Kimi host is "global" is [infer]. The map from login to listing lives in Provimux, not in providers.dev: the API knows providers, not Provimux.
+
+**Sources of a listing, in one fixed order**, the same order `sources-side-by-side` uses for a value:
+
+1. `listed`: the capture (section 4.3).
+2. `providers.dev`: an authored list or field, with `reason` and `evidence` as every authored statement has.
+3. `models.dev`: the imported models of the same provider.
+4. `pi.dev`: pi's models of the same provider.
+
+The **models** of a listing are taken whole from the first source that has a list for the provider, as a price is taken whole from one source. A **field** of a model is taken from the first source that states it, and the row names that source.
+
+### 4.2 The API shape
+
+Two paths. Both are additions, so `/api/v1` only grows (AGENTS.md:53-57).
+
+| Path | Returns |
+|---|---|
+| `GET /api/v1/listings` | a page of `Listing`; `models` is `null` unless `view=full` (the rule `/providers/{provider}` already has) |
+| `GET /api/v1/listings/{provider}` | one `Listing` with its `models` |
+
+Provimux makes one request, `GET /api/v1/listings?view=full&limit=<max>`, and gets every listing. Every key below is always present: `null` for unknown, `[]` for none (AGENTS.md:48-52).
+
+```json
+{
+  "provider": "devin",
+  "basis": "listed",
+  "listed_at": "2026-11-22",
+  "client": "provimux",
+  "evidence": [{ "kind": "listed", "url": "https://github.com/ngvoicu/groundtruth/blob/main/listed.json", "date": "2026-11-22", "note": null }],
+  "model_count": 53,
+  "models": [
+    {
+      "id": "gemini-4-neon",
+      "name": "Gemini 4 Neon",
+      "owner": "google",
+      "entry": null,
+      "canonical": null,
+      "released": null,
+      "context_window": 1048576,
+      "max_input": null,
+      "max_output": 65536,
+      "input_modalities": ["text", "image"],
+      "output_modalities": ["text"],
+      "reasoning": {
+        "levels": ["low", "medium", "high"],
+        "budget_min": null,
+        "budget_max": null,
+        "can_disable": null,
+        "dynamic": null,
+        "disable_with": null
+      },
+      "web_search": null,
+      "aliases": [],
+      "plans": [],
+      "hidden": false,
+      "sources": {
+        "context_window": "listed", "max_input": null, "max_output": "listed",
+        "input_modalities": "listed", "output_modalities": "listed", "reasoning": "listed",
+        "web_search": null, "aliases": null, "plans": null
+      }
+    }
+  ]
+}
+```
+
+The figures in the example are placeholders.
+
+| Field | Meaning |
+|---|---|
+| `id` | the id a request names on this access method |
+| `entry` | `{provider, model}` of the catalog entry for this model on this provider, or `null`: listed, not evaluated |
+| `reasoning` | `null` when no source says anything. `can_disable`: thinking can be turned off. `dynamic`: the model may choose its own budget. `disable_with`: the vendor's word for "off" where it is not the usual one |
+| `web_search` | the access method runs the vendor's own web search for this model |
+| `plans` | plan names the vendor's list itself attaches to the model (Codex: `available_in_plans`); `[]` when the list names none |
+| `hidden` | the vendor's list marks the model as not shown in pickers |
+| `sources` | per field, the source that gave it: `listed`, `providers.dev`, `models.dev`, `pi.dev`, or `null` |
+| `basis`, `listed_at`, `client` | of the listing: the source of its models, the date that source was read, and for `listed` the client that read it |
+
+New components: `Listing`, `ListingModel`, `ListingReasoning`, `ListingSources`. `/api/v1/meta` grows a `listings` object (`count`, `fetched_at`, the capture's date). The version takes the next minor step at the time it lands.
+
+**Freshness.**
+
+| Basis | As fresh as |
+|---|---|
+| `listed` | the last capture: one day old with a daily capture (section 4.3) |
+| `models.dev`, `pi.dev` | the daily import, 04:17 UTC |
+| `providers.dev` | the last edit, dated in its evidence |
+
+Every response keeps its existing freshness headers (`ETag`, `X-Dataset-Version`, `X-Dataset-Generated-At`), and a `listed` listing older than `stale_after_days` is marked by the existing stale rule.
+
+### 4.3 The capture: how a login's list gets to a site with no logins
+
+providers.dev's CI has no logins. The owner's Provimux has them and already asks the vendors every 3 hours. So the capture reads Provimux, not the vendors:
+
+1. Provimux's new management endpoint returns, per login, **exactly what the vendor's list said**, before any merge (section 5.5, `view=live`).
+2. A new script in groundtruth, `scripts/capture_listed.py`, reads it from the owner's Provimux with the management key and writes `listed.json` at the repository root, beside `observed.json`.
+3. providers.dev's daily sync fetches `listed.json` as it fetches `observed.json` (`scripts/lib/sync.ts:15`, `:243-260`), into `data/sources/listed.json`. A missing file is "no capture yet", not an error.
+
+**No circle.** Only rows whose source is `live` are exported. A list Provimux took from providers.dev or from its built-in copy is never captured, so providers.dev never reads back its own data.
+
+**What the file holds.** Per provider: the date, the client (`provimux`, a new id in `data/authored/measurement-labels.yaml`), and the models with the fields the vendor stated. It holds no account, email, token, auth file name or login count. Where the owner has several logins of one type, the list is their union.
+
+**It sends nothing to a vendor.** The script makes one local request. Provimux has already made the vendor requests on its own schedule.
+
+**Cadence.** groundtruth's nights are started by hand, in bursts (measuring days 4, 6 to 13 and 15 to 18 November, none since) [read: groundtruth's history]. A capture tied to nights would be days or weeks old. I recommend a daily job on the owner's Mac (`launchd`) that runs the script and pushes the file when it changed. It spends no quota. It is the owner's decision (section 10).
+
+**Before the new Provimux exists.** The first capture is made with a Provimux built from the branch of step P2, run by the owner. Upstream's four `cmd/fetch_*_models` tools are a second way for Devin, Antigravity, Copilot and Codex.
+
+### 4.4 The fields a live list lacks
+
+| Provimux needs | Listing field | Who states it when the vendor's list does not |
+|---|---|---|
+| thinking budgets (`min`, `max`) | `reasoning.budget_min`, `budget_max` | authored, from the vendor's documentation |
+| thinking can be off, dynamic budget | `reasoning.can_disable`, `dynamic` | authored; Claude's list states both |
+| thinking levels | `reasoning.levels` | models.dev (`reasoning_options`), else authored |
+| output limit (Codex, Kimi, xAI) | `max_output` | models.dev (`limit.output`), else authored |
+| modalities (Antigravity, Gemini) | `input_modalities`, `output_modalities` | models.dev, else authored |
+| native web search | `web_search` | authored; Antigravity's and Claude's lists state it |
+| other ids the access method accepts | `aliases` | authored; xAI's list states them |
+
+Authored statements go in `data/authored/listings/<provider>.yaml`, one rule per model or selection, each with `reason` and `evidence` (`kind`, `url`, `date`), validated by a Zod schema like every authored file. The build fails without evidence, as today.
+
+**Not carried by providers.dev:** the three router settings of section 2.2 (`supported_parameters`, `support_configuration_update`, `config.override_header`). They say how a proxy must behave, not what a model is. Section 6.5.
+
+**Not copied:** no authored value is taken from router-for-me's files. A value comes from the vendor's list, the vendor's documentation, models.dev, pi or a groundtruth measurement, and says which.
+
+### 4.5 Two rules to amend, and what the site shows
+
+Two rules of `AGENTS.md` stand against this as written. Both need the owner's word.
+
+| Rule today | Amendment |
+|---|---|
+| "Vendors' own model lists are not values of an entry; they stay in evaluation notes." (`AGENTS.md:108`) | Stays true and gains one sentence: a vendor's list is published as the provider's listing (`/api/v1/listings`) and is never written into an entry's `limit` or into a safe value |
+| "No subscription plans, plan prices, allowances or quota data. Access is a classification only." (`AGENTS.md:76`) | A listing row may carry the plan **names** the vendor's own list attaches to a model. Still no prices, allowances or quotas |
+
+Without the second amendment, `plans` leaves the contract before it is built, and a Codex login whose live list has not arrived yet is offered every plan's models.
+
+**The site** shows a listing on the provider's page, in a section "Model list": the date, the client, and one row per model with id, name, window, output limit and reasoning levels. A model with an entry links to it; one without says "Listed, not evaluated". The page prints fields of `/api/v1/listings/{provider}` and works nothing out (AGENTS.md:114-118). The methodology gains one paragraph on what a listing is and where it comes from.
+
+### 4.6 Beside `sources-side-by-side`
+
+That branch holds a design document only; main has not moved since it forked [ran: `git log main..sources-side-by-side`, 2 commits, 1 file].
+
+| | |
+|---|---|
+| New files, no conflict | `src/core/listings.ts`, the listing schemas, `data/authored/listings/`, the `listed.json` reader, tests |
+| Shared files, small edits | `src/core/contract.ts`, `src/core/openapi.ts` (two `ENDPOINTS` rows and the version), `src/core/api.ts`, `scripts/lib/publish.ts`, `scripts/lib/sync.ts`, `structure/api-v1.json`, `AGENTS.md`, README |
+| The real collision | the version line in `openapi.ts` and the structure record. Whichever lands second takes the next minor and runs `npm run structure:update` again |
+| Not touched | `safe.ts`, `resolve.ts`, `limits.ts`, `cache.ts`, the pi fence: the code that redesign rewrites |
+
+A listing row states what the list said, not the entry's safe value. Once `sources-side-by-side` is live, a later minor can add the entry's safe window beside it; that is growth, not change.
+
+## 5. Merging, in Provimux
+
+### 5.1 The rule
+
+Per login type Provimux keeps a **section**: every model it knows for that type, with its fields. Per login it keeps the login's **live list**.
+
+| | Rule |
+|---|---|
+| The section's models | the published list; the built-in list while no published list is held; plus **learned** models: ones a live list of any login of that type named and the published list lacks |
+| A model's fields | per field, the first that states it: the live list, the published list, the built-in list. A field no source states stays unknown; nothing is invented |
+| A login **with** a live list | offers exactly the models its live list names, plus the models Provimux adds itself (image, video and speech models, `live_model_lists.go:265-276`) |
+| A login **without** a live list | offers the published list (else built-in), without learned models |
+| On top, unchanged | the user's `excluded-models`, `oauth-model-alias`, model prefixes, and models from the config and from plugins (`sdk/cliproxy/service_models.go:337-350`) |
+
+**A change from today.** The patch lets the catalog's value win for a model both have (`live_model_lists.go:31`). This design lets the vendor's value win per field, which is what "first, live" means. Step P6 lists every value this changes on the owner's logins before anything is removed. Keeping "published wins for a model both have" is the alternative (section 10).
+
+### 5.2 How often
+
+| Source | When |
+|---|---|
+| Live | at start, in the background; every 3 h per login; on `POST /v8/management/models/refresh`; when a login is added or replaced. After a failure, again in 10 minutes. All as the patch does today (`live_model_lists.go:35-37`, `:131-148`) |
+| Published | at start, in the background; every 6 h; on the same refresh. One conditional request (`If-None-Match`): providers.dev changes once a day, so most answers are `304` with no body. After a failure: 10 minutes, then 1 hour, then the normal 6 |
+| Built-in | never fetched: it is in the binary |
+
+### 5.3 Failure: never an emptied list, never a blocked start
+
+**Start.** Provimux composes its lists before it listens, from the built-in lists and from its disk cache (section 5.4). Both are local and small. No network request is awaited, so a start with no network gives the lists of the last run.
+
+**A fetched list replaces the held one only if all of this holds:**
+
+| Check | Live | Published |
+|---|---|---|
+| HTTP 200 and well-formed | yes | yes |
+| Complete | Claude: `has_more` false (`live_model_lists.go:495-497`). Gemini: every page read. Others: one answer | every listing of the document |
+| Not empty | at least one model (`:525-527`) | per listing; an empty or missing listing keeps the held one **for that login type only** |
+| Size | at most 8 MB (`:38`) | at most 8 MB |
+| Not older | the login is still the same account (`:348-352`) | `generated_at` not before the held document's |
+
+Anything else is a failed fetch: the held list stays, the failure is recorded as a code (never the error text, as today: `.github/provimux/design/pui13/02-live-lists.md` section 4), and the retry is scheduled.
+
+**A live list that cannot be refreshed** stays in use for 7 days. After that it counts as not held and the login takes the published list, with one log line and a visible state. Without this limit, a vendor that removed its list endpoint would freeze the login's models for good.
+
+**No list from any source.** The vendor gives none, providers.dev cannot be reached, and nothing is cached: the login offers the built-in list. A release is not built without a non-empty built-in list for every login type (section 5.6), so this is the floor. If a login type has none at all (upstream added one between two releases), the login offers only models from the config and plugins, the log warns, and the status endpoint says `none`. Step P1's test makes the sync check fail before such a release exists.
+
+### 5.4 The disk cache
+
+New, and holding only our own sources.
+
+| | |
+|---|---|
+| Where | a folder `model-lists/` beside the console's `static/` folder, resolved by the same rule (`internal/managementasset/updater.go:146-162`: `WRITABLE_PATH`, else the config file's folder) |
+| Files | `published.json`: the last accepted providers.dev document and its `ETag`. `live-<hash>.json`: one login's last live list |
+| A live file holds | model ids and fields, the fetch time, and a hash of the account identity. No token, email or file name |
+| Mode | `0600`, written to a temporary file and renamed |
+| Read-only disk | no cache; lists live in memory only |
+| A damaged or foreign file | ignored with one warning, then overwritten |
+
+Why it exists: without it every restart shows the published list until the vendors answer, so a model only the vendor knows would vanish and come back at each restart.
+
+### 5.5 How the user sees the source
+
+**Log.** One line when a login's source or model count changes, one line per accepted providers.dev document, a warning per failure:
+
+```
+model list for devin login a8d1…: live, 53 models, 1 not on providers.dev yet (gemini-4-neon)
+model lists from providers.dev: dataset 3f9c… of 2026-11-22, 11 listings
+model list for kimi login 0b7e…: fetch failed (http_status 401); keeping the list of 2026-11-21
+```
+
+**Management API.** A new read-only path, `GET /v8/management/provimux/model-lists`, behind the management key like the other three (`internal/api/server_provimux.go:11-16`). It reports recorded state and predicts nothing, the rule PUI-14 set.
+
+```json
+{
+  "observed_at": "2026-11-22T18:04:11Z",
+  "options": { "live_lists": true, "published_lists": true },
+  "built_in": { "dataset_version": "3f9c…", "generated_at": "2026-11-20T04:21:00Z" },
+  "published": {
+    "state": "held",
+    "dataset_version": "5a1e…",
+    "generated_at": "2026-11-22T04:20:11Z",
+    "fetched_at": "2026-11-22T12:00:03Z",
+    "from_cache": false,
+    "last_failure": null
+  },
+  "logins": [
+    {
+      "auth_index": "a8d167b7d82c8c15",
+      "provider": "devin",
+      "login": { "name": "devin-office@providers.dev.json", "email": "office@providers.dev", "label": "office@providers.dev" },
+      "disabled": false,
+      "source": "live",
+      "live": { "supported": true, "held": true, "fetched_at": "2026-11-22T16:10:44Z", "from_cache": false, "fetching": false, "listed_models": 53, "last_failure": null },
+      "registered_models": 53,
+      "learned_models": 1,
+      "models": null
+    }
+  ]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `source` | which source decides this login's models now: `live`, `published`, `built-in` or `none`. Clients treat another value as unknown |
+| `published.state` | `held`, `none` (never fetched and nothing cached) or `off` (the option) |
+| `live.supported` | the vendor has a list and this login is asked |
+| `learned_models` | models this login offers that the published list lacks |
+| `models` | `null`, unless the request names one login (`?auth_index=`): then one row per model with its `id`, its `source` and, per field, the source that gave it |
+| `?view=live` | adds, per login, the vendor's list as it arrived, unmerged. This is what the capture reads (section 4.3) |
+| `last_failure` | `{at, category, http_status}`: codes only |
+
+Rules kept from PUI-13: `auth_index` identifies a login; names follow `GET /v8/management/credentials`; responses only grow.
+
+`GET /v8/management/provimux/live-lists` stays as it is, for consoles already released. Its `providers` list grows. `POST /v8/management/models/refresh` stays the one way to refresh; its answer names providers.dev where it named router-for-me's address.
+
+**Console** (`provimux-ui`). The "Live lists" page becomes "Model lists": per login the source and its age, a mark for a list that is getting old, the count of models not on providers.dev yet, and per login the models with their source. A line at the top says which providers.dev dataset is held, or that providers.dev was not reached and since when. An old console keeps working on the old path; a new console on an old server gets `404` on the new path and shows the old page (the rule of `05-console-contract.md`).
+
+### 5.6 How the built-in list is kept current
+
+The release workflow already fetches the catalogs once, validates them, hands them to every build as one artifact and names their origin in the release notes (`provimux-release.yml:89-171`, `:225-240`). Only the origin changes.
+
+| Step of job `catalogs` | Today | After |
+|---|---|---|
+| Fetch | `router-for-me/models` at one commit | `GET https://providers.dev/api/v1/listings?view=full`, once; the answer's `X-Dataset-Version` is recorded |
+| Validate | sections present, ids unique, the Go validators | the listing schema; a non-empty listing for every login type of Provimux's map; the same Go validators on the lists as a build embeds them |
+| Hand over | artifact `model-catalogs` with `SHA256SUMS` | the same, under our file names |
+| Release notes | the commit of `router-for-me/models` | the dataset version, its date and the checksum; the file is attached to the release as `provimux-model-lists.json` |
+| providers.dev cannot be reached, or a listing is empty | | the build takes `provimux-model-lists.json` of the newest `-pmx` release and says so in the notes; with none, the release fails |
+
+Provimux is released with every CLIProxyAPI release, and upstream made 21 in the two weeks from `v8.0.60` to `v8.1.0` [ran: the tags and their dates], so the built-in list is days old at most.
+
+**The Codex client catalog** is a different thing: not a model list but the record a Codex CLI expects per model, with OpenAI's instructions (1 MB). Its sources:
+
+1. Live: the Codex login's own answer is this catalog. The patch already fetches it (`live_model_lists.go:445`) and throws most of it away.
+2. Not providers.dev: it publishes model facts, not a client's prompts.
+3. Built in: OpenAI's own public file, `codex-rs/models-manager/models.json` of `openai/codex` (Apache-2.0), fetched at one commit by the same job. It has 14 models in the same shape, and upstream's validator rejects it for one reason only: it has no `base_instructions` [ran: `go run ./cmd/validate_codex_models` on the file]. Step P5 fills that field from the same repository at the same commit, or the owner chooses the capture instead (section 10).
+
+**A copy in the repository.** `internal/registry/provimux_lists/` holds a committed copy so that a build from source works. It is as old as its commit; a release replaces it at build time, as releases replace the catalogs today.
+
+## 6. What changes in Provimux, and the cost of upstream merges
+
+### 6.1 Where the change sits
+
+Everything is in layer commits (trailer `Provimux-Layer: branding`). No protected path is touched (`guard.sh:33`: `internal/runtime/executor`, `internal/auth`, `internal/misc`, `internal/translator`, `sdk/cliproxy/session`). The live requests go through each executor's exported `HttpRequest`, as the patch's do (`live_model_lists.go:396`); every executor has one [ran: grep].
+
+**New files (no conflict possible).**
+
+| File | Holds |
+|---|---|
+| `internal/registry/provimux_model_lists.go` | the three sources per login type; the rule of 5.1; the conversion into the shapes upstream's registry reads |
+| `internal/registry/provimux_builtin_lists.go` | the built-in lists, and the test-binary rule of 6.4 |
+| `internal/registry/provimux_lists/lists.json`, `codex_client_models.json` | the committed copy of the built-in lists |
+| `internal/provimux/modellists/` | the providers.dev client and the disk cache |
+| `sdk/cliproxy/provimux_live_devin.go`, `_kimi.go`, `_xai.go`, `_gemini.go`, `_copilot.go`, `_antigravity.go` | one vendor's request and parser each |
+| `internal/api/handlers/management/provimux_model_lists.go` | the endpoint of 5.5 |
+
+**How it hooks in without editing upstream's updaters.** Upstream's three updaters are package variables whose fetch function is a field (`catalog_sources.go:352-370`). The layer's `init()` wraps that field: for the default source it returns the composed lists in upstream's own shape; for an explicit source (`models.catalog` and its two siblings, or a test's own address) it calls upstream's function unchanged. Upstream's updater stays the only writer of the registry's stores and keeps its validation, its change detection and its refresh callback (`catalog_sources.go:102-129`).
+
+**Edits to upstream's lines.**
+
+| File | Lines | Edit | Upstream commits that ever touched these lines |
+|---|---|---|---|
+| `internal/registry/model_updater.go` | 19-22, 24-25 | the two addresses removed; the embed replaced by a call into the layer | 1 |
+| `internal/registry/devin_models_updater.go` | 11-14 | the two addresses removed | 2 |
+| `internal/registry/codex_client_models_updater.go` | 11-14 | the two addresses removed | 1 |
+| `internal/registry/devin_models.go` | 16-17 | the embed replaced | 1 |
+| `internal/registry/codex_client_models.go` | 15-16 | the embed replaced | 2 |
+| `internal/registry/model_definitions.go` | 102-225 | `staticDevinModels` becomes an empty list | 1 in the last two weeks, on the whole file |
+| `sdk/cliproxy/service_models.go` | one line per login type | `applyLiveModelList(…)` for Devin, Kimi, xAI, Gemini, Copilot, Antigravity, as the patch has for three (`:161`, `:189`, `:226`) | 4 in the last two weeks, on the whole file |
+| `internal/registry/catalog_config.go` | 15-17 | `live-lists` defaults to on; `published-lists` added | the patch's own lines |
+| `internal/api/server_provimux.go` | one line | the new route (a layer file) | |
+
+Counts are `git log -L` on `v8.1.0` and `git log v8.0.60..v8.1.0` [ran]. A rebase conflicts only when upstream edits one of these exact lines; then the sync check reports the commit and the file, as for any patch.
+
+**The owner's patch file** `sdk/cliproxy/live_model_lists.go` grows: one `case` per vendor in `fetchLiveModelList`, the learned models, the disk cache and the 7-day limit. A layer commit already edits this file (PUI-14, `:355`).
+
+### 6.2 What is removed
+
+| Removed | How |
+|---|---|
+| The six addresses of `router-for-me/models` and `models.router-for.me` | the edits above. The binary then holds neither string |
+| The three embedded files | the three embeds point at the layer's lists; nothing compiled reads `internal/registry/models/` |
+| `staticDevinModels` | emptied |
+| The release's fetch of `router-for-me/models` | job `catalogs` re-sourced (5.6); the workflow input `models_commit` goes |
+| A `models.catalog`, `models.codex-catalog` or `models.devin-catalog` value that names a router-for-me host | ignored at load with one warning. The three keys keep working for the user's own file or address |
+
+**Not removed, and why.**
+
+| Stays | Why |
+|---|---|
+| The plugin store's address (`internal/pluginstore/registry.go:17`) | the owner's decision |
+| `.github/scripts/refresh-model-catalogs.sh` | upstream's script, called only by two of upstream's workflows, both disabled in this repository (`.github/provimux/upstream-workflows.md:9`, `:12`). It never runs here |
+| The three files in `internal/registry/models/`, in the source tree | section 6.4 |
+| Models written into upstream's code: Codex image models, xAI image, video and speech models, `devin/swe-1-6-slow`, Copilot's `compat.json` | they are how an executor behaves for a model the vendor's list never names, not a fetched list; `compat.json` is on a protected path. The owner decides (section 10) |
+
+### 6.3 How much of upstream's registry stays untouched
+
+Upstream has 9 non-test Go files in `internal/registry` at `v8.1.0` [ran: `git ls-tree`]. Seven get the small edits above. The two large ones, `model_registry.go` (2,297 lines) and `catalog_sources.go` (520 lines), get none. Every function keeps its code (`GetClaudeModels` and its siblings, the lookups, the updater, the refresh result): only what feeds them changes. `service_models.go` gains six lines.
+
+### 6.4 Upstream's tests, and why the three files stay in the tree
+
+I ran upstream's tests twice on `e5cf5a2d5`, over `internal/registry`, `internal/thinking`, `internal/translator`, `internal/runtime`, `internal/api`, `internal/client`, `internal/auth` and `sdk` (90 packages): once as is, once with `models.json` and `devin_models.json` emptied.
+
+| | As is | Lists emptied |
+|---|---|---|
+| Top-level tests with a result | 8,061 | 7,350 |
+| Failing | 1 | 145 |
+| Failing only without the lists | | **144**, in 14 packages (`sdk/cliproxy` 63, `internal/runtime/executor` 33, `internal/registry` 15, `internal/thinking` 11, others 22) |
+| No result at all | | **711**: the executor package stopped |
+
+The names are in the scratch file given in section 11.
+
+The sync check passes a release only if it is "no worse than upstream" (`SYNC.md`, "The check"). Upstream's tests assume router-for-me's lists; with our lists in their place, every difference between the two would be a failing test at some sync, and a failing test needs the owner.
+
+**So:** in a **test binary** the registry starts from upstream's three files, read from the source tree; in every other binary it starts from the built-in lists. `testing.Testing()` tells the two apart, and the files are found from the module root. The three files therefore stay in `internal/registry/models/`, as upstream's test fixtures. They are in no released binary and in no binary built from source, and nothing fetches them.
+
+A test of the layer proves it (step P1): no `go:embed` in the module names that folder; the six addresses are in no Go file; a built binary contains neither host name. The same test fails when upstream adds a list file, an address or a login type, so a new upstream release cannot bring one in unseen.
+
+Deleting the three files from the tree is possible only together with waiving those 144 tests at every sync. It also needs a second commit of the README commit's kind, because upstream changes `models.json` often (8 commits in the two weeks to `v8.1.0`) and a deletion would stop the rebase each time. I do not recommend it.
+
+### 6.5 The three router settings
+
+`supported_parameters`, `support_configuration_update` and `config.override_header` exist only in router-for-me's file, on Codex models. They are not copied. Step P6's comparison shows what the owner's logins lose without them. Each one that matters is then set again from our own evidence, in a small table of the layer with the reason beside each row, or left out. Codex's live answer has a field `supports_reasoning_effort_updates` that may be the source of the second [infer].
+
+### 6.6 Copies on the owner's machine
+
+| Copy | Removed by |
+|---|---|
+| In the installed binary: router-for-me's lists of the release day | installing the new release. `brew upgrade` replaces the binary and by default cleans the old version from the Cellar [infer: Homebrew's default; not checked on the owner's machine] |
+| In old Docker images | `docker image prune`, or removing the old tag |
+| On disk, written by Provimux | none exists (section 2.1) |
+| In the config: a `models.*catalog` value naming their host | ignored by the new release; the owner deletes the line. `grep -nE 'catalog:' <config file>` shows it |
+| In the source checkout | the fixtures of 6.4 |
+
+The release notes of the first release without the lists say these five lines.
+
+## 7. Privacy
+
+| To | What Provimux sends | When | Never |
+|---|---|---|---|
+| **providers.dev** | one request, `GET https://providers.dev/api/v1/listings?view=full&limit=<max>`, with `User-Agent: provimux/<version>` and `If-None-Match` | at start and every 6 h | which logins exist, any model id, any account, any identifier of the install, a cookie. The request is the same for every user, so the server cannot tell what a user has. As for any website, the host (Cloudflare) sees the sender's IP address |
+| **A vendor** | one list request per login, to the vendor's own host, with that login's credential and the client headers Provimux already sends that vendor | at start and every 3 h (Copilot every 2 h, as upstream) | a prompt, a file, another login's data |
+| **router-for-me** | nothing for model lists | | The plugin store's address is still fetched when the store is used, as decided |
+
+- **providers.dev can be switched off:** `models.published-lists: false`. Provimux then never contacts it and uses live and built-in lists.
+- **Live lists can be switched off:** `models.live-lists: false`, as today. Logins then take the published list.
+- **The request goes through the configured proxy.** Upstream's catalog fetch uses Go's default client (`catalog_sources.go:254`); the new client uses the proxy setting.
+- **Hosts.** Every live request goes to the host the login's requests already go to, with one exception to verify: the xAI login's chat goes to `cli-chat-proxy.grok.com` and its list would go to `api.x.ai` (section 3).
+- **A list call the vendor's own client also makes:** Codex, Kimi and Copilot [docs]; Devin, by upstream's comment (`devin_executor.go:109`). Not verified for Claude Code, Antigravity and Meta. Claude's and Meta's are in the released patch already.
+- **The capture publishes** model ids and fields per provider, from the owner's logins, in groundtruth's public repository. It names no account. It does show which login types the owner holds, which groundtruth's routes already show, and a Codex list hints at the plan of the account it came from.
+
+## 8. The Neon case
+
+Devin starts offering Gemini 4 Neon on day 0.
+
+| Step | What happens | Where |
+|---|---|---|
+| 1 | Within 3 hours, or at the next start, or when the owner presses refresh, Provimux asks the Devin login's vendor for its list | new `provimux_live_devin.go` |
+| 2 | The answer has the new variants (`gemini-4-neon-low`, `-medium`, `-high`), each with label, window, output limit and multimodal flag | the fields upstream's tool reads (`cmd/fetch_devin_models/main.go:300-377`) |
+| 3 | The variants are joined into one model, `gemini-4-neon`, with levels `low`, `medium`, `high` | `aggregateDevinModels`, `devin_models.go:341` |
+| 4 | The answer is complete and not empty: it becomes the login's live list, in memory and on disk | 5.3, 5.4 |
+| 5 | The published Devin list lacks the model: it is added to the section as learned, with every field from the vendor | 5.1 |
+| 6 | The registry is refreshed for Devin logins. `GET /v1/models` shows `devin/gemini-4-neon` | upstream's refresh callback |
+| 7 | The log says `live, 53 models, 1 not on providers.dev yet (gemini-4-neon)`; the console shows the model with the tag "from Devin's list" | 5.5 |
+| 8 | A request for it is routed to Devin with the effort as the id's suffix | as for every Devin model today [infer: the new id follows the suffix scheme] |
+| 9 | That night the capture writes the Devin list, with Neon, into `listed.json` | 4.3 |
+| 10 | At 04:17 UTC providers.dev imports it. The listing `devin` has Neon; the Devin page shows it as "Listed, not evaluated" | 4.1, 4.5 |
+| 11 | Another user's Provimux gets Neon from their own Devin login at step 1. If their fetch fails, they get it from providers.dev within 6 hours of step 10 | 5.2 |
+| 12 | The next release has it built in | 5.6 |
+
+**Compared with today:** `devin_models.json` still lacked the model on 2026-11-22 (the brief), and Provimux had no other way to learn it.
+
+**What does not help:** if the Devin request fails that day, the login keeps yesterday's list and has no Neon until a fetch succeeds or step 10 has happened. If Devin's answer lacks a field, the field stays unknown; Provimux does not assume the 64,000 output limit upstream's tool assumes (`cmd/fetch_devin_models/main.go:49`).
+
+## 9. The steps
+
+Order: providers.dev, then Provimux, then review and release. Each row is one task.
+
+### providers.dev
+
+| Step | Does | Must hold afterwards | Tests |
+|---|---|---|---|
+| D0 | The owner's word on the two rules (4.5) and on the order beside `sources-side-by-side` | `AGENTS.md` and the README say the amended rules | `tests/api-structure.test.ts` still finds the stability wording |
+| D1 | The contract: the listing schemas, the two paths, `meta.listings`, the version step, `npm run structure:update` | `/api/v1/listings` answers with an empty page when there is no data; the structure only grew from 1.0.0 | `api-structure`, `api` (the served OpenAPI equals `openapi()`), `contract` (two listings have the same keys) |
+| D2 | The sources: models.dev's and pi's providers as lists; `data/authored/listings/` with its schema; the order of 4.1 | every provider of 4.1's table that has an imported or authored list has a listing; each field names its source; a statement without evidence fails the build | unit tests of `listings.ts`: the whole list from the first source, each field from the first that states it, fixed keys |
+| D3 | The capture's reader: `listed.json` in the sync, with a schema; the client id `provimux` in `measurement-labels.yaml` | a missing file changes nothing; a malformed one keeps the last good copy and raises a sync issue; a `listed` list replaces the lower sources for that provider | sync tests with a fixture file, a missing file and a malformed file |
+| D4 | The page section and the methodology paragraph | the provider page prints the listing from the API and works nothing out; a listed model without an entry is not a link | `pages`, `render` |
+| D5 | groundtruth: `scripts/capture_listed.py`, the schema of `listed.json`, CI's check of the file, the optional daily job | the file names no account, email or token (the existing credential scan passes); a run with no live list for a provider leaves that provider's part unchanged | a test with a recorded Provimux answer; the scan |
+
+### Provimux
+
+| Step | Does | Must hold afterwards | Tests |
+|---|---|---|---|
+| P1 | The built-in lists and the test-binary rule (6.4); the six address and embed edits; `staticDevinModels` emptied | a built binary holds neither router-for-me host name; in a test binary upstream's tests see what they saw before | a layer test: no embed names `internal/registry/models/`, no Go file has the addresses, every section of `staticModelsJSON` has a login type in the layer's map. `strings` on a built binary. **The sync check's verdict on the branch: no test fails that passes on the tag** |
+| P2 | Live lists for Devin, Kimi, xAI and Gemini keys; learned models for all nine; on by default; the disk cache; the 7-day limit | section 5.1's table, row by row; a failed or partial fetch changes no list; a restart with no network gives the lists of the last run | per vendor: a parser test on a recorded answer, an empty answer, a cut-off answer, a paged answer. Store tests for the cache (damaged file, another account, read-only folder). The patch's existing tests still pass |
+| P3 | The providers.dev client and the composition | section 5.1 and 5.3; one request per 6 hours; `304` changes nothing; one bad listing keeps only that login type's held list | a test server: `200`, `304`, `500`, a cut-off body, an older document, an empty listing. A test that the request carries no parameter beyond `view` and `limit` and no header beyond the two of section 7 |
+| P4 | The management endpoint and its OpenAPI; the log lines; the console page | every key always present; `view=live` returns only what a vendor said; an old console and an old server each still work with the other | handler tests as for `live-lists` (200 with a source, 503 without); the examples validate against the OpenAPI; the console's own tests |
+| P5 | The release workflow: `catalogs` from providers.dev; the Codex client catalog from `openai/codex`; the fallback to the last release's file | a dry run builds every archive with the same lists; the notes name the dataset version; a build with providers.dev unreachable uses the last release's file and says so | a dry run (`workflow_dispatch`); the existing "Check the model catalogs" step on the new files; `cmd/validate_codex_models` passes on the built-in Codex catalog |
+| P6 | The comparison, once, on the owner's machine, run by the owner: for every login, the models and fields before the change and after it | a written list of every difference, each accepted by the owner or fixed. Nothing of router-for-me's file is copied to fix one | the report itself; it is the gate for the release |
+
+**Gate between the two.** P1 and P5 are not released before providers.dev has a non-empty listing for every login type of Provimux's map. P2 to P4 can be built and run from the branch earlier; the first capture needs them (4.3).
+
+### Review and release
+
+| Step | Does | Must hold afterwards |
+|---|---|---|
+| R1 | A critical review of the providers.dev change against sections 4 and 7 | findings fixed or accepted by the chief |
+| R2 | A critical review of the Provimux change against sections 5, 6 and 7, and of P6's report | the same; `guard.sh` passes; the sync check passes on the candidate |
+| R3 | Release: providers.dev first (a push to `main` deploys), then the capture, then the Provimux `-pmx` release; the release notes carry the five lines of 6.6 | on the owner's machine after the upgrade: no request to a router-for-me host for a model list in 24 hours of the log; every login's source is `live` or `published` on the status page; the Neon model is offered |
+
+## 10. Decisions that are the owner's
+
+| # | Decision | Recommendation | The other way costs |
+|---|---|---|---|
+| 1 | The three files of router-for-me stay in the source tree as fixtures for upstream's tests, and are in no binary | **Keep them** (6.4) | Deleting them fails 144 of upstream's tests and stops the executor package's 711; every sync would then need a waiver or the owner |
+| 2 | The two rules of providers.dev (4.5): a listing as its own resource, and plan names on a row | **Amend both** | Without the first there is no providers.dev part. Without the second, `plans` is not built and a Codex login without a live list is offered every plan's models |
+| 3 | How often the capture runs | **A daily job on the owner's Mac**; it spends no quota | Tied to measuring nights, a captured list is days or weeks old |
+| 4 | For a model both sources know, whose field value wins | **The vendor's**, per field (5.1) | "Published wins" is what the patch does today; it changes nothing on the owner's logins, and a value the vendor raised arrives only with the next capture |
+| 5 | Models written into upstream's code (image, video and speech models, `devin/swe-1-6-slow`, Copilot's `compat.json`) | **Leave them**: they are executor behaviour, compiled in, fetched from nowhere | Moving them to our lists means edits in upstream files, one of them on a protected path |
+| 6 | The three router settings of 6.5 | **Do not carry them over**; set again only what P6 shows is needed, from our own evidence | Copying them keeps today's behaviour for those Codex models and keeps a piece of router-for-me's list |
+| 7 | The built-in Codex client catalog | **OpenAI's own public file**, with the one missing field filled from the same repository (5.6) | The capture of the owner's Codex login would publish OpenAI's 1 MB answer in groundtruth |
+| 8 | The order beside `sources-side-by-side` | **Listings first**: it is small, touches none of the code that redesign rewrites, and Provimux waits for it | Landing second costs only the version line and the structure record |
+
+## 11. What I ran, and what I did not verify
+
+| Check | Result |
+|---|---|
+| A script over the three embedded files | the counts and fields of section 2.2; the Codex client file has 14 models and a `base_instructions` of about 17,000 characters per model |
+| `grep` for router-for-me's hosts over the worktree | the six addresses, the plugin store, the release workflow, upstream's refresh script; in tests only `internal/managementasset/updater_provimux_test.go:107` |
+| `grep` for file writes in `internal/registry` | none outside tests |
+| `git log v8.0.60..v8.1.0` per file; `git log -L` per edited range | the commit counts of sections 6.1 and 6.4 |
+| Upstream's tests, as is and with the two lists emptied (90 packages) | section 6.4 |
+| `go run ./cmd/validate_codex_models` on `openai/codex`'s `codex-rs/models-manager/models.json` | rejected: `field "base_instructions" must be a non-empty string`; no other complaint reached |
+| The vendors' public pages and open-source clients | section 3, the rows tagged [docs] |
+
+The test runs' result files (the 144 names, and the two runs as `go test -json`) stayed in the session's scratch folder, outside the repository, and are not kept; the two runs take about 10 minutes to repeat.
+
+**Not verified.**
+
+| Point | Who settles it |
+|---|---|
+| Whether `api.x.ai` answers the xAI login's token on its list paths | the owner, in P2, with his login |
+| Devin's, Kimi's and Antigravity's list answers as they arrive today | P2's recorded answers |
+| Whether Claude Code, Antigravity's client and Meta's client make the same list call | not needed for the build; stated in section 7 as unverified |
+| That a new Devin id always follows the effort-suffix scheme | P2; a variant that does not is offered as its own model, which is safe |
+| Homebrew's cleanup of the old version on the owner's machine | the owner, at R3 |
+| Which Kimi host is models.dev's "global" | D2 |
+| The one test that fails on `e5cf5a2d5` as is, `TestScheduler_InterleavedMarkResult_DoesNotTriggerRebuild` in `sdk/cliproxy/auth`: not part of this design | |
