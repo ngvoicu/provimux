@@ -21,6 +21,7 @@ import (
 var provimuxManagementPaths = []string{
 	"/v8/management/provimux/model-routes",
 	"/v8/management/provimux/live-lists",
+	"/v8/management/provimux/model-lists",
 	"/v8/management/provimux/savings",
 }
 
@@ -34,10 +35,22 @@ func (provimuxTestLiveSource) State(*coreauth.Auth) management.ProvimuxLiveListS
 	return management.ProvimuxLiveListState{}
 }
 
+type provimuxTestModelListSource struct{}
+
+func (provimuxTestModelListSource) LoginTypes() []string { return []string{"claude"} }
+
+func (provimuxTestModelListSource) ModelListLogin(*coreauth.Auth, bool, bool, bool) (management.ProvimuxModelListLogin, bool) {
+	return management.ProvimuxModelListLogin{}, false
+}
+
 func provimuxTestServer(t *testing.T, enabled, home bool) *Server {
 	t.Helper()
 	management.SetProvimuxLiveListSource(provimuxTestLiveSource{})
-	t.Cleanup(func() { management.SetProvimuxLiveListSource(nil) })
+	management.SetProvimuxModelListSource(provimuxTestModelListSource{})
+	t.Cleanup(func() {
+		management.SetProvimuxLiveListSource(nil)
+		management.SetProvimuxModelListSource(nil)
+	})
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte("port: 8317\nremote-management: {secret-key: test-password}\n"), 0600); err != nil {
 		t.Fatal(err)
