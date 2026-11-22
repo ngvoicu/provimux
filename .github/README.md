@@ -275,7 +275,7 @@ second takes over while the first has a cooldown recorded.
 
 ### Live model lists for each login
 
-**What you get.** Each Claude, Codex, Meta, Devin, Kimi and xAI login, and each Gemini API key, registers the models
+**What you get.** Each Claude, Codex, Meta and Devin login, and each Gemini API key, registers the models
 its own account lists, not only the shared catalog. Copilot and Antigravity logins, whose lists CLIProxyAPI already
 reads, also offer the models the catalog doesn't have yet. Models the provider has retired, or doesn't offer to your
 account, disappear from the list, and new models appear on the day the provider lists them.
@@ -299,16 +299,20 @@ models:
   source states stays unknown. Models the catalog doesn't have yet are added from the provider's own description:
   Claude gives the context window, output limit, reasoning levels and image input; Codex the context window,
   reasoning levels and input types; Devin the context window, output limit, image input and, through its variant ids,
-  the reasoning levels; Kimi the context window and image and video input; xAI the context window, input and output
-  types and reasoning levels; Gemini keys the input and output limits. Meta lists only model ids. Hidden Codex
-  entries are never added.
-- A fetch replaces a list only when it is complete (every page, both of xAI's answers) and names at least one model.
+  the reasoning levels; Gemini keys the input and output limits. Meta lists only model ids. Hidden Codex entries are
+  never added. A value counts only where the provider's answer states it: a field its answer lacks (Claude's
+  "thinking can be turned off", for one) keeps the catalog's value.
+- Kimi and xAI logins are not asked yet: they keep the catalog exactly as before. Their lists will be asked once one
+  real answer from each has been recorded and checked against the ids their requests use.
+- A fetch replaces a list only when it is complete (every page) and names at least one model, within 30 seconds; a
+  provider that does not answer in time counts as a failed fetch.
   Until a list arrives, or while fetches fail (retried every 10 minutes), the catalog or the last good list is used:
   a provider outage never empties a login. A list belongs to the login's account, so a login file replaced by another
   account never keeps the old list.
 - Lists are kept on disk, in `model-lists/` beside the console's `static/` folder (mode 0600: model ids and values,
   the fetch time and a hash of the account, no token, email or file name), so a start without network serves the
-  lists of the last run. A list that could not be refreshed for 7 days gives way to the catalog, with one log line.
+  lists of the last run. A list that could not be refreshed for 7 days gives way to the catalog, with one log line;
+  its file is deleted at the next start, and a login whose account or credential changed leaves no old file behind.
 - API keys keep the catalog, except a Gemini key on Google's own host; a key with its own base URL is never asked.
   Changing `live-lists` in a running instance applies at once.
 
@@ -562,9 +566,8 @@ The requests Provimux sends to providers are the same as CLIProxyAPI's, except w
 - on OpenAI API keys: a client's `prompt_cache_options.ttl`;
 - on the Codex WebSocket: the transcript of a full replay;
 - for Devin: the output limit of each model, when the real limits are in use;
-- unless `models.live-lists: false`: each Claude, Codex, Meta, Devin, Kimi and xAI login, and each Gemini API key on
-  Google's own host, asks its provider for its model list (at startup and every 3 hours). xAI's list is asked on
-  `api.x.ai`, the host the login already uses for its WebSocket, compact and speech requests.
+- unless `models.live-lists: false`: each Claude, Codex, Meta and Devin login, and each Gemini API key on Google's own
+  host, asks its provider for its model list (at startup and every 3 hours).
 
 ## Support
 
