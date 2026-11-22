@@ -275,62 +275,74 @@ second takes over while the first has a cooldown recorded.
 
 ### Live model lists for each login
 
-**What you get.** Each Claude, Codex and Meta login registers the models its own account lists, not only the shared
-catalog. Models the provider has retired, or doesn't offer to your account, disappear from the list, and new models
-appear on the day the provider lists them.
+**What you get.** Each Claude, Codex, Meta, Devin, Kimi and xAI login, and each Gemini API key, registers the models
+its own account lists, not only the shared catalog. Copilot and Antigravity logins, whose lists CLIProxyAPI already
+reads, also offer the models the catalog doesn't have yet. Models the provider has retired, or doesn't offer to your
+account, disappear from the list, and new models appear on the day the provider lists them.
 
 **Why it matters.** The shared catalog is edited by hand. It can list a model a day late, keep a retired model that
 then answers 404, or list a model your plan is refused.
 
 ![A diagram titled "models.live-lists: each login registers what its own account lists", with two columns, "The shared catalog" and "What the login serves". Claude login: the catalog has claude-opus-5-5, claude-sonnet-5-5, claude-haiku-5-5, claude-opus-4-1-20250805 and claude-3-7-sonnet-20250219; the login serves the first three, and the two older models are struck through. Codex login: the catalog has gpt-6.1-terra and gpt-6-chat-thinking; the login serves gpt-6.1-terra, gpt-6-chat-thinking is struck through, and gpt-6.2-sol is added in green. The legend reads: in both: the catalog's values; not in the login's list: hidden; not in the catalog yet: added from the provider.](provimux/media/live-lists.png)
 
-**How to turn it on.** It is off by default.
+**How to turn it off.** It is on by default.
 
 ```yaml
 models:
-  live-lists: true
+  live-lists: false
 ```
 
-- Provimux fetches each login's list in the background: at startup, every 3 hours, and on
-  `POST /v8/management/models/refresh`. Requests never wait for it.
-- A login registers only the catalog models its list contains. Models the catalog doesn't have yet are added from
-  the provider's own description. For Claude that is the context window, output limit, reasoning levels and image
-  input. For Codex it is the context window, reasoning levels and input types, but no output limit: Codex's list does
-  not give one, so a new Codex model has none until the catalog lists it. Meta lists only model ids, so Meta logins
-  are only filtered.
-- For models the catalog already has, the catalog's values are kept. Hidden Codex entries are never added, and
-  CLIProxyAPI's Codex image models stay.
-- Until a list arrives, or while fetches fail (retried every 10 minutes), the catalog or the last good list is used:
+- Provimux fetches each login's list in the background: at startup, every 3 hours, on
+  `POST /v8/management/models/refresh`, and when a login is added or replaced. Requests never wait for it.
+- A login registers exactly the models its list names, plus the image, video and speech models CLIProxyAPI adds
+  itself. Per field, the provider's value wins; the catalog fills what the provider's list doesn't state; a value no
+  source states stays unknown. Models the catalog doesn't have yet are added from the provider's own description:
+  Claude gives the context window, output limit, reasoning levels and image input; Codex the context window,
+  reasoning levels and input types; Devin the context window, output limit, image input and, through its variant ids,
+  the reasoning levels; Kimi the context window and image and video input; xAI the context window, input and output
+  types and reasoning levels; Gemini keys the input and output limits. Meta lists only model ids. Hidden Codex
+  entries are never added.
+- A fetch replaces a list only when it is complete (every page, both of xAI's answers) and names at least one model.
+  Until a list arrives, or while fetches fail (retried every 10 minutes), the catalog or the last good list is used:
   a provider outage never empties a login. A list belongs to the login's account, so a login file replaced by another
   account never keeps the old list.
-- API keys keep the catalog. Changing `live-lists` in a running instance applies at once.
+- Lists are kept on disk, in `model-lists/` beside the console's `static/` folder (mode 0600: model ids and values,
+  the fetch time and a hash of the account, no token, email or file name), so a start without network serves the
+  lists of the last run. A list that could not be refreshed for 7 days gives way to the catalog, with one log line.
+- API keys keep the catalog, except a Gemini key on Google's own host; a key with its own base URL is never asked.
+  Changing `live-lists` in a running instance applies at once.
 
 ### Model routes and live-list status for the console
 
-**What you get.** Two read-only management endpoints that the Provimux console,
+**What you get.** Read-only management endpoints that the Provimux console,
 [provimux-ui](https://github.com/ngvoicu/provimux-ui), uses for its own pages: for each
-model, every login and key that registered it with the cooldown recorded on it; and for each Claude, Codex and Meta
-login, the state of its live model list.
+model, every login and key that registered it with the cooldown recorded on it; and for each login, which list
+decides its models and the state of its live model list.
 
 **Why it matters.** The model list for clients names no account by design. The operator needs to see which logins
 and keys carry a model, which of them have a cooldown recorded and until when, and whether a login's live list is
 current or failing, without reading the log.
 
-**How to use it.** Nothing to turn on. Both take the management key, like every `/v8/management` route.
+**How to use it.** Nothing to turn on. They take the management key, like every `/v8/management` route.
 
 - `GET /v8/management/provimux/model-routes`: per model, its routes in priority order, each with `provider`, `kind`
   (`oauth` or `apikey`), `priority`, the `host` of an API key, the login named as the credentials page names it
   (`name`, `email`, `label`, only for logins that page lists; otherwise `auth_index` identifies it), its limits and
   reasoning levels, and a `recorded_cooldown` (for the credential or for one model, until when, and a reason code).
   `?model=<id>` (repeatable) narrows the list.
-- `GET /v8/management/provimux/live-lists`: per login, `source` (`live` or `catalog`), when the list was fetched, how
-  many models it listed and how many the login serves, and the last failed fetch as a category (`http_status`,
-  `credentials`, `invalid_response`, `network`, `other`) with the provider's HTTP status. The reason in words stays in
-  the log.
-- Both report what Provimux has recorded. They do not predict the router: they don't say which route a request
+- `GET /v8/management/provimux/model-lists`: per login, the `source` that decides its models (`live`, `published`,
+  `built-in` or `none`), its live list (`held`, `expired` after 7 days, `fetched_at`, `from_cache`, how many models
+  it listed, the last failed fetch as a category with the provider's HTTP status), how many models it serves and how
+  many of them the catalog doesn't have yet. `?auth_index=<index>` adds that login's models with the source of each
+  value; `?view=live` adds each login's list as the provider returned it.
+- `GET /v8/management/provimux/live-lists`: the older form of the same state, kept for consoles released before
+  `model-lists`: per login, `source` (`live` or `catalog`), when the list was fetched, how many models it listed and
+  how many the login serves, and the last failed fetch as a category (`http_status`, `credentials`,
+  `invalid_response`, `network`, `other`) with the provider's HTTP status. The reason in words stays in the log.
+- They report what Provimux has recorded. They do not predict the router: they don't say which route a request
   would get, whether a route is selectable right now, which route answered last, or when a list is fetched next.
 - No response carries an API key, a token, an auth ID, a base URL beyond its host, or any provider error text. Stock
-  CLIProxyAPI answers 404 on both paths.
+  CLIProxyAPI answers 404 on these paths.
 
 The contract is [`openapi.yaml`](provimux/design/pui13/openapi.yaml), with example responses next to it.
 
@@ -550,8 +562,9 @@ The requests Provimux sends to providers are the same as CLIProxyAPI's, except w
 - on OpenAI API keys: a client's `prompt_cache_options.ttl`;
 - on the Codex WebSocket: the transcript of a full replay;
 - for Devin: the output limit of each model, when the real limits are in use;
-- with `models.live-lists: true`: each Claude, Codex and Meta login asks its provider for its model list (at startup
-  and every 3 hours).
+- unless `models.live-lists: false`: each Claude, Codex, Meta, Devin, Kimi and xAI login, and each Gemini API key on
+  Google's own host, asks its provider for its model list (at startup and every 3 hours). xAI's list is asked on
+  `api.x.ai`, the host the login already uses for its WebSocket, compact and speech requests.
 
 ## Support
 
