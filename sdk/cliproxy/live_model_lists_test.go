@@ -130,7 +130,7 @@ func TestParseMetaLiveModelList(t *testing.T) {
 func TestFilterByLiveModelList(t *testing.T) {
 	builtin := registry.WithCodexBuiltins(nil)[0].ID
 	catalog := []*ModelInfo{
-		{ID: "gpt-6.1-sol", ContextLength: 922000, DisplayName: "catalog"},
+		{ID: "gpt-6.1-sol", ContextLength: 922000, DisplayName: "catalog", MaxCompletionTokens: 128000, Type: "openai"},
 		{ID: "gpt-6-chat-thinking"},
 		{ID: builtin},
 	}
@@ -145,8 +145,14 @@ func TestFilterByLiveModelList(t *testing.T) {
 	if got := strings.Join(liveIDs(out), ","); got != "gpt-6.1-sol,"+builtin+",gpt-next" {
 		t.Fatalf("models = %s", got)
 	}
-	if sol := hasLiveID(out, "gpt-6.1-sol"); sol.DisplayName != "catalog" || sol.ContextLength != 922000 {
-		t.Fatalf("catalog values must win: %+v", sol)
+	// model-lists.md 5.1: per field, the vendor's value wins; the catalog fills what the list does
+	// not state (here the output limit) and keeps the routing fields.
+	if sol := hasLiveID(out, "gpt-6.1-sol"); sol.DisplayName != "live" || sol.ContextLength != 872000 ||
+		sol.MaxCompletionTokens != 128000 || sol.Type != "openai" {
+		t.Fatalf("vendor values must win per field: %+v", sol)
+	}
+	if catalog[0].DisplayName != "catalog" {
+		t.Fatal("the catalog's model must not be changed in place")
 	}
 	next := hasLiveID(out, "gpt-next")
 	next.Thinking.Levels[0] = "changed"
@@ -162,7 +168,7 @@ func TestApplyLiveModelListLeavesCatalogAlone(t *testing.T) {
 	oauth := &coreauth.Auth{ID: "claude-login", Provider: "claude", Attributes: map[string]string{"auth_kind": "oauth"}}
 	apiKey := &coreauth.Auth{ID: "claude-key", Provider: "claude", Attributes: map[string]string{"api_key": "sk-test"}}
 	on := &config.Config{}
-	on.Models.LiveLists = true
+	on.Models.LiveLists = new(true)
 	liveModelLists.put("claude-login", liveModelList{identity: liveModelListIdentity(oauth), ids: map[string]struct{}{"claude-opus-5-5": {}}, fetchedAt: time.Now()})
 	liveModelLists.put("claude-key", liveModelList{identity: liveModelListIdentity(apiKey), ids: map[string]struct{}{"claude-opus-5-5": {}}, fetchedAt: time.Now()})
 
@@ -269,7 +275,7 @@ func TestRefreshLiveModelListsRegistersCodexLogin(t *testing.T) {
 	defer server.Close()
 
 	cfg := &config.Config{}
-	cfg.Models.LiveLists = true
+	cfg.Models.LiveLists = new(true)
 	svc := &Service{cfg: cfg, coreManager: coreauth.NewManager(nil, nil, nil)}
 	executor := &liveListExecutor{provider: "codex"}
 	svc.coreManager.RegisterExecutor(executor)
@@ -377,7 +383,7 @@ func TestReplacedLoginDiscardsTheOldList(t *testing.T) {
 	resetLiveModelLists()
 	t.Cleanup(resetLiveModelLists)
 	cfg := &config.Config{}
-	cfg.Models.LiveLists = true
+	cfg.Models.LiveLists = new(true)
 	old := &coreauth.Auth{ID: "same-file", Provider: "claude", Attributes: map[string]string{"auth_kind": "oauth"}, Metadata: map[string]any{"email": "old@example.com"}}
 	replacement := &coreauth.Auth{ID: "same-file", Provider: "claude", Attributes: map[string]string{"auth_kind": "oauth"}, Metadata: map[string]any{"email": "new@example.com"}}
 	liveModelLists.put("same-file", liveModelList{identity: liveModelListIdentity(old), ids: map[string]struct{}{"claude-haiku-5-5": {}}, fetchedAt: time.Now()})
@@ -395,7 +401,7 @@ func TestFetchFinishingAfterLoginReplacementIsDiscarded(t *testing.T) {
 	}))
 	defer server.Close()
 	cfg := &config.Config{}
-	cfg.Models.LiveLists = true
+	cfg.Models.LiveLists = new(true)
 	svc := &Service{cfg: cfg, coreManager: coreauth.NewManager(nil, nil, nil)}
 	executor := &liveListExecutor{provider: "meta"}
 	svc.coreManager.RegisterExecutor(executor)
@@ -466,7 +472,7 @@ func TestLiveModelListFetchUsesPreparedCredentials(t *testing.T) {
 	}))
 	defer server.Close()
 	cfg := &config.Config{}
-	cfg.Models.LiveLists = true
+	cfg.Models.LiveLists = new(true)
 	svc := &Service{cfg: cfg, coreManager: coreauth.NewManager(nil, nil, nil)}
 	executor := &preparingListExecutor{liveListExecutor: liveListExecutor{provider: "meta"}, preparedURL: server.URL}
 	svc.coreManager.RegisterExecutor(executor)

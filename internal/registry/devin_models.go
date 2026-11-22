@@ -108,9 +108,11 @@ func LookupDevinModel(modelID string) *ModelInfo {
 	// Fallback: If clean is a thinking variant (e.g. claude-opus-5-low-fast or gpt-6-astra-high),
 	// look up its base model (e.g. claude-opus-5 or gpt-6-astra).
 	if base, _ := splitDevinModelID(clean); base != clean && base != "" {
-		return cloneModelInfo(findStaticModel(models, base))
+		if model := findStaticModel(models, base); model != nil {
+			return cloneModelInfo(model)
+		}
 	}
-	return nil
+	return provimuxLookupLearnedDevin(clean)
 }
 
 // GetDevinModelsJSON returns the current raw JSON payload of the Devin model catalog.
