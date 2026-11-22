@@ -14,7 +14,8 @@ import (
 
 // Provimux: the state behind GET /v8/management/provimux/model-lists (model-lists.md 5.5). It reads
 // the live-list store, the Copilot and Antigravity records and the registry, and copies values
-// only. Field sources are "live" (the vendor's list stated it) or "built-in" (the catalog did).
+// only. Field sources are "built-in" (the catalog gave the value) or "live" (the
+// vendor's list did: a learned model, or a field the catalog leaves empty).
 
 // provimuxModelListLoginTypes are the providers whose credentials get a row: the nine with a live
 // list, and Vertex and AI Studio, which take the catalog.
@@ -209,9 +210,11 @@ func provimuxFirstPositive(values ...int) int {
 	return 0
 }
 
-// provimuxFieldSources names, per field, the first source that states it: the vendor's list, then
-// the catalog. With allLive every stated value is the account's (Copilot resolves each model from
-// the account's answer).
+// provimuxFieldSources names, per field, where the registered value came from, by the rule of
+// fillLiveModel: for a model the catalog has, the catalog's value ("built-in"), and the vendor's
+// ("live") only where the catalog leaves the field empty, never for the reasoning levels (the
+// catalog's thinking block is kept whole); for a learned model, the vendor's. With allLive every
+// stated value is the account's (Copilot resolves each model from the account's answer).
 func provimuxFieldSources(out map[string]string, vendor, catalog *ModelInfo, allLive bool) {
 	states := func(model *ModelInfo, field string) bool {
 		if model == nil {
@@ -235,10 +238,16 @@ func provimuxFieldSources(out map[string]string, vendor, catalog *ModelInfo, all
 	}
 	for _, field := range []string{"display_name", "context", "output", "input_modalities", "output_modalities", "reasoning_levels"} {
 		switch {
-		case states(vendor, field) || (allLive && states(catalog, field)):
-			out[field] = "live"
+		case allLive:
+			if states(vendor, field) || states(catalog, field) {
+				out[field] = "live"
+			}
 		case states(catalog, field):
 			out[field] = "built-in"
+		case catalog != nil && field == "reasoning_levels":
+			// the catalog's thinking block is kept whole: no levels from the vendor
+		case states(vendor, field):
+			out[field] = "live"
 		}
 	}
 }

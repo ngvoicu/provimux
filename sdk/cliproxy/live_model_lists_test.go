@@ -130,14 +130,15 @@ func TestParseMetaLiveModelList(t *testing.T) {
 func TestFilterByLiveModelList(t *testing.T) {
 	builtin := registry.WithCodexBuiltins(nil)[0].ID
 	catalog := []*ModelInfo{
-		{ID: "gpt-6.1-sol", ContextLength: 922000, DisplayName: "catalog", MaxCompletionTokens: 128000, Type: "openai"},
+		{ID: "gpt-6.1-sol", ContextLength: 922000, DisplayName: "catalog", Type: "openai"},
 		{ID: "gpt-6-chat-thinking"},
 		{ID: builtin},
 	}
 	list := liveModelList{
 		ids: map[string]struct{}{"gpt-6.1-sol": {}, "gpt-next": {}},
 		extra: []*ModelInfo{
-			{ID: "gpt-6.1-sol", ContextLength: 872000, DisplayName: "live"},
+			{ID: "gpt-6.1-sol", ContextLength: 872000, DisplayName: "live", MaxCompletionTokens: 128000,
+				Thinking: &registry.ThinkingSupport{Levels: []string{"low"}}},
 			{ID: "gpt-next", ContextLength: 272000, Thinking: &registry.ThinkingSupport{Levels: []string{"low"}}},
 		},
 	}
@@ -145,11 +146,11 @@ func TestFilterByLiveModelList(t *testing.T) {
 	if got := strings.Join(liveIDs(out), ","); got != "gpt-6.1-sol,"+builtin+",gpt-next" {
 		t.Fatalf("models = %s", got)
 	}
-	// model-lists.md 5.1: per field, the vendor's value wins; the catalog fills what the list does
-	// not state (here the output limit) and keeps the routing fields.
-	if sol := hasLiveID(out, "gpt-6.1-sol"); sol.DisplayName != "live" || sol.ContextLength != 872000 ||
-		sol.MaxCompletionTokens != 128000 || sol.Type != "openai" {
-		t.Fatalf("vendor values must win per field: %+v", sol)
+	// model-lists.md 13.1: for a model the catalog has, the catalog's values stay; the vendor fills
+	// only a field the catalog leaves empty (here the output limit), never the thinking block.
+	if sol := hasLiveID(out, "gpt-6.1-sol"); sol.DisplayName != "catalog" || sol.ContextLength != 922000 ||
+		sol.MaxCompletionTokens != 128000 || sol.Type != "openai" || sol.Thinking != nil {
+		t.Fatalf("the catalog's values must stay: %+v", sol)
 	}
 	if catalog[0].DisplayName != "catalog" {
 		t.Fatal("the catalog's model must not be changed in place")
