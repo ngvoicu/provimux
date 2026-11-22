@@ -32,7 +32,7 @@ func (h *Handler) RefreshModelDefinitions(c *gin.Context) {
 	}
 
 	result, errRefresh := registry.RefreshModelCatalogsWithPolicy(c.Request.Context(), sources, home)
-	if sources.LiveLists && !home {
+	if sources.LiveListsOn() && !home {
 		registry.RequestLiveModelListRefresh()
 	}
 	if errRefresh != nil {

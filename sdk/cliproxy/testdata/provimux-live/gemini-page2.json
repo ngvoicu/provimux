@@ -1,0 +1,4 @@
+{"models":[
+ {"name":"models/gemini-3-flash-preview","version":"3.0","displayName":"Gemini 3 Flash","inputTokenLimit":1048576,"outputTokenLimit":65536,"supportedGenerationMethods":["generateContent","countTokens"],"thinking":true},
+ {"name":"models/gemini-4-neon","version":"4.0-preview","displayName":"Gemini 4 Neon","description":"Preview.","inputTokenLimit":2097152,"outputTokenLimit":131072,"supportedGenerationMethods":["generateContent","countTokens"],"thinking":true}
+]}

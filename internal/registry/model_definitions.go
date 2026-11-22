@@ -51,7 +51,7 @@ func GetClaudeModels() []*ModelInfo {
 
 // GetCopilotModels returns the Copilot presets from the active model catalog.
 func GetCopilotModels() []*ModelInfo {
-	return cloneModelInfos(getModels().Copilot)
+	return withProvimuxLearned(cloneModelInfos(getModels().Copilot), "copilot")
 }
 
 // GetGeminiModels returns the standard Gemini model definitions.
@@ -517,7 +517,7 @@ func LookupStaticModelInfoByChannel(modelID, channel string) *ModelInfo {
 			}
 		}
 	}
-	return nil
+	return provimuxLookupLearnedByChannel(modelID, channel)
 }
 
 // GetMetaModels returns the standard Meta Muse model definitions.

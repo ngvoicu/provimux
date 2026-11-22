@@ -1,0 +1,6 @@
+{"models":{
+ "gemini-4-argon-high":{"displayName":"Gemini 4 Argon (High)","maxTokens":1048576,"maxOutputTokens":65535},
+ "gemini-5-neon":{"displayName":"Gemini 4 Neon","maxTokens":2097152,"maxOutputTokens":131072},
+ "chat_20706":{"displayName":"internal"},
+ "tab_flash_lite_preview":{}
+},"webSearchModelIds":["gemini-5-neon"]}
