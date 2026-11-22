@@ -160,7 +160,13 @@ func (source provimuxLiveListSource) ModelListLogin(auth *coreauth.Auth, liveLis
 		if model == nil {
 			continue
 		}
-		key := provimuxListKeyOfRegistered(section, model.ID)
+		// A configured alias is classified first: it is never one of the vendor's or the catalog's ids,
+		// whatever its name ("other" in the contract). On 8.1.1 a Devin alias's bare name can equal a
+		// native id without its devin/ namespace.
+		key := ""
+		if strings.TrimSpace(model.OAuthAlias) == "" {
+			key = provimuxListKeyOfRegistered(section, model.ID)
+		}
 		_, listed := liveIDs[key]
 		_, known := catalogByID[key]
 		learned := decides && listed && !known
