@@ -236,9 +236,13 @@ git worktree add --detach ../pmx-fix "$lease" && cd ../pmx-fix
 
 Every push below uses `--force-with-lease=refs/heads/main:<that SHA>`. It is refused when someone else moved `main` in the meantime. If that happens, start again; don't re-read the lease.
 
-### The rebase stops: upstream took a patch in another form
+### Upstream took a patch in another form
 
-The issue says the rebase stopped at a commit of one of the owner's patches, which upstream took in another form (squashed or reworked). Remove that patch's commits from `main` **on the old base**, push that `main`, and let the check rebase it:
+The issue names the stopped commit and conflicting files. Compare the commit's effect with the new upstream tag: a squash or rework may implement all or only part of our patch. A similar subject alone is not enough.
+
+For a hand rebase onto the new tag in the scratch worktree (`git rebase v<base>`), skip a stopped commit only when upstream covers all of it (`git rebase --skip`). If it covers part, resolve the conflict to keep the missing behavior, stage the resolution and `git rebase --continue`. Keep the branding trailers. Once the rebase finishes, run the guard and the build and tests ("Run the tests without credentials"); both must pass before proceeding.
+
+Alternatively, remove the covered patch's commits from `main` **on the old base**, push that `main`, and let the check rebase it:
 
 ```sh
 git log --oneline v<old base>..HEAD             # find the patch's commits (all of them)
@@ -270,7 +274,7 @@ The check fails at the guard (rule 5 names a root `README*` that is not `README.
 The issue's "decisions needed" lists the commits. A clean rebase drops a patch whose effect is already in the new tree, for example a patch that upstream cherry-picked and then reverted. In that case the fix is gone from Provimux. Read the range-diff in the issue, or in the artifact's `logs/range-diff.txt`:
 
 - **Intended** (upstream has the fix, or the change is only context): publish with `--accept-dropped <sha>` or `--accept-changed <sha>` naming each commit.
-- **Not intended:** fix the stack on the old base as in the previous section, push it, and run the check again.
+- **Not intended:** fix the stack on the old base as in "Upstream took a patch in another form", push it, and run the check again.
 
 ### New upstream workflow files
 
