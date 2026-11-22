@@ -94,6 +94,9 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 	switch provider {
 	case constant.Gemini:
 		models = registry.GetGeminiModels()
+		if entry := resolveConfigGeminiKeyForConfig(cfg, a); entry == nil || len(entry.Models) == 0 {
+			models = s.applyLiveModelList(cfg, a, models)
+		}
 		if entry := resolveConfigGeminiKeyForConfig(cfg, a); entry != nil {
 			if len(entry.Models) > 0 {
 				models = buildGeminiConfigModels(entry)
@@ -158,7 +161,7 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 				excluded = entry.ExcludedModels
 			}
 		}
-		models = applyLiveModelList(cfg, a, models)
+		models = s.applyLiveModelList(cfg, a, models)
 		models = applyExcludedModels(models, excluded)
 	case "codex":
 		if authKind == "apikey" {
@@ -186,10 +189,11 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 		default:
 			models = registry.GetCodexProModels()
 		}
-		models = applyLiveModelList(cfg, a, models)
+		models = s.applyLiveModelList(cfg, a, models)
 		models = applyExcludedModels(models, excluded)
 	case "kimi", "kimi-ai", "kimi.ai", "kimi.com":
 		models = registry.GetKimiModels()
+		models = s.applyLiveModelList(cfg, a, models)
 		models = applyExcludedModels(models, excluded)
 	case "xai":
 		models = registry.GetXAIModels()
@@ -201,9 +205,10 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 				excluded = entry.ExcludedModels
 			}
 		}
+		models = s.applyLiveModelList(cfg, a, models)
 		models = applyExcludedModels(models, excluded)
 	case "copilot":
-		for _, route := range a.ActiveCopilotCatalog(time.Now()).Routes() {
+		for _, route := range provimuxCopilotRoutes(cfg, a.ActiveCopilotCatalog(time.Now())) {
 			id := route.Info.ID
 			models = append(models, copilotPublicModel(route.Info, id, id))
 		}
@@ -212,6 +217,7 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 		models = applyExcludedModels(models, excluded)
 	case "devin":
 		models = registry.GetDevinModels()
+		models = s.applyLiveModelList(cfg, a, models)
 		models = applyExcludedModels(models, excluded)
 	case "meta":
 		models = registry.GetMetaModels()
@@ -223,7 +229,7 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 				excluded = entry.ExcludedModels
 			}
 		}
-		models = applyLiveModelList(cfg, a, models)
+		models = s.applyLiveModelList(cfg, a, models)
 		models = applyExcludedModels(models, excluded)
 	default:
 		// Handle OpenAI-compatibility providers by name using config

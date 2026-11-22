@@ -159,6 +159,7 @@ func FetchAntigravityAvailableModels(ctx context.Context, req AntigravityModelPr
 	if !ok {
 		return AntigravityModelCapabilityHints{}, AntigravityProbeStatusTransientError
 	}
+	provimuxObserveAntigravityModels(data)
 	return hints, AntigravityProbeStatusSuccess
 }
 

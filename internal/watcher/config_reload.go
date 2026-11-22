@@ -168,5 +168,5 @@ func configChangeForcesAuthRefresh(oldConfig, newConfig *config.Config) bool {
 	retryConfigChanged := oldConfig.RequestRetry != newConfig.RequestRetry || oldConfig.MaxRetryInterval != newConfig.MaxRetryInterval || oldConfig.MaxRetryCredentials != newConfig.MaxRetryCredentials
 	return oldConfig.ForceModelPrefix != newConfig.ForceModelPrefix || !reflect.DeepEqual(oldConfig.OAuthModelAlias, newConfig.OAuthModelAlias) ||
 		!reflect.DeepEqual(oldConfig.OAuthSettings, newConfig.OAuthSettings) || retryConfigChanged ||
-		oldConfig.Models.LiveLists != newConfig.Models.LiveLists
+		oldConfig.Models.LiveListsOn() != newConfig.Models.LiveListsOn()
 }

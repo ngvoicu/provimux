@@ -107,7 +107,8 @@ func provimuxLiveListFailureOf(err error) (string, int) {
 		return provimuxLiveFailureOther, 0
 	case strings.HasPrefix(message, "prepare credentials:"):
 		return provimuxLiveFailureCredentials, 0
-	case strings.HasSuffix(message, "model list: invalid JSON"),
+	case errors.Is(err, errLiveModelListMalformed), errors.Is(err, errLiveModelListIncomplete), errors.Is(err, errLiveModelListTooLarge),
+		strings.HasSuffix(message, "model list: invalid JSON"),
 		strings.HasPrefix(message, "claude model list: incomplete"),
 		strings.HasSuffix(message, " returned no models"):
 		return provimuxLiveFailureResponse, 0
@@ -122,7 +123,9 @@ func provimuxLiveListFailureOf(err error) (string, int) {
 
 type provimuxLiveListSource struct{}
 
-func (provimuxLiveListSource) Providers() []string { return []string{"claude", "codex", "meta"} }
+func (provimuxLiveListSource) Providers() []string {
+	return append([]string(nil), liveModelListProviders...)
+}
 
 // State reads the store and the failure note under both locks, so a failure recorded meanwhile is
 // either seen whole or not at all. Only observations of the login's current account are reported:
@@ -138,7 +141,7 @@ func (provimuxLiveListSource) State(auth *coreauth.Auth) management.ProvimuxLive
 	provimuxLiveListNotes.mu.Lock()
 	defer provimuxLiveListNotes.mu.Unlock()
 	provimuxPruneLiveListNotesLocked()
-	if list, ok := liveModelLists.lists[auth.ID]; ok && list.identity == identity {
+	if list, ok := liveModelLists.lists[auth.ID]; ok && list.identity == identity && liveModelListHeld(list, liveModelListNow()) {
 		state.HasList = true
 		state.FetchedAt = list.fetchedAt
 		state.ListedModels = len(list.ids)

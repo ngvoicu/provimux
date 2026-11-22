@@ -121,7 +121,7 @@ func LookupDevinModel(modelID string) *ModelInfo {
 			}
 		}
 	}
-	return nil
+	return provimuxLookupLearnedDevin(clean)
 }
 
 // GetDevinModelsJSON returns the current raw JSON payload of the Devin model catalog.
