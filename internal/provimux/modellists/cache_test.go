@@ -17,8 +17,7 @@ var fetched = time.Date(2026, 11, 22, 12, 0, 3, 0, time.UTC)
 func writeAda(t *testing.T, store *Store) {
 	t.Helper()
 	err := store.WriteLive("devin", "devin||email=office@providers.dev", fetched, []string{"devin/gemini-4-neon", "devin/swe-2"},
-		[]*registry.ModelInfo{{ID: "devin/gemini-4-neon", ContextLength: 1048576, Thinking: &registry.ThinkingSupport{Levels: []string{"low", "high"}}}},
-		map[string][]string{"devin/gemini-4-neon": {"zero_allowed"}})
+		[]*registry.ModelInfo{{ID: "devin/gemini-4-neon", ContextLength: 1048576, Thinking: &registry.ThinkingSupport{Levels: []string{"low", "high"}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,8 +31,7 @@ func TestRoundTripModeAndContent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !live.FetchedAt.Equal(fetched) || len(live.IDs) != 2 || live.Models[0].ContextLength != 1048576 || live.Models[0].Thinking.Levels[1] != "high" ||
-		len(live.Stated["devin/gemini-4-neon"]) != 1 {
+	if !live.FetchedAt.Equal(fetched) || len(live.IDs) != 2 || live.Models[0].ContextLength != 1048576 || live.Models[0].Thinking.Levels[1] != "high" {
 		t.Fatalf("live = %+v", live)
 	}
 	entries, _ := os.ReadDir(dir)
@@ -61,7 +59,7 @@ func TestMissingIsNotCached(t *testing.T) {
 	if _, err := (*Store)(nil).ReadLive("devin", "x"); !errors.Is(err, ErrNotCached) {
 		t.Fatal("a store without a folder holds nothing")
 	}
-	if err := NewStore("").WriteLive("devin", "x", fetched, []string{"a"}, nil, nil); err != nil {
+	if err := NewStore("").WriteLive("devin", "x", fetched, []string{"a"}, nil); err != nil {
 		t.Fatal("a store without a folder writes nothing and fails nothing")
 	}
 }
@@ -124,14 +122,14 @@ func TestReadOnlyFolderKeepsListsInMemory(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(parent, 0o700) })
 	store := NewStore(filepath.Join(parent, FolderName))
-	if err := store.WriteLive("devin", "x", fetched, []string{"a"}, nil, nil); err == nil {
+	if err := store.WriteLive("devin", "x", fetched, []string{"a"}, nil); err == nil {
 		t.Fatal("a read-only disk must report the failed write")
 	}
 	if _, err := store.ReadLive("devin", "x"); err == nil {
 		t.Fatal("nothing was written")
 	}
 	// A second failure is logged at debug level only; it still fails without panicking.
-	if err := store.WriteLive("devin", "x", fetched, []string{"a"}, nil, nil); err == nil {
+	if err := store.WriteLive("devin", "x", fetched, []string{"a"}, nil); err == nil {
 		t.Fatal("still read-only")
 	}
 }
