@@ -11,6 +11,7 @@ import (
 
 func TestProvimuxModelListSource(t *testing.T) {
 	provimuxLiveReset(t)
+	provimuxAsk(t, "kimi")
 	server := provimuxServe(t, map[string]func(http.ResponseWriter, *http.Request){"/coding/v1/models": provimuxBody(provimuxFixture(t, "kimi-models.json"))})
 	executor := &liveListExecutor{provider: "kimi"}
 	svc, auth := provimuxService(t, provimuxOn(), executor, &coreauth.Auth{ID: "kimi-status-test", Provider: "kimi",

@@ -3,6 +3,7 @@ package cliproxy
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -58,6 +59,22 @@ func provimuxLiveReset(t *testing.T) {
 		provimuxAntigravityLists.mu.Lock()
 		provimuxAntigravityLists.byAuth = map[string]provimuxAntigravityList{}
 		provimuxAntigravityLists.mu.Unlock()
+	})
+}
+
+// provimuxAsk turns on the internal switch of login types that are off by default (Kimi, xAI),
+// so the code kept behind it stays tested.
+func provimuxAsk(t *testing.T, providers ...string) {
+	t.Helper()
+	previous := make(map[string]bool, len(providers))
+	for _, provider := range providers {
+		previous[provider] = liveModelListAsked[provider]
+		liveModelListAsked[provider] = true
+	}
+	t.Cleanup(func() {
+		for provider, value := range previous {
+			liveModelListAsked[provider] = value
+		}
 	})
 }
 
@@ -310,6 +327,7 @@ func TestProvimuxKimiParser(t *testing.T) {
 
 func TestProvimuxKimiFetchMergesPerField(t *testing.T) {
 	provimuxLiveReset(t)
+	provimuxAsk(t, "kimi")
 	server := provimuxServe(t, map[string]func(http.ResponseWriter, *http.Request){"/coding/v1/models": provimuxBody(provimuxFixture(t, "kimi-models.json"))})
 	executor := &liveListExecutor{provider: "kimi"}
 	svc, auth := provimuxService(t, provimuxOn(), executor, &coreauth.Auth{ID: "kimi-live-test", Provider: "kimi",
@@ -352,7 +370,7 @@ func TestProvimuxXAIParser(t *testing.T) {
 	}
 	grok := hasLiveID(list.extra, "grok-4.7")
 	if grok.ContextLength != 2000000 || strings.Join(grok.SupportedInputModalities, ",") != "text,image" ||
-		grok.Thinking == nil || strings.Join(grok.Thinking.Levels, ",") != "low,medium,high" || !grok.Thinking.ZeroAllowed {
+		grok.Thinking == nil || strings.Join(grok.Thinking.Levels, ",") != "none,low,medium,high" || !grok.Thinking.ZeroAllowed {
 		t.Fatalf("grok = %+v %+v", grok, grok.Thinking)
 	}
 	if neon := hasLiveID(list.extra, "grok-5-neon"); neon.Thinking != nil || neon.ContextLength != 256000 {
@@ -375,6 +393,7 @@ func TestProvimuxXAIParser(t *testing.T) {
 
 func TestProvimuxXAIPartialFetchChangesNothing(t *testing.T) {
 	provimuxLiveReset(t)
+	provimuxAsk(t, "xai")
 	var modelsFail atomic.Bool
 	server := provimuxServe(t, map[string]func(http.ResponseWriter, *http.Request){
 		"/v1/language-models": provimuxBody(provimuxFixture(t, "xai-language-models.json")),
@@ -575,6 +594,7 @@ func TestProvimuxAntigravityLearnsWithTheVendorsFields(t *testing.T) {
 
 func TestProvimuxSectionRules(t *testing.T) {
 	provimuxLiveReset(t)
+	provimuxAsk(t, "xai")
 	catalog := []*ModelInfo{
 		{ID: "grok-4.7", Type: "xai", ContextLength: 1, MaxCompletionTokens: 30000, Thinking: &registry.ThinkingSupport{Levels: []string{"low"}, Min: 1, Max: 2}},
 		{ID: "grok-retired", Type: "xai"},
@@ -612,6 +632,7 @@ func TestProvimuxSectionRules(t *testing.T) {
 
 func TestProvimuxExclusionsStillApply(t *testing.T) {
 	provimuxLiveReset(t)
+	provimuxAsk(t, "kimi")
 	server := provimuxServe(t, map[string]func(http.ResponseWriter, *http.Request){"/coding/v1/models": provimuxBody(provimuxFixture(t, "kimi-models.json"))})
 	cfg := provimuxOn()
 	cfg.OAuthExcludedModels = map[string][]string{"kimi": {"kimi-k3-neon"}}
@@ -629,6 +650,7 @@ func TestProvimuxExclusionsStillApply(t *testing.T) {
 
 func TestProvimuxSevenDayLimit(t *testing.T) {
 	provimuxLiveReset(t)
+	provimuxAsk(t, "kimi")
 	server := provimuxServe(t, map[string]func(http.ResponseWriter, *http.Request){"/coding/v1/models": provimuxBody(provimuxFixture(t, "kimi-models.json"))})
 	executor := &liveListExecutor{provider: "kimi"}
 	svc, auth := provimuxService(t, provimuxOn(), executor, &coreauth.Auth{ID: "kimi-age-test", Provider: "kimi",
@@ -661,6 +683,7 @@ func TestProvimuxSevenDayLimit(t *testing.T) {
 
 func TestProvimuxRestartWithoutNetworkKeepsTheLastLists(t *testing.T) {
 	provimuxLiveReset(t)
+	provimuxAsk(t, "kimi")
 	dir := t.TempDir()
 	t.Setenv("WRITABLE_PATH", dir)
 	var down atomic.Bool
@@ -724,11 +747,12 @@ func TestProvimuxRestartWithoutNetworkKeepsTheLastLists(t *testing.T) {
 
 func TestProvimuxCacheOfAnotherAccountIsIgnored(t *testing.T) {
 	provimuxLiveReset(t)
+	provimuxAsk(t, "kimi")
 	store := modellists.NewStore(t.TempDir())
 	liveModelLists.cache.Store(store)
 	ada := &coreauth.Auth{ID: "kimi-cache", Provider: "kimi", Attributes: map[string]string{"auth_kind": "oauth"}, Metadata: map[string]any{"email": "office@providers.dev"}}
 	bob := &coreauth.Auth{ID: "kimi-cache", Provider: "kimi", Attributes: map[string]string{"auth_kind": "oauth"}, Metadata: map[string]any{"account_id": "acct-2"}}
-	if err := store.WriteLive("kimi", liveModelListIdentity(ada), time.Now(), []string{"kimi-k3-neon"}, []*ModelInfo{{ID: "kimi-k3-neon"}}); err != nil {
+	if err := store.WriteLive("kimi", liveModelListIdentity(ada), time.Now(), []string{"kimi-k3-neon"}, []*ModelInfo{{ID: "kimi-k3-neon"}}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := applyLiveModelList(provimuxOn(), bob, []*ModelInfo{{ID: "kimi-k2.8"}}); strings.Join(liveIDs(got), ",") != "kimi-k2.8" {
@@ -765,5 +789,195 @@ func TestProvimuxLogLine(t *testing.T) {
 	}
 	if strings.Contains(line, "office@providers.dev") || strings.Contains(line, "devin-log") {
 		t.Fatalf("the log names the login by its auth index only: %q", line)
+	}
+}
+
+// --- the review's fixes ------------------------------------------------------------------------
+
+// Kimi and xAI are not asked for now: no request, nothing cached, and their logins get exactly the
+// models e5cf5a2d5 gives them (the catalog through the same registration path).
+func TestProvimuxKimiAndXAIAreNotAsked(t *testing.T) {
+	provimuxLiveReset(t)
+	dir := t.TempDir()
+	t.Setenv("WRITABLE_PATH", dir)
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		http.Error(w, "must not be asked", http.StatusTeapot)
+	}))
+	t.Cleanup(server.Close)
+	for _, tc := range []struct {
+		provider string
+		base     string
+		catalog  func() []*ModelInfo
+	}{
+		{"kimi", server.URL + "/coding", registry.GetKimiModels},
+		{"xai", server.URL + "/v1", registry.GetXAIModels},
+	} {
+		executor := &liveListExecutor{provider: tc.provider}
+		svc, auth := provimuxService(t, provimuxOn(), executor, &coreauth.Auth{ID: tc.provider + "-not-asked", Provider: tc.provider,
+			Attributes: map[string]string{"auth_kind": "oauth", "base_url": tc.base}, Metadata: map[string]any{"access_token": "t"}})
+		svc.registerModelsForAuth(t.Context(), auth)
+		provimuxRefresh(svc, executor, true)
+		svc.registerModelsForAuth(t.Context(), auth)
+		var want []string
+		for _, model := range tc.catalog() {
+			want = append(want, model.ID)
+		}
+		slices.Sort(want)
+		if got := provimuxRegistered(auth); !slices.Equal(got, want) {
+			t.Fatalf("%s: registered %v, the catalog is %v", tc.provider, got, want)
+		}
+		if executor.calls.Load() != 0 {
+			t.Fatalf("%s was asked", tc.provider)
+		}
+		state, row := provimuxLiveListSource{}.ModelListLogin(auth, true, false, true)
+		if !row || state.Supported || state.Source != "built-in" || state.Live != nil {
+			t.Fatalf("%s status = %+v", tc.provider, state)
+		}
+		if slices.Contains(provimuxLiveListSource{}.Providers(), tc.provider) {
+			t.Fatalf("live-lists names %s as asked", tc.provider)
+		}
+	}
+	if requests.Load() != 0 {
+		t.Fatalf("%d requests reached the vendor", requests.Load())
+	}
+	if files, _ := filepath.Glob(filepath.Join(dir, modellists.FolderName, "*")); len(files) != 0 {
+		t.Fatalf("nothing may be cached: %v", files)
+	}
+}
+
+// A vendor that never answers: the fetch ends at its deadline, the held list stays, the failure is
+// recorded as network, and the login is no longer "fetching".
+func TestProvimuxFetchDeadline(t *testing.T) {
+	provimuxLiveReset(t)
+	previous := liveModelListFetchTimeout
+	liveModelListFetchTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { liveModelListFetchTimeout = previous })
+	var hang atomic.Bool
+	server := provimuxServe(t, map[string]func(http.ResponseWriter, *http.Request){
+		"/v1beta/models": func(w http.ResponseWriter, r *http.Request) {
+			if hang.Load() {
+				<-r.Context().Done() // never answers
+				return
+			}
+			_, _ = w.Write(provimuxFixture(t, "gemini-page2.json"))
+		},
+	})
+	serverURL, _ := url.Parse(server.URL)
+	executor := &provimuxRewriteExecutor{provider: "gemini", server: serverURL}
+	svc, auth := provimuxService(t, provimuxOn(), executor, &coreauth.Auth{ID: "gemini-deadline-test", Provider: "gemini",
+		Attributes: map[string]string{"api_key": "AIza-test"}})
+	svc.registerModelsForAuth(t.Context(), auth)
+	provimuxRefresh(svc, executor, false)
+	before := provimuxRegistered(auth)
+	if !slices.Contains(before, "gemini-4-neon") {
+		t.Fatalf("registered = %v", before)
+	}
+	hang.Store(true)
+	started := time.Now()
+	provimuxRefresh(svc, executor, true)
+	if elapsed := time.Since(started); elapsed > 5*time.Second {
+		t.Fatalf("the fetch outlived its deadline: %s", elapsed)
+	}
+	if after := provimuxRegistered(auth); !slices.Equal(after, before) {
+		t.Fatalf("a timed-out fetch changed the list: %v -> %v", before, after)
+	}
+	state := provimuxLiveListSource{}.State(auth)
+	if state.Fetching || !state.HasList || state.Failure == nil || state.Failure.Category != provimuxLiveFailureNetwork {
+		t.Fatalf("state = %+v failure = %+v", state, state.Failure)
+	}
+
+	// Devin's request is sent by its own client: it gets the same deadline.
+	var deadline atomic.Bool
+	previousDo := devinLiveModelListDo
+	devinLiveModelListDo = func(ctx context.Context, _ *config.Config, _ *coreauth.Auth, req *http.Request) (*http.Response, error) {
+		_, has := req.Context().Deadline()
+		deadline.Store(has)
+		<-req.Context().Done()
+		return nil, req.Context().Err()
+	}
+	t.Cleanup(func() { devinLiveModelListDo = previousDo })
+	devinExecutor := &liveListExecutor{provider: "devin"}
+	devinSvc, devin := provimuxService(t, provimuxOn(), devinExecutor, &coreauth.Auth{ID: "devin-deadline-test", Provider: "devin",
+		Attributes: map[string]string{"auth_kind": "oauth"}, Metadata: map[string]any{"api_key": "s", "user_id": "u-1"}})
+	if _, err := devinSvc.fetchLiveModelList(context.Background(), devin); err == nil || !deadline.Load() {
+		t.Fatalf("devin: err=%v deadline=%v", err, deadline.Load())
+	}
+}
+
+// A vendor's value wins only where its answer states it: Claude's answer without
+// thinking.types.disabled leaves the catalog's "thinking can be turned off".
+func TestProvimuxMissingFieldIsNoStatement(t *testing.T) {
+	catalog := []*ModelInfo{{ID: "claude-opus-5-5", Type: "claude", Thinking: &registry.ThinkingSupport{
+		Levels: []string{"low", "high"}, ZeroAllowed: true, DynamicAllowed: true, Min: 1024, Max: 32000}}}
+	answer := func(types string) []byte {
+		return []byte(`{"data":[{"id":"claude-opus-5-5","max_input_tokens":1000000,"capabilities":{
+			"effort":{"low":{"supported":true},"medium":{"supported":true},"high":{"supported":true}},
+			"thinking":{"supported":true` + types + `}}}],"has_more":false}`)
+	}
+	for _, tc := range []struct {
+		name          string
+		types         string
+		zero, dynamic bool
+	}{
+		{"no types at all", ``, true, true},
+		{"adaptive only", `,"types":{"adaptive":{"supported":false}}`, true, false},
+		{"disabled stated false", `,"types":{"disabled":{"supported":false}}`, false, true},
+		{"both stated", `,"types":{"disabled":{"supported":true},"adaptive":{"supported":true}}`, true, true},
+	} {
+		list, err := parseClaudeLiveModelList(answer(tc.types), time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		merged := filterByLiveModelList("claude", catalog, list)[0]
+		if merged.Thinking.ZeroAllowed != tc.zero || merged.Thinking.DynamicAllowed != tc.dynamic ||
+			strings.Join(merged.Thinking.Levels, ",") != "low,medium,high" || merged.Thinking.Max != 32000 {
+			t.Fatalf("%s: thinking = %+v", tc.name, merged.Thinking)
+		}
+	}
+	// Persisted: a list read back from the disk cache keeps what was stated.
+	provimuxLiveReset(t)
+	store := modellists.NewStore(t.TempDir())
+	liveModelLists.cache.Store(store)
+	list, _ := parseClaudeLiveModelList(answer(`,"types":{"disabled":{"supported":false}}`), time.Now())
+	list.identity, list.provider = "claude||email=office@providers.dev", "claude"
+	liveModelLists.writeCached("claude-a", list)
+	login := &coreauth.Auth{ID: "claude-a", Provider: "claude", Attributes: map[string]string{"auth_kind": "oauth"}, Metadata: map[string]any{"email": "office@providers.dev"}}
+	list.identity = liveModelListIdentity(login)
+	liveModelLists.writeCached("claude-a", list)
+	if got := applyLiveModelList(provimuxOn(), login, catalog); got[0].Thinking.ZeroAllowed || !got[0].Thinking.DynamicAllowed {
+		t.Fatalf("from the cache: %+v", got[0].Thinking)
+	}
+}
+
+// A login whose identity changes (another account, a credential-based identity after a token
+// refresh) leaves no file behind, and files past the 7-day limit are pruned at start.
+func TestProvimuxCacheFilesDoNotPileUp(t *testing.T) {
+	provimuxLiveReset(t)
+	dir := t.TempDir()
+	store := modellists.NewStore(dir)
+	liveModelLists.cache.Store(store)
+	for i := range 4 {
+		list := liveModelList{identity: fmt.Sprintf("gemini||credential=%d", i), provider: "gemini",
+			ids: map[string]struct{}{"gemini-4-neon": {}}, fetchedAt: time.Now()}
+		liveModelLists.writeCached("gemini-key", list)
+	}
+	if files, _ := filepath.Glob(filepath.Join(dir, "live-*.json")); len(files) != 1 {
+		t.Fatalf("one login, one file: %v", files)
+	}
+	old := filepath.Join(dir, "live-0123456789abcdef0123456789abcdef.json")
+	if err := os.WriteFile(old, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	past := time.Now().Add(-liveModelListMaxAge - time.Hour)
+	if err := os.Chtimes(old, past, past); err != nil {
+		t.Fatal(err)
+	}
+	if removed := store.PruneOlderThan(liveModelListMaxAge, time.Now()); removed != 1 {
+		t.Fatalf("removed %d", removed)
+	}
+	if files, _ := filepath.Glob(filepath.Join(dir, "live-*.json")); len(files) != 1 {
+		t.Fatalf("the current file stays: %v", files)
 	}
 }
