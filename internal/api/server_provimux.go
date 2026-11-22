@@ -12,5 +12,6 @@ func (s *Server) registerProvimuxRoutes(v8 *gin.RouterGroup) {
 	savings.Start()
 	v8.GET("/provimux/model-routes", s.mgmt.ProvimuxModelRoutes)
 	v8.GET("/provimux/live-lists", s.mgmt.ProvimuxLiveLists)
+	v8.GET("/provimux/model-lists", s.mgmt.ProvimuxModelLists)
 	v8.GET("/provimux/savings", s.mgmt.ProvimuxSavings)
 }
