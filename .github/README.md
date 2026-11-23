@@ -546,6 +546,8 @@ api-keys:
   made-up default.
 - OpenAI-compatible entries have no catalog; OpenRouter entries get their limits from
   [OpenRouter built in](#openrouter-built-in).
+- When one model name is served by several accounts (aliases on logins, keys and OpenRouter), set `display-name` on
+  each alias row: the list shows the name of the account registered last, so the same name everywhere keeps it stable.
 
 ### Devin: real output limits, and a quota pause per model
 
