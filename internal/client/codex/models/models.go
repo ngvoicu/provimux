@@ -319,6 +319,9 @@ func applyCodexClientDevinDisplayName(entry map[string]any, id string, model map
 }
 
 func isCodexClientDevinModel(id string, model map[string]any, entry map[string]any, providersForModel ProvidersForModelFunc) bool {
+	if provimuxServedBeyondDevin(id, providersForModel) {
+		return false
+	}
 	idLower := strings.ToLower(strings.TrimSpace(id))
 	if strings.HasPrefix(idLower, "devin/") {
 		return true
