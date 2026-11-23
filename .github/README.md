@@ -52,7 +52,7 @@ server's address, see [For a team](#for-a-team)). Docker, release archives and b
 
 - **[Which account serves each model, and which one answered](#which-account-serves-each-model-and-which-one-answered).**
   The model list names, per model, the API keys (`apikey`) and logins (`oauth`) behind it, by priority, and every
-  response says which kind answered.
+  response says which one answered.
 - **[Its own console pages](#the-console-provimux-ui)**: **Model routes** (routes by priority, with the cooldown
   recorded and its reason) and **Live model lists** in provimux-ui, from
   [two read-only endpoints](#model-routes-and-live-list-status-for-the-console).
@@ -237,7 +237,7 @@ client as with CLIProxyAPI.
 
 **What you get.** The OpenAI-format model list can tell you, for each model, which of your accounts serve it: the
 provider, whether it is a subscription login (`oauth`) or an API key (`apikey`), its priority, and for an API key the
-host it calls. Every response served by an account then says which kind of account answered it.
+host it calls. Every response served by an account then says which account answered it.
 
 **Why it matters.** The same model can be reached through more than one account, and accounts differ in limits,
 prompt-cache lifetime and price: a Claude API key keeps the prompt cache for five minutes unless the request asks for
@@ -258,11 +258,13 @@ one it is using.
   you chose for an OpenAI-compatible entry is shown: its `provider` is `openai-compatible-<name>`, so clients that can
   read the model list see that name, including an email if you named the entry with one.
 - A response served by an account (a completion, for example) carries an `X-CPA-AUTH-KIND` header (`oauth` or
-  `apikey`) for the account that answered, next to CLIProxyAPI's `X-CPA-TRACE-ID`. The model list itself has no such
-  header. When a request is retried on another account before the answer starts, the header names the one that
+  `apikey`), an `X-CPA-AUTH-PROVIDER` header (its `provider`, as in the model list) and, for an API key with a base
+  URL, an `X-CPA-AUTH-HOST` header, for the account that answered, next to CLIProxyAPI's `X-CPA-TRACE-ID`. The model
+  list itself has no such header. When a request is retried on another account before the answer starts, the header names the one that
   answered. Browsers can read it, like the trace ID.
 - On the Codex WebSocket (`/v1/responses`), which has response headers only once per connection, each turn's
-  `response.created` event carries `"cpa_auth_kind": "oauth"` or `"apikey"`.
+  `response.created` event carries `"cpa_auth_kind": "oauth"` or `"apikey"`, with `cpa_auth_provider` and
+  `cpa_auth_host` beside it.
 
 ```bash
 PROVIMUX=http://127.0.0.1:8317   # on the same machine; from another machine, use the server's address
@@ -546,9 +548,10 @@ incremental request that names no model still appends, and pending tool calls an
 Provimux works with any client CLIProxyAPI works with. For [pi](https://pi.dev), two extensions read what
 [which account serves each model](#which-account-serves-each-model-and-which-one-answered) reports:
 
-- [pi-cliproxyapi-provider](https://github.com/ngvoicu/pi-cliproxyapi-provider) adds Provimux (or CLIProxyAPI) as a
-  pi provider. Each model's name ends with where it comes from: `sub` for a subscription login, `api` for an API key,
-  then what it falls back to. pi 1.5.2 or newer shows the name on every line of `/model`, after the id.
+- [pi-provimux](https://github.com/ngvoicu/pi-provimux) adds Provimux (or CLIProxyAPI) as a pi provider, `provimux`.
+  Each model's name ends with where it comes from: `sub` for a subscription login, `api` for an API key, then what it
+  falls back to. pi 1.5.2 or newer shows the name on every line of `/model`, after the id. After each answer, its
+  footer names the route that answered (`answered: Anthropic sub`).
 - [pi-cache-keeper](https://github.com/ngvoicu/pi-cache-keeper) keeps the prompt cache warm and compacts from it. Its
   footer shows `sub` or `api` for the account that answered last, and warns when an API key answered for a model you
   reach through a subscription.
@@ -556,8 +559,8 @@ Provimux works with any client CLIProxyAPI works with. For [pi](https://pi.dev),
 ![A terminal titled "pi 1.5.2 · /model, with pi-cliproxyapi-provider". Each line of pi's model list shows the model id, its name with where it comes from in parentheses, and [cliproxyapi]: "claude-opus-5-5 (Claude Opus 5.5 · Anthropic sub, fallback api)", selected and current; "claude-sonnet-5-5 (Claude Sonnet 5.5 · Anthropic sub, fallback api)"; "gpt-6.1-terra (GPT 6.1 Terra · OpenAI sub)"; "anthropic/claude-opus-5.5 (anthropic/claude-opus-5.5 · OpenRouter api)". Below the list, for the selected model: "Model Name: Claude Opus 5.5 · Anthropic sub, fallback api". Then the last line of pi's footer with pi-cache-keeper, in two states: "cache warm · 59m left · sub · window ✓ · cache short ✓ · long ✓ (in use) · price ✗", and "cache warm · 4m left · api · window ✓ · cache short ✓ (in use) · long ✓ · price ✗ · ⚠ answered by an API key".](provimux/media/pi.png)
 
 ```bash
-pi install git:github.com/ngvoicu/pi-cliproxyapi-provider
-pi install git:github.com/ngvoicu/pi-cache-keeper
+pi install npm:pi-provimux
+pi install npm:pi-cache-keeper
 ```
 
 Their READMEs describe the settings.
