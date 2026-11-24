@@ -118,8 +118,10 @@ func (source provimuxLiveListSource) ModelListLogin(auth *coreauth.Auth, liveLis
 		}
 	case "vertex", "aistudio":
 	default:
-		if liveModelListProvider(auth) == "" {
-			break // a type whose fetcher is switched off (Kimi, xAI): the catalog, as before
+		if liveModelListProvider(auth) == "" || keyFixedAttr(auth) {
+			// A type whose fetcher is switched off (Kimi, xAI), or a Gemini key with fixed-models: true:
+			// never asked, the catalog, as before.
+			break
 		}
 		state.Supported = true
 		held := source.State(auth)
