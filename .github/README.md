@@ -353,7 +353,8 @@ equal `priority`, and the key's share is paid per token. The controls:
   entries have it too now, and it applies after the refresh, so taking a model out of `models` no longer keeps it
   out: `excluded-models` does;
 - `fixed-models: true` on the key (or its group under `api-keys:`): it offers exactly its rows and its service is
-  never asked.
+  never asked. Vertex and Interactions keys accept it and are never asked anyway. Set it with the console or a
+  `PUT` of the key list; the older per-entry `PATCH` endpoints do not take it.
 
 ```yaml
 openai-compatibility:
