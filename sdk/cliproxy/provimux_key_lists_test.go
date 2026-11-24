@@ -2,6 +2,7 @@ package cliproxy
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -22,6 +23,8 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher/diff"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher/synthesizer"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	"gopkg.in/yaml.v3"
 )
 
@@ -911,5 +914,53 @@ func TestProvimuxKeyRegistrationNeverWaits(t *testing.T) {
 	}
 	if got := provimuxRegistered(auths[0]); !slices.Equal(got, []string{"row"}) {
 		t.Fatalf("registered = %v", got)
+	}
+}
+
+// A request for a learned model reaches the service under the service's id; a row's alias under the
+// row's name. No routing code knows learned models: a name no row names passes through.
+func TestProvimuxKeyRequestsReachTheService(t *testing.T) {
+	provimuxLiveReset(t)
+	var mu sync.Mutex
+	var sent []string
+	stand := newKeyStandIn(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			_, _ = w.Write([]byte(`{"data":["upstream-row","learned-x"]}`))
+			return
+		}
+		var body struct {
+			Model string `json:"model"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		sent = append(sent, r.URL.Path+" "+body.Model)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"c1","object":"chat.completion","created":1,"model":"` + body.Model +
+			`","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+	})
+	cfg := keyCompatConfig(stand.URL+"/v1", config.OpenAICompatibilityModel{Name: "upstream-row", Alias: "row"})
+	svc, auths := keyService(t, cfg)
+	svc.coreManager.SetConfig(cfg)
+	svc.coreManager.RefreshAPIKeyModelAlias()
+	svc.registerModelsForAuth(t.Context(), auths[0])
+	keyRefresh(svc, false)
+	if got := provimuxRegistered(auths[0]); !slices.Equal(got, []string{"learned-x", "row"}) {
+		t.Fatalf("registered = %v", got)
+	}
+	providerKey := keyModelListExecutorKey(auths[0])
+	for _, model := range []string{"learned-x", "row"} {
+		payload := []byte(`{"model":"` + model + `","messages":[{"role":"user","content":"hi"}]}`)
+		_, err := svc.coreManager.Execute(t.Context(), []string{providerKey},
+			cliproxyexecutor.Request{Model: model, Payload: payload, Format: sdktranslator.FormatOpenAI},
+			cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI, OriginalRequest: payload})
+		if err != nil {
+			t.Fatalf("%s: %v", model, err)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.Equal(sent, []string{"/v1/chat/completions learned-x", "/v1/chat/completions upstream-row"}) {
+		t.Fatalf("the service received %v", sent)
 	}
 }
