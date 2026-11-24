@@ -548,3 +548,39 @@ On `main` after `providers-dev-lists` has landed (section 9).
 | That each built-in executor's `HttpRequest` sends an API key's credential on a list path as it does on a model path (read for `openai-compatibility` and Claude; the others by their `PrepareRequest`) | K1's fetch tests |
 | How many models the owner's own keys would add, and which of them a subscription also serves (decision 1) | the same run, read from the `keys` rows and the Model routes page |
 | Whether groundtruth's discovery tolerates the new top-level `keys` | it reads `logins` only [infer]; checked when K2 is reviewed |
+
+## 14. As built (K1, K2)
+
+Built on branch `key-model-lists-build`, on `main` with `providers-dev-lists` below it. What differs from sections 1 to 13, and what a review found.
+
+**Upstream lines, additions only.** 29 lines in 9 files, against the 15 in 6 of section 8:
+
+| File | Lines | Why more than planned |
+|---|---|---|
+| `sdk/cliproxy/service_models.go` | 3 | as planned |
+| `internal/config/config_types.go` | 9 | 5 fields; 4 blank lines keep `gofmt` from realigning existing fields |
+| `internal/config/vertex_compat.go` | 2 | `fixed-models` on Vertex keys: below |
+| `internal/config/config_normalization.go` | 1 | as planned |
+| `internal/config/config_v8.go` | 1 | `fixed-models` is a shared group field of the `api-keys:` layout: below |
+| `internal/watcher/synthesizer/config.go` | 5 | the credential carries `fixed_models` too: below |
+| `internal/api/handlers/management/config_lists.go` | 4 | `gofmt` writes the `if` on three lines |
+| `internal/api/handlers/management/config_auth_index.go` | 3 | `GET /openai-compatibility` names its fields: below |
+| `internal/watcher/diff/openai_compat.go` | 1 | one call to a new file |
+
+**What did not hold.**
+
+- *A reload sees `fixed-models` by itself* (section 5). It does not: the watcher dispatches a config key only when its synthesized credential changes. The credential therefore carries `fixed_models: "true"` (the fallback section 13 named). Status readers without the config read the same attribute.
+- *Both fields pass `PUT` with no handler edit* (section 6). True for `PUT`, but `GET /openai-compatibility` builds its answer field by field, so a console that saved what it read would have erased both fields. It now returns them.
+- *The `api-keys:` layout.* A group of built-in keys accepts only the shared fields and fails the whole load on any other, so `fixed-models` on a group stopped a start. It is a shared field now: a group sets it for its keys, a key may override it, a save writes it on the group.
+- *Vertex keys have no `fixed-models`* (section 6). A config with it on a Vertex key loaded (the field ignored) but then every write through the v8 config endpoint was refused, because the whole file is validated strictly. Vertex keys accept the field; it has no effect, since they are never asked (`key.fixed` reports it, `key.not_asked` stays `no_list_endpoint`).
+- *Legacy `PATCH` and `fixed-models`.* `PATCH /openai-compatibility`, `/claude-api-key` and the other per-entry `PATCH` handlers name their fields one by one and do not take `fixed-models`: a `PATCH` naming it answers 200 and leaves the field as it was. Making them apply it needs about four upstream lines per handler (six handlers); left as it is. `PUT` of the list and the v8 endpoints (`PUT /config/api-keys/<family>`, the console's own save path) write it. `PATCH /openai-compatibility` takes `excluded-models` (section 6.1).
+- *A fixed Gemini key on Google's host without rows* kept `live.supported: true` in `logins` although it is never asked. Its row now says `supported: false` and the catalog, as the older live-lists endpoint does.
+
+**Beyond the design.**
+
+- The `keys` row's `key` object also has `name`, `learned` (the ids the key offers that no row names, after `excluded-models`) and `unlisted` (the rows the held list does not name), so a console can show what a refresh added without one request per key.
+- The request without key and headers (the 401/403 retry of section 4) is a fourth argument of `fetchKeyModelList`; `KeyModelList` takes the config the handler holds.
+
+**Redirects (accepted as is).** The list request goes through the key type's executor, which follows redirects as it does for model requests. When a key's own host redirects `/models` to another host, Go's client drops `Authorization` there, but forwards a Gemini key's `x-goog-api-key` and an entry's custom headers. Only the host the owner configured for the key can cause this, and a model request to the same host already behaves the same way.
+
+**Tests.** The tables of section 10, against stand-ins (`sdk/cliproxy/provimux_key_lists_test.go`, `provimux_key_list_status_test.go`, `internal/api/handlers/management/provimux_key_*_test.go`), including the console's save path (`GET /config`, `PUT /config/api-keys/<family>` for every key family) and a request through the conductor for a learned model and for a row's alias.
