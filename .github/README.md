@@ -649,8 +649,22 @@ The requests Provimux sends to providers are the same as CLIProxyAPI's, except w
 - on the Codex WebSocket: the transcript of a full replay;
 - for Devin: the output limit of each model, when the real limits are in use;
 - unless `models.live-lists: false`: each Claude, Codex, Meta and Devin login, and each Gemini API key on Google's own
-  host, asks its provider for its model list (at startup and every 3 hours); so does each API key with its own
-  models list, unless it says `fixed-models: true`, at the host you configured for it.
+  host, asks its provider for its model list (at startup and every 3 hours);
+- unless `models.live-lists: false`, or the key says `fixed-models: true`: each API key with its own models list asks
+  its service for its model list (at startup, every 3 hours and when the key is added or changed), at the host you
+  configured for that key (Meta's own for a Meta key without one), with that key, its headers and its proxy: the
+  request the console's "Get the list from …" button sends (`<base-url>/models` for an `openai-compatibility` key,
+  once more without the key and headers after a 401 or 403; `/v1/models` for Claude, Codex, xAI and Meta keys;
+  `/v1beta/models` for a Gemini key on its own host).
+
+Provimux also sends one request of its own to providers.dev, unless `models.published-lists: false` (and never in
+home mode): at startup, every 6 hours and on `POST /v8/management/models/refresh`,
+`GET https://providers.dev/api/v1/listings` with a fixed filter (`view=full`, `limit=40` and the same list of
+providers for every user), through your configured proxy. It carries a `User-Agent` of `provimux/<version>` and the
+`ETag` of the last answer providers.dev gave, and nothing else: no key, no account, no model you use and nothing
+about your requests. providers.dev sees what any web server sees, the address the request comes from. The answer
+only fills a model's name, window, output limit and modalities where neither the vendor's list nor the catalog
+states them.
 
 ## Support
 
