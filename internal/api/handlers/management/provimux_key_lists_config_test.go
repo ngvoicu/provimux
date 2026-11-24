@@ -98,3 +98,56 @@ func TestProvimuxKeyListFieldsPutAndPatch(t *testing.T) {
 		t.Fatalf("an empty PATCH clears the list: %v", got)
 	}
 }
+
+// The v8 layout (api-keys: groups) carries both fields through a load and a console save.
+func TestProvimuxKeyListFieldsV8Layout(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	layout := `api-keys:
+  claude:
+    - name: claude-1
+      models:
+        - name: claude-opus-5-5
+      keys:
+        - api-key: sk-ant
+          fixed-models: true
+    - name: claude-2
+      fixed-models: true
+      keys:
+        - api-key: sk-ant-2
+        - api-key: sk-ant-3
+          fixed-models: false
+  openai-compatibility:
+    - name: openrouter
+      base-url: https://openrouter.ai/api/v1
+      fixed-models: true
+      excluded-models: ["X-AI/*"]
+      models: []
+      keys:
+        - api-key: sk-or
+`
+	if err := os.WriteFile(path, []byte(layout), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.ClaudeKey) != 3 || !cfg.ClaudeKey[0].FixedModels || !cfg.ClaudeKey[1].FixedModels || cfg.ClaudeKey[2].FixedModels ||
+		len(cfg.OpenAICompatibility) != 1 ||
+		!cfg.OpenAICompatibility[0].FixedModels || !slices.Equal(cfg.OpenAICompatibility[0].ExcludedModels, []string{"x-ai/*"}) {
+		t.Fatalf("loaded: claude %+v compat %+v", cfg.ClaudeKey, cfg.OpenAICompatibility)
+	}
+	// A console save (PUT of the whole list) writes the file; a load reads both fields back.
+	h := &Handler{cfg: cfg, configFilePath: path}
+	keyListsRequest(t, h, (*Handler).PutOpenAICompat, http.MethodPut,
+		`[{"name":"openrouter","base-url":"https://openrouter.ai/api/v1","fixed-models":true,"excluded-models":["x-ai/*","*-preview"],"api-key-entries":[{"api-key":"sk-or"}],"models":[]}]`)
+	saved, _ := os.ReadFile(path)
+	again, err := config.LoadConfig(path)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, saved)
+	}
+	if !again.ClaudeKey[0].FixedModels || !again.ClaudeKey[1].FixedModels || again.ClaudeKey[2].FixedModels || !again.OpenAICompatibility[0].FixedModels ||
+		!slices.Equal(again.OpenAICompatibility[0].ExcludedModels, []string{"x-ai/*", "*-preview"}) {
+		t.Fatalf("after a save:\n%s", saved)
+	}
+}
