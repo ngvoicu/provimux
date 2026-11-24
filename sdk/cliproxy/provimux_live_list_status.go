@@ -134,7 +134,7 @@ func (provimuxLiveListSource) Providers() []string {
 // either seen whole or not at all. Only observations of the login's current account are reported:
 // a list or failure of an earlier account in the same auth file is not.
 func (provimuxLiveListSource) State(auth *coreauth.Auth) management.ProvimuxLiveListState {
-	if liveModelListProvider(auth) == "" {
+	if liveModelListProvider(auth) == "" || keyFixedAttr(auth) {
 		return management.ProvimuxLiveListState{}
 	}
 	state := management.ProvimuxLiveListState{Covered: true}
