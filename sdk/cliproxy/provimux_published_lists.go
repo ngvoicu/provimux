@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,11 +21,13 @@ import (
 
 // Provimux: providers.dev's model lists (model-lists.md step P3, sections 5.1 to 5.4).
 //
-// The layers of a model's fields, for a model the catalog lacks (a learned model): the vendor's live
-// list first; then providers.dev's listing of the login type, for every field the vendor's list does
-// not state; then the parser's placeholder (a name equal to the id, text output), never an invented
-// limit. A model the catalog has keeps the catalog's values as built (13.1): providers.dev does not
-// touch it. Which models a login offers is not decided here: its live list, else the catalog.
+// The layers of a model's fields. A model the catalog has: providers.dev's value on top of the catalog's
+// for every field its listing states (the registry's catalog overlay, provimuxCatalogOverlayOf), with the
+// vendor's list keeping what 13.1 gave it: a field the catalog itself leaves empty. A model the catalog
+// lacks (a learned model): the vendor's live list first; then providers.dev's listing, for every field the
+// vendor's list does not state; then the parser's placeholder (a name equal to the id, text output),
+// never an invented limit. Which models a login offers is not decided here: its live list, else the
+// catalog.
 //
 // Start never waits for providers.dev: the last accepted document is read from disk with the live
 // lists, and the fetch runs in the background, at start, every 6 hours and on
@@ -107,20 +110,29 @@ func provimuxPublishedKey(provider, id string) string {
 // loadCache reads the disk copy once, before any request. A damaged or foreign file is ignored with
 // one warning (by the store).
 func (st *provimuxPublishedStore) loadCache(cache *modellists.Store) {
+	if cache == nil {
+		return
+	}
 	st.mu.Lock()
-	defer st.mu.Unlock()
-	if st.cacheRead || cache == nil {
+	if st.cacheRead || st.doc != nil {
+		st.cacheRead = true
+		st.mu.Unlock()
 		return
 	}
 	st.cacheRead = true
-	if st.doc != nil {
-		return
-	}
+	st.mu.Unlock()
 	doc, err := cache.ReadPublished()
 	if err != nil || doc == nil {
 		return
 	}
+	st.mu.Lock()
+	if st.doc != nil { // a fetch finished meanwhile
+		st.mu.Unlock()
+		return
+	}
 	st.setDocLocked(doc, true)
+	st.mu.Unlock()
+	registry.ProvimuxCatalogOverlayChanged() // never with mu held: the overlay takes it
 	log.Infof("model lists from providers.dev: dataset %s of %s, %d listings, read from the disk cache",
 		provimuxShortVersion(doc.DatasetVersion), doc.GeneratedAt.UTC().Format(time.DateOnly), len(doc.Listings))
 }
@@ -181,7 +193,7 @@ func (s *Service) runPublishedListRefresh(ctx context.Context) {
 		cfg := s.cfg
 		s.cfgMu.RUnlock()
 		on := provimuxPublishedListsOn(cfg)
-		if provimuxPublished.on.Swap(on) != on {
+		if provimuxSetPublishedOn(on) {
 			// Turned on or off: the learned models' fields change with it.
 			s.provimuxPublishedChanged(provimuxAllSections())
 		}
@@ -237,6 +249,7 @@ func (s *Service) refreshPublishedLists(ctx context.Context, cfg *config.Config)
 	logged := st.lastLogged == merged.DatasetVersion
 	st.lastLogged = merged.DatasetVersion
 	st.mu.Unlock()
+	registry.ProvimuxCatalogOverlayChanged()
 	if cache := liveModelLists.cache.Load(); cache != nil {
 		_ = cache.WritePublished(merged)
 	}
@@ -303,16 +316,26 @@ func (s *Service) provimuxPublishedChanged(sections []string) {
 		want[section] = true
 	}
 	for _, auth := range s.coreManager.List() {
-		if auth == nil || auth.Disabled || !want[provimuxModelListType(auth)] {
+		if auth == nil || auth.Disabled {
 			continue
 		}
-		s.refreshModelRegistrationForAuth(auth)
+		section := provimuxModelListType(auth)
+		if section == "" {
+			// An API key: it registers the same catalog sections, so their overlay reaches it too.
+			section = registry.ProvimuxLearnedSection(auth.Provider)
+			if provider := strings.ToLower(strings.TrimSpace(auth.Provider)); provider == "vertex" || provider == "aistudio" {
+				section = provider
+			}
+		}
+		if want[section] {
+			s.refreshModelRegistrationForAuth(auth)
+		}
 	}
 }
 
 // provimuxAllSections are the login types whose learned models providers.dev can fill.
 func provimuxAllSections() []string {
-	return append(append([]string(nil), liveModelListTypes...), "copilot", "antigravity")
+	return append(append([]string(nil), liveModelListTypes...), "copilot", "antigravity", "vertex", "aistudio")
 }
 
 func provimuxShortVersion(version string) string {
@@ -539,3 +562,120 @@ func provimuxFieldDiffers(field string, a, b *ModelInfo) bool {
 	}
 	return false
 }
+
+// ---- providers.dev on top of the catalog (models the catalog has)
+
+// provimuxCatalogOverlayOf is the registry's catalog overlay: a catalog model with providers.dev's value
+// in every field its listing states, or nil when the listing has no row for it (or nothing differs).
+// The vendor's list still fills, as built, only the fields the catalog itself leaves empty
+// (fillLiveModelOver), and there it wins over providers.dev.
+func provimuxCatalogOverlayOf(section string, raw *ModelInfo) *ModelInfo {
+	if raw == nil {
+		return nil
+	}
+	row := provimuxPublished.lookup(section, raw.ID)
+	if row == nil {
+		return nil
+	}
+	out := cloneLiveModel(raw)
+	if raw.NativeCapabilities != nil {
+		capabilities := *raw.NativeCapabilities
+		out.NativeCapabilities = &capabilities
+	}
+	if provimuxRowStates(row, "display_name") {
+		out.DisplayName = strings.TrimSpace(*row.Name)
+	}
+	if provimuxRowStates(row, "context") {
+		out.ContextLength = *row.ContextWindow
+		if out.InputTokenLimit > 0 || out.Type == "gemini" {
+			out.InputTokenLimit = *row.ContextWindow
+		}
+	}
+	if provimuxRowStates(row, "output") {
+		out.MaxCompletionTokens = *row.MaxOutput
+		if out.OutputTokenLimit > 0 || out.Type == "gemini" {
+			out.OutputTokenLimit = *row.MaxOutput
+		}
+	}
+	if provimuxRowStates(row, "input_modalities") {
+		out.SupportedInputModalities = append([]string(nil), row.InputModalities...)
+	}
+	if provimuxRowStates(row, "output_modalities") {
+		out.SupportedOutputModalities = append([]string(nil), row.OutputModalities...)
+	}
+	if reasoning := row.Reasoning; reasoning != nil {
+		if reasoning.Supported != nil && !*reasoning.Supported {
+			out.Thinking = nil // providers.dev states the model does not reason
+		} else {
+			levels := provimuxKnownLevels(reasoning.Levels)
+			if out.Thinking == nil && (len(levels) > 0 || provimuxPositive(reasoning.BudgetMax)) {
+				out.Thinking = &registry.ThinkingSupport{}
+			}
+			if out.Thinking != nil {
+				if len(levels) > 0 {
+					out.Thinking.Levels = levels
+				}
+				if provimuxPositive(reasoning.BudgetMax) {
+					out.Thinking.Max = *reasoning.BudgetMax
+				}
+				if provimuxPositive(reasoning.BudgetMin) {
+					out.Thinking.Min = *reasoning.BudgetMin
+				}
+				if reasoning.CanDisable != nil {
+					out.Thinking.ZeroAllowed = *reasoning.CanDisable
+				}
+				if reasoning.Dynamic != nil {
+					out.Thinking.DynamicAllowed = *reasoning.Dynamic
+				}
+				if section == "claude" && reasoning.DisableWith != nil {
+					out.Thinking.DisableType = strings.TrimSpace(*reasoning.DisableWith)
+				}
+			}
+		}
+	}
+	if row.WebSearch != nil {
+		if out.NativeCapabilities == nil {
+			out.NativeCapabilities = &registry.NativeCapabilities{}
+		}
+		webSearch := *row.WebSearch
+		out.NativeCapabilities.WebSearch = &webSearch
+	}
+	if reflect.DeepEqual(out, raw) {
+		return nil
+	}
+	return out
+}
+
+// provimuxRowStates reports whether a listing row states a field of the status endpoint.
+func provimuxRowStates(row *modellists.ListingModel, field string) bool {
+	if row == nil {
+		return false
+	}
+	switch field {
+	case "display_name":
+		return row.Name != nil && strings.TrimSpace(*row.Name) != ""
+	case "context":
+		return provimuxPositive(row.ContextWindow)
+	case "output":
+		return provimuxPositive(row.MaxOutput)
+	case "input_modalities":
+		return len(row.InputModalities) > 0
+	case "output_modalities":
+		return len(row.OutputModalities) > 0
+	case "reasoning_levels":
+		return row.Reasoning != nil && ((row.Reasoning.Supported != nil && !*row.Reasoning.Supported) || len(provimuxKnownLevels(row.Reasoning.Levels)) > 0)
+	}
+	return false
+}
+
+// provimuxSetPublishedOn sets the option for this process and, when it changed, drops the registry's
+// overlaid catalog. Never called with provimuxPublished.mu held (the overlay takes it).
+func provimuxSetPublishedOn(on bool) bool {
+	if provimuxPublished.on.Swap(on) == on {
+		return false
+	}
+	registry.ProvimuxCatalogOverlayChanged()
+	return true
+}
+
+func init() { registry.SetProvimuxCatalogOverlay(provimuxCatalogOverlayOf) }

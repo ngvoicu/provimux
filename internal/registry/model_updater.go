@@ -209,9 +209,7 @@ func loadModelsFromBytes(data []byte, source string) error {
 }
 
 func getModels() *staticModelsJSON {
-	modelsCatalogStore.mu.RLock()
-	defer modelsCatalogStore.mu.RUnlock()
-	return modelsCatalogStore.data
+	return provimuxOverlaidModels(provimuxRawModels()) // Provimux: providers.dev on top of the catalog
 }
 
 func validateModelsCatalog(data *staticModelsJSON) error {

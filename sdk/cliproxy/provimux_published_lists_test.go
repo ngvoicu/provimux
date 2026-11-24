@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -86,7 +85,8 @@ func provimuxPublishedReset(t *testing.T) {
 		st.setDocLocked(nil, false)
 		st.cacheRead, st.failure, st.failures, st.next, st.lastLogged = false, nil, 0, time.Time{}, ""
 		st.mu.Unlock()
-		st.on.Store(on)
+		st.on.Store(!on)
+		provimuxSetPublishedOn(on)
 	}
 	reset(true)
 	previousDefault := registry.SetProvimuxPublishedListsDefault(true)
@@ -178,7 +178,8 @@ func provimuxStatusRow(t *testing.T, auth *coreauth.Auth, id string) (row struct
 }
 
 // A learned model gets its limits from providers.dev: every field the vendor's list does not state, and
-// only those. Models the catalog has keep the catalog's values (13.1).
+// only those. A model the catalog has takes providers.dev's value in every field the listing states (on
+// top of the catalog), and the executors' lookups see the same values.
 func TestProvimuxPublishedFillsALearnedModel(t *testing.T) {
 	provimuxLiveReset(t)
 	provimuxPublishedReset(t)
@@ -204,7 +205,7 @@ func TestProvimuxPublishedFillsALearnedModel(t *testing.T) {
 		provimuxPDKimiK9(32768),
 		map[string]any{"id": "gemini-4-neon", "name": "other", "context_window": 1, "max_output": 2, "input_modalities": []string{"audio"},
 			"output_modalities": []string{"image"}, "reasoning": map[string]any{"levels": []string{"max"}}, "aliases": []string{}},
-		map[string]any{"id": "swe-2", "name": "other", "context_window": 3, "max_output": 4, "aliases": []string{}})))
+		map[string]any{"id": "swe-2", "name": nil, "context_window": nil, "max_output": catalogSWE.MaxCompletionTokens + 1000, "aliases": []string{}})))
 	svc.refreshPublishedLists(t.Context(), svc.cfg)
 
 	after := provimuxRegisteredModel(auth, "devin/kimi-k9")
@@ -230,21 +231,38 @@ func TestProvimuxPublishedFillsALearnedModel(t *testing.T) {
 		strings.Join(neon.Thinking.Levels, ",") != "low,medium,high" || strings.Join(neon.SupportedInputModalities, ",") != "text,image" {
 		t.Fatalf("neon: %+v", neon)
 	}
-	// A model the catalog has keeps the catalog's values, whatever providers.dev says.
+	// A model the catalog has: providers.dev's output limit on top of the catalog's; the fields its row
+	// leaves out stay the catalog's.
 	swe := provimuxRegisteredModel(auth, "devin/swe-2")
-	if swe == nil || swe.ContextLength != catalogSWE.ContextLength || swe.MaxCompletionTokens != catalogSWE.MaxCompletionTokens || swe.DisplayName == "other" {
-		t.Fatalf("catalog model changed: %+v, catalog %+v", swe, catalogSWE)
+	t.Logf("catalog model devin/swe-2: catalog output=%d, providers.dev output=%d, registered output=%d, context=%d (catalog %d)",
+		catalogSWE.MaxCompletionTokens, catalogSWE.MaxCompletionTokens+1000, swe.MaxCompletionTokens, swe.ContextLength, catalogSWE.ContextLength)
+	if swe == nil || swe.MaxCompletionTokens != catalogSWE.MaxCompletionTokens+1000 || swe.ContextLength != catalogSWE.ContextLength ||
+		swe.DisplayName != catalogSWE.DisplayName {
+		t.Fatalf("catalog model: %+v, catalog %+v", swe, catalogSWE)
 	}
-	if row := provimuxStatusRow(t, auth, "devin/swe-2"); slices.Contains([]string{row.Sources["context"], row.Sources["output"]}, "published") {
+	if row := provimuxStatusRow(t, auth, "devin/swe-2"); row.Sources["output"] != "published" || row.Sources["context"] != "built-in" ||
+		row.Output != catalogSWE.MaxCompletionTokens+1000 {
 		t.Fatalf("a catalog model's sources: %v", row.Sources)
 	}
+	if model := registry.LookupDevinModel("swe-2"); model == nil || model.MaxCompletionTokens != catalogSWE.MaxCompletionTokens+1000 {
+		t.Fatalf("the executor's lookup: %+v", model)
+	}
+	if model := registry.LookupModelInfo("devin/swe-2", "devin"); model == nil || model.MaxCompletionTokens != catalogSWE.MaxCompletionTokens+1000 {
+		t.Fatalf("LookupModelInfo: %+v", model)
+	}
+	if raw := registry.ProvimuxRawCatalogModel("devin", "swe-2"); raw == nil || raw.MaxCompletionTokens != catalogSWE.MaxCompletionTokens {
+		t.Fatalf("the catalog itself is unchanged: %+v", raw)
+	}
 
-	// Option off: the vendor's values alone again.
+	// Option off: the vendor's and the catalog's values alone again.
 	svc.cfg.Models.PublishedLists = new(false)
-	provimuxPublished.on.Store(false)
+	provimuxSetPublishedOn(false)
 	svc.provimuxPublishedChanged([]string{"devin"})
 	if off := provimuxRegisteredModel(auth, "devin/kimi-k9"); off == nil || off.MaxCompletionTokens != 0 || off.Thinking != nil {
 		t.Fatalf("option off: %+v", off)
+	}
+	if off := provimuxRegisteredModel(auth, "devin/swe-2"); off == nil || off.MaxCompletionTokens != catalogSWE.MaxCompletionTokens {
+		t.Fatalf("option off, catalog model: %+v", off)
 	}
 }
 
@@ -521,5 +539,58 @@ func TestProvimuxPublishedRefreshHook(t *testing.T) {
 	<-done
 	if pd.count() != 2 {
 		t.Fatalf("requests = %d", pd.count())
+	}
+}
+
+// Where the catalog leaves a field empty, the vendor's list fills it as built and wins over providers.dev;
+// where the catalog states it, providers.dev's value (on top) stays, whatever the vendor says. The thinking
+// block is never the vendor's.
+func TestProvimuxVendorBeforePublishedOnlyWhereTheCatalogIsEmpty(t *testing.T) {
+	raw := &ModelInfo{ID: "m", DisplayName: "Catalog", MaxCompletionTokens: 8000}
+	overlaid := &ModelInfo{ID: "m", DisplayName: "Catalog", MaxCompletionTokens: 9000, ContextLength: 200000,
+		Thinking: &registry.ThinkingSupport{Levels: []string{"low", "high"}}}
+	vendor := &ModelInfo{ID: "m", DisplayName: "Vendor", MaxCompletionTokens: 4000, ContextLength: 131072,
+		Thinking: &registry.ThinkingSupport{Levels: []string{"medium"}}}
+	merged := fillLiveModelOver(raw, overlaid, vendor)
+	if merged.MaxCompletionTokens != 9000 || merged.ContextLength != 131072 || merged.DisplayName != "Catalog" ||
+		strings.Join(merged.Thinking.Levels, ",") != "low,high" {
+		t.Fatalf("merged = %+v thinking %+v", merged, merged.Thinking)
+	}
+	maxOutput, window := 9000, 200000
+	row := &modellists.ListingModel{ID: "m", MaxOutput: &maxOutput, ContextWindow: &window}
+	sources := map[string]string{}
+	provimuxFieldSources(sources, vendor, raw, false, row)
+	if sources["output"] != "published" || sources["context"] != "live" || sources["display_name"] != "built-in" {
+		t.Fatalf("sources = %v", sources)
+	}
+}
+
+// A login without a live list (live lists off): the catalog decides, so providers.dev's values go on top
+// of every catalog model its listing has a row for; the models offered stay the catalog's.
+func TestProvimuxPublishedOnTopOfTheCatalogWithoutALiveList(t *testing.T) {
+	provimuxLiveReset(t)
+	provimuxPublishedReset(t)
+	pd := provimuxPD(t)
+	catalogSWE := registry.LookupDevinModel("swe-2")
+	cfg := &config.Config{}
+	cfg.Models.LiveLists = new(false)
+	cfg.Models.PublishedLists = new(true)
+	executor := &liveListExecutor{provider: "devin"}
+	svc, auth := provimuxService(t, cfg, executor, &coreauth.Auth{ID: "devin-no-list", Provider: "devin",
+		Attributes: map[string]string{"auth_kind": "oauth"}, Metadata: map[string]any{"api_key": "devin-session", "email": "office@providers.dev"}})
+	svc.registerModelsForAuth(t.Context(), auth)
+	before := provimuxRegistered(auth)
+	pd.serve(http.StatusOK, `"v1"`, provimuxPDPage("2026-11-23T04:20:11Z", provimuxPDListing("devin",
+		map[string]any{"id": "swe-2", "max_output": catalogSWE.MaxCompletionTokens / 2, "aliases": []string{}},
+		provimuxPDKimiK9(32768))))
+	svc.refreshPublishedLists(t.Context(), svc.cfg)
+	if after := provimuxRegistered(auth); strings.Join(after, ",") != strings.Join(before, ",") {
+		t.Fatalf("the listing decided which models the login offers: %v -> %v", before, after)
+	}
+	if swe := provimuxRegisteredModel(auth, "devin/swe-2"); swe == nil || swe.MaxCompletionTokens != catalogSWE.MaxCompletionTokens/2 {
+		t.Fatalf("swe-2 = %+v", swe)
+	}
+	if row := provimuxStatusRow(t, auth, "devin/swe-2"); row.Sources["output"] != "published" || row.Sources["context"] != "built-in" {
+		t.Fatalf("sources = %v", row.Sources)
 	}
 }

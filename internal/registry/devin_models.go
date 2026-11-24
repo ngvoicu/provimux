@@ -75,7 +75,7 @@ func devinModelDefinitions() []*ModelInfo {
 	devinCatalogStore.mu.RUnlock()
 
 	if len(models) > 0 {
-		return models
+		return provimuxOverlaidDevin(models) // Provimux: providers.dev on top of the catalog
 	}
 
 	if m := getModels(); m != nil && len(m.Devin) > 0 {
