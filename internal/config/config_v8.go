@@ -398,6 +398,7 @@ var sharedKeyFields = map[string]bool{
 	// connection-pool follows proxy-url: a group-level default that each key may
 	// override, so an operator can pool one provider without touching the others.
 	"connection-pool": true,
+	"fixed-models":    true, // Provimux: a key's model list never refreshes (key-model-lists.md 6)
 }
 
 func expandV8Groups(groups *yaml.Node, provider string) (*yaml.Node, error) {
