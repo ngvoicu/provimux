@@ -110,7 +110,7 @@ func provimuxStoreLearned(provider string) []*ModelInfo {
 				continue
 			}
 			seen[key] = struct{}{}
-			learned = append(learned, model)
+			learned = append(learned, provimuxComposeLearned(provider, model))
 		}
 	}
 	return learned
