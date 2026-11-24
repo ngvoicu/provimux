@@ -328,7 +328,7 @@ func publishCatalogBytes(data []byte) ([]string, error) {
 	if errValidate := validateModelsCatalog(&parsed); errValidate != nil {
 		return nil, errValidate
 	}
-	old := getModels()
+	old := provimuxRawModels() // Provimux: the catalog as stored, without providers.dev's values
 	if len(parsed.Meta) == 0 && old != nil {
 		parsed.Meta = old.Meta
 	}

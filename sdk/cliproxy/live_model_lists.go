@@ -389,7 +389,7 @@ func liveModelListType(auth *coreauth.Auth) string {
 // other logins, or before the first list (fetched or cached) it returns models unchanged (and asks
 // for a fetch).
 func applyLiveModelList(cfg *config.Config, auth *coreauth.Auth, models []*ModelInfo) []*ModelInfo {
-	provimuxPublished.on.Store(provimuxPublishedListsOn(cfg))
+	provimuxSetPublishedOn(provimuxPublishedListsOn(cfg))
 	provider := liveModelListProvider(auth)
 	if cfg == nil || !cfg.Models.LiveListsOn() || cfg.Home.Enabled || provider == "" {
 		return models
@@ -450,7 +450,8 @@ func filterByLiveModelList(provider string, models []*ModelInfo, list liveModelL
 			continue
 		}
 		if live := described[id]; live != nil && listed && !builtin {
-			model = fillLiveModel(model, live)
+			// Judged against the catalog as it states the model, without providers.dev's values on top.
+			model = fillLiveModelOver(registry.ProvimuxRawOfOverlaid(provider, model), model, live)
 		}
 		out = append(out, model)
 		seen[id] = struct{}{}
@@ -499,6 +500,17 @@ func cloneLiveModel(model *ModelInfo) *ModelInfo {
 // catalog's whole: a catalog model without one is a model whose thinking the router does not
 // handle, and its levels, budgets and flags are read together.
 func fillLiveModel(catalog, live *ModelInfo) *ModelInfo {
+	return fillLiveModelOver(catalog, catalog, live)
+}
+
+// fillLiveModelOver is fillLiveModel for a catalog model with providers.dev's values on top (model): the
+// vendor's description fills the fields the catalog itself (raw) leaves empty, and wins there over
+// providers.dev; every other field stays model's. A nil raw is model.
+func fillLiveModelOver(raw, model, live *ModelInfo) *ModelInfo {
+	if raw == nil {
+		raw = model
+	}
+	catalog := raw
 	fillName := catalog.DisplayName == "" && live.DisplayName != ""
 	fillDescription := catalog.Description == "" && live.Description != ""
 	fillCreated := catalog.Created == 0 && live.Created != 0
@@ -509,11 +521,11 @@ func fillLiveModel(catalog, live *ModelInfo) *ModelInfo {
 	fillOutputs := len(catalog.SupportedOutputModalities) == 0 && len(live.SupportedOutputModalities) > 0
 	fillMethods := len(catalog.SupportedGenerationMethods) == 0 && len(live.SupportedGenerationMethods) > 0
 	if !fillName && !fillDescription && !fillCreated && !fillContext && !fillOutput && !fillInputs && !fillOutputs && !fillMethods {
-		return catalog // nothing to fill: the catalog's own entry, as 8.1.0-pmx.1 registers it
+		return model // nothing to fill: the catalog's own entry (with providers.dev's values), as registered without a list
 	}
-	merged := cloneLiveModel(catalog)
-	if catalog.NativeCapabilities != nil {
-		capabilities := *catalog.NativeCapabilities
+	merged := cloneLiveModel(model)
+	if model.NativeCapabilities != nil {
+		capabilities := *model.NativeCapabilities
 		merged.NativeCapabilities = &capabilities
 	}
 	if fillName {

@@ -29,8 +29,9 @@ models:
   # live-lists: false
   # On unless set to false. Ask providers.dev for its model lists of these login types: one request, the
   # same for every user, at startup, every 6 hours and on POST /v8/management/models/refresh (a 304 changes
-  # nothing). For a model the catalog lacks, its values fill every field the vendor's list leaves out.
-  # Models the catalog has keep the catalog's values. providers.dev unreachable never blocks a start or
+  # nothing). Its values go on top of the catalog's for every field its listing states (the vendor's list
+  # still fills a field the catalog leaves empty), and fill a learned model's fields the vendor's list
+  # leaves out. It never decides which models a login offers. providers.dev unreachable never blocks a start or
   # empties a list; the last accepted document is kept on disk (model-lists/published.json).
   # published-lists: false
 

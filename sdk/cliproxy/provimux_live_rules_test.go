@@ -174,7 +174,7 @@ func TestProvimuxFieldSourcesFollowTheRule(t *testing.T) {
 		SupportedInputModalities: []string{"text"}, Thinking: &registry.ThinkingSupport{Levels: []string{"low"}}}
 	merged := fillLiveModel(catalog, vendor)
 	sources := map[string]string{}
-	provimuxFieldSources(sources, vendor, catalog, false)
+	provimuxFieldSources(sources, vendor, catalog, false, nil)
 	want := map[string]string{"display_name": "built-in", "output": "built-in", "context": "live", "input_modalities": "live"}
 	if !reflect.DeepEqual(sources, want) {
 		t.Fatalf("sources = %v, want %v", sources, want)
@@ -184,7 +184,7 @@ func TestProvimuxFieldSourcesFollowTheRule(t *testing.T) {
 		t.Fatalf("merged = %+v", merged)
 	}
 	learned := map[string]string{}
-	provimuxFieldSources(learned, vendor, nil, false)
+	provimuxFieldSources(learned, vendor, nil, false, nil)
 	if learned["reasoning_levels"] != "live" || learned["display_name"] != "live" {
 		t.Fatalf("a learned model's fields are the vendor's: %v", learned)
 	}
