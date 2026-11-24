@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,12 +20,12 @@ import (
 
 // Provimux: providers.dev's model lists (model-lists.md step P3, sections 5.1 to 5.4).
 //
-// The layers of a model's fields. A model the catalog has: providers.dev's value on top of the catalog's
-// for every field its listing states (the registry's catalog overlay, provimuxCatalogOverlayOf), with the
-// vendor's list keeping what 13.1 gave it: a field the catalog itself leaves empty. A model the catalog
-// lacks (a learned model): the vendor's live list first; then providers.dev's listing, for every field the
-// vendor's list does not state; then the parser's placeholder (a name equal to the id, text output),
-// never an invented limit. Which models a login offers is not decided here: its live list, else the
+// providers.dev fills gaps only, never overrides. A model the catalog has: the vendor's list where the
+// catalog leaves a field empty (13.1), then the catalog, then providers.dev for a field both leave empty
+// (the registry's catalog overlay, provimuxCatalogOverlayOf; never the thinking block or web search). A
+// model the catalog lacks (a learned model): the vendor's live list first; then providers.dev's listing,
+// for every field the vendor's list does not state, within the guards of provimuxComposeLearned; then the
+// parser's placeholder (a name equal to the id, text output), never an invented limit. Which models a login offers is not decided here: its live list, else the
 // catalog.
 //
 // Start never waits for providers.dev: the last accepted document is read from disk with the live
@@ -369,12 +368,39 @@ func provimuxPublishedStateOf() management.ProvimuxPublishedState {
 
 func init() { management.SetProvimuxPublishedStateSource(provimuxPublishedStateOf) }
 
-// ---- the composition of a learned model's fields
+// ---- the composition: providers.dev fills gaps only (model-lists.md 13.5)
+
+// provimuxRowWindow is a listing row's context window: max_input where it is stated and smaller than
+// context_window (or the only one stated), else context_window; 0 when the row states neither.
+func provimuxRowWindow(row *modellists.ListingModel) int {
+	window := 0
+	if provimuxPositive(row.ContextWindow) {
+		window = *row.ContextWindow
+	}
+	if provimuxPositive(row.MaxInput) && (window == 0 || *row.MaxInput < window) {
+		window = *row.MaxInput
+	}
+	return window
+}
+
+// provimuxRowOutput is a listing row's output limit, or 0 when it states none or states one that is not
+// below the window (window: the model's, else the row's own): such a figure is the window, not a limit.
+func provimuxRowOutput(row *modellists.ListingModel, window int) int {
+	if !provimuxPositive(row.MaxOutput) {
+		return 0
+	}
+	if window <= 0 {
+		window = provimuxRowWindow(row)
+	}
+	if window > 0 && *row.MaxOutput >= window {
+		return 0
+	}
+	return *row.MaxOutput
+}
 
 // provimuxLiveStates reports whether the vendor's list stated a field of a learned model, as against
 // leaving it empty or to the parser's placeholder: a name equal to the id, and "text" alone as the
-// output, which every parser but xAI's writes without the vendor saying it. The thinking flags
-// (can be off, dynamic budget) are stated by Claude's list only, and a true flag by any list.
+// output, which every parser but xAI's writes without the vendor saying it.
 func provimuxLiveStates(section string, live *ModelInfo, field string) bool {
 	if live == nil {
 		return false
@@ -393,18 +419,18 @@ func provimuxLiveStates(section string, live *ModelInfo, field string) bool {
 			return false
 		}
 		return section == "xai" || len(live.SupportedOutputModalities) > 1 || !strings.EqualFold(live.SupportedOutputModalities[0], "text")
-	case "reasoning_levels":
-		return live.Thinking != nil && len(live.Thinking.Levels) > 0
-	case "reasoning_budget":
-		return live.Thinking != nil && (live.Thinking.Min > 0 || live.Thinking.Max > 0)
 	case "web_search":
 		return live.NativeCapabilities != nil && live.NativeCapabilities.WebSearch != nil
 	}
 	return false
 }
 
-// provimuxComposeLearned returns a learned model with providers.dev's values in every field the
-// vendor's list does not state. Without a listing row it is the vendor's model, unchanged.
+// provimuxComposeLearned returns a learned model (one the catalog lacks) with providers.dev's values in
+// the fields the vendor's list does not state. Guards: the thinking block is taken whole from one source
+// (the vendor's when it has one, else providers.dev's levels, budgets and dynamic flag; never
+// "supported: false" and never "can_disable"); a max_output not below the window is refused; a stated
+// max_input smaller than the context window is the window. Without a listing row it is the vendor's
+// model, unchanged.
 func provimuxComposeLearned(section string, live *ModelInfo) *ModelInfo {
 	if live == nil {
 		return nil
@@ -421,16 +447,16 @@ func provimuxComposeLearned(section string, live *ModelInfo) *ModelInfo {
 	if !provimuxLiveStates(section, live, "display_name") && row.Name != nil && strings.TrimSpace(*row.Name) != "" {
 		out.DisplayName = strings.TrimSpace(*row.Name)
 	}
-	if !provimuxLiveStates(section, live, "context") && provimuxPositive(row.ContextWindow) {
-		out.ContextLength = *row.ContextWindow
+	if window := provimuxRowWindow(row); !provimuxLiveStates(section, live, "context") && window > 0 {
+		out.ContextLength = window
 		if out.Type == "gemini" {
-			out.InputTokenLimit = *row.ContextWindow
+			out.InputTokenLimit = window
 		}
 	}
-	if !provimuxLiveStates(section, live, "output") && provimuxPositive(row.MaxOutput) {
-		out.MaxCompletionTokens = *row.MaxOutput
+	if output := provimuxRowOutput(row, provimuxFirstPositive(out.ContextLength, out.InputTokenLimit)); !provimuxLiveStates(section, live, "output") && output > 0 {
+		out.MaxCompletionTokens = output
 		if out.Type == "gemini" || out.OutputTokenLimit > 0 || section == "copilot" {
-			out.OutputTokenLimit = *row.MaxOutput
+			out.OutputTokenLimit = output
 		}
 	}
 	if !provimuxLiveStates(section, live, "input_modalities") && len(row.InputModalities) > 0 {
@@ -439,7 +465,9 @@ func provimuxComposeLearned(section string, live *ModelInfo) *ModelInfo {
 	if !provimuxLiveStates(section, live, "output_modalities") && len(row.OutputModalities) > 0 {
 		out.SupportedOutputModalities = append([]string(nil), row.OutputModalities...)
 	}
-	provimuxComposeThinking(section, live, out, row.Reasoning)
+	if live.Thinking == nil {
+		out.Thinking = provimuxRowThinking(row.Reasoning)
+	}
 	if !provimuxLiveStates(section, live, "web_search") && row.WebSearch != nil {
 		if out.NativeCapabilities == nil {
 			out.NativeCapabilities = &registry.NativeCapabilities{}
@@ -450,39 +478,28 @@ func provimuxComposeLearned(section string, live *ModelInfo) *ModelInfo {
 	return out
 }
 
-// provimuxComposeThinking fills the thinking block field by field: levels, budgets and the two flags.
-// A listing that says the model does not reason adds nothing.
-func provimuxComposeThinking(section string, live, out *ModelInfo, reasoning *modellists.Reasoning) {
-	if reasoning == nil || (reasoning.Supported != nil && !*reasoning.Supported) {
-		return
+// provimuxRowThinking is a listing's thinking block, whole: its known levels, its budgets and its dynamic
+// flag. Never "can_disable" (thinking that can be turned off) and never "supported: false": those are
+// not taken from providers.dev. nil when the row states no level and no budget.
+func provimuxRowThinking(reasoning *modellists.Reasoning) *registry.ThinkingSupport {
+	if reasoning == nil {
+		return nil
 	}
 	levels := provimuxKnownLevels(reasoning.Levels)
-	hasBudget := provimuxPositive(reasoning.BudgetMax)
-	if out.Thinking == nil {
-		if len(levels) == 0 && !hasBudget {
-			return
-		}
-		out.Thinking = &registry.ThinkingSupport{}
+	if len(levels) == 0 && !provimuxPositive(reasoning.BudgetMax) {
+		return nil
 	}
-	if !provimuxLiveStates(section, live, "reasoning_levels") && len(levels) > 0 {
-		out.Thinking.Levels = levels
-	}
-	if !provimuxLiveStates(section, live, "reasoning_budget") && hasBudget {
-		out.Thinking.Max = *reasoning.BudgetMax
-		if provimuxPositive(reasoning.BudgetMin) {
-			out.Thinking.Min = *reasoning.BudgetMin
+	thinking := &registry.ThinkingSupport{Levels: levels}
+	if provimuxPositive(reasoning.BudgetMax) {
+		thinking.Max = *reasoning.BudgetMax
+		if provimuxPositive(reasoning.BudgetMin) && *reasoning.BudgetMin <= thinking.Max {
+			thinking.Min = *reasoning.BudgetMin
 		}
 	}
-	flagsStated := section == "claude" && live.Thinking != nil
-	if !flagsStated && !out.Thinking.ZeroAllowed && reasoning.CanDisable != nil {
-		out.Thinking.ZeroAllowed = *reasoning.CanDisable
+	if reasoning.Dynamic != nil {
+		thinking.DynamicAllowed = *reasoning.Dynamic
 	}
-	if !flagsStated && !out.Thinking.DynamicAllowed && reasoning.Dynamic != nil {
-		out.Thinking.DynamicAllowed = *reasoning.Dynamic
-	}
-	if section == "claude" && out.Thinking.DisableType == "" && reasoning.DisableWith != nil {
-		out.Thinking.DisableType = strings.TrimSpace(*reasoning.DisableWith)
-	}
+	return thinking
 }
 
 // provimuxKnownLevels keeps the effort levels Provimux knows, in its order.
@@ -506,13 +523,14 @@ func provimuxLearnedFieldSources(out map[string]string, section string, live *Mo
 	if live == nil {
 		return
 	}
-	row := provimuxPublished.lookup(section, live.ID)
 	composed := provimuxComposeLearned(section, live)
 	for _, field := range []string{"display_name", "context", "output", "input_modalities", "output_modalities", "reasoning_levels"} {
 		switch {
-		case provimuxLiveStates(section, live, field):
+		case field != "reasoning_levels" && provimuxLiveStates(section, live, field):
 			out[field] = "live"
-		case row != nil && provimuxFieldDiffers(field, live, composed):
+		case field == "reasoning_levels" && live.Thinking != nil && len(live.Thinking.Levels) > 0:
+			out[field] = "live"
+		case provimuxFieldDiffers(field, live, composed):
 			out[field] = "published"
 		case provimuxModelHas(live, field):
 			out[field] = "live"
@@ -563,12 +581,12 @@ func provimuxFieldDiffers(field string, a, b *ModelInfo) bool {
 	return false
 }
 
-// ---- providers.dev on top of the catalog (models the catalog has)
-
-// provimuxCatalogOverlayOf is the registry's catalog overlay: a catalog model with providers.dev's value
-// in every field its listing states, or nil when the listing has no row for it (or nothing differs).
-// The vendor's list still fills, as built, only the fields the catalog itself leaves empty
-// (fillLiveModelOver), and there it wins over providers.dev.
+// provimuxCatalogOverlayOf is the registry's catalog overlay for a model the catalog has: providers.dev
+// fills only the fields the catalog leaves empty (name, window, output limit, input and output
+// modalities), never one it states. The thinking block and web search stay the catalog's, whole: a
+// catalog model without a thinking block is one whose thinking the router does not handle. The vendor's
+// list, where a login has one, still fills an empty field first and wins there (fillLiveModelOver), so
+// the order per field is the vendor's list, the catalog, providers.dev. nil when nothing is filled.
 func provimuxCatalogOverlayOf(section string, raw *ModelInfo) *ModelInfo {
 	if raw == nil {
 		return nil
@@ -582,90 +600,34 @@ func provimuxCatalogOverlayOf(section string, raw *ModelInfo) *ModelInfo {
 		capabilities := *raw.NativeCapabilities
 		out.NativeCapabilities = &capabilities
 	}
-	if provimuxRowStates(row, "display_name") {
-		out.DisplayName = strings.TrimSpace(*row.Name)
+	changed := false
+	if raw.DisplayName == "" && row.Name != nil && strings.TrimSpace(*row.Name) != "" {
+		out.DisplayName, changed = strings.TrimSpace(*row.Name), true
 	}
-	if provimuxRowStates(row, "context") {
-		out.ContextLength = *row.ContextWindow
-		if out.InputTokenLimit > 0 || out.Type == "gemini" {
-			out.InputTokenLimit = *row.ContextWindow
+	if window := provimuxRowWindow(row); raw.ContextLength == 0 && raw.InputTokenLimit == 0 && window > 0 {
+		out.ContextLength, changed = window, true
+		if out.Type == "gemini" {
+			out.InputTokenLimit = window
 		}
 	}
-	if provimuxRowStates(row, "output") {
-		out.MaxCompletionTokens = *row.MaxOutput
-		if out.OutputTokenLimit > 0 || out.Type == "gemini" {
-			out.OutputTokenLimit = *row.MaxOutput
-		}
-	}
-	if provimuxRowStates(row, "input_modalities") {
-		out.SupportedInputModalities = append([]string(nil), row.InputModalities...)
-	}
-	if provimuxRowStates(row, "output_modalities") {
-		out.SupportedOutputModalities = append([]string(nil), row.OutputModalities...)
-	}
-	if reasoning := row.Reasoning; reasoning != nil {
-		if reasoning.Supported != nil && !*reasoning.Supported {
-			out.Thinking = nil // providers.dev states the model does not reason
-		} else {
-			levels := provimuxKnownLevels(reasoning.Levels)
-			if out.Thinking == nil && (len(levels) > 0 || provimuxPositive(reasoning.BudgetMax)) {
-				out.Thinking = &registry.ThinkingSupport{}
-			}
-			if out.Thinking != nil {
-				if len(levels) > 0 {
-					out.Thinking.Levels = levels
-				}
-				if provimuxPositive(reasoning.BudgetMax) {
-					out.Thinking.Max = *reasoning.BudgetMax
-				}
-				if provimuxPositive(reasoning.BudgetMin) {
-					out.Thinking.Min = *reasoning.BudgetMin
-				}
-				if reasoning.CanDisable != nil {
-					out.Thinking.ZeroAllowed = *reasoning.CanDisable
-				}
-				if reasoning.Dynamic != nil {
-					out.Thinking.DynamicAllowed = *reasoning.Dynamic
-				}
-				if section == "claude" && reasoning.DisableWith != nil {
-					out.Thinking.DisableType = strings.TrimSpace(*reasoning.DisableWith)
-				}
+	if raw.MaxCompletionTokens == 0 && raw.OutputTokenLimit == 0 {
+		if output := provimuxRowOutput(row, provimuxFirstPositive(out.ContextLength, out.InputTokenLimit)); output > 0 {
+			out.MaxCompletionTokens, changed = output, true
+			if out.Type == "gemini" {
+				out.OutputTokenLimit = output
 			}
 		}
 	}
-	if row.WebSearch != nil {
-		if out.NativeCapabilities == nil {
-			out.NativeCapabilities = &registry.NativeCapabilities{}
-		}
-		webSearch := *row.WebSearch
-		out.NativeCapabilities.WebSearch = &webSearch
+	if len(raw.SupportedInputModalities) == 0 && len(row.InputModalities) > 0 {
+		out.SupportedInputModalities, changed = append([]string(nil), row.InputModalities...), true
 	}
-	if reflect.DeepEqual(out, raw) {
+	if len(raw.SupportedOutputModalities) == 0 && len(row.OutputModalities) > 0 {
+		out.SupportedOutputModalities, changed = append([]string(nil), row.OutputModalities...), true
+	}
+	if !changed {
 		return nil
 	}
 	return out
-}
-
-// provimuxRowStates reports whether a listing row states a field of the status endpoint.
-func provimuxRowStates(row *modellists.ListingModel, field string) bool {
-	if row == nil {
-		return false
-	}
-	switch field {
-	case "display_name":
-		return row.Name != nil && strings.TrimSpace(*row.Name) != ""
-	case "context":
-		return provimuxPositive(row.ContextWindow)
-	case "output":
-		return provimuxPositive(row.MaxOutput)
-	case "input_modalities":
-		return len(row.InputModalities) > 0
-	case "output_modalities":
-		return len(row.OutputModalities) > 0
-	case "reasoning_levels":
-		return row.Reasoning != nil && ((row.Reasoning.Supported != nil && !*row.Reasoning.Supported) || len(provimuxKnownLevels(row.Reasoning.Levels)) > 0)
-	}
-	return false
 }
 
 // provimuxSetPublishedOn sets the option for this process and, when it changed, drops the registry's
@@ -676,6 +638,14 @@ func provimuxSetPublishedOn(on bool) bool {
 	}
 	registry.ProvimuxCatalogOverlayChanged()
 	return true
+}
+
+// provimuxPrepareModelLists runs before a login's models are read from the catalog: it opens the disk
+// cache (and with it providers.dev's last accepted document) and sets the option for this process, so
+// the first registration of a start already sees the document on disk.
+func (s *Service) provimuxPrepareModelLists(cfg *config.Config) {
+	s.openLiveModelListCache()
+	provimuxSetPublishedOn(provimuxPublishedListsOn(cfg))
 }
 
 func init() { registry.SetProvimuxCatalogOverlay(provimuxCatalogOverlayOf) }
