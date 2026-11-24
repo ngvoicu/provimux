@@ -183,3 +183,29 @@ func containsSecret(raw []byte) bool {
 	}
 	return false
 }
+
+// A Gemini key on Google's host with fixed-models: true and no rows is never asked: its logins row says
+// so (live.supported false, the catalog), as does the older live-lists endpoint.
+func TestProvimuxKeyStatusFixedGeminiOnGoogle(t *testing.T) {
+	provimuxLiveReset(t)
+	cfg := provimuxOn()
+	cfg.GeminiKey = []config.GeminiKey{{APIKey: "AIza-fixed", FixedModels: true}, {APIKey: "AIza-asked"}}
+	svc, auths := keyService(t, cfg)
+	for _, auth := range auths {
+		fixed := auth.Attributes["api_key"] == "AIza-fixed"
+		state, ok := provimuxLiveListSource{}.ModelListLogin(auth, true, false, false)
+		if !ok || state.Supported == fixed || (fixed && state.Source != "built-in") {
+			t.Fatalf("%s: logins row = %+v (ok %v)", auth.Attributes["api_key"], state, ok)
+		}
+		if covered := (provimuxLiveListSource{}).State(auth).Covered; covered == fixed {
+			t.Fatalf("%s: live-lists covered = %v", auth.Attributes["api_key"], covered)
+		}
+		if _, _, keyRow := (provimuxLiveListSource{}).KeyModelList(cfg, auth, true, false, false); keyRow {
+			t.Fatal("a Gemini key without rows has no keys row")
+		}
+		if got := liveModelListKindFor(cfg, auth); (got == "") != fixed {
+			t.Fatalf("%s: kind %q", auth.Attributes["api_key"], got)
+		}
+	}
+	_ = svc
+}
