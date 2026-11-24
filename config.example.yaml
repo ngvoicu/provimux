@@ -797,6 +797,7 @@ upstream:
 #             levels: ["high", "medium", "low", "none", "auto"]
 #         - name: "gemini-2.5-pro"
 #           alias: "vertex-pro"
+#       fixed-models: true                          # optional (Provimux): accepted and has no effect; Vertex keys are never asked for a model list
 #       excluded-models:                            # optional: models to exclude from listing
 #         - "imagen-3.0-generate-002"
 #         - "imagen-*"
