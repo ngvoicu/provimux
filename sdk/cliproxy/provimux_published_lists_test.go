@@ -178,8 +178,8 @@ func provimuxStatusRow(t *testing.T, auth *coreauth.Auth, id string) (row struct
 }
 
 // A learned model gets its limits from providers.dev: every field the vendor's list does not state, and
-// only those. A model the catalog has takes providers.dev's value in every field the listing states (on
-// top of the catalog), and the executors' lookups see the same values.
+// only those, with the thinking block whole from providers.dev and never its can_disable. A model the
+// catalog has keeps every value the catalog states: providers.dev only fills gaps.
 func TestProvimuxPublishedFillsALearnedModel(t *testing.T) {
 	provimuxLiveReset(t)
 	provimuxPublishedReset(t)
@@ -213,7 +213,7 @@ func TestProvimuxPublishedFillsALearnedModel(t *testing.T) {
 	t.Logf("after:  context=%d (%s) output=%d (%s) levels=%v (%s) name=%q (%s)", afterRow.Context, afterRow.Sources["context"],
 		afterRow.Output, afterRow.Sources["output"], afterRow.Levels, afterRow.Sources["reasoning_levels"], afterRow.Name, afterRow.Sources["display_name"])
 	if after == nil || after.MaxCompletionTokens != 32768 || after.ContextLength != 262144 || after.DisplayName != "Kimi K9" ||
-		after.Thinking == nil || strings.Join(after.Thinking.Levels, ",") != "low,high" || !after.Thinking.ZeroAllowed ||
+		after.Thinking == nil || strings.Join(after.Thinking.Levels, ",") != "low,high" || after.Thinking.ZeroAllowed ||
 		strings.Join(after.SupportedInputModalities, ",") != "text" {
 		t.Fatalf("after: %+v thinking=%+v", after, after.Thinking)
 	}
@@ -231,27 +231,19 @@ func TestProvimuxPublishedFillsALearnedModel(t *testing.T) {
 		strings.Join(neon.Thinking.Levels, ",") != "low,medium,high" || strings.Join(neon.SupportedInputModalities, ",") != "text,image" {
 		t.Fatalf("neon: %+v", neon)
 	}
-	// A model the catalog has: providers.dev's output limit on top of the catalog's; the fields its row
-	// leaves out stay the catalog's.
+	// A model the catalog has: the catalog states its output limit, so providers.dev's differing one is
+	// not taken, in the registration, the status endpoint or the executors' lookups.
 	swe := provimuxRegisteredModel(auth, "devin/swe-2")
-	t.Logf("catalog model devin/swe-2: catalog output=%d, providers.dev output=%d, registered output=%d, context=%d (catalog %d)",
-		catalogSWE.MaxCompletionTokens, catalogSWE.MaxCompletionTokens+1000, swe.MaxCompletionTokens, swe.ContextLength, catalogSWE.ContextLength)
-	if swe == nil || swe.MaxCompletionTokens != catalogSWE.MaxCompletionTokens+1000 || swe.ContextLength != catalogSWE.ContextLength ||
-		swe.DisplayName != catalogSWE.DisplayName {
+	t.Logf("catalog model devin/swe-2: catalog output=%d, providers.dev output=%d, registered output=%d",
+		catalogSWE.MaxCompletionTokens, catalogSWE.MaxCompletionTokens+1000, swe.MaxCompletionTokens)
+	if swe == nil || swe.MaxCompletionTokens != catalogSWE.MaxCompletionTokens || swe.ContextLength != catalogSWE.ContextLength {
 		t.Fatalf("catalog model: %+v, catalog %+v", swe, catalogSWE)
 	}
-	if row := provimuxStatusRow(t, auth, "devin/swe-2"); row.Sources["output"] != "published" || row.Sources["context"] != "built-in" ||
-		row.Output != catalogSWE.MaxCompletionTokens+1000 {
+	if row := provimuxStatusRow(t, auth, "devin/swe-2"); row.Sources["output"] != "built-in" || row.Output != catalogSWE.MaxCompletionTokens {
 		t.Fatalf("a catalog model's sources: %v", row.Sources)
 	}
-	if model := registry.LookupDevinModel("swe-2"); model == nil || model.MaxCompletionTokens != catalogSWE.MaxCompletionTokens+1000 {
+	if model := registry.LookupDevinModel("swe-2"); model == nil || model.MaxCompletionTokens != catalogSWE.MaxCompletionTokens {
 		t.Fatalf("the executor's lookup: %+v", model)
-	}
-	if model := registry.LookupModelInfo("devin/swe-2", "devin"); model == nil || model.MaxCompletionTokens != catalogSWE.MaxCompletionTokens+1000 {
-		t.Fatalf("LookupModelInfo: %+v", model)
-	}
-	if raw := registry.ProvimuxRawCatalogModel("devin", "swe-2"); raw == nil || raw.MaxCompletionTokens != catalogSWE.MaxCompletionTokens {
-		t.Fatalf("the catalog itself is unchanged: %+v", raw)
 	}
 
 	// Option off: the vendor's and the catalog's values alone again.
@@ -542,32 +534,30 @@ func TestProvimuxPublishedRefreshHook(t *testing.T) {
 	}
 }
 
-// Where the catalog leaves a field empty, the vendor's list fills it as built and wins over providers.dev;
-// where the catalog states it, providers.dev's value (on top) stays, whatever the vendor says. The thinking
-// block is never the vendor's.
+// Per field: the vendor's list where the catalog leaves the field empty (as built), else the catalog, else
+// providers.dev filling a gap both leave. The thinking block is never the vendor's.
 func TestProvimuxVendorBeforePublishedOnlyWhereTheCatalogIsEmpty(t *testing.T) {
 	raw := &ModelInfo{ID: "m", DisplayName: "Catalog", MaxCompletionTokens: 8000}
-	overlaid := &ModelInfo{ID: "m", DisplayName: "Catalog", MaxCompletionTokens: 9000, ContextLength: 200000,
-		Thinking: &registry.ThinkingSupport{Levels: []string{"low", "high"}}}
+	filled := &ModelInfo{ID: "m", DisplayName: "Catalog", MaxCompletionTokens: 8000, ContextLength: 200000,
+		SupportedInputModalities: []string{"text", "image"}}
 	vendor := &ModelInfo{ID: "m", DisplayName: "Vendor", MaxCompletionTokens: 4000, ContextLength: 131072,
 		Thinking: &registry.ThinkingSupport{Levels: []string{"medium"}}}
-	merged := fillLiveModelOver(raw, overlaid, vendor)
-	if merged.MaxCompletionTokens != 9000 || merged.ContextLength != 131072 || merged.DisplayName != "Catalog" ||
-		strings.Join(merged.Thinking.Levels, ",") != "low,high" {
+	merged := fillLiveModelOver(raw, filled, vendor)
+	if merged.MaxCompletionTokens != 8000 || merged.ContextLength != 131072 || merged.DisplayName != "Catalog" || merged.Thinking != nil ||
+		strings.Join(merged.SupportedInputModalities, ",") != "text,image" {
 		t.Fatalf("merged = %+v thinking %+v", merged, merged.Thinking)
 	}
-	maxOutput, window := 9000, 200000
-	row := &modellists.ListingModel{ID: "m", MaxOutput: &maxOutput, ContextWindow: &window}
 	sources := map[string]string{}
-	provimuxFieldSources(sources, vendor, raw, false, row)
-	if sources["output"] != "published" || sources["context"] != "live" || sources["display_name"] != "built-in" {
+	provimuxFieldSources(sources, vendor, raw, false, filled)
+	if sources["output"] != "built-in" || sources["context"] != "live" || sources["display_name"] != "built-in" ||
+		sources["input_modalities"] != "published" || sources["reasoning_levels"] != "" {
 		t.Fatalf("sources = %v", sources)
 	}
 }
 
-// A login without a live list (live lists off): the catalog decides, so providers.dev's values go on top
-// of every catalog model its listing has a row for; the models offered stay the catalog's.
-func TestProvimuxPublishedOnTopOfTheCatalogWithoutALiveList(t *testing.T) {
+// A login without a live list (live lists off): the catalog decides which models it offers and every value
+// it states; a listing that differs changes neither.
+func TestProvimuxPublishedLeavesTheCatalogWithoutALiveList(t *testing.T) {
 	provimuxLiveReset(t)
 	provimuxPublishedReset(t)
 	pd := provimuxPD(t)
@@ -587,10 +577,7 @@ func TestProvimuxPublishedOnTopOfTheCatalogWithoutALiveList(t *testing.T) {
 	if after := provimuxRegistered(auth); strings.Join(after, ",") != strings.Join(before, ",") {
 		t.Fatalf("the listing decided which models the login offers: %v -> %v", before, after)
 	}
-	if swe := provimuxRegisteredModel(auth, "devin/swe-2"); swe == nil || swe.MaxCompletionTokens != catalogSWE.MaxCompletionTokens/2 {
+	if swe := provimuxRegisteredModel(auth, "devin/swe-2"); swe == nil || swe.MaxCompletionTokens != catalogSWE.MaxCompletionTokens {
 		t.Fatalf("swe-2 = %+v", swe)
-	}
-	if row := provimuxStatusRow(t, auth, "devin/swe-2"); row.Sources["output"] != "published" || row.Sources["context"] != "built-in" {
-		t.Fatalf("sources = %v", row.Sources)
 	}
 }

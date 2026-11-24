@@ -450,7 +450,7 @@ func filterByLiveModelList(provider string, models []*ModelInfo, list liveModelL
 			continue
 		}
 		if live := described[id]; live != nil && listed && !builtin {
-			// Judged against the catalog as it states the model, without providers.dev's values on top.
+			// Judged against the catalog as it states the model, without the gaps providers.dev filled.
 			model = fillLiveModelOver(registry.ProvimuxRawOfOverlaid(provider, model), model, live)
 		}
 		out = append(out, model)
@@ -503,7 +503,7 @@ func fillLiveModel(catalog, live *ModelInfo) *ModelInfo {
 	return fillLiveModelOver(catalog, catalog, live)
 }
 
-// fillLiveModelOver is fillLiveModel for a catalog model with providers.dev's values on top (model): the
+// fillLiveModelOver is fillLiveModel for a catalog model whose gaps providers.dev filled (model): the
 // vendor's description fills the fields the catalog itself (raw) leaves empty, and wins there over
 // providers.dev; every other field stays model's. A nil raw is model.
 func fillLiveModelOver(raw, model, live *ModelInfo) *ModelInfo {
