@@ -25,7 +25,12 @@ models:
   # catalog has keeps the catalog's values (the provider fills only empty ones); models it lacks are added.
   # Copilot and Antigravity logins also offer listed models the catalog lacks. A failed or partial fetch
   # changes nothing (Kimi and xAI logins are not asked yet); lists are kept on disk (model-lists/ beside the console's static folder) for the next
-  # start, and a list not refreshed for 7 days gives way to the catalog. Other API keys keep the catalog.
+  # start, and a list not refreshed for 7 days gives way to the catalog.
+  # API keys with their own models list (every openai-compatibility entry, and Claude, Codex, xAI, Meta and
+  # Gemini keys with models rows) refresh too: such a key offers its rows exactly as written, plus every model
+  # its service lists that no row names, minus its excluded-models. Nothing is written to this file; a row is
+  # never dropped. fixed-models: true on a key (or its group) turns this off for it. Other API keys keep the
+  # catalog. false here turns it off for every login and key.
   # live-lists: false
   # On unless set to false. Ask providers.dev for its model lists of these login types: one request, the
   # same for every user, at startup, every 6 hours and on POST /v8/management/models/refresh (a 304 changes
@@ -867,6 +872,7 @@ upstream:
 #         - api-key: "sk-atSM..." # use the official claude API key, no need to set the base url
 #     - name: claude-2
 #       prefix: "test" # optional: require calls like "test/claude-sonnet-latest" to target this credential
+#       fixed-models: true # optional (Provimux): offer exactly the models below and never ask the service for its list; unset, a key with models rows also offers every model its service lists (models.live-lists)
 #       disable-cooling: false # optional override: true disables cooling, false enables it; omit to inherit global
 #       request-retry: 3 # optional per-auth override; 0 disables additional rounds; omit or set < 0 to inherit global
 #       request-scoped-errors: # optional: custom rules to classify upstream errors by status and body patterns
@@ -1046,6 +1052,11 @@ upstream:
 #       disabled: false # optional: set to true to disable this provider without removing it
 #       prefix: "test" # optional: require calls like "test/kimi-k2" to target this provider's credentials
 #       base-url: "https://openrouter.ai/api/v1" # The base URL of the provider.
+#       # Provimux: the models below refresh themselves: the rows as written, plus every model <base-url>/models
+#       # lists that no row names (all of them when there are no rows), minus excluded-models; nothing is
+#       # written to this file. fixed-models: true offers exactly the rows and never asks.
+#       fixed-models: false # optional
+#       excluded-models: ["text-embedding-*", "x-ai/*"] # optional: hide models this entry would offer, rows and listed alike; wildcards as for other keys
 #       support-prompt-cache-key: false # optional: derive prompt_cache_key for requests from all input protocols
 #       disable-cooling: false # optional provider override: true disables cooling, false enables it; omit to inherit global
 #       request-retry: 3 # optional per-provider override; 0 disables additional rounds; omit or set < 0 to inherit global
