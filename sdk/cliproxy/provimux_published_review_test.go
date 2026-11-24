@@ -212,8 +212,8 @@ func TestProvimuxReviewGapsAreFilled(t *testing.T) {
 	}
 }
 
-// Learned models: the thinking block is whole from one source; supported:false and can_disable are never
-// taken; a max_output not below the window is refused; a smaller max_input is the window.
+// Learned models: providers.dev never supplies the thinking block (the vendor's list's, or none); a
+// max_output not below the window is refused; a smaller max_input is the window.
 func TestProvimuxReviewLearnedModelGuards(t *testing.T) {
 	provimuxLiveReset(t)
 	provimuxPublishedReset(t)
@@ -230,8 +230,8 @@ func TestProvimuxReviewLearnedModelGuards(t *testing.T) {
 	if got.MaxCompletionTokens != 0 {
 		t.Errorf("a max_output not below the window is refused: %d", got.MaxCompletionTokens)
 	}
-	if got.Thinking == nil || strings.Join(got.Thinking.Levels, ",") != "low,high" || got.Thinking.Max != 4096 || got.Thinking.ZeroAllowed {
-		t.Errorf("providers.dev's block, never can_disable: %+v", got.Thinking)
+	if got.Thinking != nil {
+		t.Errorf("no thinking block from providers.dev: %+v", got.Thinking)
 	}
 
 	vendor := &registry.ThinkingSupport{Levels: []string{"medium"}, ZeroAllowed: false}
@@ -243,8 +243,33 @@ func TestProvimuxReviewLearnedModelGuards(t *testing.T) {
 		t.Errorf("output below the vendor's window: %d", got.MaxCompletionTokens)
 	}
 	got = provimuxComposeLearned("devin", &ModelInfo{ID: "has-thinking", Type: "devin", ContextLength: 200000})
-	if got.Thinking == nil || got.Thinking.ZeroAllowed {
-		t.Errorf("supported:false and can_disable are never taken: %+v", got.Thinking)
+	if got.Thinking != nil || got.NativeCapabilities != nil {
+		t.Errorf("no thinking and no web search from providers.dev: %+v %+v", got.Thinking, got.NativeCapabilities)
+	}
+}
+
+// The six learned Gemini rows of today's data that providers.dev gives levels: a Gemini key's learned model
+// gets none from it (the review's levels-on-a-budget-model case, for models the catalog lacks).
+func TestProvimuxReviewLearnedGeminiGetsNoLevels(t *testing.T) {
+	provimuxLiveReset(t)
+	provimuxPublishedReset(t)
+	ids := []string{"gemini-flash-latest", "gemini-flash-lite-latest", "gemini-3.1-pro-preview-customtools", "gemini-3-pro-image",
+		"gemini-nano-banana-2.1", "gemini-robotics-er-2-preview"}
+	var rows []map[string]any
+	for _, id := range ids {
+		rows = append(rows, map[string]any{"id": id, "context_window": 1048576, "max_output": 65536, "input_modalities": []string{"text", "image"},
+			"output_modalities": []string{"text"}, "web_search": true, "aliases": []string{},
+			"reasoning": map[string]any{"supported": true, "levels": []string{"low", "medium", "high"}, "budget_max": 24576, "dynamic": true}})
+	}
+	provimuxReviewLoad(t, provimuxPDListing("google", rows...))
+	for _, id := range ids {
+		got := provimuxComposeLearned("gemini", &ModelInfo{ID: id, Type: "gemini", DisplayName: id, InputTokenLimit: 1048576, ContextLength: 1048576})
+		if got.Thinking != nil || got.NativeCapabilities != nil {
+			t.Errorf("%s: thinking %+v web search %+v from providers.dev", id, got.Thinking, got.NativeCapabilities)
+		}
+		if got.MaxCompletionTokens != 65536 || strings.Join(got.SupportedInputModalities, ",") != "text,image" {
+			t.Errorf("%s: output and modalities are still filled: %+v", id, got)
+		}
 	}
 }
 

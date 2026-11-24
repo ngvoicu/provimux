@@ -8,12 +8,12 @@ import (
 
 // Provimux: providers.dev fills the catalog's gaps, and never overrides a value the catalog states
 // (model-lists.md 13.5, step P3). Per field: the vendor's live list where the catalog leaves the field empty,
-// then the catalog, then providers.dev, only for a field both leave empty.
+// then the catalog, then providers.dev, only for a field both leave empty, and only the name, window, output
+// limit and modalities: providers.dev never supplies the thinking block or web search, for any model.
 //
 // sdk/cliproxy registers an overlay: for a catalog model of a login type, the model with providers.dev's
-// value in the fields the catalog leaves empty (never the thinking block or web search). Every read of the
-// catalog (getModels, the Devin store) returns the filled catalog, so the registered models, the lookups
-// executors make (LookupModelInfo, LookupDevinModel, Copilot's resolver) and the status endpoint see the
+// value in those fields the catalog leaves empty. Every read of the catalog (getModels, the Devin store)
+// returns the filled catalog, so the registered models, the lookups executors make (LookupModelInfo, LookupDevinModel, Copilot's resolver) and the status endpoint see the
 // same values. Upstream's updater keeps reading and replacing the raw catalog (provimuxRawModels), so a
 // filled gap is never stored in it. Without an overlay, or with nothing to fill, the raw catalog itself is
 // returned.
