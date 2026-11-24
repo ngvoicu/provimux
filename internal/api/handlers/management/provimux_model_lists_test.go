@@ -385,3 +385,38 @@ func TestProvimuxModelListsValidatorHasTeeth(t *testing.T) {
 		t.Fatalf("a broken document must fail: %v", errs)
 	}
 }
+
+// Step P3: the published block reports providers.dev's held document, its last failure as a code, and
+// "off" while models.published-lists is off.
+func TestProvimuxModelListsPublishedBlock(t *testing.T) {
+	h, _ := provimuxModelListFixture(t)
+	SetProvimuxPublishedStateSource(func() ProvimuxPublishedState {
+		return ProvimuxPublishedState{State: "held", DatasetVersion: "3463331602dfba12", GeneratedAt: provimuxFetchedAt,
+			FetchedAt: provimuxFetchedAt.Add(time.Hour), FromCache: true,
+			Failure: &ProvimuxLiveListFailure{At: provimuxFetchedAt.Add(2 * time.Hour), Category: "http_status", HTTPStatus: 503}}
+	})
+	t.Cleanup(func() { SetProvimuxPublishedStateSource(nil) })
+
+	body, raw := provimuxGetModelLists(t, h, "", http.StatusOK)
+	if body["published"].(map[string]any)["state"] != "off" || body["options"].(map[string]any)["published_lists"] != false {
+		t.Fatalf("unset in a test binary means off: %s", raw)
+	}
+	h.cfg.Models.PublishedLists = new(true)
+	body, raw = provimuxGetModelLists(t, h, "", http.StatusOK)
+	published := body["published"].(map[string]any)
+	failure, _ := published["last_failure"].(map[string]any)
+	if body["options"].(map[string]any)["published_lists"] != true || published["state"] != "held" ||
+		published["dataset_version"] != "3463331602dfba12" || published["generated_at"] != "2026-11-19T16:10:44Z" ||
+		published["fetched_at"] != "2026-11-19T17:10:44Z" || published["from_cache"] != true ||
+		failure == nil || failure["category"] != "http_status" || failure["http_status"].(float64) != 503 {
+		t.Fatalf("published = %s", raw)
+	}
+	provimuxValidate(t, "ModelListsResponse", raw)
+
+	SetProvimuxPublishedStateSource(func() ProvimuxPublishedState { return ProvimuxPublishedState{State: "none"} })
+	body, raw = provimuxGetModelLists(t, h, "", http.StatusOK)
+	if published = body["published"].(map[string]any); published["state"] != "none" || published["dataset_version"] != nil || published["last_failure"] != nil {
+		t.Fatalf("none = %s", raw)
+	}
+	provimuxValidate(t, "ModelListsResponse", raw)
+}

@@ -122,7 +122,9 @@ func provimuxCopilotLearned() []*ModelInfo {
 	sort.Strings(ids)
 	var learned []*ModelInfo
 	for _, id := range ids {
-		learned = append(learned, provimuxCopilotLists.byAuth[id].learned...)
+		for _, model := range provimuxCopilotLists.byAuth[id].learned {
+			learned = append(learned, provimuxComposeLearned("copilot", model))
+		}
 	}
 	return learned
 }
