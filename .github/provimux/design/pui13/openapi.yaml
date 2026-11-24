@@ -425,7 +425,8 @@ components:
       type: string
       description: |
         Which source decides the login's models now. "live": the list its vendor returned for this account.
-        "published": providers.dev's list of the login type (not in this build: step P3). "built-in": the
+        "published": providers.dev's list of the login type (not sent by this build: providers.dev fills fields of
+        learned models but does not decide which models a login offers; model-lists.md 13.5). "built-in": the
         catalog built into the binary (until step P1 also refreshed by upstream's catalog updater). "none":
         no list at all; the login offers only models from the config and plugins (an Antigravity account
         that has not answered yet; a Copilot account without a usable answer). Clients treat other values
@@ -446,7 +447,7 @@ components:
               description: The models.live-lists option (on unless set to false).
             published_lists:
               type: boolean
-              description: The models.published-lists option. Always false in a build without the providers.dev client.
+              description: The models.published-lists option (on unless set to false; off in home mode).
         built_in:
           type: object
           description: The built-in lists' providers.dev dataset. Both null while the built-in lists are the catalog (before step P1).
@@ -466,7 +467,10 @@ components:
               type: string
               description: |
                 "held": a providers.dev document is held. "none": never fetched and nothing cached. "off": the
-                option is off, or this build has no providers.dev client. Clients treat other values as unknown.
+                option is off. Clients treat other values as unknown. dataset_version and generated_at are the
+                document's; fetched_at is when it arrived (a 304 does not change it); from_cache: read from the
+                disk at start and not confirmed by providers.dev since; last_failure: the last fetch, when it failed
+                (http_status, invalid_response for a malformed, incomplete or older document, network).
               example: "off"
             dataset_version:
               type: [string, "null"]
@@ -529,7 +533,7 @@ components:
           description: The account's last fetch, when it failed. Not reported for Copilot and Antigravity.
     ModelListFieldSource:
       type: [string, "null"]
-      description: '"built-in" (the catalog gave the value) or "live" (the vendor''s list did: for a model the catalog lacks, or a field the catalog leaves empty; a model the catalog has keeps every value the catalog states); null when no source states it.'
+      description: '"built-in" (the catalog gave the value), "live" (the vendor''s list did: for a model the catalog lacks, or a field the catalog leaves empty; a model the catalog has keeps every value the catalog states) or "published" (providers.dev''s listing did, for a field of a model the catalog lacks that the vendor''s list does not state); null when no source states it. Clients treat other values as unknown.'
     ModelListModel:
       type: object
       required: [id, display_name, source, learned, limits, modalities, reasoning_levels, sources]

@@ -18,6 +18,10 @@ type CatalogSources struct {
 	// Kimi, xAI, and Gemini API keys) the models of that list, with the vendor's values, and adds
 	// the models the catalog doesn't have yet. On unless set to false (Provimux).
 	LiveLists *bool `yaml:"live-lists,omitempty" json:"live-lists,omitempty"`
+	// PublishedLists asks providers.dev (one request, the same for every user, every 6 hours) for the
+	// model lists of Provimux's login types; their values fill the fields a vendor's list leaves out
+	// for a model the catalog lacks. On unless set to false (Provimux, model-lists.md step P3).
+	PublishedLists *bool `yaml:"published-lists,omitempty" json:"published-lists,omitempty"`
 }
 
 // provimuxLiveListsDefault is the value of an unset models.live-lists: on, except in a test binary.
@@ -26,7 +30,27 @@ type CatalogSources struct {
 // this value with SetProvimuxLiveListsDefault.
 var provimuxLiveListsDefault atomic.Bool
 
-func init() { provimuxLiveListsDefault.Store(!testing.Testing()) }
+// provimuxPublishedListsDefault is the value of an unset models.published-lists: on, except in a test
+// binary, where no test may reach providers.dev by accident.
+var provimuxPublishedListsDefault atomic.Bool
+
+func init() {
+	provimuxLiveListsDefault.Store(!testing.Testing())
+	provimuxPublishedListsDefault.Store(!testing.Testing())
+}
+
+// SetProvimuxPublishedListsDefault sets the value of an unset models.published-lists and returns the
+// previous one. For tests.
+func SetProvimuxPublishedListsDefault(on bool) bool { return provimuxPublishedListsDefault.Swap(on) }
+
+// PublishedListsOn reports whether providers.dev's lists are fetched and used. Unset means on (outside
+// test binaries).
+func (m CatalogSources) PublishedListsOn() bool {
+	if m.PublishedLists == nil {
+		return provimuxPublishedListsDefault.Load()
+	}
+	return *m.PublishedLists
+}
 
 // SetProvimuxLiveListsDefault sets the value of an unset models.live-lists and returns the previous
 // one. For tests.
