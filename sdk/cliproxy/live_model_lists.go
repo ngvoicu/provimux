@@ -389,6 +389,7 @@ func liveModelListType(auth *coreauth.Auth) string {
 // other logins, or before the first list (fetched or cached) it returns models unchanged (and asks
 // for a fetch).
 func applyLiveModelList(cfg *config.Config, auth *coreauth.Auth, models []*ModelInfo) []*ModelInfo {
+	provimuxPublished.on.Store(provimuxPublishedListsOn(cfg))
 	provider := liveModelListProvider(auth)
 	if cfg == nil || !cfg.Models.LiveListsOn() || cfg.Home.Enabled || provider == "" {
 		return models
@@ -416,12 +417,14 @@ func (s *Service) applyLiveModelList(cfg *config.Config, auth *coreauth.Auth, mo
 	return applyLiveModelList(cfg, auth, models)
 }
 
-// openLiveModelListCache sets the disk cache's folder from the service's config path, once.
+// openLiveModelListCache sets the disk cache's folder from the service's config path, once, and reads
+// providers.dev's last accepted document from it: both local, before any request.
 func (s *Service) openLiveModelListCache() {
 	if s == nil || liveModelLists.cache.Load() != nil {
 		return
 	}
 	liveModelLists.cache.CompareAndSwap(nil, modellists.NewStore(modellists.Dir(s.configPath)))
+	provimuxPublished.loadCache(liveModelLists.cache.Load())
 }
 
 // filterByLiveModelList keeps the catalog models the list names, with the catalog's values (only
@@ -463,7 +466,7 @@ func filterByLiveModelList(provider string, models []*ModelInfo, list liveModelL
 		if _, listed := list.ids[id]; !listed {
 			continue
 		}
-		out = append(out, cloneLiveModel(model))
+		out = append(out, provimuxComposeLearned(provider, model))
 		seen[id] = struct{}{}
 	}
 	return out
@@ -573,7 +576,11 @@ func (s *Service) liveModelListsEnabled() bool {
 // the models of logins whose list changed.
 func (s *Service) runLiveModelListRefresh(ctx context.Context) {
 	s.openLiveModelListCache()
-	registry.SetLiveModelListRefreshHook(func() { liveModelLists.request(true) })
+	go s.runPublishedListRefresh(ctx)
+	registry.SetLiveModelListRefreshHook(func() {
+		liveModelLists.request(true)
+		provimuxPublished.request()
+	})
 	defer registry.SetLiveModelListRefreshHook(nil)
 	timer := time.NewTimer(0)
 	defer timer.Stop()

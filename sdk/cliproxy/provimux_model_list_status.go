@@ -14,8 +14,9 @@ import (
 
 // Provimux: the state behind GET /v8/management/provimux/model-lists (model-lists.md 5.5). It reads
 // the live-list store, the Copilot and Antigravity records and the registry, and copies values
-// only. Field sources are "built-in" (the catalog gave the value) or "live" (the
-// vendor's list did: a learned model, or a field the catalog leaves empty).
+// only. Field sources are "built-in" (the catalog gave the value), "live" (the vendor's list did: a
+// learned model, or a field the catalog leaves empty) or "published" (providers.dev did, for a field of a
+// learned model the vendor's list does not state).
 
 // provimuxModelListLoginTypes are the providers whose credentials get a row: the nine with a live
 // list, and Vertex and AI Studio, which take the catalog.
@@ -199,7 +200,12 @@ func (source provimuxLiveListSource) ModelListLogin(auth *coreauth.Auth, liveLis
 			if !decides {
 				vendor = nil
 			}
-			provimuxFieldSources(row.Sources, vendor, catalogByID[key], allLive)
+			if learned && !allLive {
+				// A model the catalog lacks: the vendor's list, then providers.dev (step P3).
+				provimuxLearnedFieldSources(row.Sources, section, vendor)
+			} else {
+				provimuxFieldSources(row.Sources, vendor, catalogByID[key], allLive)
+			}
 		}
 		state.Models = append(state.Models, row)
 	}

@@ -81,7 +81,7 @@ func provimuxAntigravityModels(cfg *config.Config, auth *coreauth.Auth, catalog 
 	}
 	provimuxNoteAntigravityList(auth, hints, learned)
 	for _, model := range learned {
-		models = append(models, cloneLiveModel(model))
+		models = append(models, provimuxComposeLearned("antigravity", model))
 	}
 	return models
 }
@@ -117,7 +117,7 @@ func provimuxAntigravityLearned() []*ModelInfo {
 		for _, model := range provimuxAntigravityLists.byAuth[id].learned {
 			if _, dup := seen[model.ID]; !dup {
 				seen[model.ID] = struct{}{}
-				learned = append(learned, model)
+				learned = append(learned, provimuxComposeLearned("antigravity", model))
 			}
 		}
 	}
