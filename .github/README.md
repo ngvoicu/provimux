@@ -58,6 +58,9 @@ server's address, see [For a team](#for-a-team)). Docker, release archives and b
   [two read-only endpoints](#model-routes-and-live-list-status-for-the-console).
 - **[Live model lists for each login](#live-model-lists-for-each-login).** Each Claude, Codex and Meta login serves
   what its own account lists: retired models disappear, new ones appear the day the provider lists them.
+- **[Model lists for API keys that keep themselves up to date](#model-lists-for-api-keys).** A key with its own
+  models (every OpenAI-compatible entry, such as OpenRouter) also offers the models its service lists, without a
+  save in the console; `excluded-models` and `fixed-models` keep it to what you want.
 - **[The right context and output limits](#the-right-context-and-output-limits-for-configured-models)** for the
   models you declare under an API key, and **[Devin's real output limits](#devin-real-output-limits-and-a-quota-pause-per-model)**
   with a quota pause per model.
@@ -320,8 +323,72 @@ models:
   lists of the last run. A list that could not be refreshed for 7 days (by its own fetch time) gives way to the
   catalog, with one log line. Files are never deleted, also those of removed logins: each is small, one per account,
   two logins of one account share it, and a file of another account or login type is ignored when read.
-- API keys keep the catalog, except a Gemini key on Google's own host; a key with its own base URL is never asked.
-  Changing `live-lists` in a running instance applies at once.
+- API keys without their own models list keep the catalog, except a Gemini key on Google's own host. API keys with
+  one refresh it as the next section says. Changing `live-lists` in a running instance applies at once.
+
+### Model lists for API keys
+
+**What you get.** An API key with its own `models` list (every `openai-compatibility` entry, and Claude, Codex,
+xAI, Meta and Gemini keys with rows) keeps that list up to date by itself. The key offers:
+
+1. every row of its `models` in `config.yaml`, exactly as written: name, alias and every setting;
+2. plus every model its service lists that no row already names, under the service's own id;
+3. minus its `excluded-models`.
+
+An `openai-compatibility` entry with no rows offers its service's whole list. Before, such a list changed only
+when you pressed "Get the list from …" in the console and saved; that button stays, and is how a model gets an
+alias or its own settings.
+
+**Why it matters.** Services such as OpenRouter add models every week. A key now offers them the day its service
+lists them, and a model the service retires goes with its next list, unless a row of yours names it: rows are
+never dropped, and the console marks a row the service no longer lists.
+
+**Upgrading: what changes.** It is on by default, so on the day you upgrade every key with rows starts offering its
+service's other models too. When one of them is a model a subscription of yours also serves (an OpenAI key listing
+a model your Codex login has, a Claude key beside a Claude login), requests for it are shared between the two at
+equal `priority`, and the key's share is paid per token. The controls:
+
+- `priority` on the key or the login, as before: the higher one is used first;
+- `excluded-models` on the key, with wildcards (`gpt-5.5*`, `x-ai/*`, `text-embedding-*`); `openai-compatibility`
+  entries have it too now, and it applies after the refresh, so taking a model out of `models` no longer keeps it
+  out: `excluded-models` does;
+- `fixed-models: true` on the key (or its group under `api-keys:`): it offers exactly its rows and its service is
+  never asked.
+
+```yaml
+openai-compatibility:
+  - name: openrouter
+    base-url: https://openrouter.ai/api/v1
+    excluded-models: ["x-ai/*", "text-embedding-*"]
+    # fixed-models: true   # offer exactly the rows below; never ask OpenRouter for its list
+    models:
+      - name: anthropic/claude-opus-5.5
+        alias: or-opus
+```
+
+The **Model lists** endpoint below shows, per key, which models it learned from its service (`key.learned`) apart
+from its rows, and which rows its service no longer lists (`key.unlisted`). The Model routes page shows every
+account serving a model.
+
+- The request is the one the console's button sends, to the host you configured for the key, with that key, its
+  headers and its proxy: `<base-url>/models` for an `openai-compatibility` key (once more without the key and headers
+  when the service answers 401 or 403, for services whose list is public), `/v1/models` for Claude (with
+  `anthropic-version`), Codex, xAI and Meta keys, every page of `/v1beta/models` for a Gemini key on its own host.
+  A Gemini key on Google's own host already had its list read: it is now added to the rows instead of ignored.
+  Vertex and Interactions keys are not asked.
+- Fetching, failures and the disk cache work as for logins: at startup, every 3 hours, on
+  `POST /v8/management/models/refresh` and when a key is added or changed; 30 seconds per fetch; a failure keeps the
+  last good list (or the rows) and is retried after 10 minutes; a list not refreshed for 7 days gives way to the rows.
+  Each key holds its own list, so two keys of one entry can see different models. The disk cache holds a hash of the
+  key, never the key.
+- **Nothing is written to `config.yaml`**: the models a key learned exist only in memory and in the cache, so a save
+  from the console or a reload never carries them. Requests never wait for a fetch.
+- A learned model gets what a row with only its name would get: on OpenRouter, OpenRouter's window, output limit and
+  reasoning efforts; on a Claude, Codex, xAI, Meta or Gemini key, the catalog's values when the catalog has the id.
+  A model that needs a setting of its own (`use-max-completion-tokens`, an alias) needs a row, as before.
+- A key's list never teaches the shared catalog: a gateway behind a Claude key can list anything.
+- `models.live-lists: false` turns this off for every key and login. A service that lists non-chat models
+  (embeddings, speech) offers them too; hide them with `excluded-models`.
 
 ### Model routes and live-list status for the console
 
@@ -345,7 +412,11 @@ current or failing, without reading the log.
   `built-in` or `none`), its live list (`held`, `expired` after 7 days, `fetched_at`, `from_cache`, how many models
   it listed, the last failed fetch as a category with the provider's HTTP status), how many models it serves and how
   many of them the catalog doesn't have yet. `?auth_index=<index>` adds that login's models with the source of each
-  value; `?view=live` adds each login's list as the provider returned it.
+  value; `?view=live` adds each login's list as the provider returned it. A `keys` array has a row per API key whose
+  list refreshes itself or could: whether its service is asked (`key.not_asked`: `fixed`, `live_lists_off`,
+  `no_list_endpoint`), when its list was refreshed and the last failure, the ids it learned (`key.learned`), and its
+  rows the service no longer lists (`key.unlisted`); with `?auth_index=` every model it serves, `learned` or a row,
+  and whether the service lists it (`listed`).
 - `GET /v8/management/provimux/live-lists`: the older form of the same state, kept for consoles released before
   `model-lists`: per login, `source` (`live` or `catalog`), when the list was fetched, how many models it listed and
   how many the login serves, and the last failed fetch as a category (`http_status`, `credentials`,
@@ -575,7 +646,8 @@ The requests Provimux sends to providers are the same as CLIProxyAPI's, except w
 - on the Codex WebSocket: the transcript of a full replay;
 - for Devin: the output limit of each model, when the real limits are in use;
 - unless `models.live-lists: false`: each Claude, Codex, Meta and Devin login, and each Gemini API key on Google's own
-  host, asks its provider for its model list (at startup and every 3 hours).
+  host, asks its provider for its model list (at startup and every 3 hours); so does each API key with its own
+  models list, unless it says `fixed-models: true`, at the host you configured for it.
 
 ## Support
 

@@ -364,7 +364,7 @@ func provimuxTypeMatches(types []string, value any) bool {
 }
 
 func TestProvimuxModelListsExamplesFollowTheContract(t *testing.T) {
-	for _, name := range []string{"model-lists.json", "model-lists-login.json", "model-lists-live.json"} {
+	for _, name := range []string{"model-lists.json", "model-lists-login.json", "model-lists-live.json", "model-lists-keys.json", "model-lists-key.json"} {
 		data, err := os.ReadFile(filepath.Join(provimuxDesignDir(t), "examples", name))
 		if err != nil {
 			t.Fatal(err)
