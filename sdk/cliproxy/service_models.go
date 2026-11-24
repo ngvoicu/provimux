@@ -89,6 +89,7 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 	if ctx.Err() != nil {
 		return true
 	}
+	s.provimuxPrepareModelLists(cfg) // Provimux: providers.dev's document on disk, before the catalog is read
 	published := true
 	var models []*ModelInfo
 	switch provider {

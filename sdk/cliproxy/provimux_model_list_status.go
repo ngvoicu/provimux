@@ -7,7 +7,6 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/management"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/copilot"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/provimux/modellists"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	sdkauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
@@ -205,18 +204,14 @@ func (source provimuxLiveListSource) ModelListLogin(auth *coreauth.Auth, liveLis
 				// A model the catalog lacks: the vendor's list, then providers.dev (step P3).
 				provimuxLearnedFieldSources(row.Sources, section, vendor)
 			} else {
-				// The catalog as it states the model, and providers.dev's row on top of it.
-				catalog := catalogByID[key]
+				// The catalog as it states the model, and as providers.dev filled its gaps.
+				catalog, filled := catalogByID[key], catalogByID[key]
 				if catalog != nil {
 					if raw := registry.ProvimuxRawCatalogModel(section, catalog.ID); raw != nil {
 						catalog = raw
 					}
 				}
-				var published *modellists.ListingModel
-				if catalog != nil {
-					published = provimuxPublished.lookup(section, key)
-				}
-				provimuxFieldSources(row.Sources, vendor, catalog, allLive, published)
+				provimuxFieldSources(row.Sources, vendor, catalog, allLive, filled)
 			}
 		}
 		state.Models = append(state.Models, row)
@@ -241,7 +236,7 @@ func provimuxFirstPositive(values ...int) int {
 // ("live") only where the catalog leaves the field empty, never for the reasoning levels (the
 // catalog's thinking block is kept whole); for a learned model, the vendor's. With allLive every
 // stated value is the account's (Copilot resolves each model from the account's answer).
-func provimuxFieldSources(out map[string]string, vendor, catalog *ModelInfo, allLive bool, published *modellists.ListingModel) {
+func provimuxFieldSources(out map[string]string, vendor, catalog *ModelInfo, allLive bool, filled *ModelInfo) {
 	states := func(model *ModelInfo, field string) bool {
 		if model == nil {
 			return false
@@ -268,12 +263,12 @@ func provimuxFieldSources(out map[string]string, vendor, catalog *ModelInfo, all
 			if states(vendor, field) || states(catalog, field) {
 				out[field] = "live"
 			}
-		case catalog != nil && !states(catalog, field) && field != "reasoning_levels" && states(vendor, field):
-			out[field] = "live" // the vendor fills what the catalog leaves empty, before providers.dev
-		case provimuxRowStates(published, field):
-			out[field] = "published" // providers.dev on top of the catalog
 		case states(catalog, field):
 			out[field] = "built-in"
+		case catalog != nil && field != "reasoning_levels" && states(vendor, field):
+			out[field] = "live" // the vendor fills what the catalog leaves empty, before providers.dev
+		case catalog != nil && field != "reasoning_levels" && states(filled, field):
+			out[field] = "published" // providers.dev fills a gap both leave
 		case catalog != nil && field == "reasoning_levels":
 			// the catalog's thinking block is kept whole: no levels from the vendor
 		case states(vendor, field):
