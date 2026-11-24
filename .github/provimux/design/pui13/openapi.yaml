@@ -94,7 +94,8 @@ paths:
           required: false
           description: |
             Return only this login, with models filled: one row per model it registers, with the source of each
-            field. A value no login has returns an empty logins list.
+            field. A value no login has returns an empty logins list. The same for keys: a key's auth_index returns
+            only its keys row, with models filled.
           schema:
             type: string
         - name: view
@@ -102,7 +103,8 @@ paths:
           required: false
           description: |
             "live": every row carries live_list, the vendor's list as it arrived, unmerged (null without one).
-            What groundtruth's daily discovery reads. Other values are ignored.
+            What groundtruth's daily discovery reads. Other values are ignored. Key rows carry live_list too: the
+            key's service's list as it arrived.
           schema:
             type: string
             enum: [live]
@@ -429,12 +431,14 @@ components:
         learned models but does not decide which models a login offers; model-lists.md 13.5). "built-in": the
         catalog built into the binary (until step P1 also refreshed by upstream's catalog updater). "none":
         no list at all; the login offers only models from the config and plugins (an Antigravity account
-        that has not answered yet; a Copilot account without a usable answer). Clients treat other values
-        as unknown.
+        that has not answered yet; a Copilot account without a usable answer). "config" (key rows only): the
+        key's rows in config.yaml alone decide, because no list of its service is held, the list is older than
+        7 days, or the key is not asked. For a key, "live" means its service's list is held and added to its
+        rows. Clients treat other values as unknown.
       example: live
     ModelListsResponse:
       type: object
-      required: [observed_at, options, built_in, published, login_types, logins]
+      required: [observed_at, options, built_in, published, login_types, logins, keys]
       properties:
         observed_at:
           $ref: "#/components/schemas/Timestamp"
@@ -498,6 +502,17 @@ components:
           description: Sorted by provider, login name, auth_index. Disabled logins included.
           items:
             $ref: "#/components/schemas/ModelListLogin"
+        keys:
+          type: array
+          description: |
+            Config API keys whose model list refreshes itself or could (key-model-lists.md 7.1): every
+            openai-compatibility key, and every built-in key (claude, codex, xai, meta, gemini, interactions,
+            vertex) with rows in its models. A built-in key without rows keeps the catalog and has no row. A Gemini
+            key on Google's own host keeps its row in logins and has one here too when it has rows. Keys are never
+            in logins otherwise. Sorted by key.type, provider, auth_index. Disabled keys included. Absent from
+            servers before this field: a reader that does not know it ignores it.
+          items:
+            $ref: "#/components/schemas/ModelListKeyRow"
     ModelListLive:
       type: object
       description: The login's live list. For a login type without one, supported is false and the rest false or null.
@@ -643,3 +658,134 @@ components:
           description: Only with view=live, and then on every row. The vendor's list as it arrived; null without one.
           items:
             $ref: "#/components/schemas/VendorModel"
+    ModelListKeyRow:
+      type: object
+      description: A logins row's fields for one config API key, plus key. login.label is the entry's name or the key's label; login.name and login.email are null.
+      required: [auth_index, provider, login, disabled, source, live, registered_models, learned_models, models, key]
+      properties:
+        auth_index:
+          type: [string, "null"]
+        provider:
+          type: string
+          description: An openai-compatibility entry's name (lower case), else the key type.
+          example: openrouter
+        login:
+          $ref: "#/components/schemas/Login"
+        disabled:
+          type: boolean
+        source:
+          $ref: "#/components/schemas/ModelListSource"
+        live:
+          $ref: "#/components/schemas/ModelListLive"
+        registered_models:
+          type: integer
+          description: How many models the key serves now (a prefixed copy counts as one more).
+        learned_models:
+          type: integer
+          description: How many models the key offers that no row names; the length of key.learned.
+        models:
+          type: [array, "null"]
+          description: Null unless the request names this key with auth_index.
+          items:
+            $ref: "#/components/schemas/ModelListKeyModel"
+        live_list:
+          type: [array, "null"]
+          description: Only with view=live, and then on every row. The service's list as it arrived; null without one.
+          items:
+            $ref: "#/components/schemas/VendorModel"
+        key:
+          $ref: "#/components/schemas/ModelListKey"
+    ModelListKey:
+      type: object
+      required: [type, name, fixed, not_asked, configured_models, unlisted_models, learned, unlisted]
+      properties:
+        type:
+          type: string
+          description: openai-compatibility, claude, codex, xai, meta, gemini, interactions or vertex. Clients treat other values as unknown.
+          example: openai-compatibility
+        name:
+          type: string
+          description: An openai-compatibility entry's name (lower case), else the key type; the same as the row's provider.
+        fixed:
+          type: boolean
+          description: The key's entry says fixed-models true.
+        not_asked:
+          type: [string, "null"]
+          description: |
+            Null when the key's service is asked for its list. Else why not: "fixed" (fixed-models true),
+            "live_lists_off" (models.live-lists false, or home mode), "no_list_endpoint" (vertex and interactions
+            keys). live.supported is false exactly when this is not null. Clients treat other values as unknown.
+        configured_models:
+          type: integer
+          description: Rows in the key's models in config.yaml.
+        unlisted_models:
+          type: [integer, "null"]
+          description: Rows whose model the held list does not name; null without a list in use (source not "live").
+        learned:
+          type: array
+          description: |
+            The ids of the models the key offers that no row names, as its service lists them (before the
+            entry's prefix), in the list's order; excluded-models already applied. Empty without a list in use.
+            These are the models a refresh added: a console marks them apart from the config's rows.
+          items:
+            type: string
+        unlisted:
+          type: [array, "null"]
+          description: The names, as written, of the rows counted by unlisted_models; null with it.
+          items:
+            type: string
+    ModelListKeyModel:
+      type: object
+      description: A ModelListModel of a key, plus listed. sources are null for keys.
+      required: [id, display_name, source, learned, limits, modalities, reasoning_levels, sources, listed]
+      properties:
+        id:
+          type: string
+        display_name:
+          type: [string, "null"]
+        source:
+          type: string
+          description: '"live": a model the key learned from its service. "other": a row of the config, a plugin''s model. Clients treat other values as unknown.'
+        learned:
+          type: boolean
+          description: The key offers it because its service lists it; no row names it.
+        limits:
+          $ref: "#/components/schemas/Limits"
+        modalities:
+          type: object
+          required: [input, output]
+          properties:
+            input:
+              type: array
+              items:
+                type: string
+            output:
+              type: array
+              items:
+                type: string
+        reasoning_levels:
+          type: array
+          items:
+            type: string
+        sources:
+          type: object
+          required: [display_name, context, output, input_modalities, output_modalities, reasoning_levels]
+          properties:
+            display_name:
+              $ref: "#/components/schemas/ModelListFieldSource"
+            context:
+              $ref: "#/components/schemas/ModelListFieldSource"
+            output:
+              $ref: "#/components/schemas/ModelListFieldSource"
+            input_modalities:
+              $ref: "#/components/schemas/ModelListFieldSource"
+            output_modalities:
+              $ref: "#/components/schemas/ModelListFieldSource"
+            reasoning_levels:
+              $ref: "#/components/schemas/ModelListFieldSource"
+        listed:
+          type: [boolean, "null"]
+          description: |
+            Whether the service's held list names the model: true for a learned model; for a row, whether the
+            list names the model the row names (false marks a row the service no longer lists; rows are never
+            dropped). Null without a list in use, and for a plugin's model.
