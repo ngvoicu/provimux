@@ -391,7 +391,7 @@ func liveModelListType(auth *coreauth.Auth) string {
 func applyLiveModelList(cfg *config.Config, auth *coreauth.Auth, models []*ModelInfo) []*ModelInfo {
 	provimuxSetPublishedOn(provimuxPublishedListsOn(cfg))
 	provider := liveModelListProvider(auth)
-	if cfg == nil || !cfg.Models.LiveListsOn() || cfg.Home.Enabled || provider == "" {
+	if cfg == nil || !cfg.Models.LiveListsOn() || cfg.Home.Enabled || provider == "" || keyGeminiFixed(cfg, auth) {
 		return models
 	}
 	identity := liveModelListIdentity(auth)
@@ -618,17 +618,20 @@ func (s *Service) refreshLiveModelLists(ctx context.Context, force bool) {
 	}
 	if !s.liveModelListsEnabled() {
 		// Turned off: drop the lists so turning it on again starts from fresh fetches.
+		keys := liveModelLists.keyListIDs()
 		liveModelLists.forget(nil)
 		provimuxUpdateLearnedModels(liveModelListTypes...)
+		s.refreshKeyRegistrations(keys) // keys offer their configured models again
 		return
 	}
 	s.openLiveModelListCache()
+	cfg := s.currentConfig()
 	present := make(map[string]struct{})
 	for _, auth := range s.coreManager.List() {
 		if ctx.Err() != nil {
 			return
 		}
-		if auth == nil || liveModelListProvider(auth) == "" {
+		if auth == nil || liveModelListKindFor(cfg, auth) == "" {
 			continue
 		}
 		present[auth.ID] = struct{}{}
@@ -655,6 +658,14 @@ func (s *Service) refreshLiveModelLists(ctx context.Context, force bool) {
 		if !ok || current == nil {
 			continue
 		}
+		if isKeyModelListKind(liveModelListKindFor(cfg, current)) {
+			log.Warnf("model list for %s: list older than 7 days and not refreshed; offering the configured models until a fetch succeeds",
+				keyModelListLogName(current))
+			if !current.Disabled {
+				s.refreshModelRegistrationForAuth(current)
+			}
+			continue
+		}
 		log.Warnf("model list for %s login %s: live list older than 7 days and not refreshed; using the catalog until a fetch succeeds",
 			liveModelListProvider(current), provimuxLiveLogName(current))
 		provimuxUpdateLearnedModels(liveModelListProvider(current))
@@ -675,11 +686,20 @@ func (s *Service) fetchAndRegisterLiveModelList(ctx context.Context, snapshot *c
 	if !ok || current == nil || liveModelListIdentity(current) != identity {
 		return
 	}
-	provider := liveModelListProvider(snapshot)
+	provider := s.liveModelListKind(snapshot)
+	if provider == "" || provider != s.liveModelListKind(current) {
+		return // the key became fixed, or live lists were turned off, while the request ran
+	}
+	key := isKeyModelListKind(provider)
 	if err != nil {
 		liveModelLists.fail(snapshot.ID, liveModelListNow())
 		noteLiveModelListFailure(snapshot.ID, identity, err)
 		category, status := provimuxLiveListFailureOf(err)
+		if key {
+			log.Warnf("model list for %s: fetch failed (%s); %s", keyModelListLogName(current),
+				provimuxLiveFailureText(category, status), keyModelListKeptText(snapshot.ID, identity))
+			return
+		}
 		log.Warnf("model list for %s login %s: fetch failed (%s); %s", provider, provimuxLiveLogName(current),
 			provimuxLiveFailureText(category, status), provimuxLiveKeptText(snapshot.ID, identity))
 		return
@@ -689,11 +709,17 @@ func (s *Service) fetchAndRegisterLiveModelList(ctx context.Context, snapshot *c
 	changed := liveModelLists.put(snapshot.ID, list)
 	liveModelLists.writeCached(list)
 	if changed {
-		provimuxUpdateLearnedModels(provider)
+		if !key {
+			provimuxUpdateLearnedModels(provider) // a key's list never teaches the catalog (key-model-lists.md 5)
+		}
 		if !current.Disabled {
 			s.refreshModelRegistrationForAuth(current)
 		}
-		log.Info(provimuxLiveLogLine(provider, current, list))
+		if key {
+			log.Info(keyModelListLogLine(s.currentConfig(), current, list))
+		} else {
+			log.Info(provimuxLiveLogLine(provider, current, list))
+		}
 	}
 }
 
@@ -715,10 +741,16 @@ func (s *Service) fetchLiveModelList(ctx context.Context, auth *coreauth.Auth) (
 var errLiveModelListTimeout = errors.New("model list: no answer within the deadline")
 
 func (s *Service) fetchLiveModelListWithin(ctx context.Context, auth *coreauth.Auth) (liveModelList, error) {
-	provider := liveModelListProvider(auth)
-	executor, ok := s.coreManager.Executor(provider)
+	provider := s.liveModelListKind(auth)
+	executorKey := provider
+	if isKeyModelListKind(provider) {
+		// A key's requests go through its own provider's executor (an openai-compatibility key's is
+		// its entry's), which sets the key, the entry's headers and the proxy.
+		executorKey = keyModelListExecutorKey(auth)
+	}
+	executor, ok := s.coreManager.Executor(executorKey)
 	if !ok || executor == nil {
-		return liveModelList{}, fmt.Errorf("no %s executor", provider)
+		return liveModelList{}, fmt.Errorf("no %s executor", executorKey)
 	}
 	// Prepare the credential the way requests do (e.g. Meta mints an API key and learns its base URL
 	// from a DCA token), so the result is stored by the manager and the URL below is the prepared one.
@@ -734,7 +766,7 @@ func (s *Service) fetchLiveModelListWithin(ctx context.Context, auth *coreauth.A
 	s.cfgMu.RLock()
 	cfg := s.cfg
 	s.cfgMu.RUnlock()
-	get := func(rawURL string, header http.Header) ([]byte, error) {
+	send := func(rawURL string, header http.Header, bare bool) ([]byte, error) {
 		req, errReq := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 		if errReq != nil {
 			return nil, errReq
@@ -744,7 +776,14 @@ func (s *Service) fetchLiveModelListWithin(ctx context.Context, auth *coreauth.A
 				req.Header.Add(key, value)
 			}
 		}
-		resp, errDo := executor.HttpRequest(ctx, auth, req)
+		var resp *http.Response
+		var errDo error
+		if bare {
+			// Without the key and the entry's headers, through the key's proxy (key-model-lists.md 4).
+			resp, errDo = helps.NewProxyAwareHTTPClient(ctx, cfg, auth, 0).Do(req)
+		} else {
+			resp, errDo = executor.HttpRequest(ctx, auth, req)
+		}
 		if errDo != nil {
 			return nil, errDo
 		}
@@ -764,6 +803,11 @@ func (s *Service) fetchLiveModelListWithin(ctx context.Context, auth *coreauth.A
 			return nil, fmt.Errorf("%s model list: %w", provider, errLiveModelListTooLarge)
 		}
 		return body, nil
+	}
+	get := func(rawURL string, header http.Header) ([]byte, error) { return send(rawURL, header, false) }
+	if isKeyModelListKind(provider) {
+		bare := func(rawURL string, header http.Header) ([]byte, error) { return send(rawURL, header, true) }
+		return fetchKeyModelList(provider, auth, get, bare)
 	}
 
 	switch provider {

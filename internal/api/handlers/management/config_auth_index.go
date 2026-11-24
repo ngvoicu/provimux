@@ -61,6 +61,8 @@ type openAICompatibilityWithAuthIndex struct {
 	RequestRetry          *int                                     `json:"request-retry,omitempty"`
 	RequestScopedErrors   []config.RequestScopedErrorRule          `json:"request-scoped-errors,omitempty"`
 	AuthIndex             string                                   `json:"auth-index,omitempty"`
+	FixedModels           bool                                     `json:"fixed-models,omitempty"`    // Provimux
+	ExcludedModels        []string                                 `json:"excluded-models,omitempty"` // Provimux
 }
 
 func liveAuthIndexFromManager(manager *coreauth.Manager) map[string]string {
@@ -923,6 +925,7 @@ func (h *Handler) openAICompatibilityWithAuthIndex() []openAICompatibilityWithAu
 			RequestScopedErrors:   entry.RequestScopedErrors,
 			AuthIndex:             "",
 		}
+		response.FixedModels, response.ExcludedModels = entry.FixedModels, entry.ExcludedModels // Provimux: key-model-lists.md 6
 		if len(entry.APIKeyEntries) == 0 {
 			idParts := []string{entry.BaseURL}
 			if poolID := config.FormatConnectionPoolDedupID(synthesizer.OpenAICompatConnectionPool(&entry, nil)); poolID != "" {
