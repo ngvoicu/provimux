@@ -178,8 +178,9 @@ func provimuxStatusRow(t *testing.T, auth *coreauth.Auth, id string) (row struct
 }
 
 // A learned model gets its limits from providers.dev: every field the vendor's list does not state, and
-// only those, with the thinking block whole from providers.dev and never its can_disable. A model the
-// catalog has keeps every value the catalog states: providers.dev only fills gaps.
+// only those, and never the thinking block (kimi-k9 keeps the output limit from providers.dev and gets no
+// levels from it). A model the catalog has keeps every value the catalog states: providers.dev only fills
+// gaps.
 func TestProvimuxPublishedFillsALearnedModel(t *testing.T) {
 	provimuxLiveReset(t)
 	provimuxPublishedReset(t)
@@ -213,11 +214,11 @@ func TestProvimuxPublishedFillsALearnedModel(t *testing.T) {
 	t.Logf("after:  context=%d (%s) output=%d (%s) levels=%v (%s) name=%q (%s)", afterRow.Context, afterRow.Sources["context"],
 		afterRow.Output, afterRow.Sources["output"], afterRow.Levels, afterRow.Sources["reasoning_levels"], afterRow.Name, afterRow.Sources["display_name"])
 	if after == nil || after.MaxCompletionTokens != 32768 || after.ContextLength != 262144 || after.DisplayName != "Kimi K9" ||
-		after.Thinking == nil || strings.Join(after.Thinking.Levels, ",") != "low,high" || after.Thinking.ZeroAllowed ||
+		after.Thinking != nil ||
 		strings.Join(after.SupportedInputModalities, ",") != "text" {
 		t.Fatalf("after: %+v thinking=%+v", after, after.Thinking)
 	}
-	if afterRow.Sources["output"] != "published" || afterRow.Sources["reasoning_levels"] != "published" ||
+	if afterRow.Sources["output"] != "published" || afterRow.Sources["reasoning_levels"] != "" || len(afterRow.Levels) != 0 ||
 		afterRow.Sources["context"] != "live" || afterRow.Sources["display_name"] != "live" || afterRow.Sources["input_modalities"] != "live" {
 		t.Fatalf("after: sources %v", afterRow.Sources)
 	}

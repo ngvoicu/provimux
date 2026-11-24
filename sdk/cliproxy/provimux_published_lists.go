@@ -20,13 +20,14 @@ import (
 
 // Provimux: providers.dev's model lists (model-lists.md step P3, sections 5.1 to 5.4).
 //
-// providers.dev fills gaps only, never overrides. A model the catalog has: the vendor's list where the
-// catalog leaves a field empty (13.1), then the catalog, then providers.dev for a field both leave empty
-// (the registry's catalog overlay, provimuxCatalogOverlayOf; never the thinking block or web search). A
-// model the catalog lacks (a learned model): the vendor's live list first; then providers.dev's listing,
-// for every field the vendor's list does not state, within the guards of provimuxComposeLearned; then the
-// parser's placeholder (a name equal to the id, text output), never an invented limit. Which models a login offers is not decided here: its live list, else the
-// catalog.
+// providers.dev fills gaps only, never overrides, and only name, window, output limit and modalities;
+// never the thinking block or web search, for any model. A model the catalog has: the vendor's list where
+// the catalog leaves a field empty (13.1), then the catalog, then providers.dev for a field both leave
+// empty (the registry's catalog overlay, provimuxCatalogOverlayOf). A model the catalog lacks (a learned
+// model): the vendor's live list first; then providers.dev's listing, for those fields the vendor's list
+// does not state, within the guards of provimuxComposeLearned; then the parser's placeholder (a name equal
+// to the id, text output), never an invented limit. Which models a login offers is not decided here: its
+// live list, else the catalog.
 //
 // Start never waits for providers.dev: the last accepted document is read from disk with the live
 // lists, and the fetch runs in the background, at start, every 6 hours and on
@@ -419,18 +420,15 @@ func provimuxLiveStates(section string, live *ModelInfo, field string) bool {
 			return false
 		}
 		return section == "xai" || len(live.SupportedOutputModalities) > 1 || !strings.EqualFold(live.SupportedOutputModalities[0], "text")
-	case "web_search":
-		return live.NativeCapabilities != nil && live.NativeCapabilities.WebSearch != nil
 	}
 	return false
 }
 
 // provimuxComposeLearned returns a learned model (one the catalog lacks) with providers.dev's values in
-// the fields the vendor's list does not state. Guards: the thinking block is taken whole from one source
-// (the vendor's when it has one, else providers.dev's levels, budgets and dynamic flag; never
-// "supported: false" and never "can_disable"); a max_output not below the window is refused; a stated
-// max_input smaller than the context window is the window. Without a listing row it is the vendor's
-// model, unchanged.
+// the fields the vendor's list does not state, and only these: name, window (a stated max_input smaller
+// than context_window is the window), output limit (refused when not below the window), input and output
+// modalities. The thinking block and web search are never providers.dev's: the vendor's list's, or none.
+// Without a listing row it is the vendor's model, unchanged.
 func provimuxComposeLearned(section string, live *ModelInfo) *ModelInfo {
 	if live == nil {
 		return nil
@@ -465,53 +463,10 @@ func provimuxComposeLearned(section string, live *ModelInfo) *ModelInfo {
 	if !provimuxLiveStates(section, live, "output_modalities") && len(row.OutputModalities) > 0 {
 		out.SupportedOutputModalities = append([]string(nil), row.OutputModalities...)
 	}
-	if live.Thinking == nil {
-		out.Thinking = provimuxRowThinking(row.Reasoning)
-	}
-	if !provimuxLiveStates(section, live, "web_search") && row.WebSearch != nil {
-		if out.NativeCapabilities == nil {
-			out.NativeCapabilities = &registry.NativeCapabilities{}
-		}
-		webSearch := *row.WebSearch
-		out.NativeCapabilities.WebSearch = &webSearch
-	}
+	// The thinking block and web search are never providers.dev's: a learned model's thinking is the
+	// vendor's list's, or none (a level list on a budget model, or Devin level suffixes as ids, would change
+	// what is sent).
 	return out
-}
-
-// provimuxRowThinking is a listing's thinking block, whole: its known levels, its budgets and its dynamic
-// flag. Never "can_disable" (thinking that can be turned off) and never "supported: false": those are
-// not taken from providers.dev. nil when the row states no level and no budget.
-func provimuxRowThinking(reasoning *modellists.Reasoning) *registry.ThinkingSupport {
-	if reasoning == nil {
-		return nil
-	}
-	levels := provimuxKnownLevels(reasoning.Levels)
-	if len(levels) == 0 && !provimuxPositive(reasoning.BudgetMax) {
-		return nil
-	}
-	thinking := &registry.ThinkingSupport{Levels: levels}
-	if provimuxPositive(reasoning.BudgetMax) {
-		thinking.Max = *reasoning.BudgetMax
-		if provimuxPositive(reasoning.BudgetMin) && *reasoning.BudgetMin <= thinking.Max {
-			thinking.Min = *reasoning.BudgetMin
-		}
-	}
-	if reasoning.Dynamic != nil {
-		thinking.DynamicAllowed = *reasoning.Dynamic
-	}
-	return thinking
-}
-
-// provimuxKnownLevels keeps the effort levels Provimux knows, in its order.
-func provimuxKnownLevels(levels []string) []string {
-	return liveModelListLevels(func(level string) bool {
-		for _, value := range levels {
-			if strings.EqualFold(strings.TrimSpace(value), level) {
-				return true
-			}
-		}
-		return false
-	})
 }
 
 func provimuxPositive(value *int) bool { return value != nil && *value > 0 }

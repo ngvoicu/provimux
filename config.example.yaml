@@ -30,7 +30,8 @@ models:
   # On unless set to false. Ask providers.dev for its model lists of these login types: one request, the
   # same for every user, at startup, every 6 hours and on POST /v8/management/models/refresh (a 304 changes
   # nothing). It fills gaps only, never overrides: a field both the catalog and the vendor's list leave
-  # empty, and a learned model's fields its vendor's list leaves out. It never decides which models a login
+  # empty, and a learned model's fields its vendor's list leaves out; only name, window, output limit and
+  # modalities, never thinking or web search. It never decides which models a login
   # offers. providers.dev unreachable never blocks a start or
   # empties a list; the last accepted document is kept on disk (model-lists/published.json).
   # published-lists: false
