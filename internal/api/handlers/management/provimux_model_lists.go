@@ -77,7 +77,58 @@ type ProvimuxModelListSource interface {
 var (
 	provimuxModelListSourceMu sync.RWMutex
 	provimuxModelListSource   ProvimuxModelListSource
+	provimuxPublishedSource   func() ProvimuxPublishedState
 )
+
+// ProvimuxPublishedState is providers.dev's document as sdk/cliproxy holds it (step P3).
+type ProvimuxPublishedState struct {
+	State          string // held or none; the handler says off when the option is off
+	DatasetVersion string
+	GeneratedAt    time.Time
+	FetchedAt      time.Time
+	FromCache      bool
+	Failure        *ProvimuxLiveListFailure
+}
+
+// SetProvimuxPublishedStateSource registers the reader of providers.dev's document; nil removes it.
+func SetProvimuxPublishedStateSource(source func() ProvimuxPublishedState) {
+	provimuxModelListSourceMu.Lock()
+	defer provimuxModelListSourceMu.Unlock()
+	provimuxPublishedSource = source
+}
+
+// provimuxPublishedOf is the response's published block.
+func provimuxPublishedOf(on bool) provimuxModelListPublished {
+	provimuxModelListSourceMu.RLock()
+	source := provimuxPublishedSource
+	provimuxModelListSourceMu.RUnlock()
+	if !on || source == nil {
+		return provimuxModelListPublished{State: "off"}
+	}
+	state := source()
+	out := provimuxModelListPublished{State: state.State, FromCache: state.FromCache}
+	if out.State == "" {
+		out.State = "none"
+	}
+	if state.DatasetVersion != "" {
+		out.DatasetVersion = provimuxString(state.DatasetVersion)
+	}
+	if !state.GeneratedAt.IsZero() {
+		out.GeneratedAt = provimuxString(provimuxTime(state.GeneratedAt))
+	}
+	if !state.FetchedAt.IsZero() {
+		out.FetchedAt = provimuxString(provimuxTime(state.FetchedAt))
+	}
+	if state.Failure != nil {
+		failure := &provimuxLiveListFailure{At: provimuxTime(state.Failure.At), Category: state.Failure.Category}
+		if state.Failure.HTTPStatus > 0 {
+			status := state.Failure.HTTPStatus
+			failure.HTTPStatus = &status
+		}
+		out.LastFailure = failure
+	}
+	return out
+}
 
 // SetProvimuxModelListSource registers the source; nil removes it.
 func SetProvimuxModelListSource(source ProvimuxModelListSource) {
@@ -190,15 +241,16 @@ func (h *Handler) ProvimuxModelLists(c *gin.Context) {
 	wantIndex := strings.TrimSpace(c.Query("auth_index"))
 	withLive := strings.EqualFold(strings.TrimSpace(c.Query("view")), "live")
 	liveListsOn := registry.CatalogSources{}.LiveListsOn()
+	publishedOn := registry.CatalogSources{}.PublishedListsOn()
 	if cfg := h.configSnapshot(); cfg != nil {
 		liveListsOn = cfg.Models.LiveListsOn()
+		publishedOn = cfg.Models.PublishedListsOn() && !cfg.Home.Enabled
 	}
 	response := provimuxModelListsResponse{
 		ObservedAt: provimuxTime(provimuxNow().UTC()),
-		Options:    provimuxModelListOptions{LiveLists: liveListsOn},
-		// This build has no providers.dev client (step P3): the published lists are off, and the
-		// built-in lists are the catalog's, which names no providers.dev dataset (step P1).
-		Published:  provimuxModelListPublished{State: "off"},
+		Options:    provimuxModelListOptions{LiveLists: liveListsOn, PublishedLists: publishedOn},
+		// The built-in lists are the catalog's, which names no providers.dev dataset (P1 dropped).
+		Published:  provimuxPublishedOf(publishedOn),
 		LoginTypes: append([]string{}, source.LoginTypes()...),
 		Logins:     []provimuxModelListRow{},
 	}
