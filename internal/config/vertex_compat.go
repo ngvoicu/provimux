@@ -54,6 +54,8 @@ type VertexCompatKey struct {
 	// ExcludedModels lists model IDs that should be excluded for this provider.
 	ExcludedModels []string `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
 
+	FixedModels bool `yaml:"fixed-models,omitempty" json:"fixed-models,omitempty"` // Provimux: accepted, no effect (Vertex keys are never asked)
+
 	// DisableCooling overrides the global cooling policy for this credential when set.
 	// True disables auth/model cooldowns; false explicitly enables them.
 	DisableCooling *bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`

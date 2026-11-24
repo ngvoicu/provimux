@@ -127,7 +127,8 @@ func resolveKeyModelList(cfg *config.Config, auth *coreauth.Auth) (keyModelListI
 			}
 		case "vertex":
 			if entry := resolveConfigVertexCompatKeyForConfig(cfg, auth); entry != nil {
-				info = keyModelListInfo{keyType: "vertex", notAsked: keyNotAskedNoEndpoint, rows: keyRowsOf(entry.Models)}
+				info = keyModelListInfo{keyType: "vertex", notAsked: keyNotAskedNoEndpoint, fixed: entry.FixedModels,
+					rows: keyRowsOf(entry.Models)}
 			}
 		}
 		if info.keyType == "" || len(info.rows) == 0 {
@@ -200,6 +201,12 @@ func liveModelListKindFor(cfg *config.Config, auth *coreauth.Auth) string {
 		return ""
 	}
 	return provider
+}
+
+// keyFixedAttr reports whether a config key's credential says fixed-models: true (the attribute the
+// synthesizer writes). Status readers that have no config use it.
+func keyFixedAttr(auth *coreauth.Auth) bool {
+	return auth != nil && auth.AuthKind() == coreauth.AuthKindAPIKey && auth.Attributes["fixed_models"] == "true"
 }
 
 // keyGeminiFixed reports whether a Gemini key's config entry says fixed-models: true.
