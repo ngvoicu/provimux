@@ -269,6 +269,7 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 				}
 				isCompatAuth = true
 				ms := buildOpenAICompatibilityConfigModels(compat)
+				ms = s.applyKeyModelList(cfg, a, ms) // Provimux: the key's learned models and excluded-models
 				if providerKey == "" {
 					providerKey = "openai-compatibility"
 				}
@@ -295,6 +296,7 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 						providerKey = "openai-compatibility"
 					}
 					ms := cached.models
+					ms = s.applyKeyModelList(cfg, a, ms) // Provimux: the key's learned models and excluded-models
 					if len(ms) > 0 {
 						ms = s.appendPluginModels(providerKey, ms, nil)
 						published = s.registerResolvedModelsForAuthFenced(a, fence, providerKey, applyModelPrefixes(ms, a.Prefix, cfg.ForceModelPrefix))
@@ -343,6 +345,7 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 		models = appendDistinctModels(models, s.copilotPublicPluginModels(a, staticModels))
 		staticModels = nil
 	}
+	models = s.applyKeyModelList(cfg, a, models) // Provimux: a key's learned models (key-model-lists.md)
 	models = applyExcludedModels(models, excluded)
 	models = applyOAuthModelAliasForAuth(cfg, provider, authKind, a.Attributes, models)
 	if ctx.Err() != nil {

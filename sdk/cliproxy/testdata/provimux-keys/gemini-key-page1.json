@@ -1,0 +1,7 @@
+{
+  "models": [
+    {"name": "models/gemini-4-pro", "displayName": "Gemini 4 Pro", "supportedGenerationMethods": ["generateContent", "countTokens"]},
+    {"name": "models/text-embedding-005", "displayName": "Text Embedding 005", "supportedGenerationMethods": ["embedContent"]}
+  ],
+  "nextPageToken": "p2"
+}
