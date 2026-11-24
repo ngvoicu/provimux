@@ -53,6 +53,7 @@ type ProvimuxModelListModel struct {
 	Outputs []string
 	Levels  []string
 	Sources map[string]string // per field: live, built-in; missing = no source
+	Listed  *bool             // a key's model: whether its service's held list names it; nil = unknown
 }
 
 // ProvimuxVendorModel is one entry of a vendor's list as it arrived. Zero means not stated.
@@ -150,6 +151,7 @@ type provimuxModelListsResponse struct {
 	Published  provimuxModelListPublished `json:"published"`
 	LoginTypes []string                   `json:"login_types"`
 	Logins     []provimuxModelListRow     `json:"logins"`
+	Keys       []provimuxKeyModelListRow  `json:"keys"` // config API keys (key-model-lists.md 7.1)
 }
 
 type provimuxModelListOptions struct {
@@ -242,7 +244,8 @@ func (h *Handler) ProvimuxModelLists(c *gin.Context) {
 	withLive := strings.EqualFold(strings.TrimSpace(c.Query("view")), "live")
 	liveListsOn := registry.CatalogSources{}.LiveListsOn()
 	publishedOn := registry.CatalogSources{}.PublishedListsOn()
-	if cfg := h.configSnapshot(); cfg != nil {
+	cfg := h.configSnapshot()
+	if cfg != nil {
 		liveListsOn = cfg.Models.LiveListsOn()
 		publishedOn = cfg.Models.PublishedListsOn() && !cfg.Home.Enabled
 	}
@@ -254,6 +257,7 @@ func (h *Handler) ProvimuxModelLists(c *gin.Context) {
 		LoginTypes: append([]string{}, source.LoginTypes()...),
 		Logins:     []provimuxModelListRow{},
 	}
+	response.Keys = h.provimuxKeyModelListRows(cfg, liveListsOn, wantIndex, withLive)
 	if manager := h.provimuxAuthManager(); manager != nil {
 		modelRegistry := registry.GetGlobalRegistry()
 		for _, auth := range manager.List() {
