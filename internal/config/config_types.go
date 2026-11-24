@@ -809,6 +809,8 @@ type ClaudeKey struct {
 	// ExcludedModels lists model IDs that should be excluded for this provider.
 	ExcludedModels []string `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
 
+	FixedModels bool `yaml:"fixed-models,omitempty" json:"fixed-models,omitempty"` // Provimux: offer exactly Models; never ask the service for its list
+
 	// RebuildMidSystemMessage moves Claude messages with role "system" into the top-level system field.
 	RebuildMidSystemMessage bool `yaml:"rebuild-mid-system-message,omitempty" json:"rebuild-mid-system-message,omitempty"`
 
@@ -940,6 +942,8 @@ type CodexKey struct {
 	// ExcludedModels lists model IDs that should be excluded for this provider.
 	ExcludedModels []string `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
 
+	FixedModels bool `yaml:"fixed-models,omitempty" json:"fixed-models,omitempty"` // Provimux: offer exactly Models; never ask the service for its list
+
 	// DisableCooling overrides the global cooling policy for this credential when set.
 	// True disables auth/model cooldowns; false explicitly enables them.
 	DisableCooling *bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
@@ -1057,6 +1061,8 @@ type GeminiKey struct {
 	// ExcludedModels lists model IDs that should be excluded for this provider.
 	ExcludedModels []string `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
 
+	FixedModels bool `yaml:"fixed-models,omitempty" json:"fixed-models,omitempty"` // Provimux: offer exactly Models; never ask the service for its list
+
 	// DisableCooling overrides the global cooling policy for this credential when set.
 	// True disables auth/model cooldowns; false explicitly enables them.
 	DisableCooling *bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
@@ -1141,6 +1147,9 @@ type OpenAICompatibility struct {
 
 	// Models defines the model configurations including aliases for routing.
 	Models []OpenAICompatibilityModel `yaml:"models" json:"models"`
+
+	FixedModels    bool     `yaml:"fixed-models,omitempty" json:"fixed-models,omitempty"`       // Provimux: offer exactly Models; never ask the service for its list
+	ExcludedModels []string `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"` // Provimux: hidden after the refresh, as on the other key types
 
 	// Headers optionally adds extra HTTP headers for requests sent to this provider.
 	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`

@@ -101,6 +101,7 @@ func describeOpenAICompatibilityUpdate(oldEntry, newEntry config.OpenAICompatibi
 	if openAICompatConnectionPoolChanged(oldEntry, newEntry) {
 		details = append(details, "connection-pool updated")
 	}
+	details = append(details, provimuxOpenAICompatDetails(oldEntry, newEntry)...) // Provimux
 	if len(details) == 0 {
 		return ""
 	}

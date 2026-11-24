@@ -168,6 +168,7 @@ func (s *ConfigSynthesizer) synthesizeGeminiKeyEntries(ctx *SynthesisContext, en
 			attrs["models_hash"] = hash
 		}
 		addConfigHeadersToAttrs(entry.Headers, attrs)
+		provimuxFixedModelsAttr(attrs, entry.FixedModels) // Provimux: key-model-lists.md 6
 		a := &coreauth.Auth{
 			ID:         id,
 			Provider:   provider,
@@ -245,6 +246,7 @@ func (s *ConfigSynthesizer) synthesizeClaudeKeys(ctx *SynthesisContext) []*corea
 			attrs["models_hash"] = hash
 		}
 		addConfigHeadersToAttrs(ck.Headers, attrs)
+		provimuxFixedModelsAttr(attrs, ck.FixedModels) // Provimux: key-model-lists.md 6
 		a := &coreauth.Auth{
 			ID:         id,
 			Provider:   "claude",
@@ -335,6 +337,7 @@ func (s *ConfigSynthesizer) synthesizeCodexStyleKeys(ctx *SynthesisContext, entr
 			attrs["models_hash"] = hash
 		}
 		addConfigHeadersToAttrs(entry.Headers, attrs)
+		provimuxFixedModelsAttr(attrs, entry.FixedModels) // Provimux: key-model-lists.md 6
 		a := &coreauth.Auth{
 			ID:                  id,
 			Provider:            provider,
@@ -428,6 +431,7 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 				UpdatedAt:           now,
 				ProxyConnectionPool: authProxyConnectionPool(openAICompatConnectionPool(compat, entry)),
 			}
+			provimuxOpenAICompatAttrs(a, compat) // Provimux: excluded-models and fixed-models (key-model-lists.md 6.1)
 			if len(a.Metadata) == 0 {
 				a.Metadata = nil
 			}
@@ -475,6 +479,7 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 				UpdatedAt:           now,
 				ProxyConnectionPool: authProxyConnectionPool(openAICompatConnectionPool(compat, nil)),
 			}
+			provimuxOpenAICompatAttrs(a, compat) // Provimux: excluded-models and fixed-models (key-model-lists.md 6.1)
 			if len(a.Metadata) == 0 {
 				a.Metadata = nil
 			}
