@@ -149,7 +149,8 @@ func TestSampleDay(t *testing.T) {
 	}
 }
 
-// Nothing else of a record is read: markers in every other field never reach the store.
+// Nothing else of a record is read: markers in every other field never reach the store. Alias, the
+// model name the client sent, is kept since only-my-names round 2, apart from the rows (requested).
 func TestNothingElseIsRead(t *testing.T) {
 	store := openTestStore(t, "")
 	env := newTestEnv(t, store)
@@ -166,13 +167,16 @@ func TestNothingElseIsRead(t *testing.T) {
 	env.round()
 	file := store.file(t)
 	for _, marker := range []string{"marker-pass", "marker-path", "marker-query", "marker-client-key", "marker-source",
-		"marker-auth-id", "marker-auth-index", "marker-alias", "marker-session", "marker-fail-body", "marker-response-header"} {
+		"marker-auth-id", "marker-auth-index", "marker-session", "marker-fail-body", "marker-response-header"} {
 		if bytes.Contains(file, []byte(marker)) {
 			t.Errorf("%s reached the store's file", marker)
 		}
 	}
 	if !bytes.Contains(file, []byte("api.anthropic.com")) {
 		t.Fatal("premise: the day was written")
+	}
+	if !bytes.Contains(file, []byte(`"requested":[{"m":"marker-alias"`)) {
+		t.Fatalf("the requested name is not kept apart from the rows: %s", file)
 	}
 }
 

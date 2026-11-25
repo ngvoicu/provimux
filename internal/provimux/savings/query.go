@@ -35,6 +35,8 @@ type Request struct {
 	From, To                         string
 	Groups                           [][]string
 	Kind, Provider, Host, Model, Key *string
+	// IncludeRequested adds requested_models (include=requested_models).
+	IncludeRequested bool
 }
 
 // ParseRequest reads the endpoint's query. Its error text is the 400 answer's message.
@@ -111,6 +113,17 @@ func ParseRequest(values url.Values) (Request, error) {
 	req.Host = filter("host", true)
 	req.Model = filter("model", true)
 	req.Key = filter("key", false)
+	for _, value := range values["include"] {
+		for _, part := range strings.Split(value, ",") {
+			switch strings.TrimSpace(part) {
+			case "requested_models":
+				req.IncludeRequested = true
+			case "":
+			default:
+				return Request{}, fmt.Errorf("include: unknown value %q", part)
+			}
+		}
+	}
 	return req, nil
 }
 
@@ -147,6 +160,8 @@ type Response struct {
 	Models            []ModelPrice `json:"models"`
 	ModelsTruncated   bool         `json:"models_truncated"`
 	ReportedCostHosts []string     `json:"reported_cost_hosts"`
+	// RequestedModels is present only with include=requested_models.
+	RequestedModels *RequestedModels `json:"requested_models,omitempty"`
 }
 
 // Range is the resolved range; Period is null when from and to were given.
@@ -378,6 +393,7 @@ func (r *recorder) query(ctx context.Context, req Request) (*Response, error) {
 		if deltas != nil {
 			// Not assignPrices: a price given while reading is not the day's.
 			rows.mergePending(deltas.rows, state.secret)
+			rows.mergeAsked(deltas.asked)
 		}
 		if len(rows.rows) > 0 {
 			assembled = append(assembled, queryDay{day: day, rows: rows})
@@ -385,6 +401,9 @@ func (r *recorder) query(ctx context.Context, req Request) (*Response, error) {
 	}
 
 	answer := build(req, assembled, book)
+	if req.IncludeRequested {
+		answer.RequestedModels = requestedModelsOf(assembled)
+	}
 	answer.ObservedAt = formatTime(now)
 	answer.Timezone = loc.String()
 	answer.UTCOffsetSeconds = offset
