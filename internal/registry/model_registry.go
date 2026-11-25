@@ -48,8 +48,6 @@ type ModelInfo struct {
 	OAuthAlias string `json:"-"`
 	// OAuthAliasSource is the exact published source of that alias, including any suffix.
 	OAuthAliasSource string `json:"-"`
-	// PrefixedFrom is the id a copy under an account's prefix copies ("opus" on "team-a/opus"). Provimux: only-my-names
-	PrefixedFrom string `json:"-"`
 	// ExplicitThinking indicates thinking/reasoning configuration was explicitly configured for this model.
 	ExplicitThinking bool `json:"-"`
 	// ExplicitInputModalities indicates input modalities were explicitly configured for this model.

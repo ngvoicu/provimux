@@ -848,9 +848,9 @@ components:
           type: array
           description: |
             Every name an enabled account (or a plugin executor) registers now that a request could not be
-            served under (not one of the owner's names, nor a copy of one under an account's prefix, nor one of
-            them with a thinking suffix), with the accounts that register it; an alias in a login's own file
-            included. Spellings that differ only in case are different names. Not listed to clients and refused
+            served under (not one of the owner's names, nor a copy of one under a prefix the config declares, nor
+            one of them with a thinking suffix), with the accounts that register it; an alias in a login's own
+            file, and a copy under a prefix set only in a login's own file, included. Spellings that differ only in case are different names. Not listed to clients and refused
             when only_my_names.enabled and applies; served otherwise (then it is what would stop being served).
             Sorted by name, without case.
           items:
@@ -901,9 +901,9 @@ components:
         id:
           type: string
           description: |
-            The id as clients send it: the name under an account's prefix ("team-a/opus" for "opus"), or the name
-            with a thinking suffix registered as an id ("opus(high)"). A copy that is itself one of the owner's names
-            (kept in full) is listed here and also has its own row in names.
+            The id as clients send it: the name under a prefix the config declares ("team-a/opus" for "opus"), or
+            the name with a thinking suffix registered as an id ("opus(high)"). A copy that is itself one of the
+            owner's names (kept in full) is listed here and also has its own row in names.
         accounts:
           type: integer
           minimum: 1
@@ -929,13 +929,18 @@ components:
         accounts:
           type: integer
           minimum: 0
-          description: Enabled accounts (and plugin executors) that register the name exactly now; 0 when nothing answers it.
+          description: |
+            Enabled accounts (and plugin executors) that register the name exactly now; 0 when nothing registers
+            that spelling (a request for a kept "MINE" can still reach a registered "mine" through upstream's
+            lower-case lookup).
         copies:
           type: array
           description: |
-            The registered ids served through the name that are not the name itself: its copies under accounts'
-            prefixes ("team-a/opus"), and its spellings with a thinking suffix that an account registers as ids
-            ("opus(high)"). Not counted in accounts. Sorted by id.
+            The registered ids served through the name that are not the name itself: its copies under a prefix
+            the config declares on a key or provider entry ("team-a/opus"), and its spellings with a thinking
+            suffix that an account registers as ids ("opus(high)", "team-a/opus(high)"). An id that is also one
+            of the owner's names in full (kept "team-a/opus" or "opus(high)") is here and has its own row. Not
+            counted in accounts. Sorted by id.
           items:
             $ref: "#/components/schemas/ServedCopy"
     KeepIgnored:
@@ -992,8 +997,8 @@ components:
         names:
           type: array
           description: |
-            Requests refused because the name is not one of the owner's and an account registers it. A name
-            nobody registers is refused as unknown and is not counted. Most recent first. In memory only.
+            Requests refused because the rule in force does not serve the name, whether or not an account
+            registers it (the check reads the rule and the name, nothing else). Most recent first. In memory only.
           items:
             type: object
             required: [name, requests, last_at]

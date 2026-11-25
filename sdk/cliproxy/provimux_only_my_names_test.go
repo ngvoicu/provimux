@@ -17,6 +17,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/management"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/provimux/onlymynames"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
@@ -107,7 +108,7 @@ func namesServed(t *testing.T, auth *coreauth.Auth) []string {
 	}
 	var served []string
 	for _, id := range provimuxRegistered(auth) {
-		door := registry.ProvimuxServes(id)
+		door := namesServes(id)
 		if listed[id] != door || infos[id] != door {
 			t.Fatalf("%s: listed %v / %v, the door %v", id, listed[id], infos[id], door)
 		}
@@ -122,14 +123,13 @@ func namesServed(t *testing.T, auth *coreauth.Auth) []string {
 // through the same view and predicate as GET /provimux/names.
 func namesOthers(ids ...string) map[string][]string {
 	rule, registered, _ := registry.ProvimuxNamesView()
-	index := registry.NewProvimuxIndex(registered)
 	wanted := map[string]bool{}
 	for _, id := range ids {
 		wanted[id] = true
 	}
 	out := map[string][]string{}
 	for _, entry := range registered {
-		if wanted[entry.ClientID] && !rule.Serves(entry.ID, index) {
+		if wanted[entry.ClientID] && !rule.Serves(entry.ID) {
 			out[entry.ID] = append(out[entry.ID], entry.ClientID)
 		}
 	}
@@ -269,7 +269,7 @@ func TestProvimuxOnlyMyNamesByNameAndPools(t *testing.T) {
 	poolOff := registry.GetGlobalRegistry().GetModelProviders("names-pool")
 	countOff := registry.GetGlobalRegistry().GetModelCount("names-pool")
 	namesCommit(svc, build(namesOn()))
-	if !registry.ProvimuxServes("gpt-5.5") || registry.GetGlobalRegistry().GetModelCount("gpt-5.5") != 2 {
+	if !namesServes("gpt-5.5") || registry.GetGlobalRegistry().GetModelCount("gpt-5.5") != 2 {
 		t.Fatal("gpt-5.5 is served by both accounts")
 	}
 	if got := registry.GetGlobalRegistry().GetModelProviders("names-pool"); !slices.Equal(got, poolOff) || registry.GetGlobalRegistry().GetModelCount("names-pool") != countOff || countOff != 2 {
@@ -283,7 +283,7 @@ func TestProvimuxOnlyMyNamesByNameAndPools(t *testing.T) {
 }
 
 // R7: a prefix belongs to the account (team-a/opus is served when opus is his, with force-model-prefix too:
-// the copy carries PrefixedFrom); a namespace belongs to the name (devin/x is served only when keep has
+// the prefix is declared in the config); a namespace belongs to the name (devin/x is served only when keep has
 // devin/x).
 func TestProvimuxOnlyMyNamesPrefixesAndNamespaces(t *testing.T) {
 	namesReset(t)
@@ -337,7 +337,7 @@ func TestProvimuxOnlyMyNamesFirstListOfAStart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !registry.ProvimuxApplies() {
+	if !onlymynames.Current().Applies() {
 		t.Fatal("Build did not put the rule in force")
 	}
 	// What Run does first for config keys, before any reload.
@@ -451,7 +451,7 @@ func TestProvimuxOnlyMyNamesRuleOfAConfig(t *testing.T) {
 	home.Home.Enabled = true
 	home.Models.OnlyMyNames = namesOn()
 	provimuxSetNamesRule(home)
-	if rule, _, _ := registry.ProvimuxNamesView(); !rule.Home() || registry.ProvimuxApplies() {
+	if rule, _, _ := registry.ProvimuxNamesView(); !rule.Home() || onlymynames.Current().Applies() {
 		t.Fatal("home mode is not recorded")
 	}
 }
@@ -538,16 +538,16 @@ func TestProvimuxOnlyMyNamesLateAndRejectedRegistrations(t *testing.T) {
 	if got := namesServed(t, key); !slices.Equal(got, []string{"mine"}) {
 		t.Fatalf("after the rejected publication: %v", got)
 	}
-	if refused, offered := registry.ProvimuxRefuse("stale-only"); !refused || offered {
-		t.Fatalf("a rejected publication offers its name: %v %v", refused, offered)
+	if registry.GetGlobalRegistry().GetModelCount("stale-only") != 0 || !namesRefuse("stale-only") {
+		t.Fatal("a rejected publication registered its name")
 	}
 	// Removal: the name is no longer offered at once (no record), and back off nothing is held.
 	svc.applyCoreAuthRemoval(context.Background(), key.ID)
-	if _, offered := registry.ProvimuxRefuse("plain"); offered {
+	if registry.GetGlobalRegistry().GetModelCount("plain") != 0 {
 		t.Fatal("a removed account still offers plain")
 	}
 	namesCommit(svc, off)
-	if !registry.ProvimuxServes("plain") {
+	if !namesServes("plain") {
 		t.Fatal("off: plain")
 	}
 }
@@ -571,14 +571,14 @@ func TestProvimuxOnlyMyNamesChurn(t *testing.T) {
 		if svc.registerResolvedModelsForAuthFenced(auth, fence, "claude", []*ModelInfo{{ID: "churn-obsolete"}}) { // the fence is spent
 			t.Fatal("premise: the obsolete publication is rejected")
 		}
-		registry.ProvimuxRefuse("churn-held")
+		namesRefuse("churn-held")
 		svc.applyCoreAuthRemoval(context.Background(), auth.ID)
 	}
-	if refused := registry.ProvimuxRefusedNow(); refused == nil || len(refused.Names) != 1 || refused.Names[0].Requests != 250 {
+	if refused := onlymynames.RefusedNow(); refused == nil || len(refused.Names) != 1 || refused.Names[0].Requests != 250 {
 		t.Fatalf("refused %+v", refused)
 	}
 	for _, name := range []string{"churn-held", "churn-obsolete", "churn-mine"} {
-		if _, offered := registry.ProvimuxRefuse(name); offered || registry.GetGlobalRegistry().GetModelCount(name) != 0 {
+		if registry.GetGlobalRegistry().GetModelCount(name) != 0 {
 			t.Fatalf("%s is still offered after every account went", name)
 		}
 	}
@@ -605,7 +605,7 @@ func TestProvimuxOnlyMyNamesCaseOnlyAliasEdit(t *testing.T) {
 	if got := namesServed(t, auths[0]); len(got) != 0 {
 		t.Fatalf("after the commit: %v", got)
 	}
-	if refused, offered := registry.ProvimuxRefuse("mine"); !refused || !offered {
+	if !namesRefuse("mine") {
 		t.Fatal("mine after the commit")
 	}
 	namesReconfigure(svc, build("Mine"), auths)
@@ -656,7 +656,7 @@ func TestProvimuxOnlyMyNamesRejectedReplacementKeepsTheStatusExact(t *testing.T)
 			t.Fatalf("work-fast in names: %s", recorder.Body.String())
 		}
 	}
-	if !inOthers || registry.ProvimuxServes("work-fast") {
+	if !inOthers || namesServes("work-fast") {
 		t.Fatalf("work-fast: %s", recorder.Body.String())
 	}
 }
@@ -708,10 +708,23 @@ func TestProvimuxOnlyMyNamesRuleChangesUnderLoad(t *testing.T) {
 		if !slices.Equal(ids, []string{"load-mine"}) && !slices.Equal(ids, []string{"load-mine", "load-plain"}) && len(ids) != 0 {
 			t.Fatalf("a list mixes rules: %v", ids)
 		}
-		registry.ProvimuxRefuse("load-plain")
+		namesRefuse("load-plain")
 	}
 	close(stop)
 	wg.Wait()
+}
+
+// namesServes is the door's predicate under the rule in force: true when it does not apply.
+func namesServes(name string) bool { return !onlymynames.Current().Refuses(name) }
+
+// namesRefuse judges a request for name as the door does, under the rule in force, and counts a refusal.
+func namesRefuse(name string) bool {
+	rule := onlymynames.Current()
+	if !rule.Refuses(name) {
+		return false
+	}
+	onlymynames.Count(rule, name)
+	return true
 }
 
 // namesRegisteredStable is what clientID registers, without Created: a configured model takes it from the

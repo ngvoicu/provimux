@@ -921,7 +921,6 @@ func applyModelPrefixes(models []*ModelInfo, prefix string, forceModelPrefix boo
 		}
 		clone := cloneModelInfoForCatalogRoute(model)
 		clone.ID = prefixedID
-		clone.PrefixedFrom = baseID // Provimux: only-my-names
 		if clone.MetadataModelID == "" {
 			clone.MetadataModelID = baseID
 		}
