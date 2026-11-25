@@ -43,6 +43,9 @@ type dayValue struct {
 	Keys      map[string]string `json:"keys"`
 	Prices    map[string]price  `json:"prices"`
 	Rows      []storedRow       `json:"rows"`
+	// Requested counts requests by the model name the client sent (only-my-names round 2); absent on
+	// days written before it.
+	Requested []storedRequested `json:"requested,omitempty"`
 }
 
 type storedRow struct {
@@ -65,10 +68,11 @@ type dayRows struct {
 	prices  map[string]price
 	rows    map[rowKey]*row
 	regular int // rows that are not folded
+	asked   map[string]*counters
 }
 
 func newDayRows(tz string, offset int) *dayRows {
-	return &dayRows{tz: tz, offset: offset, keys: map[string]string{}, prices: map[string]price{}, rows: map[rowKey]*row{}}
+	return &dayRows{tz: tz, offset: offset, keys: map[string]string{}, prices: map[string]price{}, rows: map[rowKey]*row{}, asked: map[string]*counters{}}
 }
 
 // sortedKeys orders rows by kind, provider, host, model and key, so a value encodes the same bytes
@@ -96,6 +100,7 @@ func (d *dayRows) encode(day string) ([]byte, error) {
 		r := d.rows[k]
 		value.Rows = append(value.Rows, storedRow{K: k.k, P: k.p, H: k.h, M: k.m, C: k.c, Pm: r.pm, Pmm: r.pmm, N: r.n})
 	}
+	value.Requested = d.storedRequested()
 	return json.Marshal(value)
 }
 
@@ -123,6 +128,7 @@ func decodeDay(data []byte) (*dayRows, error) {
 			d.regular++
 		}
 	}
+	d.mergeAsked(requestedOf(value.Requested))
 	return d, nil
 }
 
@@ -154,9 +160,12 @@ func boolCompare(a, b bool) int {
 type deltaDay struct {
 	rows    map[pendingKey]*counters
 	regular int // combinations that are not folded
+	asked   map[string]*counters
 }
 
-func newDeltaDay() *deltaDay { return &deltaDay{rows: map[pendingKey]*counters{}} }
+func newDeltaDay() *deltaDay {
+	return &deltaDay{rows: map[pendingKey]*counters{}, asked: map[string]*counters{}}
+}
 
 // add adds n to a combination. A combination already present takes no new slot; beyond maxRows
 // combinations a new one joins its kind, provider and host's folded delta. This bounds memory only:
@@ -186,6 +195,9 @@ func (d *deltaDay) add(pk pendingKey, n counters) {
 func (d *deltaDay) addAll(other *deltaDay) {
 	for _, pk := range slices.SortedFunc(maps.Keys(other.rows), comparePendingKeys) {
 		d.add(pk, *other.rows[pk])
+	}
+	for _, name := range slices.Sorted(maps.Keys(other.asked)) {
+		d.addAsked(name, *other.asked[name])
 	}
 }
 

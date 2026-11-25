@@ -71,6 +71,19 @@ paths:
               type: string
           style: form
           explode: true
+        - name: include
+          in: query
+          required: false
+          description: |
+            `requested_models` adds `requested_models` to the answer: requests by the model name the clients
+            sent (only-my-names, round 2). Another value is a 400. Without it the answer is unchanged.
+          schema:
+            type: array
+            items:
+              type: string
+              enum: [requested_models]
+          style: form
+          explode: true
         - name: kind
           in: query
           required: false
@@ -238,6 +251,39 @@ components:
             provider's own address. The console names them beside `reported_cost`.
           items:
             type: string
+        requested_models:
+          $ref: "#/components/schemas/RequestedModels"
+    RequestedModels:
+      type: object
+      required: [from, models, truncated]
+      description: |
+        Requests by the model name the client sent (an alias, a name with an account's prefix), without a
+        thinking suffix, lower case, over the whole range; the filters do not apply. Rows count the same
+        requests under the model the account ran. Present only with include=requested_models.
+      properties:
+        from:
+          type: [string, "null"]
+          description: |
+            The first day of the range that has requested names; days recorded before the version that added
+            them count only in the rows. Null when no day of the range has them.
+        models:
+          type: array
+          description: Most requests first, then by name; at most 2000.
+          items:
+            type: object
+            required: [model, requests, failures, tokens]
+            properties:
+              model:
+                type: string
+              requests:
+                type: integer
+              failures:
+                type: integer
+              tokens:
+                type: integer
+                description: Input (uncached, cache reads and writes) plus output tokens.
+        truncated:
+          type: boolean
     Range:
       type: object
       required: [period, from, to]
