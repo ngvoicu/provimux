@@ -338,6 +338,50 @@ func TestProvimuxOnlyMyNamesJudgementReadsNoRegistry(t *testing.T) {
 	if loads != 1 {
 		t.Errorf("provimuxDoor loads the rule %d times, want once (only-my-names.md 18)", loads)
 	}
+	// One value from the router check to the door (only-my-names.md 18.2): the door takes the decision's value
+	// first and loads only when it is empty; the router check stores the value it judges under; and
+	// applyModelRouter never replaces the decision it declared, so every return carries that value.
+	if first, ok := door.Body.List[0].(*ast.AssignStmt); !ok || len(first.Rhs) != 1 || namesExpr(first.Rhs[0]) != "decision.provimuxRule" {
+		t.Error("provimuxDoor does not start from the decision's rule value")
+	}
+	noRouter := namesFunc(t, root, "sdk/api/handlers/provimux_only_my_names.go", "provimuxNoRouter")
+	stores := false
+	ast.Inspect(noRouter.Body, func(n ast.Node) bool {
+		if as, ok := n.(*ast.AssignStmt); ok && len(as.Lhs) == 1 && namesExpr(as.Lhs[0]) == "decision.provimuxRule" && namesExpr(as.Rhs[0]) == "rule" {
+			stores = true
+		}
+		return true
+	})
+	if !stores {
+		t.Error("provimuxNoRouter does not store its rule value on the decision")
+	}
+	router := namesFunc(t, root, "sdk/api/handlers/handlers_routing.go", "applyModelRouter")
+	ast.Inspect(router.Body, func(n ast.Node) bool {
+		if as, ok := n.(*ast.AssignStmt); ok {
+			for _, lhs := range as.Lhs {
+				if id, ok := lhs.(*ast.Ident); ok && id.Name == "decision" {
+					t.Error("applyModelRouter replaces its decision: the rule value would not reach the door")
+				}
+			}
+		}
+		if ret, ok := n.(*ast.ReturnStmt); ok && (len(ret.Results) != 1 || namesExpr(ret.Results[0]) != "decision") {
+			t.Error("applyModelRouter returns something other than its decision")
+		}
+		return true
+	})
+}
+
+// namesExpr spells a selector chain ("decision.provimuxRule") or an identifier.
+func namesExpr(e ast.Expr) string {
+	switch v := e.(type) {
+	case *ast.Ident:
+		return v.Name
+	case *ast.SelectorExpr:
+		return namesExpr(v.X) + "." + v.Sel.Name
+	case *ast.StarExpr:
+		return namesExpr(v.X)
+	}
+	return ""
 }
 
 func types(sel *ast.SelectorExpr) string {
