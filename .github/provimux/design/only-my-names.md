@@ -409,3 +409,45 @@ The look is the frontend designer's. What the Models page needs:
 - which `model-lists` fields read the registry: S5;
 - that the savings endpoint's per-model name is the name the client sent, prefix included (`internal/provimux/savings/record.go:30`): the console step checks it against its fixture, since the Models page already relies on it for "used in the last 30 days";
 - that the owner uses no login-file aliases, plugins or Home mode: the design holds either way.
+
+## 14. As built (N1 and N2)
+
+Steps N1 and N2 are built; N3 (the console) is not. The six decisions of section 11 were taken as recommended. Where
+the build differs from sections 1 to 9, and why:
+
+- **The first config of a start is never committed** (`commitConfigUpdate` runs on reloads and Home commits only; `Run`
+  starts from the config `Build` stored). So the rule is also set in `Build` (`sdk/cliproxy/builder.go`, one more
+  inserted line). Test R9 builds a service with the switch on and fails if a held-back name is ever registered.
+- **The config's names are read in `internal/config`** (`ProvimuxNamesRule`, `ProvimuxOnlyMyNamesChanged`), because the
+  watcher's reload clause needs them and `internal/registry` cannot import the config; `sdk/cliproxy` keeps the two
+  service-side calls.
+- **The record holds what each account offered**, before the rule, and the rule is applied to it when it is read. The
+  preview (`others`) and the refusal message therefore follow a change of `keep` or of an alias at once, whether or
+  not the change re-registers the account.
+- **The reload clause** forces every account through registration when the switch turns, or, with the switch on,
+  when the set of names changes; with the switch off on both sides it never fires, so a reload is what it was. In the
+  tests every reload re-registered every account anyway (C1 and C3 pass without the clause, a login in the auth folder
+  included); the clause is kept as the design asked.
+- **The refusal is one inserted line**, a call to a helper in a new file, not three.
+- **A plugin executor's own models** appear in `others` with `auth_index: null`, `kind: null` and the plugin's
+  provider; their record is kept until the process ends, even after the plugin is gone.
+- **`names[].accounts`** counts the enabled accounts that register the name exactly; a prefixed copy (`team-a/opus`)
+  is not counted under `opus`.
+- **The message names the base model** (after `auto` and without a thinking suffix), and refusals are counted under
+  the name as the client sent it, without the suffix.
+- **Routes that map a client's name to a fixed one** apply the rule to the fixed name: `/v1/audio/speech` with
+  `tts-1` is refused as `grok-tts`, `/openai/v1/videos` with `sora-2` as `grok-imagine-video`, and video retrieval by
+  id (which names no model) is refused while `grok-imagine-video` is held back.
+- **The Responses websocket**: upstream answers a name it cannot route (held back or unknown alike) by closing the
+  socket without an error event, so the setting's message cannot reach a websocket client; nothing reaches a vendor.
+- **The realtime and live routes** (`/v1/realtime*`, `/v1/live`) name a model but choose a Codex login without
+  consulting the registry, and no account registers their names (`gpt-realtime`, `gpt-live-1-codex`): those names are
+  neither the owner's nor held back, and with a Codex login such a request is served whatever the switch says. Not
+  changed: it needs a decision and an insertion in `internal/client/codex/live`.
+- **C2**: the config API rewrites a file of the older layout into the v8 layout at its first write, whatever the key;
+  the file stays byte-identical apart from the new key only when it is already in the v8 layout (the console's files
+  are, after any save). C2 is tested from a v8 file.
+- **Test placement**: D1 to D4 and the reload tests run in `sdk/cliproxy` (they drive the real Service, watcher and
+  API server, which `test/` cannot reach); D5 runs at the handlers; S5 runs beside the model-lists source.
+- **The shared fixture of S2** is `pui13/examples/names-fixture.yaml`; `pui13/examples/names.json` is an example
+  answer checked against the contract.
