@@ -69,9 +69,9 @@ server's address, see [For a team](#for-a-team)). Docker, release archives and b
   with a quota pause per model.
 - **[Savings](#savings-what-prompt-caching-was-worth-and-what-each-key-cost)**: daily usage totals kept across restarts, valued
   at OpenRouter's list prices: what prompt caching was worth, subscription against API key, what the paid keys cost.
-- **[Works with pi](#works-with-pi)**, through two extensions that show which account answered.
+- **[Works with Pi](#works-with-pi)**, through two extensions that show which account answered.
 
-![A diagram headed "Your subscriptions and API keys behind one endpoint, open to everyone you choose". On the left, "Your tools, and your team's": pi, Codex CLI, Claude Code, and any OpenAI-, Claude- or Gemini-format client. They point at the middle box, Provimux at http://&lt;your-server&gt;:8317, which lists: which account serves each model, and which one answered; each login's own model list; OpenRouter caching, sessions and limits; the right context and output limits. Provimux points at "Your accounts" on the right: Claude subscription (oauth), Claude API key (apikey), Codex subscription (oauth), and OpenRouter key (apikey, openrouter.ai).](provimux/media/overview.png)
+![A diagram headed "Your subscriptions and API keys behind one endpoint, open to everyone you choose". On the left, "Your tools, and your team's": Pi, Codex CLI, Claude Code, and any OpenAI-, Claude- or Gemini-format client. They point at the middle box, Provimux at http://&lt;your-server&gt;:8317, which lists: which account serves each model, and which one answered; each login's own model list; OpenRouter caching, sessions and limits; the right context and output limits. Provimux points at "Your accounts" on the right: Claude subscription (oauth), Claude API key (apikey), Codex subscription (oauth), and OpenRouter key (apikey, openrouter.ai).](provimux/media/overview.png)
 
 Then: [Install](#install) · [For a team](#for-a-team) · [The console](#the-console-provimux-ui) ·
 [Versions and releases](#versions-and-releases) · [Features in detail](#features-in-detail) · [Requests to providers](#requests-to-providers) ·
@@ -745,20 +745,20 @@ twice and the request was billed at about twice the input.
 and an input that starts with every input item of the previous request, in order, replaces the transcript. An
 incremental request that names no model still appends, and pending tool calls answered by a replay are kept.
 
-### Works with pi
+### Works with Pi
 
-Provimux works with any client CLIProxyAPI works with. For [pi](https://pi.dev), two extensions read what
+Provimux works with any client CLIProxyAPI works with. For [Pi](https://pi.dev), two extensions read what
 [which account serves each model](#which-account-serves-each-model-and-which-one-answered) reports:
 
-- [pi-provimux](https://github.com/ngvoicu/pi-provimux) adds Provimux (or CLIProxyAPI) as a pi provider, `provimux`.
+- [pi-provimux](https://github.com/ngvoicu/pi-provimux) adds Provimux (or CLIProxyAPI) as a Pi provider, `provimux`.
   Each model's name ends with where it comes from: `sub` for a subscription login, `api` for an API key, then what it
-  falls back to. pi 1.5.2 or newer shows the name on every line of `/model`, after the id. After each answer, its
+  falls back to. Pi 1.6.0 or newer shows the name on every line of `/model`, after the id. After each answer, its
   footer names the route that answered (`answered: Anthropic sub`).
 - [pi-cache-keeper](https://github.com/ngvoicu/pi-cache-keeper) keeps the prompt cache warm and compacts from it. Its
   footer shows `sub` or `api` for the account that answered last, and warns when an API key answered for a model you
   reach through a subscription.
 
-![pi's /model list with Provimux. Each line shows the model id, its name with where it comes from in parentheses, and [provimux]: "claude-opus-5-5 (Claude Opus 5.5 · Anthropic sub, fallback api)", selected and current; "gpt-6.2-sol (GPT-6.2-Sol · OpenAI sub, fallback api)"; "gpt-6.2-astra (GPT-6.2-Astra · OpenAI sub, fallback api)"; "gpt-6.1-terra (GPT 6.1 Terra · OpenAI sub, fallback api)"; "gpt-6.1-sol (gpt-6.1-sol · OpenAI api)"; "devin/gpt-6-astra (GPT-6 Astra (Devin) · Devin sub)"; "gpt-6-astra (gpt-6-astra · OpenAI api)"; "gpt-6-luna (gpt-6-luna · OpenAI api)"; "devin/gpt-6-luna (GPT-6 Luna (Devin) · Devin sub)"; "aion-labs/aion-2.0 (aion-labs/aion-2.0 · OpenRouter api)". Below the list: "(1/1064)".](provimux/media/pi.png)
+![Pi's /model list with Provimux. Each line shows the model id, its name with where it comes from in parentheses, and [provimux]: "claude-opus-5-5 (Claude Opus 5.5 · Anthropic sub, fallback api)", selected and current; "gpt-6.2-sol (GPT-6.2-Sol · OpenAI sub, fallback api)"; "gpt-6.2-astra (GPT-6.2-Astra · OpenAI sub, fallback api)"; "gpt-6.1-terra (GPT 6.1 Terra · OpenAI sub, fallback api)"; "gpt-6.1-sol (gpt-6.1-sol · OpenAI api)"; "devin/gpt-6-astra (GPT-6 Astra (Devin) · Devin sub)"; "gpt-6-astra (gpt-6-astra · OpenAI api)"; "gpt-6-luna (gpt-6-luna · OpenAI api)"; "devin/gpt-6-luna (GPT-6 Luna (Devin) · Devin sub)"; "aion-labs/aion-2.0 (aion-labs/aion-2.0 · OpenRouter api)". Below the list: "(1/1064)".](provimux/media/pi.png)
 
 ```bash
 pi install npm:pi-provimux
