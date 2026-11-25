@@ -120,10 +120,11 @@ func (h *Handler) provimuxAuthManager() *coreauth.Manager {
 func provimuxBuildModelRoutes(manager *coreauth.Manager, only map[string]struct{}, now time.Time) []provimuxModel {
 	modelRegistry := registry.GetGlobalRegistry()
 	routesByModel := make(map[string][]provimuxRoute)
-	// models.only-my-names (only-my-names.md 16.4): while the rule applies, only the names it serves, read
-	// as the answer is made; otherwise this is one atomic load.
+	// models.only-my-names (only-my-names.md 16.4): while the rule applies, only the names it serves. The rule
+	// is loaded once, and the whole answer is decided under it; with it not applying this is one atomic load.
+	rule := registry.ProvimuxRuleNow()
 	var served map[string]bool
-	if registry.ProvimuxApplies() {
+	if rule.Applies() {
 		served = make(map[string]bool)
 	}
 	for _, auth := range manager.List() {
@@ -141,7 +142,7 @@ func provimuxBuildModelRoutes(manager *coreauth.Manager, only map[string]struct{
 					continue
 				}
 			}
-			if provimuxGated(served, model.ID) {
+			if provimuxGated(rule, served, model.ID) {
 				continue
 			}
 			routeModels = append(routeModels, model.ID)
@@ -167,7 +168,7 @@ func provimuxBuildModelRoutes(manager *coreauth.Manager, only map[string]struct{
 					continue
 				}
 			}
-			if provimuxGated(served, model.ID) {
+			if provimuxGated(rule, served, model.ID) {
 				continue
 			}
 			route := base
@@ -348,15 +349,15 @@ func provimuxTime(t time.Time) string {
 	return t.UTC().Format(time.RFC3339Nano)
 }
 
-// provimuxGated reports whether models.only-my-names leaves id out; served (nil while the rule does not
-// apply) remembers each id's answer for one response.
-func provimuxGated(served map[string]bool, id string) bool {
+// provimuxGated reports whether rule leaves id out; served (nil while the rule does not apply) remembers each
+// id's answer for one response.
+func provimuxGated(rule *registry.ProvimuxNamesRule, served map[string]bool, id string) bool {
 	if served == nil {
 		return false
 	}
 	ok, known := served[id]
 	if !known {
-		ok = registry.ProvimuxServes(id)
+		ok = registry.ProvimuxServesUnder(rule, id)
 		served[id] = ok
 	}
 	return !ok

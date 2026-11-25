@@ -168,8 +168,8 @@ func TestProvimuxOnlyMyNamesSwitchThroughTheConfigAPI(t *testing.T) {
 	compat := "standin"
 	h.await("at start", map[string][]string{"claude": {"mine", "plain-a"}, compat: {"shared"}})
 	keyA, keyB := h.auth("claude"), h.auth(compat)
-	firstA := registry.GetGlobalRegistry().GetModelsForClient(keyA.ID)
-	firstB := registry.GetGlobalRegistry().GetModelsForClient(keyB.ID)
+	firstA := namesRegisteredStable(keyA.ID)
+	firstB := namesRegisteredStable(keyB.ID)
 	before, err := os.ReadFile(h.configPath)
 	if err != nil {
 		t.Fatal(err)
@@ -193,7 +193,7 @@ func TestProvimuxOnlyMyNamesSwitchThroughTheConfigAPI(t *testing.T) {
 		t.Fatalf("C2: added %q", added)
 	}
 	h.await("on", map[string][]string{"claude": {"mine"}, compat: {}})
-	if a, b := registry.GetGlobalRegistry().GetModelsForClient(keyA.ID), registry.GetGlobalRegistry().GetModelsForClient(keyB.ID); !reflect.DeepEqual(a, firstA) || !reflect.DeepEqual(b, firstB) {
+	if a, b := namesRegisteredStable(keyA.ID), namesRegisteredStable(keyB.ID); !reflect.DeepEqual(a, firstA) || !reflect.DeepEqual(b, firstB) {
 		t.Fatalf("K5: on changed what is registered:\n%+v\n%+v", a, b)
 	}
 
@@ -202,7 +202,7 @@ func TestProvimuxOnlyMyNamesSwitchThroughTheConfigAPI(t *testing.T) {
 
 	h.put("models/only-my-names", `{"enabled":false,"keep":["shared"]}`)
 	h.await("off", map[string][]string{"claude": {"mine", "plain-a"}, compat: {"shared"}})
-	if a, b := registry.GetGlobalRegistry().GetModelsForClient(keyA.ID), registry.GetGlobalRegistry().GetModelsForClient(keyB.ID); !reflect.DeepEqual(a, firstA) || !reflect.DeepEqual(b, firstB) {
+	if a, b := namesRegisteredStable(keyA.ID), namesRegisteredStable(keyB.ID); !reflect.DeepEqual(a, firstA) || !reflect.DeepEqual(b, firstB) {
 		t.Fatalf("off again differs from the start:\n%+v\n%+v", a, b)
 	}
 	if got := h.service.currentConfig().Models.OnlyMyNames; got == nil || got.Enabled || !slices.Equal(got.Keep, []string{"shared"}) {

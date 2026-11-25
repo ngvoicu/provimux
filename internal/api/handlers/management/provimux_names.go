@@ -93,24 +93,22 @@ func (h *Handler) ProvimuxNames(c *gin.Context) {
 
 func (h *Handler) provimuxNamesAnswer() provimuxNamesResponse {
 	byID := map[string]*coreauth.Auth{}
-	manager := h.provimuxAuthManager()
-	if manager != nil {
+	if manager := h.provimuxAuthManager(); manager != nil {
 		for _, auth := range manager.List() {
 			if auth != nil && !auth.Disabled {
 				byID[auth.ID] = auth
 			}
 		}
 	}
-	rule, registered := registry.ProvimuxNamesView()
+	// One rule for the whole answer: the rule in force, its refusal counter and the registrations, read
+	// together (16.6; the second review's finding on overlapping reads).
+	rule, registered, refused := registry.ProvimuxNamesView()
 	index := registry.NewProvimuxIndex(registered)
 
-	enabled, home := rule.Enabled(), rule.Home()
-	if manager != nil && manager.HomeEnabled() {
-		home = true
-	}
+	home := rule.Home()
 	response := provimuxNamesResponse{
 		ObservedAt:  provimuxTime(provimuxNow()),
-		OnlyMyNames: provimuxOnlyMyNamesState{Enabled: enabled, Applies: !home},
+		OnlyMyNames: provimuxOnlyMyNamesState{Enabled: rule.Enabled(), Applies: !home},
 		Applied:     provimuxNamesApplied{Generation: rule.Generation()},
 		Names:       []provimuxOwnName{},
 		KeepIgnored: []provimuxKeepIgnored{},
@@ -123,13 +121,14 @@ func (h *Handler) provimuxNamesAnswer() provimuxNamesResponse {
 		response.OnlyMyNames.NotApplied = provimuxString("home")
 	}
 
-	// What is shown: the enabled accounts and the plugin executors. What is the owner's is decided over every
-	// registration, as the gate decides it.
+	// What is shown: the enabled accounts and the plugin executors. Whether an id is served is decided over
+	// every registration, with the predicate the lists and the door use.
 	visible := func(clientID string) bool {
 		return byID[clientID] != nil || provimuxPluginExecutorProvider(clientID) != ""
 	}
 
-	// names: the config's (alias rows, keep), then the aliases the logins register from their own files.
+	// names: the config's, exactly as written (alias rows and keep). A name is the owner's only when the
+	// config says so.
 	type ownName struct {
 		name    string
 		setBy   []string
@@ -138,54 +137,13 @@ func (h *Handler) provimuxNamesAnswer() provimuxNamesResponse {
 	}
 	own := map[string]*ownName{}
 	var order []string
-	add := func(name, setBy string) *ownName {
-		name = strings.TrimSpace(name)
-		key := strings.ToLower(name)
-		if key == "" {
-			return nil
-		}
-		entry, ok := own[key]
-		if !ok {
-			entry = &ownName{name: name, clients: map[string]struct{}{}, copies: map[string]map[string]struct{}{}}
-			own[key] = entry
-			order = append(order, key)
-		}
-		for _, have := range entry.setBy {
-			if have == setBy {
-				return entry
-			}
-		}
-		entry.setBy = append(entry.setBy, setBy)
-		return entry
-	}
-	configNames := map[string]struct{}{}
 	for _, name := range rule.Names() {
-		configNames[strings.ToLower(name.Name)] = struct{}{}
-		for _, setBy := range name.SetBy {
-			add(name.Name, setBy)
-		}
-	}
-	// A registered alias that the config does not name comes from a login's own file (an oauth-model-alias
-	// row is in the config's names).
-	loginFile := func(alias string) {
-		if _, inConfig := configNames[strings.ToLower(strings.TrimSpace(alias))]; !inConfig {
-			add(alias, registry.ProvimuxNameSetByLoginFile)
-		}
-	}
-	for _, auth := range byID {
-		for _, row := range coreauth.OAuthModelAliasesFromAttributes(auth.Attributes) {
-			if alias := strings.TrimSpace(row.Alias); alias != "" && alias != strings.TrimSpace(row.Name) {
-				add(alias, registry.ProvimuxNameSetByLoginFile)
-			}
-		}
-	}
-	for _, entry := range registered {
-		if entry.OAuthAlias != "" && visible(entry.ClientID) {
-			loginFile(entry.OAuthAlias)
-		}
+		own[name.Name] = &ownName{name: name.Name, setBy: name.SetBy, clients: map[string]struct{}{}, copies: map[string]map[string]struct{}{}}
+		order = append(order, name.Name)
 	}
 
-	// Every registered id is in exactly one of names (as a name or a copy) and others: the gate's predicate.
+	// Every registered id is in exactly one of names (as a name or a copy) and others, by the door's own
+	// predicate: a request for the id is served or refused.
 	type idClients struct {
 		clients []string
 		from    []string // the PrefixedFrom of its registrations
@@ -207,54 +165,67 @@ func (h *Handler) provimuxNamesAnswer() provimuxNamesResponse {
 			group.from = append(group.from, entry.PrefixedFrom)
 		}
 	}
+	// copyTarget is the name a served id is listed under when it is not itself a name of the config: a copy
+	// under an account's prefix lists under the name it copies; a spelling with a thinking suffix under the
+	// name its base is, or copies.
+	copied := map[string]string{} // id -> the config name some registration of it copies
+	for _, entry := range registered {
+		if from := strings.TrimSpace(entry.PrefixedFrom); from != "" && own[from] != nil && copied[entry.ID] == "" {
+			copied[entry.ID] = from
+		}
+	}
+	prefixedFrom := func(id string) string { return copied[id] }
+	addCopy := func(target, id string, clients []string) {
+		entry := own[target]
+		if entry.copies[id] == nil {
+			entry.copies[id] = map[string]struct{}{}
+		}
+		for _, clientID := range clients {
+			entry.copies[id][clientID] = struct{}{}
+		}
+	}
 	others := map[string]*provimuxOtherName{}
-	otherClients := map[string]map[string]struct{}{}
 	for _, id := range idOrder {
 		group := ids[id]
-		key := strings.ToLower(strings.TrimSpace(id))
-		if !rule.His(id, index) {
-			other, ok := others[key]
-			if !ok {
+		if !rule.Serves(id, index) {
+			other := others[id]
+			if other == nil {
 				other = &provimuxOtherName{Name: id, Accounts: []provimuxNameAccount{}}
-				others[key] = other
-				otherClients[key] = map[string]struct{}{}
+				others[id] = other
 			}
 			for _, clientID := range group.clients {
-				if _, dup := otherClients[key][clientID]; dup {
-					continue
-				}
-				otherClients[key][clientID] = struct{}{}
-				other.Accounts = append(other.Accounts, h.provimuxNameAccountOf(byID, clientID))
+				other.Accounts = append(other.Accounts, provimuxNameAccountOf(byID, clientID))
 			}
 			continue
 		}
 		placed := false
-		if entry := own[key]; entry != nil {
+		if entry := own[id]; entry != nil {
 			for _, clientID := range group.clients {
 				entry.clients[clientID] = struct{}{}
 			}
 			placed = true
 		}
-		for _, from := range group.from {
-			if base := own[strings.ToLower(strings.TrimSpace(from))]; base != nil {
-				if base.copies[id] == nil {
-					base.copies[id] = map[string]struct{}{}
-				}
-				for _, clientID := range group.clients {
-					base.copies[id][clientID] = struct{}{}
-				}
-				placed = true
-			}
+		if target := prefixedFrom(id); target != "" {
+			addCopy(target, id, group.clients)
+			placed = true
 		}
-		if !placed { // the owner's by a registration not shown here: listed under its own spelling
-			entry := add(id, registry.ProvimuxNameSetByLoginFile)
-			for _, clientID := range group.clients {
-				entry.clients[clientID] = struct{}{}
-			}
+		if placed {
+			continue
+		}
+		base := registry.ProvimuxBase(id)
+		target := ""
+		switch {
+		case own[base] != nil:
+			target = base
+		case prefixedFrom(base) != "":
+			target = prefixedFrom(base)
+		}
+		if target != "" {
+			addCopy(target, id, group.clients)
 		}
 	}
 
-	sort.Slice(order, func(i, j int) bool { return provimuxNameLess(own[order[i]].name, own[order[j]].name) })
+	sort.Slice(order, func(i, j int) bool { return provimuxNameLess(order[i], order[j]) })
 	for _, key := range order {
 		entry := own[key]
 		setBy := entry.setBy
@@ -281,21 +252,19 @@ func (h *Handler) provimuxNamesAnswer() provimuxNamesResponse {
 	}
 	sort.SliceStable(response.Others, func(i, j int) bool { return provimuxNameLess(response.Others[i].Name, response.Others[j].Name) })
 
-	if rule.Applies() && !home {
-		if refused := registry.ProvimuxRefusedNow(); refused != nil {
-			body := &provimuxRefusedNamesBody{Since: provimuxTime(refused.Since), Names: []provimuxRefusedName{}, Truncated: refused.Truncated}
-			for _, name := range refused.Names {
-				body.Names = append(body.Names, provimuxRefusedName{Name: name.Name, Requests: name.Requests, LastAt: provimuxTime(name.LastAt)})
-			}
-			response.Refused = body
+	if refused != nil {
+		body := &provimuxRefusedNamesBody{Since: provimuxTime(refused.Since), Names: []provimuxRefusedName{}, Truncated: refused.Truncated}
+		for _, name := range refused.Names {
+			body.Names = append(body.Names, provimuxRefusedName{Name: name.Name, Requests: name.Requests, LastAt: provimuxTime(name.LastAt)})
 		}
+		response.Refused = body
 	}
 	return response
 }
 
 // provimuxNameAccountOf names a registry client as a route of GET /provimux/model-routes names its account; a
 // plugin executor's own models have no account, only the plugin's provider.
-func (h *Handler) provimuxNameAccountOf(byID map[string]*coreauth.Auth, clientID string) provimuxNameAccount {
+func provimuxNameAccountOf(byID map[string]*coreauth.Auth, clientID string) provimuxNameAccount {
 	if auth := byID[clientID]; auth != nil {
 		return provimuxNameAccount{
 			AuthIndex: provimuxString(lockedAuthIndex(auth)),
@@ -318,14 +287,10 @@ func provimuxNameLess(left, right string) bool {
 }
 
 func provimuxSetByRank(setBy string) int {
-	switch setBy {
-	case registry.ProvimuxNameSetByAlias:
+	if setBy == registry.ProvimuxNameSetByAlias {
 		return 0
-	case registry.ProvimuxNameSetByKeep:
-		return 1
-	default:
-		return 2
 	}
+	return 1
 }
 
 // provimuxPluginExecutorProvider is the provider of a plugin executor's model client
