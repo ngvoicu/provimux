@@ -896,7 +896,8 @@ The rule is one immutable value built at the config commit from the config alone
 and the model prefixes the config declares on its key and provider entries (the `prefix` field of every Gemini,
 Interactions, Claude, Codex, xAI, Meta, Vertex-compat and OpenAI-compatibility entry, trimmed as the synthesizer
 trims it). A name is his when the config names it exactly, or it is `p/n` for a declared prefix `p` and one of his
-names `n`. A name is served when it is his or its name without a thinking suffix is. `auto` never is.
+names `n`, the exact concatenation upstream builds (only the whole name is trimmed, as a request is: `p/ n` is no
+copy of `n`; 18.7). A name is served when it is his or its name without a thinking suffix is. `auto` never is.
 
 A prefix that exists only in a login's own file is not the config's (no login type takes a prefix from the config):
 a copy under it is his only when its full name is on `keep`, exactly as an alias in a login's own file (it shows
@@ -909,11 +910,9 @@ review's finding 8, an index republished after the switch went off). The upstrea
 `PrefixedFrom` are removed: `sdk/cliproxy/service_models.go` is again identical to `9ffc2a244`. With the field of
 18.2, the upstream lines are 22 in 6 files.
 
-**Upstream's copies equal the rule's.** A generated-config test registers 300 configs (Claude, Codex and
-OpenAI-compatibility entries with and without prefixes, alias and plain rows, `force-model-prefix` on and off, `keep`)
-twice, with and without their prefixes; the ids only the prefixed registration has are upstream's copies. For every
-account the config declares, the copies of his names upstream registers are exactly the copies the rule computes,
-and every copy is served exactly when what it copies is (1,196 copies checked). No case was found where they differ.
+**Upstream's copies equal the rule's.** `TestProvimuxOnlyMyNamesRuleCopiesEqualUpstreamCopies`, as rewritten in
+18.7: generated v8 configs through the config loader, every family above, both `force-model-prefix` settings, prefixes
+with slashes and spaces; its oracle does not ask the rule.
 
 ### 18.2 The door
 
@@ -948,7 +947,8 @@ value it stored; what the plugin runs is under "What the switch does not cover".
 
 `GET /provimux/names` reads the rule, its counter and the registrations under one read lock, then the accounts.
 An account enters the auth manager before its models enter the registry, so every registration read is matched to
-its account and a count is right at the first answer carrying a rule's ETag (the review's finding 3). An id is
+its account and a count is right at the first answer carrying a rule's ETag (the review's finding 3). While a login
+is being replaced by another, a count can be one read behind (18.7). An id is
 placed by the door's predicate under the same value. A name kept with its thinking suffix has its own row and stays
 among its base's `copies`, as a prefixed copy kept in full does.
 
@@ -975,4 +975,53 @@ nothing rewrites them. Test: `TestRequestedModelsKeepCase` (`B-Coder` sent, `B-C
 ### 18.6 Left
 
 K3 does not see a registry method taken as a method value at package level (the review's note 7): left.
+
+### 18.7 After the fifth review
+
+2026-11-25, after the bounded check of `00475e892`. One fix, two tests made to prove what they claim, four points
+documented rather than changed (the chief's decision).
+
+**A copy is the exact concatenation.** Upstream builds a copy as `prefix + "/" + name`. `CopyOf` passed the part after
+the slash to `Has`, which trims it again, so `team-a/ mine-t` (a space after the slash), a raw model another key
+offered, was listed and served as a copy of `mine-t`. `CopyOf` now looks the part after the slash up as it stands; only
+the whole name is trimmed, once. Tests: `TestRuleCopyIsTheExactConcatenation` and, on the server,
+`TestProvimuxOnlyMyNamesSpaceAfterThePrefixIsNoCopy` (refused with the setting's message, not listed, nothing at the
+stand-in; the real copy reaches its key's upstream). Both fail on `00475e892`.
+
+**The prefix test's oracle is independent of the rule.** It classified the copies it observed with `CopyOf`, so it
+could not show the two sets equal. Now: 320 configs written as v8 YAML and read by the config loader, with entries of
+all eight families that take a prefix, `force-model-prefix` on and off (each config is also registered with it on),
+prefixes written `crew`, `  crew  `, `/crew/`, `org/crew`, `data team`, `/ data team /`, raw rows spelled like copies
+(`crew/mine`, `team-a/ mine`), keep with full copies, patterns, `auto` and blanks. His names are computed by the test
+from what it generated; the declared prefixes are those upstream gave the accounts it synthesized; upstream's copies are
+the ids an account registers that are its prefix, `/`, and an id of the same config registered without prefixes. For
+every account, upstream's copies of his names equal, as a set, the rule's prefix before each of the rule's names the
+account offers; the rule's names and prefixes equal the oracle's; every registered id (and its `(high)` spelling) is
+served exactly when it is his or `p/n` for a declared `p` and his `n`. 4,355 registered ids, 1,226 copies, every family
+under both settings. On `00475e892` it fails on `team-a/ mine`.
+
+**Judgements, by behaviour.** `TestProvimuxOnlyMyNamesJudgementReadsNoRegistry` caught a registry call inside the
+door's judgement but passed a field read in the list judge and a registry call in the code around the door. Beside it:
+`TestProvimuxOnlyMyNamesListJudgementIgnoresRegistrations` (the list gate over a registry that goes down to one model
+and up to many) and `TestProvimuxOnlyMyNamesJudgementIgnoresRegistrations` (the real server: the door, the router check
+and a router's target, alpha search, `model-routes`' filter). Under one rule value, which the tests check is unchanged,
+unrelated accounts are registered and unregistered (served and unserved models, one offered by several accounts);
+every judgement is held to the rule and must not move. The source check now also refuses a judge that uses its
+receiver (the registry, for the list gate). Nine mutations (the check's three, a second list-field read, one each in
+the router check, alpha search and `model-routes`, a second each in alpha search and `model-routes`): the behaviour
+tests fail on all nine, the source check on eight (not the registry call around the door, which reads the registry
+legitimately to resolve `auto`).
+
+**Documented, not changed** (the README's "What the switch does not cover"):
+
+- A request for `auto` already under way when the switch is turned on is resolved from the names served after the
+  save (it may be answered by another of his names than a moment before, or refused with upstream's own error if none
+  is eligible).
+- The status's account count for a name can be one read behind while a login is being replaced by another; the next
+  read is right.
+- A Gemini key whose alias is written as a full resource name (`models/gemini-2.5-pro`): keeping the short name lists
+  the resource and answers its detail, but generation under it is refused; this is upstream's routing of such an alias
+  with the switch off too. Keep the alias's full name, or write the alias without `models/`.
+- With the switch on, a name no account offers gets the setting's message and takes one of the 256 refusal-count
+  slots; the machine-readable fields (400, `invalid_request_error`, `model_not_found`, `param: model`) are as before.
 
