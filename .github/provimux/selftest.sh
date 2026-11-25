@@ -65,7 +65,15 @@
 #                 even when closing the sync issue fails
 #   latest        release-latest (run from the workflow): only its own release id,
 #                 never backward, stops on an unreadable or tagless latest, fails a
-#                 wrong readback
+#                 wrong readback; a readback still showing the old latest (or none) is
+#                 read again (stub sleep: 2 4 8 16 32 s), another release fails at once
+#   published     publish-release's readback (run from the workflow): not found (404),
+#                 a draft or not immutable is read again; another read error fails at once
+#   image readback  put_manifest of the image step (run from the workflow, a stub curl
+#                 for the registry): an absent tag right after the PUT is read again
+#                 (6 reads, then "never appeared"); another digest or an HTTP 500 fails
+#                 at once
+#   notify table  the base tag's commit once; a failed release run as "failed"
 #   README commit (design/root-readme.md) check.sh prepare on one upstream tag per case:
 #                 the READMEs edited, rewritten (a plain range-diff then unpairs the
 #                 README commit), untouched: resolved, same candidate twice; a later
@@ -574,6 +582,17 @@ expect "-pmx tag exists, release a draft: pushed, release not complete" "sync: v
 contains "  ... says how to rerun the release run" "$tmp/notify.out" "gh run rerun 7 --failed -R test/provimux"
 lacks "  ... never says to publish again" "$tmp/notify.out" "publish.sh v1.1.0"
 lacks "  ... nor that nothing was pushed" "$tmp/notify.out" "nothing was pushed"
+# The table of refs: the base tag (annotated, as upstream's are) once, and a failed release run in words.
+git -C "$pmx" push -q "$remote" refs/tags/v1.1.0
+jq '.workflow_runs[0].conclusion = "failure"' "$stub/api/repos_test_provimux_actions_runs_event_push_branch_v1.1.0-pmx.1_per_page_50.json" >"$tmp/r.json"
+mv "$tmp/r.json" "$stub/api/repos_test_provimux_actions_runs_event_push_branch_v1.1.0-pmx.1_per_page_50.json"
+notify v1.1.0 failed 'publish: the provimux-release run for v1.1.0-pmx.1 ended failure; the issue stays open' >/dev/null
+# shellcheck disable=SC2016 # a literal Markdown table row
+contains "table: the base tag's commit, once" "$tmp/notify.out" '| `v1.1.0` | `'"$v110"'` |'
+contains "  ... a failed release run reads 'failed'" "$tmp/notify.out" 'release: draft; release run for that commit: failed |'
+lacks "  ... never 'failure:failure'" "$tmp/notify.out" 'failure:failure'
+git -C "$remote" tag -d v1.1.0 >/dev/null
+runs "$pmx_sha"
 jq '.draft = false' "$stub/api/repos_test_provimux_releases_tags_v1.1.0-pmx.1.json" >"$tmp/d.json"
 mv "$tmp/d.json" "$stub/api/repos_test_provimux_releases_tags_v1.1.0-pmx.1.json"
 expect "push reported a failure but the remote has the complete release (lost acknowledgement): released" "sync: v1.1.0 — released" \
@@ -1023,12 +1042,127 @@ rel 301 v1.3.0-pmx.1 '.immutable = false'
 expect "this run's release is not immutable: refused" refused "$(lrun TAG=v1.3.0-pmx.1 ID=301)"
 rel 301 v1.3.0-pmx.1
 cp "$stub/api/repos_test_provimux_releases_299.json" "$tmp/r299"; rel 301 v1.3.0-pmx.1
-# A readback that is not this release (GitHub kept another one latest).
+# From here the PATCH changes nothing by itself: the read-back shows what the test puts there.
 # shellcheck disable=SC2016 # literal text for sed
 sed -i.bak 's|cp "\$f" "\$(dirname|true "$(dirname|' "$stub/bin/gh" && rm -f "$stub/bin/gh.bak"
+# A stub sleep: records each wait in $STUB_SLEEPS and runs $STUB_ON_SLEEP (the write becoming
+# visible), without waiting.
+mkdir -p "$stub/sleepbin"
+# shellcheck disable=SC2016 # expanded by the stub
+printf '#!/bin/sh\necho "$1" >>"$STUB_SLEEPS"\n[ -z "$STUB_ON_SLEEP" ] || sh -c "$STUB_ON_SLEEP"\n' >"$stub/sleepbin/sleep"
+chmod +x "$stub/sleepbin/sleep"
+sleeps() { tr '\n' ' ' <"$tmp/sleeps" | sed 's/ $//'; }
+lwait() { : >"$tmp/sleeps"; lrun PATH="$stub/sleepbin:$stub/bin:$PATH" STUB_SLEEPS="$tmp/sleeps" "$@"; }
+lf="$stub/api/repos_test_provimux_releases_latest.json"
 latest '{"tag_name": "v1.2.0-pmx.1"}'
-expect "latest reads back as another release after the change: fails" refused "$(lrun TAG=v1.3.0-pmx.1 ID=301)"
-contains "  ... says so" "$tmp/latest.out" "reads back as"
+expect "latest still reads as before the change: read again, then fails" refused "$(lwait TAG=v1.3.0-pmx.1 ID=301)"
+expect "  ... 6 reads, 2 4 8 16 32 s apart" "2 4 8 16 32" "$(sleeps)"
+contains "  ... says what it reads" "$tmp/latest.out" "reads back as 'v1.2.0-pmx.1'"
+expect "latest shows the change after the first wait: promoted" pass \
+  "$(lwait TAG=v1.3.0-pmx.1 ID=301 STUB_ON_SLEEP="echo '{\"tag_name\": \"v1.3.0-pmx.1\"}' >'$lf'")"
+expect "  ... after one wait" "2" "$(sleeps)"
+latest none
+expect "no latest before: a 404 right after the change is read again; promoted" pass \
+  "$(lwait TAG=v1.2.0-pmx.1 ID=299 STUB_ON_SLEEP="echo '{\"tag_name\": \"v1.2.0-pmx.1\"}' >'$lf'")"
+expect "  ... after one wait" "2" "$(sleeps)"
+latest '{"tag_name": "v1.2.0-pmx.1"}'
+expect "latest then reads as a third release: fails at that read" refused \
+  "$(lwait TAG=v1.3.0-pmx.1 ID=301 STUB_ON_SLEEP="echo '{\"tag_name\": \"v1.1.0-pmx.1\"}' >'$lf'")"
+expect "  ... no further wait" "2" "$(sleeps)"
+contains "  ... says what it reads" "$tmp/latest.out" "reads back as 'v1.1.0-pmx.1'"
+latest '{"tag_name": "v1.2.0-pmx.1"}'
+
+echo "# provimux-release.yml: publish-release reads the published release back"
+if inline published; then ok "published lines found in the workflow"; else bad "published lines found in the workflow"; fi
+pf="$stub/api/repos_test_provimux_releases_tags_v1.3.0-pmx.1.json"
+pubrel() { jq -n --argjson d "$1" --argjson i "$2" '{id: 301, draft: $d, prerelease: false, immutable: $i, assets: []}'; }
+prun() { # prun [ENV...]: the published lines with the stub gh and sleep; pub in $tmp/pub-rb.out
+  : >"$tmp/sleeps"
+  # shellcheck disable=SC2016 # expanded by the harness shell
+  env PATH="$stub/sleepbin:$stub/bin:$PATH" STUB_API="$stub/api" STUB_SLEEPS="$tmp/sleeps" GH_REPO=test/provimux TAG=v1.3.0-pmx.1 "$@" \
+    bash -c 'set -euo pipefail; fail() { echo "::error::$*"; exit 1; }; . "$1"; jq -c ".[0] | {draft, immutable}" <<<"$pub"' _ "$tmp/published.sh" \
+    >"$tmp/pub-rb.out" 2>&1 && echo pass || echo failed
+}
+pubrel false true >"$pf"
+expect "published and immutable at the first read: no wait" pass "$(prun)"
+expect "  ... no wait" "" "$(sleeps)"
+rm -f "$pf"
+expect "not found by its tag (404) right after publishing, found after a wait: ok" pass "$(prun STUB_ON_SLEEP="jq -n '{id: 301, draft: false, prerelease: false, immutable: true, assets: []}' >'$pf'")"
+expect "  ... after one wait" "2" "$(sleeps)"
+pubrel true false >"$pf"
+expect "still a draft right after publishing, published after a wait: ok" pass "$(prun STUB_ON_SLEEP="jq -n '{id: 301, draft: false, prerelease: false, immutable: true, assets: []}' >'$pf'")"
+expect "  ... after one wait" "2" "$(sleeps)"
+rm -f "$pf"
+expect "never found by its tag: fails after 6 reads" failed "$(prun)"
+expect "  ... 2 4 8 16 32 s apart" "2 4 8 16 32" "$(sleeps)"
+contains "  ... says so" "$tmp/pub-rb.out" "not found by its tag after publishing it"
+echo 'HTTP 503' >"$pf"
+expect "the release cannot be read (503): fails at once" failed "$(prun)"
+expect "  ... no wait" "" "$(sleeps)"
+pubrel false false >"$pf"
+expect "published but never immutable: read 6 times, the check after it refuses" pass "$(prun)"
+contains "  ... hands on immutable=false" "$tmp/pub-rb.out" '"immutable":false'
+expect "  ... 2 4 8 16 32 s apart" "2 4 8 16 32" "$(sleeps)"
+rm -f "$pf"
+
+echo "# provimux-release.yml: image-push reads a manifest back (put_manifest), no registry"
+if inline readback; then ok "readback lines found in the workflow"; else bad "readback lines found in the workflow"; fi
+# A stub curl for a registry: a PUT stores the body's digest under its ref; a HEAD answers
+# 404 for the first $REG/lag reads after the PUT, then 200 with the stored digest ($REG/wrong
+# instead when it exists); $REG/err makes every HEAD a 500. Requests are logged in $REG/log.
+reg="$tmp/reg"; mkdir -p "$stub/regbin"
+cat >"$stub/regbin/curl" <<'EOF'
+#!/usr/bin/env bash
+m=GET head='' hdr='' data='' url=''
+while [ $# -gt 0 ]; do
+  case "$1" in -I) head=1 ;; -X) m=$2; shift ;; -D) hdr=$2; shift ;; --data-binary) data=${2#@}; shift ;; -o | -H | -u | -w | -T) shift ;; http*) url=$1 ;; esac
+  shift
+done
+ref=${url##*/manifests/}; f="$REG/m-$ref"
+if [ "$m" = PUT ]; then
+  echo "PUT $ref" >>"$REG/log"
+  { sha256sum "$data" 2>/dev/null || shasum -a 256 "$data"; } | awk '{print "sha256:" $1}' >"$f"
+  cp "$REG/lag" "$f.lag"; exit 0
+fi
+[ -n "$head" ] || exit 22
+echo "HEAD $ref" >>"$REG/log"
+if [ -f "$REG/err" ]; then printf 500; exit 0; fi
+if [ ! -f "$f" ]; then printf 404; exit 0; fi
+n=$(cat "$f.lag"); if [ "$n" -gt 0 ]; then echo $((n - 1)) >"$f.lag"; printf 404; exit 0; fi
+printf 'HTTP/1.1 200 OK\r\nDocker-Content-Digest: %s\r\n\r\n' "$(cat "$REG/wrong" 2>/dev/null || cat "$f")" >"$hdr"
+printf 200
+EOF
+chmod +x "$stub/regbin/curl"
+# shellcheck disable=SC2016 # expanded by the harness shell
+{ echo 'set -euo pipefail'; echo 'fail() { echo "::error::$*"; exit 1; }'
+  echo 'name=test/provimux; api=http://registry.invalid/v2/test/provimux; accept=x'
+  echo "auth=(-H 'Authorization: Bearer test')"
+  command -v sha256sum >/dev/null 2>&1 || echo 'sha256sum() { shasum -a 256 "$@"; }'
+  cat "$tmp/readback.sh"
+  echo 'put_manifest "$1" "$2" application/vnd.oci.image.index.v1+json'; echo 'echo "ok: $1"'; } >"$tmp/rb-harness.sh"
+echo '{"schemaVersion": 2}' >"$tmp/rb-index.json"
+rb() { # rb LAG [wrong|err]: put_manifest 1.3.0-pmx.1 with LAG absent reads after the PUT
+  rm -rf "$reg"; mkdir -p "$reg"; echo "$1" >"$reg/lag"; : >"$tmp/sleeps"
+  case "${2:-}" in wrong) echo "sha256:$(printf '%064d' 0)" >"$reg/wrong" ;; err) : >"$reg/err" ;; esac
+  env PATH="$stub/regbin:$stub/sleepbin:$PATH" REG="$reg" STUB_SLEEPS="$tmp/sleeps" \
+    bash "$tmp/rb-harness.sh" 1.3.0-pmx.1 "$tmp/rb-index.json" >"$tmp/rb.out" 2>&1 && echo pass || echo failed
+}
+heads() { grep -c '^HEAD ' "$reg/log"; }
+expect "the tag reads back at once: ok, no wait" pass "$(rb 0)"
+expect "  ... one read, no wait" "1 " "$(heads) $(sleeps)"
+expect "absent (404) twice right after the PUT, as ghcr.io did for 8.1.3-pmx.1: ok" pass "$(rb 2)"
+expect "  ... 3 reads, waits 2 4" "3 2 4" "$(heads) $(sleeps)"
+expect "never appears: fails after 6 reads" failed "$(rb 9)"
+expect "  ... waits 2 4 8 16 32" "6 2 4 8 16 32" "$(heads) $(sleeps)"
+contains "  ... says the tag never appeared" "$tmp/rb.out" "test/provimux:1.3.0-pmx.1 never appeared after the push"
+expect "another digest after the PUT: fails at once" failed "$(rb 0 wrong)"
+expect "  ... one read, no wait" "1 " "$(heads) $(sleeps)"
+contains "  ... names both digests" "$tmp/rb.out" "is sha256:$(printf '%064d' 0) after the push, expected sha256:"
+expect "another digest after an absent read: fails at that read" failed "$(rb 1 wrong)"
+expect "  ... 2 reads, one wait" "2 2" "$(heads) $(sleeps)"
+expect "the registry answers 500 to the read: fails at once" failed "$(rb 0 err)"
+expect "  ... one read, no wait" "1 " "$(heads) $(sleeps)"
+contains "  ... says HTTP 500" "$tmp/rb.out" "HTTP 500"
 
 
 # --- T-90: the tap's last moment, the optional plan, tap-check's failure, the owner's order -----

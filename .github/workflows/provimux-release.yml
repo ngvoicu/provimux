@@ -1009,14 +1009,31 @@ jobs:
             gh release edit "$TAG" --draft=false --latest=false
           fi
           # The public release, as anyone sees it.
-          pub="$(gh api "repos/$GH_REPO/releases/tags/$TAG" --jq '{id, draft, prerelease, assets: [.assets[] | {id, name, state, digest}]}' | jq -s .)"
+          # >>> published
+          # GitHub may show the publication a moment later (a draft is not found by its tag):
+          # while the release is not found (404), still a draft or not yet immutable, it is
+          # read again, 6 reads in all, 2, 4, 8, 16 and 32 seconds apart (about a minute), as
+          # image-push reads a manifest back. Any other read error fails at once.
+          perr="$(mktemp)"
+          for wait in 0 2 4 8 16 32; do
+            if [[ "$wait" != 0 ]]; then echo "Release $TAG does not read as published and immutable yet; reading it again in ${wait}s."; sleep "$wait"; fi
+            if pub="$(gh api "repos/$GH_REPO/releases/tags/$TAG" --jq '{id, draft, prerelease, immutable, assets: [.assets[] | {id, name, state, digest}]}' 2>"$perr")"; then
+              pub="$(jq -s . <<<"$pub")"
+              [[ "$(jq -r '"\(.[0].draft) \(.[0].immutable)"' <<<"$pub")" != "false true" ]] || break
+            else
+              grep -q 'HTTP 404' "$perr" || fail "Cannot read release $TAG after publishing it ($(head -n 1 "$perr"))."
+              pub='[]'
+            fi
+          done
+          [[ "$(jq length <<<"$pub")" == 1 ]] || fail "Release $TAG is not found by its tag after publishing it (6 reads over 62s)."
+          # <<< published
           [[ "$(jq '.[0].draft' <<<"$pub")" == false ]] || fail "Release $TAG is still a draft."
           [[ "$(jq '.[0].prerelease' <<<"$pub")" == false ]] || fail "Release $TAG is a prerelease."
           missing="$(check "$pub")" || fail "Published release $TAG does not match this run."
           [[ -z "$missing" ]] || fail "Published release $TAG lacks: $missing"
           # Immutable releases are on for the repository: a published release's assets and
           # tag can no longer change. Nothing is promoted from a release that is not.
-          [[ "$(gh api "repos/$GH_REPO/releases/tags/$TAG" --jq '.immutable')" == true ]] ||
+          [[ "$(jq '.[0].immutable' <<<"$pub")" == true ]] ||
             fail "Release $TAG is published but not immutable (Settings → General → Releases → immutable releases); nothing is promoted."
           echo "release_id=$(jq -r '.[0].id' <<<"$pub")" >>"$GITHUB_OUTPUT"
           echo "Release $TAG is public and immutable with ${#want[@]} assets, all matching." | tee -a "$GITHUB_STEP_SUMMARY"
@@ -1240,8 +1257,21 @@ jobs:
             exit 0
           fi
           gh api -X PATCH "repos/$GH_REPO/releases/$ID" -f make_latest=true >/dev/null
-          after="$(gh api "repos/$GH_REPO/releases/latest" --jq '.tag_name // ""')" || fail "Marked $TAG latest, but cannot read latest back."
-          [[ "$after" == "$TAG" ]] || fail "Marked $TAG latest, but latest reads back as '$after'."
+          # GitHub may show the change a moment later: while latest still reads as it was
+          # before (cur, or none when there was none), it is read again, 6 reads in all, 2,
+          # 4, 8, 16 and 32 seconds apart (about a minute), as image-push reads a manifest
+          # back. Another release, or any other read error, fails at once.
+          for wait in 0 2 4 8 16 32; do
+            if [[ "$wait" != 0 ]]; then echo "Latest still reads as ${cur:-none}; reading it again in ${wait}s."; sleep "$wait"; fi
+            if after="$(gh api "repos/$GH_REPO/releases/latest" --jq '.tag_name // ""' 2>"$err")"; then
+              [[ -n "$cur" && "$after" == "$cur" ]] || break
+            elif [[ -z "$cur" ]] && grep -q 'HTTP 404' "$err"; then
+              after=''
+            else
+              fail "Marked $TAG latest, but cannot read latest back ($(head -n 1 "$err"))."
+            fi
+          done
+          [[ "$after" == "$TAG" ]] || fail "Marked $TAG latest, but latest reads back as '${after:-none}'."
           echo "Latest: ${cur:-none} -> $TAG"
           # <<< latest
 
@@ -1291,6 +1321,7 @@ jobs:
             api="http://$REGISTRY/v2/$name"
           fi
           accept='application/vnd.oci.image.index.v1+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.docker.distribution.manifest.v2+json'
+          # >>> readback
           # Digest a tag or digest resolves to; empty when it does not exist.
           ref_digest() {
             local hdr code d
@@ -1315,13 +1346,26 @@ jobs:
             [[ "$loc" == *\?* ]] && sep='&' || sep='?'
             curl -fsS "${auth[@]}" -X PUT -H 'Content-Type: application/octet-stream' -T "$2" -o /dev/null "${loc}${sep}digest=$1"
           }
+          # PUT a manifest under ref (a tag or its digest), then read it back. The registry
+          # may not show a write at once (ghcr.io answered 404 for 8.1.3-pmx.1 right after
+          # accepting it): an absent read-back is read again, 6 reads in all, 2, 4, 8, 16
+          # and 32 seconds apart (about a minute), then it fails. Any other digest, or a
+          # read that is neither 200 nor 404, fails at once.
           put_manifest() { # ref file media-type
-            local want got
+            local want got wait
             want="sha256:$(sha256sum "$2" | cut -d' ' -f1)"
             curl -fsS "${auth[@]}" -X PUT -H "Content-Type: $3" --data-binary "@$2" -o /dev/null "$api/manifests/$1"
             got="$(ref_digest "$1")"
+            for wait in 2 4 8 16 32; do
+              [[ -z "$got" ]] || break
+              echo "$name:$1 is not visible yet after the push; reading it again in ${wait}s."
+              sleep "$wait"
+              got="$(ref_digest "$1")"
+            done
+            [[ -n "$got" ]] || fail "$name:$1 never appeared after the push (6 reads over 62s), expected $want."
             [[ "$got" == "$want" ]] || fail "$name:$1 is $got after the push, expected $want."
           }
+          # <<< readback
 
           index=image-index/index.json
           idigest="$(cat image-index/digest)"
