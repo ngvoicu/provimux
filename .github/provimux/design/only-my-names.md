@@ -607,12 +607,16 @@ For 2 and 3 the registry is asked for `n` as given and, when `n` has upper-case 
 
 | File | Place | Inserted |
 |---|---|---|
-| `internal/registry/model_registry.go` | in `ModelInfo`, after `OAuthAliasSource` (`:50`) | a comment line and `PrefixedFrom string` with the tag `json:"-"` (2 lines) |
-| `internal/registry/model_registry.go` | `GetAvailableModelInfos`, after the `if !available …` block (`:1723-1725`) | `if r.provimuxHeld(registration.Info) { continue }` (3 lines) |
-| `internal/registry/model_registry.go` | `buildAvailableModelsLocked`, after the `if !available …` block (`:1743-1745`) | the same 3 lines |
-| `sdk/cliproxy/service_models.go` | `applyModelPrefixes`, after `clone.ID = prefixedID` (`:832`) | `clone.PrefixedFrom = baseID` (1 line). Every prefixed copy is made here: the six registration calls, the plugin-supplied models and Antigravity's catalog all call this function (`service_models.go:278-357`, `service_executors.go:767`, `antigravity_models.go:828`) [ran: a search] |
-| `sdk/api/handlers/handlers_routing.go` | `providersForExecution`, first statement (`:130`) | `if errMsg := h.provimuxDoor(&modelName, originalRequestedModel, routeDecision); errMsg != nil { return nil, "", errMsg }` (3 lines) |
-| `sdk/api/handlers/handlers_routing.go` | `applyModelRouter`, after `var decision modelRouteDecision` (`:370`) | `if provimuxNoRouter(modelName) { return decision }` (3 lines) |
+As of section 18 (head after the fifth round): **22 lines in 6 files**. The `PrefixedFrom` rows of 16.4 are gone
+(18.1); the table below is the current one.
+
+| File | Place | Inserted | Why |
+|---|---|---|---|
+| `internal/registry/model_registry.go` | `GetAvailableModelInfos`, after the `if !available …` block (`:1725`) | `if r.provimuxHeld(registration.Info, "") { continue }` (3 lines) | the list gate (G1) of the info list |
+| `internal/registry/model_registry.go` | `buildAvailableModelsLocked`, after the `if !available …` block (`:1745`) | `if r.provimuxHeld(registration.Info, handlerType) { continue }` (3 lines) | the list gate of every format's list (the Gemini format checks the name it shows, 18.4) |
+| `sdk/api/handlers/handlers_routing.go` | `providersForExecution`, first statement (`:130`) | `if errMsg := h.provimuxDoor(&modelName, originalRequestedModel, routeDecision); errMsg != nil { return nil, "", errMsg }` (3 lines) | the door (G2): every handler execution passes it before an account is chosen |
+| `sdk/api/handlers/handlers_routing.go` | in `modelRouteDecision`, after `Model string` (`:334`) | `provimuxRule provimuxRuleValue // Provimux: only-my-names` (1 line; the type is an alias in `provimux_only_my_names.go`, so no import) | carries the rule value the router check (G3) judged under to the door (G2), directly or in the context of a prepared stream route, so one request is judged under one value (18.2). Without it a commit between the two let G3 skip the router under one rule and the door serve under the other: 449 of 2000 requests served in `TestProvimuxOnlyMyNamesRouterUnderAlternatingRules`. A sync must keep the field: our file reads and writes it, so a sync that drops it does not build, and K3's source checks require the door to start from it |
+| `sdk/api/handlers/handlers_routing.go` | `applyModelRouter`, after `var decision modelRouteDecision` (`:374`) | `if provimuxNoRouter(&decision, modelName) { return decision }` (3 lines) | the router check (G3): no router is asked about a name the rule does not serve; stores its rule value on the decision |
 | `internal/api/server_routes.go` | `codexAlphaSearch`, after the `if errRoute != nil` block (`:404-408`) | `if s.provimuxRefused(c, routing.Model, selectionModel) { return }` (3 lines) |
 | `sdk/cliproxy/service_config.go` | `:181` | stays: `provimuxSetNamesRule(newCfg)` |
 | `sdk/cliproxy/builder.go` | `:318` | stays: `provimuxSetNamesRule(b.cfg)` |
@@ -901,9 +905,9 @@ account registers that spelling.
 
 The rule lives in its own package, `internal/provimux/onlymynames`, which imports only the standard library: it
 cannot read a registration. The live fact index of 16.11 and `ModelInfo.PrefixedFrom` are gone (and with them the
-review's finding 8, an index republished after the switch went off). The two upstream lines that set and declared
-`PrefixedFrom` are removed: `sdk/cliproxy/service_models.go` is again identical to `9ffc2a244`, and the upstream
-lines are 21 in 6 files.
+review's finding 8, an index republished after the switch went off). The upstream lines that set and declared
+`PrefixedFrom` are removed: `sdk/cliproxy/service_models.go` is again identical to `9ffc2a244`. With the field of
+18.2, the upstream lines are 22 in 6 files.
 
 **Upstream's copies equal the rule's.** A generated-config test registers 300 configs (Claude, Codex and
 OpenAI-compatibility entries with and without prefixes, alias and plain rows, `force-model-prefix` on and off, `keep`)
@@ -922,13 +926,23 @@ rule value serves); that is a choice of name, not a judgement, and the chosen na
 Alpha search loads the rule once for both its names; `model-routes` once per answer; a list once per build (under
 the registry's lock, under which a rule is put in force).
 
-**What is left open.** The router check (G3, in `applyModelRouter`) and the door (G2, in `providersForExecution`)
-are two places in upstream's code with no value passing between them in our lines. G3 decides whether a router is
-asked; if a commit lands between the two, G3 may skip the router under rule B and the door serve the submitted name
-under rule A, which with A in force alone would have been routed to a target A refuses. A test that alternates two
-such rules shows it. Carrying the value needs one more inserted line in upstream's `handlers_routing.go` (a field of
-`modelRouteDecision`), or the fallback of 18 (judge only the submitted name, the router's target under "What the
-switch does not cover"); the chief decides.
+**The router check and the door share the value** (the chief's decision (a)). The router check (G3, in
+`applyModelRouter`) and the door (G2, in `providersForExecution`) are two places in upstream's code. Each loaded the
+rule, so a commit between them could let G3 skip the router under rule B and the door serve the submitted name under
+rule A, which with A alone would have been routed to a target A refuses: a test alternating two such rules served
+449 of 2000 requests. Now `provimuxNoRouter` stores the value it loaded on the decision, in one inserted field of
+`modelRouteDecision` (16.4's table), every return of `applyModelRouter` carries it, and the door judges under it,
+loading the rule only when a decision carries none (one not made by `applyModelRouter`: then the door is the only
+judgement of the request and loads once). A prepared stream route (`PrepareStreamModelRoute`) stores the decision in
+the context, the value with it. Tests: `TestProvimuxOnlyMyNamesRouterUnderAlternatingRules` (0 of 2000, under
+`-race` 20 times; 100 to 213 with the door ignoring the value), `TestProvimuxOnlyMyNamesPreparedStreamCarriesItsRule`,
+and K3's source checks (the door starts from the decision's value; `provimuxNoRouter` stores it; `applyModelRouter`
+never replaces its decision and returns only it).
+
+Every other judgement of a name loads the rule once for its whole answer and asks no router through
+`applyModelRouter`: alpha search (its own router call, then both names under one value), each list build,
+`model-routes`, the status. A plugin executor chosen by a router is reached only for a name G3 served under the
+value it stored; what the plugin runs is under "What the switch does not cover".
 
 ### 18.3 The status
 
