@@ -15,6 +15,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/provimux/onlymynames"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 )
 
@@ -166,8 +167,8 @@ func newNamesDoor(t *testing.T, on bool) *namesDoor {
 		others[other] = true
 	}
 	for _, name := range namesHeld {
-		if !others[name] || registry.ProvimuxServes(name) {
-			t.Fatalf("%s: in others %v, served %v", name, others[name], registry.ProvimuxServes(name))
+		if !others[name] || namesServes(name) {
+			t.Fatalf("%s: in others %v, served %v", name, others[name], namesServes(name))
 		}
 	}
 	return door
@@ -175,10 +176,9 @@ func newNamesDoor(t *testing.T, on bool) *namesDoor {
 
 func namesOthersOfAll() []string {
 	rule, registered, _ := registry.ProvimuxNamesView()
-	index := registry.NewProvimuxIndex(registered)
 	var names []string
 	for _, entry := range registered {
-		if !rule.Serves(entry.ID, index) {
+		if !rule.Serves(entry.ID) {
 			names = append(names, entry.ID)
 		}
 	}
@@ -258,7 +258,7 @@ func namesDoorRoutes() []namesRoute {
 // K2, D2 and D3: every route of server_routes.go that takes a model, asked for a name that is not his,
 // is refused, the stand-in vendor receives nothing, and the answer carries the setting's message. The
 // refusal is HTTP 400, model_not_found, in each client format's wrapping; a name no account offers keeps
-// upstream's.
+// the same refusal (section 18).
 func TestProvimuxOnlyMyNamesDoorRefusesEveryRoute(t *testing.T) {
 	d := newNamesDoor(t, true)
 	routes := namesDoorRoutes()
@@ -337,7 +337,9 @@ func TestProvimuxOnlyMyNamesDoorRefusesEveryRoute(t *testing.T) {
 		openAIError.Error.Type != "invalid_request_error" || openAIError.Error.Code != "model_not_found" || openAIError.Error.Param != "model" {
 		t.Fatalf("OpenAI refusal: %d %s", status, body)
 	}
-	if status, body := d.do("POST", "/v1/chat/completions", nil, chat("nobody-offers-this", false)); status != 400 || !strings.Contains(body, "unknown provider for model nobody-offers-this") {
+	// Section 18: the door judges the rule and the name, and reads no registration: a name nobody registers gets
+	// the same refusal.
+	if status, body := d.do("POST", "/v1/chat/completions", nil, chat("nobody-offers-this", false)); status != 400 || !strings.Contains(body, "model nobody-offers-this "+namesNotServed) {
 		t.Fatalf("an unknown name: %d %s", status, body)
 	}
 	if status, body := d.do("POST", "/v1/messages", claudeHeader, `{"model":"held-claude","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`); status != 400 || !strings.Contains(body, "model held-claude "+namesNotServed) {
@@ -349,10 +351,10 @@ func TestProvimuxOnlyMyNamesDoorRefusesEveryRoute(t *testing.T) {
 
 	// The refusals were counted per name, as the client sent it without a thinking suffix.
 	counted := map[string]int{}
-	for _, name := range registry.ProvimuxRefusedNow().Names {
+	for _, name := range onlymynames.RefusedNow().Names {
 		counted[name.Name] = name.Requests
 	}
-	if counted["held-compat"] < 4 || counted["held-claude"] < 3 || counted["nobody-offers-this"] != 0 {
+	if counted["held-compat"] < 4 || counted["held-claude"] < 3 || counted["nobody-offers-this"] < 1 {
 		t.Fatalf("refused counts %v", counted)
 	}
 	sort.Strings(report)

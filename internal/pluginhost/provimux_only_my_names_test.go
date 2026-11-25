@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/provimux/onlymynames"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers/gemini"
@@ -28,7 +29,7 @@ func TestProvimuxOnlyMyNamesGeminiNativeName(t *testing.T) {
 	const plugin = "names-native-plugin"
 	registry.ResetProvimuxNames()
 	t.Cleanup(registry.ResetProvimuxNames)
-	rule := registry.NewProvimuxNamesRule(true, false)
+	rule := onlymynames.NewRule(true, false)
 	rule.AddKeep([]string{id})
 	registry.SetProvimuxNamesRule(rule)
 	host := newRouteModelHostWithRecords(capabilityRecord{id: plugin, plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{
@@ -58,7 +59,7 @@ func TestProvimuxOnlyMyNamesGeminiNativeName(t *testing.T) {
 	_, list := get("/v1beta/models")
 	nativeCode, _ := get("/v1beta/models/" + native)
 	keptCode, _ := get("/v1beta/models/" + id)
-	if strings.Contains(list, native) || nativeCode != http.StatusNotFound || keptCode != http.StatusNotFound || registry.ProvimuxServes(native) {
+	if strings.Contains(list, native) || nativeCode != http.StatusNotFound || keptCode != http.StatusNotFound || !onlymynames.Current().Refuses(native) {
 		t.Fatalf("Gemini list %s, native detail %d, kept detail %d", list, nativeCode, keptCode)
 	}
 	listed := false
