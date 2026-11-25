@@ -29,7 +29,7 @@
     },
     "requested": {
       "type": "array",
-      "description": "Since only-my-names round 2: requests by the model name the client sent, without a thinking suffix, lower case, apart from the rows (which count them under the model the account ran). At most 2000 names, then ~other. Absent on days written before.",
+      "description": "Since only-my-names round 2: requests by the model name the client sent, without a thinking suffix, trimmed and cut to 128 bytes, in the case it was sent (days written before the change that kept case hold lower case), apart from the rows (which count them under the model the account ran). At most 2000 names, then ~other. Absent on days written before.",
       "items": {
         "type": "object",
         "required": ["m", "n"],
