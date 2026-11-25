@@ -1,0 +1,539 @@
+openapi: 3.1.0
+info:
+  title: Provimux figures, contract 1
+  version: "1"
+  description: |
+    What Provimux (github.com/ngvoicu/provimux) says about the accounts behind a model: which entry
+    of providers.dev each account is, and that entry's price, cache lifetimes, input window and
+    output limit, each with its date and source. Design: ../prices-and-cache.md.
+
+    Two paths carry the same records:
+    - `GET /v1/models?include=figures`, for tools, with a client key. This is contract 1.
+    - `GET /v8/management/provimux/figures`, for the console, with the management key.
+
+    How a tool uses it. Read the model list once. For each answer of the gateway read the headers
+    `X-CPA-AUTH-KIND`, `X-CPA-AUTH-PROVIDER` and `X-CPA-AUTH-HOST` (on a websocket the fields
+    `cpa_auth_kind`, `cpa_auth_provider` and `cpa_auth_host` of `response.created`): the account of
+    the model with the same `kind`, `provider` and `host` is the one that answered. Its `entry` is
+    a key of `figures.entries`. Accounts that agree in all three have the same entry.
+
+    What contract 1 promises:
+    - Every property listed as required is always present. A value that is not known is null,
+      never 0 and never left out.
+    - No property is removed, and none changes its type, unit or meaning. Properties and enum
+      values may be added: a client ignores properties it does not know and treats an enum value it
+      does not know as unknown.
+    - Prices are US dollars per million tokens. Lifetimes are seconds. Windows and limits are
+      tokens. Dates are YYYY-MM-DD. Times are RFC 3339 in UTC.
+    - `rely_on_s` is chosen by the rule written on the schema `Lifetime`.
+    - A change that breaks any of this is served as contract 2 under another `include` value, and
+      contract 1 is still answered for at least two Provimux releases that say so in their notes.
+
+    What it does not promise: the values. They are providers.dev's, dated, and change when its
+    dataset does. An account may have no entry, and an entry may have no figures: providers.dev has
+    entries for the latest models only. The account listed first is the one tried first, not
+    always the one that answers.
+
+    Nothing here names an account: no key, token, auth ID, e-mail or file name, and of a base URL
+    only its host.
+servers:
+  - url: http://127.0.0.1:8317
+paths:
+  /v1/models:
+    get:
+      operationId: listModelsWithFigures
+      summary: The model list, with the accounts behind each model and their figures when asked
+      security:
+        - clientKey: []
+      parameters:
+        - name: include
+          in: query
+          required: false
+          description: |
+            Comma-separated, in any order, case-insensitive; the parameter may be repeated.
+            Absent: the list as stock CLIProxyAPI gives it, byte for byte.
+            `accounts`: each model gains `accounts`.
+            `figures`: each model gains `accounts`, and the answer gains `figures`.
+            A value the server does not know is ignored.
+          schema:
+            type: string
+          examples:
+            accounts:
+              value: accounts
+            figures:
+              value: figures
+      responses:
+        "200":
+          description: The models this client key can use.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModelList"
+              examples:
+                figures:
+                  externalValue: examples/models-figures.json
+        "401":
+          description: The client key is missing or wrong.
+  /v8/management/provimux/figures:
+    get:
+      operationId: provimuxFigures
+      summary: The figures Provimux holds, and how it got them
+      description: |
+        Read-only. Stock CLIProxyAPI, and a Provimux older than this path, answer 404; the console
+        shows no figures then. It reports what is held and predicts nothing.
+      security:
+        - managementKey: []
+        - managementKeyHeader: []
+      parameters:
+        - name: all
+          in: query
+          required: false
+          description: |
+            `true`: every held entry. Otherwise only the entries a model of an enabled account
+            refers to.
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: The held figures.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FiguresStatus"
+              examples:
+                held:
+                  externalValue: examples/figures.json
+        "401":
+          description: The management key is missing or wrong.
+        "404":
+          description: Not a Provimux with this path.
+components:
+  securitySchemes:
+    clientKey:
+      type: http
+      scheme: bearer
+      description: A client API key of the gateway, as for every /v1 route.
+    managementKey:
+      type: http
+      scheme: bearer
+      description: The management key, as for every /v8/management route.
+    managementKeyHeader:
+      type: apiKey
+      in: header
+      name: X-Management-Key
+  schemas:
+    Timestamp:
+      type: string
+      format: date-time
+      description: RFC 3339, UTC.
+    Day:
+      type: string
+      pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+      description: A calendar day, e.g. 2026-11-24.
+    EntryRef:
+      type: string
+      pattern: "^[^/]+/.+$"
+      description: |
+        An entry of providers.dev as providers.dev writes a reference: `<provider>/<model>`. A
+        provider id never contains a slash, so the first slash ends the provider; a model id may
+        contain more.
+    Price:
+      type: number
+      minimum: 0
+      description: US dollars per million tokens. Zero is a listed zero price.
+    ModelList:
+      type: object
+      required: [object, data]
+      properties:
+        object:
+          type: string
+          const: list
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Model"
+        figures:
+          $ref: "#/components/schemas/Figures"
+          description: Present only when the request asked for `figures`.
+    Model:
+      type: object
+      required: [id, object]
+      properties:
+        id:
+          type: string
+          description: The name a request uses.
+        object:
+          type: string
+        created:
+          type: integer
+        owned_by:
+          type: string
+        accounts:
+          type: array
+          description: |
+            Present only when the request asked for `accounts` or `figures`. The enabled accounts
+            that serve the model, in the order they are tried: highest priority first. Empty when
+            none does.
+          items:
+            $ref: "#/components/schemas/Account"
+    Account:
+      type: object
+      required: [provider, kind, priority]
+      properties:
+        provider:
+          type: string
+          description: The gateway's own name of the account's kind of login or key, e.g. claude, codex, devin.
+        kind:
+          type: string
+          description: "`oauth` for a subscription login, `apikey` for an API key."
+        priority:
+          type: integer
+        host:
+          type: string
+          description: The host of an API key's base URL, lower case. Left out when the key has none.
+        entry:
+          $ref: "#/components/schemas/EntryRef"
+          description: |
+            The entry of providers.dev this account's model would be. Left out where the gateway
+            does not know it (an account on a host it has no row for, a plugin's model). It says
+            where the model would be, not that providers.dev has such an entry.
+    Figures:
+      type: object
+      required: [contract, source, state, dataset_version, generated_at, fetched_at, entries]
+      properties:
+        contract:
+          type: integer
+          const: 1
+        source:
+          type: string
+          description: Where the figures come from. Today always https://providers.dev.
+        state:
+          type: string
+          description: |
+            `held`: figures are held, from a fetch or from the disk copy. `none`: nothing was ever
+            fetched and nothing is on disk. `off`: the operator turned providers.dev off
+            (`models.published-lists: false`). With `none` and `off`, `entries` is empty.
+          enum: [held, none, "off"]
+        dataset_version:
+          type: [string, "null"]
+          description: providers.dev's version of the dataset the figures are from.
+        generated_at:
+          oneOf:
+            - $ref: "#/components/schemas/Timestamp"
+            - type: "null"
+          description: When providers.dev built that dataset.
+        fetched_at:
+          oneOf:
+            - $ref: "#/components/schemas/Timestamp"
+            - type: "null"
+          description: When this gateway last got an answer from providers.dev, changed or not.
+        entries:
+          type: object
+          description: |
+            Keyed by entry reference. On /v1/models: every entry an account in `data` refers to and
+            the gateway holds figures for. An account's `entry` that is no key here has no figures.
+          additionalProperties:
+            $ref: "#/components/schemas/Entry"
+    Entry:
+      type: object
+      required: [provider, model, url, access, price, cache, input_window, max_output]
+      properties:
+        provider:
+          type: string
+          description: providers.dev's provider id.
+        model:
+          type: string
+          description: The model's id at that provider.
+        url:
+          type: string
+          description: The entry's page on providers.dev.
+        access:
+          type: string
+          description: How the provider is reached.
+          enum: [api, subscription, unknown]
+        price:
+          $ref: "#/components/schemas/EntryPrice"
+        cache:
+          $ref: "#/components/schemas/EntryCache"
+        input_window:
+          $ref: "#/components/schemas/Limit"
+          description: The most input one request can carry on this entry, as providers.dev's safe value states it.
+        max_output:
+          $ref: "#/components/schemas/Limit"
+          description: The most tokens one response can hold. A maximum, not a default.
+    EntryPrice:
+      type: object
+      required: [billing, reference, input, output, cache_read, cache_write, tiers, other_rates, source, date, sources_differ]
+      properties:
+        billing:
+          type: string
+          description: |
+            `per_use`: the account is charged these prices per token. `reference`: the account is
+            not billed per token (a subscription); the prices are the API list prices of the entry
+            in `reference`, for comparison. `unknown`: no price applies or none is known; every
+            price is null.
+          enum: [per_use, reference, unknown]
+        reference:
+          oneOf:
+            - $ref: "#/components/schemas/EntryRef"
+            - type: "null"
+          description: With `reference`, the API entry the prices are taken from.
+        input:
+          oneOf:
+            - $ref: "#/components/schemas/Price"
+            - type: "null"
+          description: The base price of text input, before any conditional rate.
+        output:
+          oneOf:
+            - $ref: "#/components/schemas/Price"
+            - type: "null"
+        cache_read:
+          oneOf:
+            - $ref: "#/components/schemas/Price"
+            - type: "null"
+          description: Null where the source states none; then nothing may be assumed.
+        cache_write:
+          type: array
+          description: |
+            The prices of writing to the cache, shortest lifetime first; an item whose lifetime is
+            not stated comes first. Empty where the source states none.
+          items:
+            $ref: "#/components/schemas/CacheWritePrice"
+        tiers:
+          type: array
+          description: Prices above a prompt size, ascending. Empty where the source states none.
+          items:
+            $ref: "#/components/schemas/PriceTier"
+        other_rates:
+          type: boolean
+          description: |
+            True where the entry has rates this record does not carry (fast mode, a region, a time
+            of day). The entry's page has them.
+        source:
+          type: [string, "null"]
+          description: "Whose price this is: providers.dev, models.dev or pi.dev."
+        date:
+          oneOf:
+            - $ref: "#/components/schemas/Day"
+            - type: "null"
+          description: The date of that source's statement.
+        sources_differ:
+          type: boolean
+          description: True where providers.dev's sources contradict each other on this price.
+    CacheWritePrice:
+      type: object
+      required: [lifetime_s, price]
+      properties:
+        lifetime_s:
+          type: [integer, "null"]
+          description: The cache lifetime this price buys, in seconds. Null where the source does not key the price by lifetime.
+        price:
+          $ref: "#/components/schemas/Price"
+    PriceTier:
+      type: object
+      required: [input_tokens_above, input, output, cache_read, cache_write]
+      properties:
+        input_tokens_above:
+          type: integer
+          description: The tier holds for a request whose input is above this many tokens.
+        input:
+          oneOf:
+            - $ref: "#/components/schemas/Price"
+            - type: "null"
+        output:
+          oneOf:
+            - $ref: "#/components/schemas/Price"
+            - type: "null"
+        cache_read:
+          oneOf:
+            - $ref: "#/components/schemas/Price"
+            - type: "null"
+        cache_write:
+          oneOf:
+            - $ref: "#/components/schemas/Price"
+            - type: "null"
+    EntryCache:
+      type: object
+      required: [documented, retention, short, long]
+      properties:
+        documented:
+          type: string
+          description: Prompt caching as documented. `unknown` means the source says nothing, which is not `no`.
+          enum: ["yes", "no", unknown]
+        retention:
+          type: string
+          description: Whether a request can ask for a cache lifetime.
+          enum: [supported, unsupported, unknown]
+        short:
+          $ref: "#/components/schemas/Lifetime"
+          description: What a request gets without asking for a lifetime.
+        long:
+          $ref: "#/components/schemas/Lifetime"
+          description: What a request gets when it asks for the longer cache.
+    Lifetime:
+      type: object
+      description: |
+        The cache lifetime of one profile of an entry.
+
+        The rule of `rely_on_s`, in this order:
+        1. providers.dev has measurements of the entry made through Provimux (`through_provimux`
+           is not empty): the lowest of their `lifetime_s`; `basis` is `measured_through_provimux`.
+        2. else providers.dev's safe value is measured: that value; `basis` is `measured`.
+        3. else providers.dev's safe value is documented: that value; `basis` is `documented`.
+        4. else null; `basis` is `none`.
+
+        0 is a value: it was measured, and no age held on every check. It does not say the
+        provider never caches.
+      required: [rely_on_s, basis, date, safe, documented_s, documented_status, through_provimux]
+      properties:
+        rely_on_s:
+          type: [integer, "null"]
+          minimum: 0
+          description: Seconds a cached prompt can be relied on through this gateway, by the rule above.
+        basis:
+          type: string
+          enum: [measured_through_provimux, measured, documented, none]
+        date:
+          oneOf:
+            - $ref: "#/components/schemas/Day"
+            - type: "null"
+          description: The date of the statement `rely_on_s` is taken from; with row 1, of the measurement that gave the lowest value.
+        safe:
+          $ref: "#/components/schemas/SafeLifetime"
+        documented_s:
+          type: [integer, "null"]
+          description: The documented lifetime. 0 = the provider documents that it does not cache.
+        documented_status:
+          type: [string, "null"]
+          description: providers.dev's word on whether a measurement contradicts the documented lifetime, e.g. `not_contradicted`, `contradicted`.
+        through_provimux:
+          type: array
+          description: providers.dev's measurements of this profile made through Provimux, newest first. Empty where there is none.
+          items:
+            $ref: "#/components/schemas/Measurement"
+    SafeLifetime:
+      type: object
+      description: providers.dev's own safe value of the profile, whatever `rely_on_s` is taken from.
+      required: [seconds, basis, source, date, measured_with]
+      properties:
+        seconds:
+          type: [integer, "null"]
+        basis:
+          type: string
+          enum: [measured, documented, none]
+        source:
+          type: [string, "null"]
+          description: "Who the value is from: providers.dev, models.dev or pi.dev."
+        date:
+          oneOf:
+            - $ref: "#/components/schemas/Day"
+            - type: "null"
+        measured_with:
+          type: array
+          description: The clients whose measurements give a measured safe value. Empty otherwise.
+          items:
+            $ref: "#/components/schemas/Client"
+    Client:
+      type: object
+      required: [client, label, kind]
+      properties:
+        client:
+          type: string
+          description: providers.dev's public id of the client the requests went through.
+        label:
+          type: [string, "null"]
+        kind:
+          type: [string, "null"]
+          description: "`direct`, `own_client` (the vendor's own client) or `proxy`."
+    Measurement:
+      type: object
+      required: [client, label, lifetime_s, date, checks, hits, first_miss_s, asked]
+      properties:
+        client:
+          type: string
+        label:
+          type: [string, "null"]
+        lifetime_s:
+          type: integer
+          minimum: 0
+          description: The oldest tested age through which every check hit; 0 = no such age.
+        date:
+          oneOf:
+            - $ref: "#/components/schemas/Day"
+            - type: "null"
+        checks:
+          type: integer
+          description: Re-sends made, the control included.
+        hits:
+          type: integer
+          description: How many of those were served from the cache.
+        first_miss_s:
+          type: [integer, "null"]
+          description: The youngest age at which a check missed. Null = no miss.
+        asked:
+          oneOf:
+            - $ref: "#/components/schemas/Asked"
+            - type: "null"
+          description: The request field that asked for the lifetime. Null = none was asked for.
+    Asked:
+      type: object
+      required: [parameter, value]
+      properties:
+        parameter:
+          type: string
+        value:
+          type: string
+    Limit:
+      type: object
+      required: [tokens, at_least, source, date]
+      properties:
+        tokens:
+          type: [integer, "null"]
+        at_least:
+          type: boolean
+          description: True where the value is only the largest an evaluation saw accepted; the real limit may be higher.
+        source:
+          type: [string, "null"]
+          description: "Who the value is from: measured, providers.dev, models.dev or pi.dev."
+        date:
+          oneOf:
+            - $ref: "#/components/schemas/Day"
+            - type: "null"
+    FiguresStatus:
+      type: object
+      required: [observed_at, options, figures, held_entries, from_cache, last_failure]
+      properties:
+        observed_at:
+          $ref: "#/components/schemas/Timestamp"
+        options:
+          type: object
+          required: [published_lists]
+          properties:
+            published_lists:
+              type: boolean
+              description: The loaded config's `models.published-lists`; false turns every request to providers.dev off.
+        figures:
+          $ref: "#/components/schemas/Figures"
+        held_entries:
+          type: integer
+          description: How many entries the gateway holds, whatever `figures.entries` lists.
+        from_cache:
+          type: boolean
+          description: True while the held figures are the disk copy and no fetch has answered in this run.
+        last_failure:
+          oneOf:
+            - $ref: "#/components/schemas/Failure"
+            - type: "null"
+          description: The last fetch that failed since the last one that answered. Null = none.
+    Failure:
+      type: object
+      required: [at, category, http_status]
+      properties:
+        at:
+          $ref: "#/components/schemas/Timestamp"
+        category:
+          type: string
+          description: A code, never an error text. Clients treat an unknown one as a failure.
+          enum: [http_status, invalid_response, network]
+        http_status:
+          type: [integer, "null"]
