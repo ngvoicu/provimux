@@ -281,7 +281,8 @@ func TestProvimuxOnlyMyNamesWritersDoNotReadTheRule(t *testing.T) {
 // Section 18, by structure: the door's judgement is a function of one rule value and the name. Every function that
 // judges a name (the door, the router check, alpha search, model-routes' filter, the list gate) calls nothing but
 // the rule package, a method of the rule value it was given, and the standard library; it names no registry and
-// reads no field of the registry it may receive. With the rule package importing no registry
+// reads no field of the registry it may receive: a judge that is a method (the list gate's receiver is the registry)
+// does not use its receiver at all, neither a field nor a method. With the rule package importing no registry
 // (internal/provimux/onlymynames, TestRuleImportsNoRegistry), a judgement cannot read a registration: a change that
 // makes it do so fails here.
 func TestProvimuxOnlyMyNamesJudgementReadsNoRegistry(t *testing.T) {
@@ -302,11 +303,24 @@ func TestProvimuxOnlyMyNamesJudgementReadsNoRegistry(t *testing.T) {
 		for _, value := range judge.values {
 			values[value] = true
 		}
+		receivers := map[string]bool{}
+		if fn.Recv != nil {
+			for _, field := range fn.Recv.List {
+				for _, name := range field.Names {
+					if name.Name != "_" {
+						receivers[name.Name] = true
+					}
+				}
+			}
+		}
 		ast.Inspect(fn.Body, func(n ast.Node) bool {
 			switch node := n.(type) {
 			case *ast.Ident:
 				if node.Name == "registry" || node.Name == "GetGlobalRegistry" || node.Name == "reg" {
 					t.Errorf("%s %s names %s: a judgement reads no registry (only-my-names.md 18)", judge.file, judge.function, node.Name)
+				}
+				if receivers[node.Name] {
+					t.Errorf("%s %s uses its receiver %s: a judgement reads no field or method of what it is called on (only-my-names.md 18)", judge.file, judge.function, node.Name)
 				}
 			case *ast.CallExpr:
 				switch fun := node.Fun.(type) {
