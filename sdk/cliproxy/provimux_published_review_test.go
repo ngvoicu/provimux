@@ -77,17 +77,42 @@ func provimuxReviewUnchanged(t *testing.T, label string, raw, seen *ModelInfo) {
 	}
 }
 
+// provimuxReviewCatalog is a section's catalog models.
+func provimuxReviewCatalog(section string) []*ModelInfo {
+	if section == "aistudio" || section == "vertex" {
+		return registry.GetStaticModelDefinitionsByChannel(section)
+	}
+	return registry.ProvimuxCatalogModels(section)
+}
+
+// provimuxReviewRawCatalog is a section's catalog models as the catalog states them, without providers.dev's
+// values and without the models Provimux adds in code.
+func provimuxReviewRawCatalog(section string) []*ModelInfo {
+	var raws []*ModelInfo
+	for _, model := range provimuxReviewCatalog(section) {
+		if raw := registry.ProvimuxRawCatalogModel(section, model.ID); raw != nil {
+			raws = append(raws, raw)
+		}
+	}
+	return raws
+}
+
+// provimuxWindowOf and provimuxOutputOf are a model's window and output limit, 0 when it states none.
+func provimuxWindowOf(model *ModelInfo) int {
+	return provimuxFirstPositive(model.ContextLength, model.InputTokenLimit)
+}
+
+func provimuxOutputOf(model *ModelInfo) int {
+	return provimuxFirstPositive(model.MaxCompletionTokens, model.OutputTokenLimit)
+}
+
 // provimuxReviewSection serves one row per catalog model of section (listing provider) and checks every
 // model through the channel lookup, against what the lookup gave before the document.
 func provimuxReviewSection(t *testing.T, section, channel, provider string, ids ...string) {
 	t.Helper()
 	var rows []map[string]any
 	var raws, before []*ModelInfo
-	catalog := registry.ProvimuxCatalogModels(section)
-	if section == "aistudio" || section == "vertex" {
-		catalog = registry.GetStaticModelDefinitionsByChannel(section)
-	}
-	for _, model := range catalog {
+	for _, model := range provimuxReviewCatalog(section) {
 		if len(ids) > 0 && !containsFold(ids, model.ID) {
 			continue
 		}
@@ -125,61 +150,57 @@ func TestProvimuxReviewGeminiThinkingUnchanged(t *testing.T) {
 	provimuxLiveReset(t)
 	provimuxPublishedReset(t)
 	provimuxReviewSection(t, "gemini", "gemini", "google")
-	flash := registry.ProvimuxRawCatalogModel("aistudio", "gemini-flash-latest")
-	if flash == nil || flash.Thinking == nil || len(flash.Thinking.Levels) != 0 {
-		t.Fatalf("the review's case: gemini-flash-latest is a budget model in the catalog: %+v", flash)
-	}
+	// The review's case, a budget model (gemini-flash-latest when written), taken from the catalog.
+	flash := provimuxCatalogModel(t, "aistudio", provimuxReviewRawCatalog("aistudio"), "gemini-flash-latest", "a thinking budget model without levels",
+		func(m *ModelInfo) bool { return m.Thinking != nil && len(m.Thinking.Levels) == 0 && m.Thinking.Max > 0 })
 	provimuxReviewSection(t, "aistudio", "aistudio", "google")
 	provimuxReviewSection(t, "vertex", "vertex", "google-vertex")
-	if seen := registry.LookupStaticModelInfoByChannel("gemini-flash-latest", "aistudio"); seen == nil || len(seen.Thinking.Levels) != 0 ||
+	if seen := registry.LookupStaticModelInfoByChannel(flash.ID, "aistudio"); seen == nil || seen.Thinking == nil || len(seen.Thinking.Levels) != 0 ||
 		seen.Thinking.Max != flash.Thinking.Max {
-		t.Fatalf("gemini-flash-latest thinking = %+v", seen.Thinking)
+		t.Fatalf("%s thinking = %+v", flash.ID, seen)
 	}
 }
 
-// Finding 3: gemini-4-argon's output limit (65536 in the catalog; providers.dev said 32768) stays.
+// Finding 3: gemini-4-argon's output limit (65536 in the catalog when written; providers.dev said 32768)
+// stays. The model and its limit are the catalog's; providers.dev's row says half of it.
 func TestProvimuxReviewGeminiArgonOutputUnchanged(t *testing.T) {
 	provimuxLiveReset(t)
 	provimuxPublishedReset(t)
-	raw := registry.ProvimuxRawCatalogModel("aistudio", "gemini-4-argon")
-	if raw == nil {
-		t.Fatal("gemini-4-argon must be in the catalog")
-	}
-	output := 32768
+	raw := provimuxCatalogModel(t, "aistudio", provimuxReviewRawCatalog("aistudio"), "gemini-4-argon", "with an output limit",
+		func(m *ModelInfo) bool { return provimuxOutputOf(m) > 1 })
+	output := provimuxOutputOf(raw) / 2
 	row := provimuxReviewRow(raw)
 	row["max_output"] = output
 	provimuxReviewLoad(t, provimuxPDListing("google", row))
 	for _, channel := range []string{"aistudio", "gemini"} {
-		if seen := registry.LookupStaticModelInfoByChannel("gemini-4-argon", channel); seen != nil &&
-			provimuxFirstPositive(seen.MaxCompletionTokens, seen.OutputTokenLimit) != provimuxFirstPositive(raw.MaxCompletionTokens, raw.OutputTokenLimit) {
-			t.Fatalf("%s gemini-4-argon output = %d/%d, catalog %d/%d", channel, seen.MaxCompletionTokens, seen.OutputTokenLimit,
+		if seen := registry.LookupStaticModelInfoByChannel(raw.ID, channel); seen != nil && provimuxOutputOf(seen) != provimuxOutputOf(raw) {
+			t.Fatalf("%s %s output = %d/%d, catalog %d/%d", channel, raw.ID, seen.MaxCompletionTokens, seen.OutputTokenLimit,
 				raw.MaxCompletionTokens, raw.OutputTokenLimit)
 		}
 	}
-	provimuxReviewUnchanged(t, "aistudio/gemini-4-argon", raw, registry.LookupStaticModelInfoByChannel("gemini-4-argon", "aistudio"))
+	provimuxReviewUnchanged(t, "aistudio/"+raw.ID, raw, registry.LookupStaticModelInfoByChannel(raw.ID, "aistudio"))
 }
 
-// Finding 4: Codex 6.1's window (272000 for gpt-6.1-sol in the catalog; providers.dev said 1050000) stays,
-// in every plan's section.
+// Finding 4: Codex 6.1's window (272000 for gpt-6.1-sol in the catalog when written; providers.dev said
+// 1050000) stays, in every plan's section. The model and its window are the catalog's; providers.dev's row
+// says a larger one.
 func TestProvimuxReviewCodex61WindowUnchanged(t *testing.T) {
 	provimuxLiveReset(t)
 	provimuxPublishedReset(t)
-	raw := registry.ProvimuxRawCatalogModel("codex", "gpt-6.1-sol")
-	if raw == nil || raw.ContextLength != 272000 {
-		t.Fatalf("the review's case: gpt-6.1-sol = %+v", raw)
-	}
-	window := 1050000
+	raw := provimuxCatalogModel(t, "codex", provimuxReviewRawCatalog("codex"), "gpt-6.1-sol", "with a window",
+		func(m *ModelInfo) bool { return m.ContextLength > 0 })
+	window := raw.ContextLength*4 + 1000
 	row := provimuxReviewRow(raw)
 	row["context_window"] = window
 	provimuxReviewLoad(t, provimuxPDListing("openai-codex", row))
 	for name, models := range map[string][]*ModelInfo{"pro": registry.GetCodexProModels(), "plus": registry.GetCodexPlusModels(), "team": registry.GetCodexTeamModels()} {
 		for _, model := range models {
-			if model.ID == "gpt-6.1-sol" {
-				provimuxReviewUnchanged(t, "codex-"+name+"/gpt-6.1-sol", raw, model)
+			if model.ID == raw.ID {
+				provimuxReviewUnchanged(t, "codex-"+name+"/"+raw.ID, raw, model)
 			}
 		}
 	}
-	provimuxReviewUnchanged(t, "codex lookup", raw, registry.LookupStaticModelInfoByChannel("gpt-6.1-sol", "codex"))
+	provimuxReviewUnchanged(t, "codex lookup", raw, registry.LookupStaticModelInfoByChannel(raw.ID, "codex"))
 }
 
 // Finding 5: xAI's and Copilot's catalog models keep every value the catalog states (the review's Copilot
@@ -189,23 +210,23 @@ func TestProvimuxReviewXAIAndCopilotUnchanged(t *testing.T) {
 	provimuxPublishedReset(t)
 	provimuxReviewSection(t, "xai", "xai", "xai")
 	provimuxReviewSection(t, "copilot", "copilot", "github-copilot")
-	if raw := registry.ProvimuxRawCatalogModel("copilot", "claude-haiku-4.5"); raw == nil {
-		t.Fatal("the review's case: claude-haiku-4.5 must be in Copilot's catalog")
-	}
+	// The review's case (claude-haiku-4.5 when written) is among the models just checked: one that states a
+	// window and an output limit.
+	provimuxCatalogModel(t, "copilot", provimuxReviewRawCatalog("copilot"), "claude-haiku-4.5", "with a window and an output limit",
+		func(m *ModelInfo) bool { return provimuxWindowOf(m) > 0 && provimuxOutputOf(m) > 0 })
 }
 
 // providers.dev still fills a gap both leave: a catalog model without a window or output limit (Vertex's
-// Imagen models) takes the row's, with a smaller max_input as the window; its name stays the catalog's.
+// Imagen models, imagen-4.0-ultra-generate-001 when written, taken from the catalog) takes the row's, with a
+// smaller max_input as the window; its name stays the catalog's.
 func TestProvimuxReviewGapsAreFilled(t *testing.T) {
 	provimuxLiveReset(t)
 	provimuxPublishedReset(t)
-	raw := registry.ProvimuxRawCatalogModel("vertex", "imagen-4.0-ultra-generate-001")
-	if raw == nil || provimuxFirstPositive(raw.ContextLength, raw.InputTokenLimit) != 0 || provimuxFirstPositive(raw.MaxCompletionTokens, raw.OutputTokenLimit) != 0 {
-		t.Fatalf("imagen-4.0-ultra-generate-001 = %+v", raw)
-	}
-	provimuxReviewLoad(t, provimuxPDListing("google-vertex", map[string]any{"id": "imagen-4.0-ultra-generate-001", "context_window": 8192,
+	raw := provimuxCatalogModel(t, "vertex", provimuxReviewRawCatalog("vertex"), "imagen-4.0-ultra-generate-001", "without a window or an output limit",
+		func(m *ModelInfo) bool { return provimuxWindowOf(m) == 0 && provimuxOutputOf(m) == 0 })
+	provimuxReviewLoad(t, provimuxPDListing("google-vertex", map[string]any{"id": raw.ID, "context_window": 8192,
 		"max_input": 4096, "max_output": 2048, "name": "other", "aliases": []string{}}))
-	seen := registry.LookupStaticModelInfoByChannel("imagen-4.0-ultra-generate-001", "vertex")
+	seen := registry.LookupStaticModelInfoByChannel(raw.ID, "vertex")
 	if seen == nil || provimuxFirstPositive(seen.ContextLength, seen.InputTokenLimit) != 4096 ||
 		provimuxFirstPositive(seen.MaxCompletionTokens, seen.OutputTokenLimit) != 2048 || seen.DisplayName != raw.DisplayName || seen.Thinking != nil {
 		t.Fatalf("gap fill: %+v", seen)
@@ -275,7 +296,8 @@ func TestProvimuxReviewLearnedGeminiGetsNoLevels(t *testing.T) {
 
 // Finding 6: a real start. The option's switch is still off and the disk copy unread when the first login
 // registers; that registration must already see the document on disk (here a Vertex login, whose models
-// the catalog decides: Imagen has no window in the catalog, the disk copy states one).
+// the catalog decides: a catalog model without a window or an output limit, imagen-4.0-generate-001 when
+// written, taken from the catalog; the disk copy states both).
 func TestProvimuxReviewColdStartFirstLogin(t *testing.T) {
 	provimuxLiveReset(t)
 	provimuxPublishedReset(t)
@@ -284,17 +306,15 @@ func TestProvimuxReviewColdStartFirstLogin(t *testing.T) {
 	provimuxPublished.mu.Unlock()
 	provimuxPublished.on.Store(false) // a fresh process: nothing has set it yet
 	registry.ProvimuxCatalogOverlayChanged()
-	raw := registry.ProvimuxRawCatalogModel("vertex", "imagen-4.0-generate-001")
-	if raw == nil || raw.ContextLength != 0 || raw.InputTokenLimit != 0 {
-		t.Fatalf("imagen-4.0-generate-001 = %+v", raw)
-	}
+	raw := provimuxCatalogModel(t, "vertex", provimuxReviewRawCatalog("vertex"), "imagen-4.0-generate-001", "without a window or an output limit",
+		func(m *ModelInfo) bool { return provimuxWindowOf(m) == 0 && provimuxOutputOf(m) == 0 })
 	dir := t.TempDir()
 	window, output := 4096, 1024
 	seed := modellists.NewStore(filepath.Join(dir, modellists.FolderName))
 	if err := seed.WritePublished(&modellists.Document{Schema: modellists.PublishedSchema, ETag: `"v1"`, DatasetVersion: "ds-cache",
 		GeneratedAt: time.Date(2026, 11, 22, 4, 0, 0, 0, time.UTC), FetchedAt: time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC),
 		Listings: map[string]modellists.Listing{"google-vertex": {Provider: "google-vertex", Models: []modellists.ListingModel{
-			{ID: "imagen-4.0-generate-001", ContextWindow: &window, MaxOutput: &output}}}}}); err != nil {
+			{ID: raw.ID, ContextWindow: &window, MaxOutput: &output}}}}}); err != nil {
 		t.Fatal(err)
 	}
 	cfg := &config.Config{}
@@ -307,7 +327,7 @@ func TestProvimuxReviewColdStartFirstLogin(t *testing.T) {
 	}
 	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
 	svc.registerModelsForAuth(t.Context(), auth)
-	got := provimuxRegisteredModel(auth, "imagen-4.0-generate-001")
+	got := provimuxRegisteredModel(auth, raw.ID)
 	if got == nil {
 		t.Fatalf("not registered: %v", provimuxRegistered(auth))
 	}

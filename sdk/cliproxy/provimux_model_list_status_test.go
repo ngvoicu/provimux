@@ -29,7 +29,7 @@ func TestProvimuxModelListSource(t *testing.T) {
 	}
 	for _, model := range state.Models {
 		switch model.ID {
-		case "kimi-k3-neon":
+		case "provimux-test-kimi-learned":
 			if !model.Learned || model.Source != "live" || model.Sources["context"] != "live" || model.Sources["output"] != "" {
 				t.Fatalf("neon = %+v", model)
 			}
