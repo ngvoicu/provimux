@@ -1,17 +1,20 @@
 package registry
 
-// Provimux: models.only-my-names (design: .github/provimux/design/only-my-names.md, section 16). The switch
-// never changes what accounts register. The rule is one immutable value, put in force with one atomic store
-// when a config is committed (SetProvimuxNamesRule), and applied by name where names are read: the two loops
-// that build every model list (provimuxHeld, called from model_registry.go), the door every handler passes
-// before a request executes, the function that asks plugin routers, and alpha search (ProvimuxServes,
-// ProvimuxRefuse). The status endpoint reads the same value and the same registry (ProvimuxNamesView).
+// Provimux: models.only-my-names (design: .github/provimux/design/only-my-names.md, sections 16 and 17). The
+// switch never changes what accounts register. The rule is one immutable value built from the committed config
+// alone, put in force with one atomic store when the config is committed (SetProvimuxNamesRule), and applied
+// by name where names are read: the two loops that build every model list (provimuxHeld, called from
+// model_registry.go), the door every handler passes before a request executes, the function that asks plugin
+// routers, and alpha search (ProvimuxServes, ProvimuxRefuse). The status endpoint reads the same value and the
+// same registry, and judges every id with the same predicate (ProvimuxNamesView, (*ProvimuxNamesRule).Serves).
+//
+// Names are compared exactly, trimmed and nothing else, as upstream matches a request to a registered model.
 //
 // Locking: the rule is read with one atomic load. provimuxHeld runs under the registry's lock, which its
 // caller holds, and takes no other. ProvimuxServes and ProvimuxRefuse take the registry's read lock only for a
-// name that is not literally in the rule, and release it before touching the refusal counter, which has its
-// own small lock. SetProvimuxNamesRule stores the rule and clears the list cache under the registry's lock, so
-// no list built under the old rule survives the call and no list mixes two rules.
+// name the rule does not name literally, and release it before touching the refusal counter, which has its own
+// small lock. SetProvimuxNamesRule stores the rule and clears the list cache under the registry's lock, so no
+// list built under the old rule survives the call and no list mixes two rules.
 
 import (
 	"fmt"
@@ -32,21 +35,25 @@ type OnlyMyNames struct {
 
 // Who set a name (the status endpoint's set_by).
 const (
-	ProvimuxNameSetByAlias     = "alias"
-	ProvimuxNameSetByKeep      = "keep"
-	ProvimuxNameSetByLoginFile = "login-file"
+	ProvimuxNameSetByAlias = "alias"
+	ProvimuxNameSetByKeep  = "keep"
 )
 
 // Why a keep entry is ignored (the status endpoint's keep_ignored reason).
 const (
-	ProvimuxKeepIgnoredPattern = "pattern"
-	ProvimuxKeepIgnoredEmpty   = "empty"
+	ProvimuxKeepIgnoredPattern  = "pattern"
+	ProvimuxKeepIgnoredEmpty    = "empty"
+	ProvimuxKeepIgnoredReserved = "reserved"
 )
+
+// provimuxAuto is the reserved name a client sends for "the first available model": never a name the owner
+// sets (section 16.3).
+const provimuxAuto = "auto"
 
 // provimuxRefusedLimit is how many names the refusal counter holds (decision 5 of the design).
 const provimuxRefusedLimit = 256
 
-// ProvimuxOwnName is a name the owner set in the config, as first written, and who set it.
+// ProvimuxOwnName is a name the owner set in the config, as written (trimmed), and who set it.
 type ProvimuxOwnName struct {
 	Name  string
 	SetBy []string
@@ -58,11 +65,10 @@ type ProvimuxKeepIgnored struct {
 	Reason string
 }
 
-// ProvimuxNamesRule is the rule of one config: the switch, Home mode, the config's names (alias rows and keep;
-// compared trimmed and without case), the keep entries it ignores, and the SHA-256 of the config file it was
-// read from. It is built, then put in force once, and never changed after (SetProvimuxNamesRule stores a copy
-// carrying its generation). A login's own aliases are not here: they are read on the registered model
-// (OAuthAlias), by name.
+// ProvimuxNamesRule is the rule of one config: the switch, Home mode, the config's names (alias rows and keep,
+// trimmed, compared exactly), the keep entries it ignores, and the SHA-256 of the config file it was read from.
+// It is a function of the config alone. It is built, then put in force once, and never changed after
+// (SetProvimuxNamesRule stores a copy carrying its generation).
 type ProvimuxNamesRule struct {
 	enabled    bool
 	home       bool
@@ -86,21 +92,20 @@ func (r *ProvimuxNamesRule) SetSource(hash string) {
 	}
 }
 
-// AddName adds a name the owner set. Empty names are ignored.
+// AddName adds a name the owner set, trimmed. Empty names, and the reserved "auto", are ignored.
 func (r *ProvimuxNamesRule) AddName(name, setBy string) {
 	if r == nil {
 		return
 	}
 	name = strings.TrimSpace(name)
-	key := strings.ToLower(name)
-	if key == "" {
+	if name == "" || name == provimuxAuto {
 		return
 	}
-	entry, ok := r.names[key]
+	entry, ok := r.names[name]
 	if !ok {
 		entry = &ProvimuxOwnName{Name: name}
-		r.names[key] = entry
-		r.order = append(r.order, key)
+		r.names[name] = entry
+		r.order = append(r.order, name)
 	}
 	for _, have := range entry.SetBy {
 		if have == setBy {
@@ -110,8 +115,8 @@ func (r *ProvimuxNamesRule) AddName(name, setBy string) {
 	entry.SetBy = append(entry.SetBy, setBy)
 }
 
-// AddKeep adds models.only-my-names.keep: exact names only. An empty entry, or one with "*", is ignored and
-// reported (decision 4), never an error, so a typo cannot stop a start.
+// AddKeep adds models.only-my-names.keep: exact names only. An empty entry, one with "*", or the reserved
+// "auto" is ignored and reported (decision 4), never an error, so a typo cannot stop a start.
 func (r *ProvimuxNamesRule) AddKeep(entries []string) {
 	if r == nil {
 		return
@@ -123,6 +128,8 @@ func (r *ProvimuxNamesRule) AddKeep(entries []string) {
 			r.ignored = append(r.ignored, ProvimuxKeepIgnored{Value: entry, Reason: ProvimuxKeepIgnoredEmpty})
 		case strings.Contains(trimmed, "*"):
 			r.ignored = append(r.ignored, ProvimuxKeepIgnored{Value: entry, Reason: ProvimuxKeepIgnoredPattern})
+		case trimmed == provimuxAuto:
+			r.ignored = append(r.ignored, ProvimuxKeepIgnored{Value: entry, Reason: ProvimuxKeepIgnoredReserved})
 		default:
 			r.AddName(trimmed, ProvimuxNameSetByKeep)
 		}
@@ -178,67 +185,86 @@ func (r *ProvimuxNamesRule) KeepIgnored() []ProvimuxKeepIgnored {
 	return append([]ProvimuxKeepIgnored(nil), r.ignored...)
 }
 
-func (r *ProvimuxNamesRule) has(key string) bool {
-	if r == nil || key == "" {
+// Has reports whether the config names name exactly (trimmed).
+func (r *ProvimuxNamesRule) Has(name string) bool { return r.has(strings.TrimSpace(name)) }
+
+func (r *ProvimuxNamesRule) has(name string) bool {
+	if r == nil || name == "" {
 		return false
 	}
-	_, ok := r.names[key]
+	_, ok := r.names[name]
 	return ok
 }
 
-// fact reports whether a model registered with these two facts makes its id the owner's (16.3, facts 2 and
-// 3): it is an alias (of an oauth-model-alias row or of a login's own file, prefixed copies included), or a
-// copy under an account's prefix of one of the config's names.
-func (r *ProvimuxNamesRule) fact(oauthAlias, prefixedFrom string) bool {
-	if oauthAlias != "" {
-		return true
-	}
-	return prefixedFrom != "" && r.has(strings.ToLower(strings.TrimSpace(prefixedFrom)))
+// copyOf reports whether a model registered as a copy of prefixedFrom under an account's prefix is a copy of
+// one of the config's names.
+func (r *ProvimuxNamesRule) copyOf(prefixedFrom string) bool {
+	return prefixedFrom != "" && r.has(strings.TrimSpace(prefixedFrom))
 }
 
-// provimuxFacts answers, for one id, whether some account registers it (registered) and whether some account
-// registers it as an alias or as a prefixed copy of a name of rule (fact). The registry (under its lock) and
-// the status's index (ProvimuxIndex) answer it from the same registrations.
+// provimuxFacts answers, for one id, whether some account registers it as a prefixed copy of a name of rule.
+// The registry (under its lock) and the status's index (ProvimuxIndex) answer it from the same registrations.
 type provimuxFacts interface {
-	provimuxFact(rule *ProvimuxNamesRule, id string) (registered, fact bool)
+	provimuxCopy(rule *ProvimuxNamesRule, id string) bool
 }
 
-// his is the one predicate (16.3): id is the owner's when it is one of the config's names, trimmed and
-// without case, or some account registers it as an alias or as a prefixed copy of one of them. When id has
-// upper-case letters and nothing is registered under it, its lower-case form is asked too, as upstream's own
-// lookup does. It ignores the switch.
+// his reports whether id is the owner's: one of the config's names, exactly; or a copy of one under an
+// account's prefix (some account registers id with PrefixedFrom one of them). "auto" never is.
 func (r *ProvimuxNamesRule) his(id string, facts provimuxFacts) bool {
-	id = strings.TrimSpace(id)
-	if id == "" {
+	if id == "" || id == provimuxAuto {
 		return false
 	}
-	lower := strings.ToLower(id)
-	if r.has(lower) {
-		return true
-	}
-	registered, fact := facts.provimuxFact(r, id)
-	if fact {
-		return true
-	}
-	if !registered && lower != id {
-		_, fact = facts.provimuxFact(r, lower)
-	}
-	return fact
+	return r.has(id) || facts.provimuxCopy(r, id)
 }
 
-// provimuxFact implements provimuxFacts on the registry. The caller holds the registry's lock (read or write).
-func (r *ModelRegistry) provimuxFact(rule *ProvimuxNamesRule, id string) (registered, fact bool) {
+// serves is the one predicate of the lists, the door, the routers, alpha search, model-routes and the status
+// (16.3): a name is served when it is the owner's, or when its name without a thinking suffix is (a request
+// for "opus(high)" runs "opus"). It ignores the switch.
+func (r *ProvimuxNamesRule) serves(name string, facts provimuxFacts) bool {
+	name = strings.TrimSpace(name)
+	if r.his(name, facts) {
+		return true
+	}
+	base := provimuxBase(name)
+	return base != name && r.his(base, facts)
+}
+
+// literal is serves without the facts: true when the config names the name or its base. It needs no lock.
+func (r *ProvimuxNamesRule) literal(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == provimuxAuto {
+		return false
+	}
+	if r.has(name) {
+		return true
+	}
+	base := provimuxBase(name)
+	return base != name && base != provimuxAuto && r.has(base)
+}
+
+// provimuxBase is name without a thinking suffix, as thinking.ParseSuffix cuts it (which this package cannot
+// import): "opus(high)" is "opus".
+func provimuxBase(name string) string {
+	open := strings.LastIndex(name, "(")
+	if open == -1 || !strings.HasSuffix(name, ")") {
+		return name
+	}
+	return strings.TrimSpace(name[:open])
+}
+
+// provimuxCopy implements provimuxFacts on the registry. The caller holds the registry's lock (read or write).
+func (r *ModelRegistry) provimuxCopy(rule *ProvimuxNamesRule, id string) bool {
 	if _, ok := r.models[id]; !ok {
-		return false, false
+		return false
 	}
-	return true, r.provimuxFactsLocked(rule).ids[id]
+	return r.provimuxFactsLocked(rule).ids[id]
 }
 
-// provimuxFactIndex holds the ids some live client registers as an alias or as a prefixed copy of a name of
-// rule, for one registry at one of its generations. Every change of what a client registers moves the
-// registry's generation (invalidateAvailableModelsCacheLocked), and so does putting a rule in force, so an
-// index of the current generation and rule describes the registry as it is. It is built in one pass over the
-// registrations and never changed after.
+// provimuxFactIndex holds the ids some live client registers as a prefixed copy of a name of rule, for one
+// registry at one of its generations. Every change of what a client registers moves the registry's generation
+// (invalidateAvailableModelsCacheLocked), and so does putting a rule in force, so an index of the current
+// generation and rule describes the registry as it is. It is built in one pass over the registrations and
+// never changed after; it is dropped when the rule stops applying.
 type provimuxFactIndex struct {
 	registry   *ModelRegistry
 	rule       *ProvimuxNamesRule
@@ -261,7 +287,7 @@ func (r *ModelRegistry) provimuxFactsLocked(rule *ProvimuxNamesRule) *provimuxFa
 			continue
 		}
 		for id, info := range infos {
-			if info != nil && rule.fact(info.OAuthAlias, info.PrefixedFrom) {
+			if info != nil && rule.copyOf(info.PrefixedFrom) {
 				index.ids[id] = true
 			}
 		}
@@ -276,61 +302,71 @@ var provimuxRule atomic.Pointer[ProvimuxNamesRule]
 // provimuxGeneration counts the rules put in force. Written under the registry's lock.
 var provimuxGeneration uint64
 
-// provimuxHeld is the list gate (G1): whether a registered model is left out of every list. The caller holds
-// the registry's lock.
-func (r *ModelRegistry) provimuxHeld(info *ModelInfo) bool {
+// provimuxHeld is the list gate (G1): whether a registered model is left out of the list built for handlerType
+// ("" for the lists of model infos). A model is listed when its id is served; the Gemini format names a model
+// by Name, so there a Name that differs from the id must be served too, or the model is left out of that format
+// (a plugin executor's provider-native name, section 17). The caller holds the registry's lock.
+func (r *ModelRegistry) provimuxHeld(info *ModelInfo, handlerType string) bool {
 	rule := provimuxRule.Load()
 	if !rule.applies() || info == nil {
 		return false
 	}
-	return !rule.his(info.ID, r)
+	if !rule.serves(info.ID, r) {
+		return true
+	}
+	if handlerType == "gemini" && info.Name != "" {
+		if name := strings.TrimPrefix(strings.TrimSpace(info.Name), "models/"); name != strings.TrimSpace(info.ID) {
+			return !rule.serves(name, r)
+		}
+	}
+	return false
 }
 
 // ProvimuxApplies reports whether the rule in force decides what is served: one atomic load.
 func ProvimuxApplies() bool { return provimuxRule.Load().applies() }
 
-// ProvimuxServes reports whether name may be listed and asked for: true when the rule does not apply or name
-// is the owner's (only-my-names.md 16.3). name has no thinking suffix.
-func ProvimuxServes(name string) bool {
-	rule := provimuxRule.Load()
+// ProvimuxRuleNow is the rule in force (nil before any config is committed), for an answer that must be built
+// from one rule: decide with ProvimuxServesUnder.
+func ProvimuxRuleNow() *ProvimuxNamesRule { return provimuxRule.Load() }
+
+// ProvimuxServes reports whether name may be listed and asked for: true when the rule in force does not apply
+// or name is served (only-my-names.md 16.3, the name as a client sends it, with or without a thinking suffix).
+func ProvimuxServes(name string) bool { return ProvimuxServesUnder(provimuxRule.Load(), name) }
+
+// ProvimuxServesUnder is ProvimuxServes under the given rule.
+func ProvimuxServesUnder(rule *ProvimuxNamesRule, name string) bool {
 	if !rule.applies() {
 		return true
+	}
+	if rule.literal(name) {
+		return true
+	}
+	reg := GetGlobalRegistry()
+	reg.mutex.RLock()
+	served := rule.serves(name, reg)
+	reg.mutex.RUnlock()
+	return served
+}
+
+// ProvimuxRefuse reports whether a request for name (as the client sent it, a thinking suffix included) is
+// refused. offered: an account registers the name or its base; the refusal was then counted under the base and
+// the caller answers with ProvimuxNotServedMessage(base). Otherwise the caller answers as for a model nobody
+// offers.
+func ProvimuxRefuse(name string) (refused, offered bool) {
+	rule := provimuxRule.Load()
+	if !rule.applies() || rule.literal(name) {
+		return false, false
 	}
 	name = strings.TrimSpace(name)
-	if rule.has(strings.ToLower(name)) {
-		return true
-	}
+	base := provimuxBase(name)
 	reg := GetGlobalRegistry()
 	reg.mutex.RLock()
-	his := rule.his(name, reg)
-	reg.mutex.RUnlock()
-	return his
-}
-
-// ProvimuxRefuse reports whether a request for name is refused. offered: an account registers the name; the
-// refusal was then counted and the caller answers with ProvimuxNotServedMessage(name). Otherwise the caller
-// answers as for a model nobody offers.
-func ProvimuxRefuse(name string) (refused, offered bool) {
-	return ProvimuxRefuseSent(name, name)
-}
-
-// ProvimuxRefuseSent is ProvimuxRefuse for a request whose name was sent as sent (with a thinking suffix) and
-// is base without it: refused when neither is the owner's; offered when an account registers either; counted
-// under base.
-func ProvimuxRefuseSent(base, sent string) (refused, offered bool) {
-	rule := provimuxRule.Load()
-	if !rule.applies() {
-		return false, false
-	}
-	base, sent = strings.TrimSpace(base), strings.TrimSpace(sent)
-	if rule.has(strings.ToLower(base)) || (sent != base && rule.has(strings.ToLower(sent))) {
-		return false, false
-	}
-	reg := GetGlobalRegistry()
-	reg.mutex.RLock()
-	refused = !rule.his(base, reg) && (sent == base || !rule.his(sent, reg))
+	refused = !rule.serves(name, reg)
 	if refused {
-		offered = reg.provimuxRegisteredLocked(base) || (sent != base && reg.provimuxRegisteredLocked(sent))
+		_, offered = reg.models[name]
+		if !offered && base != name {
+			_, offered = reg.models[base]
+		}
 	}
 	reg.mutex.RUnlock()
 	if refused && offered {
@@ -339,33 +375,17 @@ func ProvimuxRefuseSent(base, sent string) (refused, offered bool) {
 	return refused, offered
 }
 
-// provimuxRegisteredLocked reports whether an account registers name, or its lower-case form when nothing is
-// registered under name as given (upstream's lookup, internal/util/provider.go).
-func (r *ModelRegistry) provimuxRegisteredLocked(name string) bool {
-	if name == "" {
-		return false
-	}
-	if _, ok := r.models[name]; ok {
-		return true
-	}
-	lower := strings.ToLower(name)
-	if lower == name {
-		return false
-	}
-	_, ok := r.models[lower]
-	return ok
-}
-
 // ProvimuxNotServedMessage is the message that replaces "unknown provider for model" for a refused name an
 // account registers (section 5).
 func ProvimuxNotServedMessage(name string) string {
 	return fmt.Sprintf("model %s is not served: this Provimux serves only the names its owner set (models.only-my-names). Keep it on the console's Models page, or ask for a served name (GET /v1/models).", strings.TrimSpace(name))
 }
 
-// SetProvimuxNamesRule puts rule in force: under the registry's lock, one atomic store and the list cache
-// cleared. Counting refusals starts again when the rule starts applying and is dropped when it stops. With
-// the rule applying it warns, at every call (every reload), for each keep entry it ignores and when the config
-// sets no name; with it off it logs nothing.
+// SetProvimuxNamesRule puts rule in force: under the registry's lock, one atomic store and, when the rule in
+// force applies before or after, the list cache cleared. Counting refusals starts again when the rule starts
+// applying, and the counter and the index of facts are dropped when it stops. With the rule applying it warns,
+// at every call (every reload), for each keep entry it ignores and when the config sets no name; with it off it
+// logs nothing.
 func SetProvimuxNamesRule(rule *ProvimuxNamesRule) {
 	reg := GetGlobalRegistry()
 	reg.mutex.Lock()
@@ -378,7 +398,12 @@ func SetProvimuxNamesRule(rule *ProvimuxNamesRule) {
 	}
 	wasOn := provimuxRule.Load().applies()
 	provimuxRule.Store(stored)
-	reg.invalidateAvailableModelsCacheLocked()
+	if wasOn || stored.applies() {
+		reg.invalidateAvailableModelsCacheLocked()
+	}
+	if !stored.applies() {
+		provimuxFactCache.Store(nil)
+	}
 	provimuxRefusals.mu.Lock()
 	switch {
 	case stored.applies() && !wasOn:
@@ -398,7 +423,7 @@ func SetProvimuxNamesRule(rule *ProvimuxNamesRule) {
 		log.Warnf("only-my-names: keep entry %q is ignored (%s): keep takes exact names", ignored.Value, ignored.Reason)
 	}
 	if len(stored.names) == 0 {
-		log.Warn("only-my-names is on and no name is set in the config: only aliases in a login's own file are served")
+		log.Warn("only-my-names is on and no name is set in the config: nothing is served")
 	}
 }
 
@@ -453,6 +478,10 @@ type ProvimuxRefused struct {
 func ProvimuxRefusedNow() *ProvimuxRefused {
 	provimuxRefusals.mu.Lock()
 	defer provimuxRefusals.mu.Unlock()
+	return provimuxRefusedLocked()
+}
+
+func provimuxRefusedLocked() *ProvimuxRefused {
 	if provimuxRefusals.names == nil {
 		return nil
 	}
@@ -469,18 +498,23 @@ func ProvimuxRefusedNow() *ProvimuxRefused {
 	return refused
 }
 
-// ProvimuxRegistered is one model one client registers, with the facts the rule reads.
-type ProvimuxRegistered struct{ ClientID, ID, OAuthAlias, PrefixedFrom string }
+// ProvimuxRegistered is one model one client registers, with the fact the rule reads.
+type ProvimuxRegistered struct{ ClientID, ID, PrefixedFrom string }
 
-// ProvimuxNamesView is the rule in force and, from one pass under one read lock and without cloning model
-// metadata, every model every client registers (accounts and plugin executors alike), clients sorted, each
-// client's models in its order. The status endpoint shows the enabled accounts and the plugin executors among
-// them, and decides what is the owner's with His over all of them, as the gate does over the registry.
-func ProvimuxNamesView() (rule *ProvimuxNamesRule, registered []ProvimuxRegistered) {
+// ProvimuxNamesView is one consistent reading for the status: the rule in force, the refusal counter of that
+// rule (nil unless it applies), and every model every client registers (accounts and plugin executors alike;
+// clients sorted, each client's models in its order), all under one read lock of the registry and without
+// cloning model metadata. A rule is put in force under the registry's write lock, so the three belong together.
+func ProvimuxNamesView() (rule *ProvimuxNamesRule, registered []ProvimuxRegistered, refused *ProvimuxRefused) {
 	reg := GetGlobalRegistry()
 	reg.mutex.RLock()
 	defer reg.mutex.RUnlock()
 	rule = provimuxRule.Load()
+	if rule.applies() {
+		provimuxRefusals.mu.Lock()
+		refused = provimuxRefusedLocked()
+		provimuxRefusals.mu.Unlock()
+	}
 	clients := make([]string, 0, len(reg.clientModels))
 	total := 0
 	for clientID, ids := range reg.clientModels {
@@ -499,12 +533,12 @@ func ProvimuxNamesView() (rule *ProvimuxNamesRule, registered []ProvimuxRegister
 			seen[id] = struct{}{}
 			entry := ProvimuxRegistered{ClientID: clientID, ID: id}
 			if info := infos[id]; info != nil {
-				entry.OAuthAlias, entry.PrefixedFrom = info.OAuthAlias, info.PrefixedFrom
+				entry.PrefixedFrom = info.PrefixedFrom
 			}
 			registered = append(registered, entry)
 		}
 	}
-	return rule, registered
+	return rule, registered, refused
 }
 
 // ProvimuxIndex answers the rule's facts from a view's registrations, as the registry answers them for the
@@ -522,24 +556,23 @@ func NewProvimuxIndex(registered []ProvimuxRegistered) *ProvimuxIndex {
 	return index
 }
 
-func (x *ProvimuxIndex) provimuxFact(rule *ProvimuxNamesRule, id string) (registered, fact bool) {
-	entries, ok := x.byID[id]
-	if !ok {
-		return false, false
-	}
-	for _, entry := range entries {
-		if rule.fact(entry.OAuthAlias, entry.PrefixedFrom) {
-			return true, true
+func (x *ProvimuxIndex) provimuxCopy(rule *ProvimuxNamesRule, id string) bool {
+	for _, entry := range x.byID[id] {
+		if rule.copyOf(entry.PrefixedFrom) {
+			return true
 		}
 	}
-	return true, false
+	return false
 }
 
-// His reports whether id is the owner's under rule, read from index: the gate's predicate, whatever the switch
-// says (with the switch off it is the preview).
-func (r *ProvimuxNamesRule) His(id string, index *ProvimuxIndex) bool {
-	return r.his(id, index)
+// Serves reports whether a request for id is served under rule, read from index: the gate's and the door's
+// predicate, whatever the switch says (with the switch off it is the preview).
+func (r *ProvimuxNamesRule) Serves(id string, index *ProvimuxIndex) bool {
+	return r.serves(id, index)
 }
+
+// ProvimuxBase is name without a thinking suffix, as the gate cuts it.
+func ProvimuxBase(name string) string { return provimuxBase(strings.TrimSpace(name)) }
 
 // ResetProvimuxNames drops the rule and the refusal counts. For tests.
 func ResetProvimuxNames() {

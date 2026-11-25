@@ -7,7 +7,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/provimux/savings"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 )
 
 // registerProvimuxRoutes adds Provimux's own management endpoints to the authenticated v8 group,
@@ -37,7 +36,8 @@ func (s *Server) ProvimuxRoutes() []string {
 }
 
 // provimuxRefused is models.only-my-names for alpha search (G4 of only-my-names.md 16.3), which chooses a
-// login for a named model by itself: the requested model and the model the router chose must be the owner's.
+// login for a named model by itself: the requested model and the model its router chose must be served. The
+// route asks its router first (upstream's order), so the router sees the name before the check.
 // Otherwise it answers 400 in the route's own error shape, with the setting's message when an account
 // registers the name (the refusal is then counted) and upstream's unknown-model words when none does. An
 // empty name names no model and passes. With the rule not applying it is one atomic load.
@@ -50,17 +50,13 @@ func (s *Server) provimuxRefused(c *gin.Context, requested, selectionModel strin
 		if name == "" || (i == 1 && name == requested) {
 			continue
 		}
-		base := strings.TrimSpace(thinking.ParseSuffix(name).ModelName)
-		if base == "" {
-			base = name
-		}
-		refused, offered := registry.ProvimuxRefuseSent(base, name)
+		refused, offered := registry.ProvimuxRefuse(name)
 		if !refused {
 			continue
 		}
 		message := "unknown provider for model " + name
 		if offered {
-			message = registry.ProvimuxNotServedMessage(base)
+			message = registry.ProvimuxNotServedMessage(registry.ProvimuxBase(name))
 		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": message})
 		return true

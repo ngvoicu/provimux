@@ -90,9 +90,9 @@ func TestProvimuxNamesOffListsAndServesAll(t *testing.T) {
 		t.Fatal("off: refused")
 	}
 	// The preview: the same predicate, whatever the switch says.
-	rule, registered := ProvimuxNamesView()
+	rule, registered, _ := ProvimuxNamesView()
 	index := NewProvimuxIndex(registered)
-	if rule.His("r1-gpt", index) || !rule.His("r1-opus", index) {
+	if rule.Serves("r1-gpt", index) || !rule.Serves("r1-opus", index) {
 		t.Fatal("the preview's predicate")
 	}
 	if ProvimuxRefusedNow() != nil {
@@ -100,50 +100,101 @@ func TestProvimuxNamesOffListsAndServesAll(t *testing.T) {
 	}
 }
 
-// R2, R4: names are compared trimmed and without case; the list gate leaves out the rest.
-func TestProvimuxNamesCaseAndSpaces(t *testing.T) {
+// R2 and R4, as amended (section 17, B): names are compared exactly, trimmed and nothing else, as upstream
+// matches a request; the list gate leaves out the rest.
+func TestProvimuxNamesExactNames(t *testing.T) {
 	namesReset(t)
-	namesRegister(t, "r4-acct", namesModels("r4-opus", "R4-GPT", "r4-other"))
-	SetProvimuxNamesRule(namesRule(true, []string{" R4-Opus "}, " r4-gpt "))
-	if got := namesListed(t, "r4-"); !slices.Equal(got, []string{"r4-opus"}) {
-		t.Fatalf("listed %v", got)
+	namesRegister(t, "r4-acct", namesModels("r4-opus", "R4-GPT", "r4-gpt", "R4-Mixed-Case", "r4-other"))
+	SetProvimuxNamesRule(namesRule(true, []string{" r4-opus "}, " R4-GPT ", "r4-mixed-case"))
+	listed := append(namesListed(t, "r4-"), namesListed(t, "R4-")...)
+	if !slices.Equal(listed, []string{"r4-opus", "R4-GPT"}) {
+		t.Fatalf("listed %v", listed)
 	}
-	if got := namesListed(t, "R4-"); !slices.Equal(got, []string{"R4-GPT"}) {
-		t.Fatalf("listed %v", got)
+	for name, want := range map[string]bool{"r4-opus": true, "R4-OPUS": false, "R4-GPT": true, "r4-gpt": false, "R4-Mixed-Case": false, "r4-mixed-case": true, "r4-other": false} {
+		if got := ProvimuxServes(name); got != want {
+			t.Errorf("ProvimuxServes(%q) = %v", name, got)
+		}
 	}
-	if !ProvimuxServes("R4-OPUS") || !ProvimuxServes("r4-opus") || ProvimuxServes("r4-other") {
-		t.Fatal("served by case")
+	if refused, offered := ProvimuxRefuse("R4-Mixed-Case"); !refused || !offered {
+		t.Fatal("a kept spelling in another case owns R4-Mixed-Case")
 	}
-	rule, _ := ProvimuxNamesView()
-	if got := rule.Names(); len(got) != 2 || got[0].Name != "R4-Opus" || got[1].Name != "r4-gpt" {
-		t.Fatalf("names keep their first spelling, trimmed: %+v", got)
+	if refused, offered := ProvimuxRefuse("r4-mixed-case"); refused || offered {
+		t.Fatalf("the kept spelling: refused %v, offered %v", refused, offered)
+	}
+	rule, _, _ := ProvimuxNamesView()
+	if got := rule.Names(); len(got) != 3 || got[0].Name != "r4-opus" || got[1].Name != "R4-GPT" {
+		t.Fatalf("names, trimmed and as written: %+v", got)
 	}
 }
 
-// R3 and R5 (16.3, cost 1): an alias (OAuthAlias, from an oauth-model-alias row or a login's own file) is the
-// owner's by name: every account that registers the spelling serves it; a name only a non-alias registers is
-// not.
-func TestProvimuxNamesLoginAliasIsByName(t *testing.T) {
+// A (section 17): the registry's alias flag makes nothing the owner's. An alias of an oauth-model-alias row or of
+// a login's own file is his only while the config names it; a model registered with OAuthAlias and no config
+// name is refused like any other.
+func TestProvimuxNamesAliasFlagIsNotOwnership(t *testing.T) {
 	namesReset(t)
 	SetProvimuxNamesRule(namesRule(true, nil))
-	namesRegister(t, "r5-login", []*ModelInfo{{ID: "r5-work-fast", OAuthAlias: "r5-work-fast"}, {ID: "team/r5-work-fast", OAuthAlias: "r5-work-fast", PrefixedFrom: "r5-work-fast"}, {ID: "r5-source"}})
-	namesRegister(t, "r5-key", namesModels("r5-work-fast", "r5-mine"))
-	if got := namesListed(t, "r5-"); !slices.Equal(got, []string{"r5-work-fast"}) {
+	namesRegister(t, "a-login", []*ModelInfo{{ID: "a-work-fast", OAuthAlias: "a-work-fast"}, {ID: "team/a-work-fast", OAuthAlias: "a-work-fast", PrefixedFrom: "a-work-fast"}})
+	namesRegister(t, "a-key", namesModels("a-work-fast"))
+	if got := append(namesListed(t, "a-"), namesListed(t, "team/a-")...); len(got) != 0 {
+		t.Fatalf("listed by the flag alone: %v", got)
+	}
+	if ProvimuxServes("a-work-fast") || ProvimuxServes("team/a-work-fast") {
+		t.Fatal("served by the flag alone")
+	}
+	SetProvimuxNamesRule(namesRule(true, []string{"a-work-fast"}))
+	if got := append(namesListed(t, "a-"), namesListed(t, "team/a-")...); !slices.Equal(got, []string{"a-work-fast", "team/a-work-fast"}) {
+		t.Fatalf("named in the config: %v", got)
+	}
+}
+
+// C (section 17): a registered spelling with a thinking suffix is served through its kept base, by the lists,
+// the door and the status alike.
+func TestProvimuxNamesSuffixedSpellings(t *testing.T) {
+	namesReset(t)
+	SetProvimuxNamesRule(namesRule(true, nil, "c-local-base"))
+	namesRegister(t, "c-acct", namesModels("c-local-base", "c-local-base(high)", "c-other(high)"))
+	if got := namesListed(t, "c-"); !slices.Equal(got, []string{"c-local-base", "c-local-base(high)"}) {
 		t.Fatalf("listed %v", got)
 	}
-	if got := namesListed(t, "team/r5-"); !slices.Equal(got, []string{"team/r5-work-fast"}) {
-		t.Fatalf("listed %v", got)
-	}
-	if count := GetGlobalRegistry().GetModelCount("r5-work-fast"); count != 2 {
-		t.Fatalf("both accounts still register r5-work-fast: %d", count)
-	}
-	if !ProvimuxServes("r5-work-fast") || ProvimuxServes("r5-source") || ProvimuxServes("r5-mine") {
+	if !ProvimuxServes("c-local-base(high)") || !ProvimuxServes("c-local-base(low)") || ProvimuxServes("c-other(high)") {
 		t.Fatal("served")
 	}
-	// The login goes: the key's own r5-work-fast is no longer anyone's alias.
-	GetGlobalRegistry().UnregisterClient("r5-login")
-	if ProvimuxServes("r5-work-fast") || len(namesListed(t, "r5-")) != 0 {
-		t.Fatal("an alias of a removed login still serves the name")
+	rule, registered, _ := ProvimuxNamesView()
+	index := NewProvimuxIndex(registered)
+	if !rule.Serves("c-local-base(high)", index) || rule.Serves("c-other(high)", index) {
+		t.Fatal("the status's predicate")
+	}
+}
+
+// E (section 17): the Gemini format names a model by Name. A plugin executor's model whose provider-native Name
+// differs from its kept id is left out of the Gemini list (whose detail reads that list), so the Gemini format
+// never shows a name the door refuses; the other formats list the kept id.
+func TestProvimuxNamesGeminiNames(t *testing.T) {
+	namesReset(t)
+	SetProvimuxNamesRule(namesRule(true, nil, "e-public-name", "e-kept"))
+	namesRegister(t, "plugin:e:demo:executor", []*ModelInfo{{ID: "e-public-name", Name: "e-vendor-native-name", Object: "model"},
+		{ID: "e-kept", Name: "models/e-kept", Object: "model"}})
+	var gemini []string
+	for _, model := range GetGlobalRegistry().GetAvailableModels("gemini") {
+		if name, _ := model["name"].(string); strings.Contains(name, "e-") {
+			gemini = append(gemini, name)
+		}
+	}
+	if !slices.Equal(gemini, []string{"models/e-kept"}) {
+		t.Fatalf("gemini %v", gemini)
+	}
+	if got := namesListed(t, "e-"); !slices.Equal(got, []string{"e-kept", "e-public-name"}) {
+		t.Fatalf("openai %v", got)
+	}
+	SetProvimuxNamesRule(namesRule(false, nil))
+	gemini = nil
+	for _, model := range GetGlobalRegistry().GetAvailableModels("gemini") {
+		if name, _ := model["name"].(string); strings.Contains(name, "e-") {
+			gemini = append(gemini, name)
+		}
+	}
+	if len(gemini) != 2 {
+		t.Fatalf("off: gemini %v", gemini)
 	}
 }
 
@@ -165,18 +216,22 @@ func TestProvimuxNamesPrefixAndNamespace(t *testing.T) {
 	}
 }
 
-// R8: keep takes exact names; an entry with * or an empty one is ignored and reported.
+// R8 and F: keep takes exact names; an entry with *, an empty one, and the reserved auto are ignored and
+// reported; auto is never served as a name.
 func TestProvimuxNamesKeepIgnored(t *testing.T) {
 	namesReset(t)
-	SetProvimuxNamesRule(namesRule(true, []string{"r8-mine"}, "r8-claude-*", "  ", "r8-gpt"))
+	SetProvimuxNamesRule(namesRule(true, []string{"r8-mine"}, "r8-claude-*", "  ", "r8-gpt", "auto"))
 	namesRegister(t, "r8-acct", namesModels("r8-claude-opus", "r8-claude-*", "r8-gpt", "r8-mine"))
 	if got := namesListed(t, "r8-"); !slices.Equal(got, []string{"r8-gpt", "r8-mine"}) {
 		t.Fatalf("listed %v", got)
 	}
-	rule, _ := ProvimuxNamesView()
-	want := []ProvimuxKeepIgnored{{Value: "r8-claude-*", Reason: "pattern"}, {Value: "  ", Reason: "empty"}}
+	rule, _, _ := ProvimuxNamesView()
+	want := []ProvimuxKeepIgnored{{Value: "r8-claude-*", Reason: "pattern"}, {Value: "  ", Reason: "empty"}, {Value: "auto", Reason: "reserved"}}
 	if !slices.Equal(rule.KeepIgnored(), want) {
 		t.Fatalf("keep_ignored %+v", rule.KeepIgnored())
+	}
+	if ProvimuxServes("auto") || ProvimuxServes("auto(high)") {
+		t.Fatal("auto is served as a name")
 	}
 }
 
@@ -296,7 +351,7 @@ func TestProvimuxNamesHomeDoesNotApply(t *testing.T) {
 	if got := namesListed(t, "home-"); len(got) != 1 || !ProvimuxServes("home-a") || ProvimuxApplies() {
 		t.Fatalf("home: %v", got)
 	}
-	rule, _ := ProvimuxNamesView()
+	rule, _, _ := ProvimuxNamesView()
 	if !rule.Enabled() || !rule.Home() || rule.Applies() || ProvimuxRefusedNow() != nil {
 		t.Fatalf("home rule %+v", rule)
 	}
@@ -323,7 +378,7 @@ func TestProvimuxNamesNoLag(t *testing.T) {
 	if refused, offered := ProvimuxRefuse("k6-held"); !refused || !offered {
 		t.Fatal("on: the next request")
 	}
-	rule, _ := ProvimuxNamesView()
+	rule, _, _ := ProvimuxNamesView()
 	if rule.Source() != "hash-on" || rule.Generation() != 2 {
 		t.Fatalf("in force: %q generation %d", rule.Source(), rule.Generation())
 	}
@@ -333,6 +388,15 @@ func TestProvimuxNamesNoLag(t *testing.T) {
 	SetProvimuxNamesRule(off)
 	if got := namesListed(t, "k6-"); len(got) != 2 {
 		t.Fatalf("off again: %v", got)
+	}
+	// F: the index is freed when the rule stops applying, and an off-to-off commit leaves the list cache warm.
+	if provimuxFactCache.Load() != nil {
+		t.Fatal("the index outlives the rule")
+	}
+	generation := GetGlobalRegistry().GetGeneration()
+	SetProvimuxNamesRule(namesRule(false, []string{"k6-other"}))
+	if GetGlobalRegistry().GetGeneration() != generation {
+		t.Fatal("an off-to-off commit cleared the list cache")
 	}
 	if GetGlobalRegistry().ClientRegistrationEpoch("k6-acct") != epoch {
 		t.Fatal("a rule change registered the account again")
@@ -366,7 +430,7 @@ func TestProvimuxNamesOffTakesNoLock(t *testing.T) {
 	done = make(chan struct{})
 	go func() {
 		defer close(done)
-		ProvimuxServes("O3-MINE")
+		ProvimuxServes("o3-mine(high)")
 		ProvimuxRefuse("o3-mine")
 	}()
 	select {
@@ -425,9 +489,9 @@ func TestProvimuxNamesConcurrent(t *testing.T) {
 				case 1:
 					GetGlobalRegistry().GetAvailableModels("openai")
 				case 2:
-					rule, registered := ProvimuxNamesView()
+					rule, registered, _ := ProvimuxNamesView()
 					index := NewProvimuxIndex(registered)
-					rule.His("conc-alias", index)
+					rule.Serves("conc-alias", index)
 				default:
 					ProvimuxRefuse("conc-held-conc-0-1")
 					ProvimuxServes("conc-alias")

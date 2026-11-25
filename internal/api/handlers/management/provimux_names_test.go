@@ -154,8 +154,7 @@ func TestProvimuxNamesFollowsTheContract(t *testing.T) {
 	provimuxValidate(t, "NamesResponse", data)
 }
 
-// S2: names equals the console's rule on the shared fixture config, plus keep and a login's own
-// aliases, each with who set it.
+// S2: names are the config's (alias rows and keep), each with who set it, compared exactly.
 func TestProvimuxNamesOnTheSharedFixture(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(provimuxDesignDir(t), "examples", "names-fixture.yaml"))
 	if err != nil {
@@ -174,40 +173,46 @@ func TestProvimuxNamesOnTheSharedFixture(t *testing.T) {
 		order = append(order, name.Name)
 	}
 	want := map[string][]string{
-		"claude-opus-5-5": {"keep"}, "devin/claude-opus-4.6": {"keep"}, "Fast": {"alias"}, "gpt-5.5": {"alias", "keep"},
+		"claude-opus-5-5": {"keep"}, "devin/claude-opus-4.6": {"keep"}, "Fast": {"alias"}, "gpt-5.5": {"alias"}, "GPT-5.5": {"keep"},
 		"my-opus": {"alias"}, "team-sonnet": {"alias"}, "vertex-flash": {"alias"}, "work-fast": {"alias"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("names:\n got %v\nwant %v\n%s", got, want, raw)
 	}
-	if !slices.Equal(order, []string{"claude-opus-5-5", "devin/claude-opus-4.6", "Fast", "gpt-5.5", "my-opus", "team-sonnet", "vertex-flash", "work-fast"}) {
+	if !slices.Equal(order, []string{"claude-opus-5-5", "devin/claude-opus-4.6", "Fast", "GPT-5.5", "gpt-5.5", "my-opus", "team-sonnet", "vertex-flash", "work-fast"}) {
 		t.Fatalf("order %v", order)
 	}
-	if len(answer.KeepIgnored) != 2 || answer.KeepIgnored[0].Value != "claude-*" || answer.KeepIgnored[0].Reason != "pattern" || answer.KeepIgnored[1].Reason != "empty" {
+	if len(answer.KeepIgnored) != 3 || answer.KeepIgnored[0].Value != "claude-*" || answer.KeepIgnored[0].Reason != "pattern" || answer.KeepIgnored[1].Reason != "empty" ||
+		answer.KeepIgnored[2].Value != "auto" || answer.KeepIgnored[2].Reason != "reserved" {
 		t.Fatalf("keep_ignored %+v", answer.KeepIgnored)
 	}
 	provimuxValidate(t, "NamesResponse", raw)
 
-	// A login's own alias joins with set_by login-file, on a name the config also sets or not.
+	// A (section 17): an alias in a login's own file is not a name the config sets. my-opus is the config's
+	// (an oauth-model-alias row); own-sonnet, only in the login's file, is under others, to be kept in one click.
 	login := &coreauth.Auth{ID: "fixture-login", Provider: "claude", Attributes: map[string]string{"auth_kind": "oauth",
 		"model_aliases": `[{"name":"claude-opus-5-5","alias":"my-opus"},{"name":"claude-sonnet-5","alias":"own-sonnet"}]`}}
 	h = namesFixture(t, cfg, namesAccount{login, []*registry.ModelInfo{{ID: "my-opus", OAuthAlias: "my-opus"}, {ID: "own-sonnet", OAuthAlias: "own-sonnet"}}})
-	answer, _ = namesGet(t, h)
+	answer, raw = namesGet(t, h)
 	for _, name := range answer.Names {
 		switch name.Name {
 		case "my-opus":
-			if !slices.Equal(name.SetBy, []string{"alias", "login-file"}) || name.Accounts != 1 {
+			if !slices.Equal(name.SetBy, []string{"alias"}) || name.Accounts != 1 {
 				t.Fatalf("my-opus %+v", name)
 			}
 		case "own-sonnet":
-			if !slices.Equal(name.SetBy, []string{"login-file"}) || name.Accounts != 1 {
-				t.Fatalf("own-sonnet %+v", name)
-			}
+			t.Fatalf("a login-file alias is a name: %s", raw)
 		case "team-sonnet":
 			if name.Accounts != 0 {
 				t.Fatalf("a name nothing answers: %+v", name)
 			}
 		}
+	}
+	if len(answer.Others) != 1 || answer.Others[0].Name != "own-sonnet" {
+		t.Fatalf("others: %s", raw)
+	}
+	if strings.Contains(string(raw), "login-file") {
+		t.Fatalf("set_by login-file is no longer given: %s", raw)
 	}
 }
 
@@ -257,7 +262,7 @@ func TestProvimuxNamesOthersAndServedCoverEveryOfferedName(t *testing.T) {
 		for _, name := range answer.Names {
 			names = append(names, name.Name+":"+strings.Join(name.SetBy, ","))
 		}
-		if !slices.Equal(names, []string{"opus:alias", "work-fast:login-file"}) {
+		if !slices.Equal(names, []string{"opus:alias"}) {
 			t.Fatalf("names %v", names)
 		}
 		if answer.Names[0].Accounts != 2 {
@@ -314,32 +319,60 @@ func TestProvimuxNamesNeedsManagementKey(t *testing.T) {
 	}
 }
 
-// C and cost 1 of 16.1: a login's own alias work-fast and a key that registers the same spelling. The alias
-// is the owner's by name, so the key serves it too: in names with both accounts, never in others, with the
-// switch on and off.
-func TestProvimuxNamesAServedNameIsNotAnOther(t *testing.T) {
-	for _, enabled := range []bool{false, true} {
+// A (section 17, the review's first case of finding 3): a login's own alias work-fast, and a key that
+// registers the same spelling. Not a name of the config, so it is under others with both accounts, never also
+// in names, and refused; kept, it is a name with both accounts, and served.
+func TestProvimuxNamesLoginFileAliasIsAnOther(t *testing.T) {
+	for _, keep := range [][]string{nil, {"work-fast"}} {
 		accounts := namesStandardAccounts()
 		accounts[1].models = append(accounts[1].models, &registry.ModelInfo{ID: "work-fast"})
-		h := namesFixture(t, namesCfg(enabled), accounts...)
+		h := namesFixture(t, namesCfg(true, keep...), accounts...)
 		answer, raw := namesGet(t, h)
+		inOthers, inNames := 0, 0
 		for _, other := range answer.Others {
 			if other.Name == "work-fast" {
-				t.Fatalf("enabled %v: work-fast in others: %s", enabled, raw)
+				inOthers = len(other.Accounts)
 			}
 		}
-		var accountsNow int
 		for _, name := range answer.Names {
 			if name.Name == "work-fast" {
-				accountsNow = name.Accounts
+				inNames = name.Accounts
 			}
 		}
-		if accountsNow != 2 {
-			t.Fatalf("enabled %v: work-fast accounts %d, want 2: %s", enabled, accountsNow, raw)
+		kept := keep != nil
+		if kept && (inNames != 2 || inOthers != 0 || !registry.ProvimuxServes("work-fast")) ||
+			!kept && (inNames != 0 || inOthers != 2 || registry.ProvimuxServes("work-fast")) {
+			t.Fatalf("keep %v: in names %d, in others %d, served %v: %s", keep, inNames, inOthers, registry.ProvimuxServes("work-fast"), raw)
 		}
-		if !registry.ProvimuxServes("work-fast") {
-			t.Fatalf("enabled %v: the gate refuses work-fast", enabled)
+	}
+}
+
+// D (section 17): one rule for the whole answer. A commit that lands while an answer is being built (the clock
+// is read after the view) does not leak into it: ETag, enabled, applies and refused are all the first rule's.
+func TestProvimuxNamesOneRulePerAnswer(t *testing.T) {
+	cfgA := namesCfg(true)
+	cfgA.SourceHash = "aaaa"
+	h := namesFixture(t, cfgA, namesStandardAccounts()...)
+	registry.ProvimuxRefuse("gpt-5.5")
+	cfgB := namesCfg(false)
+	cfgB.SourceHash = "bbbb"
+	previous := provimuxNow
+	t.Cleanup(func() { provimuxNow = previous })
+	committed := false
+	provimuxNow = func() time.Time {
+		if !committed {
+			committed = true
+			registry.SetProvimuxNamesRule(config.ProvimuxNamesRule(cfgB))
 		}
+		return previous()
+	}
+	answer, raw := namesGet(t, h)
+	if !committed || !answer.OnlyMyNames.Enabled || answer.Refused == nil || len(answer.Refused.Names) != 1 || !strings.Contains(string(raw), `aaaa`) {
+		t.Fatalf("an answer mixes two rules: %s", raw)
+	}
+	answer, raw = namesGet(t, h)
+	if answer.OnlyMyNames.Enabled || answer.Refused != nil || !strings.Contains(string(raw), `bbbb`) {
+		t.Fatalf("the next answer: %s", raw)
 	}
 }
 
@@ -461,16 +494,17 @@ func TestProvimuxNamesAppliedIsTheRuleInForce(t *testing.T) {
 	}
 }
 
-// K7 (only-my-names.md 16.7): a property test over generated registries and rules. Every registered id is in
-// exactly one of names (as a name or a copy) and others; the ids under names are exactly the ids the two list
-// loops show and the door lets through (registry.ProvimuxRefuse is the door's predicate); the ids under
-// others are exactly the ones skipped and refused. Ids are lower-case: names and others group spellings that
-// differ only in case, which a property over single ids cannot see.
+// K7 (only-my-names.md 16.7, extended by section 17): a property test over generated registries and rules,
+// with spellings that differ only in case, spellings with a thinking suffix, prefixed copies and login-file
+// aliases. Every registered id is in exactly one of names (a name with accounts, or a copy) and others; the ids
+// under names are exactly the ids the two list loops show and the door lets through (registry.ProvimuxRefuse
+// is the door's predicate); the ids under others are exactly the ones skipped and refused.
 func TestProvimuxNamesStatusAndGateAgree(t *testing.T) {
 	random := rand.New(rand.NewPCG(16, 7))
-	pool := []string{"opus", "gpt-5.5", "fast", "sonnet", "devin/x", "learned-a", "learned-b", "team-a/opus", "work-fast"}
+	pool := []string{"opus", "Opus", "OPUS", "opus(high)", "Opus(high)", "gpt-5.5", "GPT-5.5", "fast", "fast(low)", "sonnet",
+		"devin/x", "learned-a", "team-a/opus", "work-fast", "Mixed-Case", "mixed-case", "auto"}
 	prefixes := []string{"", "", "team-a", "team-b"}
-	for round := range 300 {
+	for round := range 400 {
 		t.Run(fmt.Sprintf("round-%d", round), func(t *testing.T) {
 			cfg := &config.Config{}
 			var rows []config.ClaudeModel
@@ -494,12 +528,12 @@ func TestProvimuxNamesStatusAndGateAgree(t *testing.T) {
 				var models []*registry.ModelInfo
 				seen := map[string]bool{}
 				for _, name := range pool {
-					if random.IntN(3) != 0 {
+					if random.IntN(3) != 0 || name == "auto" && random.IntN(2) == 0 {
 						continue
 					}
 					alias := ""
 					if random.IntN(5) == 0 {
-						alias = name
+						alias = name // a login-file or global alias: the flag decides nothing
 					}
 					if !seen[name] {
 						seen[name] = true
@@ -518,28 +552,36 @@ func TestProvimuxNamesStatusAndGateAgree(t *testing.T) {
 				Names []struct {
 					Name   string `json:"name"`
 					Copies []struct {
-						ID string `json:"id"`
+						ID       string `json:"id"`
+						Accounts int    `json:"accounts"`
 					} `json:"copies"`
 					Accounts int `json:"accounts"`
 				} `json:"names"`
 				Others []struct {
-					Name string `json:"name"`
+					Name     string            `json:"name"`
+					Accounts []json.RawMessage `json:"accounts"`
 				} `json:"others"`
 			}
 			if err := json.Unmarshal(raw, &body); err != nil {
 				t.Fatal(err)
 			}
-			inNames, inOthers := map[string]bool{}, map[string]bool{}
-			for _, name := range body.Names {
-				if name.Accounts > 0 {
-					inNames[name.Name] = true
+			registered := map[string]int{}
+			for _, account := range accounts {
+				for _, model := range account.models {
+					registered[model.ID]++
 				}
+			}
+			inNames, inOthers := map[string]int{}, map[string]int{}
+			// A copy that is itself a name of the config is both a copy and a row (the second review's finding
+			// 13): the same accounts, shown twice.
+			for _, name := range body.Names {
+				inNames[name.Name] = max(inNames[name.Name], name.Accounts)
 				for _, copied := range name.Copies {
-					inNames[copied.ID] = true
+					inNames[copied.ID] = max(inNames[copied.ID], copied.Accounts)
 				}
 			}
 			for _, other := range body.Others {
-				inOthers[other.Name] = true
+				inOthers[other.Name] += len(other.Accounts)
 			}
 			listed := map[string]bool{}
 			for _, model := range registry.GetGlobalRegistry().GetAvailableModels("openai") {
@@ -551,26 +593,18 @@ func TestProvimuxNamesStatusAndGateAgree(t *testing.T) {
 			for _, info := range registry.GetGlobalRegistry().GetAvailableModelInfos() {
 				infos[info.ID] = true
 			}
-			registered := map[string]bool{}
-			for _, account := range accounts {
-				for _, model := range account.models {
-					registered[model.ID] = true
-				}
-			}
-			for id := range registered {
+			for id, count := range registered {
 				refused, offered := registry.ProvimuxRefuse(id)
+				named, other := inNames[id] > 0, inOthers[id] > 0
 				switch {
-				case inNames[id] == inOthers[id]:
-					t.Fatalf("%s: in names %v, in others %v\n%s", id, inNames[id], inOthers[id], raw)
-				case inNames[id] != listed[id] || inNames[id] != infos[id]:
-					t.Fatalf("%s: in names %v, listed %v / %v\n%s", id, inNames[id], listed[id], infos[id], raw)
-				case inOthers[id] != refused || (refused && !offered):
-					t.Fatalf("%s: in others %v, refused %v (offered %v)\n%s", id, inOthers[id], refused, offered, raw)
-				}
-			}
-			for id := range listed {
-				if !registered[id] && strings.HasPrefix(id, "k7") {
-					t.Fatalf("listed %s, which nobody registers", id)
+				case named == other:
+					t.Fatalf("%s: in names %v, in others %v\n%s", id, named, other, raw)
+				case inNames[id]+inOthers[id] != count:
+					t.Fatalf("%s: %d accounts shown, %d register it\n%s", id, inNames[id]+inOthers[id], count, raw)
+				case named != listed[id] || named != infos[id]:
+					t.Fatalf("%s: in names %v, listed %v / %v\n%s", id, named, listed[id], infos[id], raw)
+				case other != refused || (refused && !offered):
+					t.Fatalf("%s: in others %v, refused %v (offered %v)\n%s", id, other, refused, offered, raw)
 				}
 			}
 		})
