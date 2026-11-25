@@ -204,7 +204,9 @@ func (r *Rule) Has(name string) bool {
 }
 
 // CopyOf reports whether id is a copy of one of the config's names under a prefix the config declares
-// ("crew/mine" for the name "mine" and the prefix "crew"), and which name.
+// ("crew/mine" for the name "mine" and the prefix "crew"), and which name. Upstream builds a copy as the exact
+// concatenation prefix + "/" + name, so only the whole id is trimmed (as a request is); the part after the slash
+// is compared as it stands: "crew/ mine" is no copy of "mine".
 func (r *Rule) CopyOf(id string) (string, bool) {
 	if r == nil {
 		return "", false
@@ -212,8 +214,9 @@ func (r *Rule) CopyOf(id string) (string, bool) {
 	id = strings.TrimSpace(id)
 	for _, prefix := range r.prefixes {
 		if len(id) > len(prefix)+1 && id[len(prefix)] == '/' && strings.HasPrefix(id, prefix) {
-			if name := id[len(prefix)+1:]; r.Has(name) {
-				return strings.TrimSpace(name), true
+			name := id[len(prefix)+1:]
+			if _, ok := r.names[name]; ok {
+				return name, true
 			}
 		}
 	}
