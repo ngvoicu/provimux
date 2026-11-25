@@ -53,9 +53,9 @@ server's address, see [For a team](#for-a-team)). Docker, release archives and b
 - **[Which account serves each model, and which one answered](#which-account-serves-each-model-and-which-one-answered).**
   The model list names, per model, the API keys (`apikey`) and logins (`oauth`) behind it, by priority, and every
   response says which one answered.
-- **[Its own console pages](#the-console-provimux-ui)**: **Model routes** (routes by priority, with the cooldown
-  recorded and its reason) and **Live model lists** in provimux-ui, from
-  [two read-only endpoints](#model-routes-and-live-list-status-for-the-console).
+- **[Its own console pages](#the-console-provimux-ui)** in provimux-ui: **Accounts**, **Models** (every name you can
+  send and the accounts behind it, by priority, with the cooldown recorded and its reason) and **Savings**, read from
+  [Provimux's own endpoints](#model-routes-and-live-list-status-for-the-console).
 - **[Live model lists for each login](#live-model-lists-for-each-login).** Each Claude, Codex and Meta login serves
   what its own account lists: retired models disappear, new ones appear the day the provider lists them.
 - **[Model lists for API keys that keep themselves up to date](#model-lists-for-api-keys).** A key with its own
@@ -207,13 +207,17 @@ The curl examples below use `$PROVIMUX` for the server's address (`http://127.0.
 ## The console: provimux-ui
 
 Provimux's web console is [provimux-ui](https://github.com/ngvoicu/provimux-ui), the CLI Proxy API Management Center
-in the providers.dev look, with Provimux's own pages (from console v1.28.3-pmx.2): **Model routes**, which logins and
-keys serve each model, by priority, with the cooldowns Provimux recorded; and **Live model lists**, each login's own
-list, with a refresh.
+in the providers.dev look, with Provimux's own pages: **Accounts**, every subscription and API key in one list, whether
+each works now and its priority; **Models**, every model name you can send, with the accounts that serve it in the
+order Provimux tries them, the cooldowns it recorded and each login's list, your own names, and the switch
+[Serve only my names](#serve-only-my-names); and **Savings**, what prompt caching was worth and what each account kind
+served. The original's pages stay one click away, under Advanced settings.
+[Its README](https://github.com/ngvoicu/provimux-ui/blob/main/.github/README.md#provimuxs-own-pages) describes each
+page.
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="provimux/media/console-model-routes-dark.png">
-  <img alt="The console's Model routes page. The sidebar reads Provimux by providers.dev. Chips read 9 models, 5 subscriptions, 3 API keys, 4 cooldowns recorded. Two cards: Devin: quota pause per model, switched on, with devin-opus-5-5 paused for this model, 55 min left; and OpenRouter, built in, with the entry openrouter (2 models, 1 key). Below, one card per model: anthropic/claude-opus-5.5 on an API key at openrouter.ai, 1M context, 128K output; claude-haiku-5-5 with two Claude subscriptions at priority 10 and a Claude API key at api.anthropic.com at priority 0." src="provimux/media/console-model-routes-light.png">
+  <source media="(prefers-color-scheme: dark)" srcset="provimux/media/console-models-dark.png">
+  <img alt="The console's Models page, on its Names tab, beside Excluded models (0). The sidebar reads Provimux by providers.dev and lists Accounts, Routing, Models, Savings and Advanced settings under Gateway. A card Serve only my names, switched off: Off: all 41 names are served, 13 of them yours. Chips read 41 names, 13 of yours, 4 served by more than one account, 2 cooling down, 1 needs a look. The section Your names: opus, served by a Claude subscription, 1840 requests in 30 days; claude-opus-5-5, 4 accounts, served in this order by a Claude subscription at priority 10, a Devin subscription at priority 5 that is cooling down, and a Claude API key and OpenRouter sharing priority 0; terra, served by a Codex subscription; sonnet, marked Needs a look, with a second route Provimux ignores because the login type already uses the name; haiku, served by a Claude API key." src="provimux/media/console-models-light.png">
 </picture>
 
 Nothing to install: Provimux downloads the latest provimux-ui release by itself, at startup and every 3 hours, and
@@ -371,8 +375,8 @@ openai-compatibility:
 ```
 
 The **Model lists** endpoint below shows, per key, which models it learned from its service (`key.learned`) apart
-from its rows, and which rows its service no longer lists (`key.unlisted`). The Model routes page shows every
-account serving a model.
+from its rows, and which rows its service no longer lists (`key.unlisted`). The console's Models page shows every
+account serving a model, and marks a model a key learned.
 
 - The request is the one the console's button sends, to the host you configured for the key, with that key, its
   headers and its proxy: `<base-url>/models` for an `openai-compatibility` key (once more without the key and headers
@@ -803,8 +807,9 @@ states them.
 
 Provimux is free and stays open source (MIT). For companies that run it, providers.dev offers support plans:
 **Community** (free: GitHub issues and discussions, best effort) and **Team**, **Business** and **Priority** (paid),
-listed with prices and terms at [providers.dev/support](https://providers.dev/support/). A paid plan buys a private
-channel and a first reply within a stated number of business days: a reply, not a promised fix. Provimux has one
+listed with prices and terms at
+[provimux.providers.dev/support](https://provimux.providers.dev/support/). A paid plan buys a private channel and a
+first reply within a stated number of business days: a reply, not a promised fix. Provimux has one
 maintainer, and we say so: announced holidays pause the clock, there is no 24/7 and no uptime promise for a service
 you host yourself, and the code stays MIT, so you can always fork it.
 
