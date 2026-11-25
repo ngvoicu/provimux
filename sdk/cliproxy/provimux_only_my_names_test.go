@@ -2,13 +2,18 @@ package cliproxy
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"slices"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/management"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
@@ -467,5 +472,77 @@ func TestProvimuxOnlyMyNamesReloadClause(t *testing.T) {
 		if got := config.ProvimuxOnlyMyNamesChanged(tc.old, tc.new); got != tc.want {
 			t.Errorf("%s: %v, want %v", tc.name, got, tc.want)
 		}
+	}
+}
+
+// S5: GET /provimux/model-lists with the switch on. ?view=live (the vendor's list as it arrived) is
+// byte-identical to the switch off; the fields that move are the ones read from the registry:
+// registered_models, learned_models and the models rows.
+func TestProvimuxOnlyMyNamesModelListsFields(t *testing.T) {
+	namesReset(t)
+	provimuxLiveReset(t)
+	t.Setenv("WRITABLE_PATH", t.TempDir())
+	c1, _ := namesClaudeCatalog(t)
+	login := namesLogin("names-model-lists", "claude", nil)
+	login.FileName = "names-model-lists.json"
+	login.Attributes["path"] = "/auths/names-model-lists.json"
+	login.Metadata["account_id"] = "acct-model-lists"
+	build := func(only *registry.OnlyMyNames) *config.Config {
+		cfg := provimuxOn()
+		cfg.Models.OnlyMyNames = only
+		return cfg
+	}
+	svc, auths := namesService(t, build(nil), login)
+	list := keyList(c1, "learned-login")
+	liveModelLists.put(login.ID, liveModelList{identity: liveModelListIdentity(login), provider: liveModelListProvider(login), ids: list.ids, extra: list.extra, fetchedAt: liveModelListNow()})
+	handler := management.NewHandlerWithoutConfigFilePath(build(nil), svc.coreManager)
+	get := func(query string) map[string]any {
+		t.Helper()
+		recorder := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(recorder)
+		ctx.Request = httptest.NewRequest(http.MethodGet, "/v8/management/provimux/model-lists"+query, nil)
+		handler.ProvimuxModelLists(ctx)
+		var body map[string]any
+		if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil || recorder.Code != http.StatusOK {
+			t.Fatalf("model-lists %d %s", recorder.Code, recorder.Body.String())
+		}
+		delete(body, "observed_at")
+		return body
+	}
+	row := func(body map[string]any) map[string]any {
+		t.Helper()
+		logins := body["logins"].([]any)
+		if len(logins) != 1 {
+			t.Fatalf("logins %v", logins)
+		}
+		return logins[0].(map[string]any)
+	}
+	namesReconfigure(svc, build(nil), auths)
+	query := "?view=live&auth_index=" + auths[0].EnsureIndex()
+	off := get(query)
+	namesReconfigure(svc, build(namesOn(c1)), auths)
+	on := get(query)
+
+	offRow, onRow := row(off), row(on)
+	if !reflect.DeepEqual(offRow["live_list"], onRow["live_list"]) || offRow["live_list"] == nil {
+		t.Fatalf("live_list moved:\n off %v\n  on %v", offRow["live_list"], onRow["live_list"])
+	}
+	moved := []string{}
+	for key := range offRow {
+		if !reflect.DeepEqual(offRow[key], onRow[key]) {
+			moved = append(moved, key)
+		}
+	}
+	slices.Sort(moved)
+	if !slices.Equal(moved, []string{"learned_models", "models", "registered_models"}) {
+		t.Fatalf("fields that moved: %v\n off %v\n  on %v", moved, offRow, onRow)
+	}
+	delete(off, "logins")
+	delete(on, "logins")
+	if !reflect.DeepEqual(off, on) {
+		t.Fatalf("the rest of the answer moved:\n off %v\n  on %v", off, on)
+	}
+	if offRow["registered_models"].(float64) <= onRow["registered_models"].(float64) || onRow["registered_models"].(float64) != 1 || onRow["learned_models"].(float64) != 0 {
+		t.Fatalf("registered %v -> %v, learned %v -> %v", offRow["registered_models"], onRow["registered_models"], offRow["learned_models"], onRow["learned_models"])
 	}
 }
