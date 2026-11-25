@@ -382,6 +382,16 @@ jq '.rebase = {ok: false, stopped_at: "0123456789abcdef0123456789abcdef01234567"
   "$tmp/fail.json" >"$tmp/fail2.json"
 expect "rebase failure: reported as failed" fail "$(report "$tmp/fail2.json" success)"
 contains "  ... rebase stop shown" "$tmp/report.out" "The rebase stopped at"
+lacks "  ... no warnings section without warnings" "$tmp/report.out" "Warnings from the candidate"
+jq '.warnings = [{package: "x/a", test: "TestW", text: "2 Devin model(s): m-1, m-2"}]' "$tmp/fail.json" >"$tmp/warn.json"
+expect "failure with a test warning: still failed" fail "$(report "$tmp/warn.json" success)"
+contains "  ... the warning shown" "$tmp/report.out" "TestW: 2 Devin model(s): m-1, m-2"
+jq '.status = "pass" | .candidate = "0123456789abcdef0123456789abcdef01234567" | .commits = 3
+    | .decisions = {dropped: [], changed: [], new_workflows: []}
+    | .tests = {ok: true, new_failures: [], flaky: [], failing_on_tag_too: [], candidate: {packages: 1, passed: 1, failed: 0},
+               tag: {packages: 1, passed: 1, failed: 0}}' "$tmp/warn.json" >"$tmp/warn-pass.json"
+expect "pass with a test warning: ready to publish" pass "$(report "$tmp/warn-pass.json" success)"
+contains "  ... the warning shown" "$tmp/report.out" "Warnings from the candidate's tests"
 
 # --- provimux-publish.yml's verifier, autopublish.sh and publish.sh --ci ----------------------------
 # checkrun ID [JQ]: attempt 1 of a provimux-check run of test/provimux on main that passed (JQ edits it).
@@ -732,6 +742,18 @@ jq '.jobs += [{name: "test (candidate)", conclusion: "success"}]' "$stub/api/rep
 mv "$tmp/j.json" "$stub/api/repos_test_provimux_actions_runs_77_attempts_1_jobs_per_page_100.json"
 expect "two jobs named test (candidate): error" error "$(verdict env)"
 vjobs success success
+
+echo "# check.sh verdict: provimux-warning lines of the candidate's tests"
+# vwarn: the candidate's test x/a/TestW skips with a warning (and one line that is not JSON).
+# shellcheck disable=SC2016 # literal text for eval
+vwarn='{ ev pass x/a TestA
+  printf "%s\n" "{\"Action\":\"output\",\"Package\":\"x/a\",\"Test\":\"TestW\",\"Output\":\"    w_test.go:9: provimux-warning: 2 Devin model(s) carry the placeholder: m-1, m-2 <b>\\n\"}"
+  echo "not json"; ev skip x/a TestW; ev pass x/a; } >"$vdir/test/candidate/test.json"'
+# shellcheck disable=SC2030,SC2031 # PATH only for that subshell
+expect "a test that warns and skips: still a pass" pass "$(VPRE="$vwarn" verdict env)"
+expect "  ... result.json has the warning, without markup" "TestW: 2 Devin model(s) carry the placeholder: m-1, m-2 b" \
+  "$(jq -r '.warnings[] | "\(.test): \(.text)"' "$vdir/result.json")"
+expect "no warning: an empty list" "0 pass" "$(verdict env >/dev/null; jq -r '"\(.warnings | length) \(.status)"' "$vdir/result.json")"
 
 echo "# run_artifact: by id, run, name and digest"
 ra_zip="$tmp/ra"; rm -rf "$ra_zip"; mkdir -p "$ra_zip"; echo '{}' >"$ra_zip/state.json"

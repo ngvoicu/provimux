@@ -19,7 +19,8 @@
 #                          downloads one artifact of this run ($PMX_RUN_ID) by its id,
 #                          checked (run_artifact in common.sh)
 #   check.sh verdict       reads the raw output of both trees as data (testsum.jq,
-#                          testcmp.jq) and writes the status. Runs no repository code.
+#                          testcmp.jq; the candidate's "provimux-warning:" lines with
+#                          testwarn.jq) and writes the status. Runs no repository code.
 #                          In the workflow it also requires each test job to have
 #                          concluded success (jobs API) and each step's outcome
 #                          ($PMX_OUTCOME_*) to agree with the exit status recorded.
@@ -132,6 +133,7 @@ write_result() {
   [[ -s "$out/rebase.json" ]] || echo 'null' >"$out/rebase.json"
   [[ -s "$out/release.json" ]] || echo 'null' >"$out/release.json"
   [[ -s "$out/readme.json" ]] || echo 'null' >"$out/readme.json"
+  [[ -s "$out/warnings.json" ]] || echo '[]' >"$out/warnings.json"
   jq -n \
     --arg status "$s" --arg step "$step" --arg tag "$tag" --arg base "$base" \
     --arg upstream_repo "$PMX_UPSTREAM_REPO" --arg upstream_commit "$upstream_commit" \
@@ -145,7 +147,7 @@ write_result() {
     --rawfile range_diff "$out/logs/range-diff.txt" --rawfile guard "$out/logs/guard.log" \
     --rawfile build "$out/logs/build.log" \
     --slurpfile tests "$out/tests.json" --slurpfile rebase "$out/rebase.json" --slurpfile release "$out/release.json" \
-    --slurpfile readme "$out/readme.json" '
+    --slurpfile readme "$out/readme.json" --slurpfile warnings "$out/warnings.json" '
     def lines: split("\n") | map(select(length > 0));
     def commits: lines | map(split("\t") | {commit: .[0], subject: (.[1:] | join("\t"))});
     def ok($v): if $v == "" then null else ($v == "true") end;
@@ -168,6 +170,7 @@ write_result() {
       build: {ok: ok($build_ok), tail: ($build | tail(40))},
       guard: {ok: ok($guard_ok), output: ($guard | tail(40))},
       tests: $tests[0],
+      warnings: $warnings[0],
       release: $release[0],
       range_diff: (if ($range_diff | length) > 60000 then ($range_diff[0:60000] + "\n[truncated: see logs/range-diff.txt]") else $range_diff end),
       run_url: $run_url
@@ -603,6 +606,12 @@ do_verdict() {
     --slurpfile cpkgs "$out/logs/pkgs-candidate.json" --slurpfile ppkgs "$out/logs/pkgs-tag.json" \
     --argjson cexit "$(exitval "$c/test.exit")" --argjson pexit "$(exitval "$t/test.exit")" --argjson rexit "$rexit" \
     -f "$here/testcmp.jq" >"$out/tests.json"
+  # Warnings: the candidate's test output lines with "provimux-warning: " (testwarn.jq),
+  # shown in the issue; they never decide anything.
+  if [[ -f "$c/test.json" ]]; then
+    jq -R -c -f "$here/testwarn.jq" "$c/test.json" | jq -s 'unique | .[0:20]' >"$out/warnings.json" ||
+      echo '[]' >"$out/warnings.json"
+  fi
   if [[ "$(jq -r .ok "$out/tests.json")" == true ]]; then
     tests_ok=true
   else

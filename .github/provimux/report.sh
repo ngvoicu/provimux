@@ -115,6 +115,13 @@ old_base_tag="$(j .old.base_tag)"; [[ "$old_base_tag" =~ $PMX_STABLE_RE ]] || ol
 # fence: free text as a code block that the text cannot close.
 fence() { echo '~~~~text'; sed 's/~~~/~ ~ ~/g' | cut -c1-400; echo '~~~~'; }
 list() { jq -r "$1" "$r" | fence; }
+# warnings: the candidate's test warnings (check.sh verdict, testwarn.jq), if any. They
+# never fail the check; the text comes from the candidate's test output (data, fenced).
+warnings() {
+  [[ "$(jq '.warnings // [] | length' "$r")" != 0 ]] || return 0
+  echo "**Warnings from the candidate's tests** (reported, not counted; see SYNC.md, \"Warnings from the tests\"):"
+  list '.warnings[] | "\(.test): \(.text)"'
+}
 
 marker="<!-- provimux-sync status=$status candidate=${candidate:-none} -->"
 case "$status" in
@@ -158,6 +165,7 @@ esac
       echo "bash .github/provimux/publish.sh $tag"
       echo '```'
       echo
+      warnings
       if [[ "$(jq '.tests.flaky | length' "$r")" != 0 ]]; then echo "Flaky on the candidate (failed, then passed when the package was rerun):"; list '.tests.flaky[]'; fi
       if [[ "$(jq '.tests.failing_on_tag_too | length' "$r")" != 0 ]]; then echo "Failing on \`$tag\` too (not counted):"; list '.tests.failing_on_tag_too[]'; fi
       ;;
@@ -179,6 +187,7 @@ esac
                         + ["exit status: candidate \(.candidate.exit), tag \(.tag.exit), package rerun \(.rerun.exit // "none")"]) | join("\n")'
       fi
       if isfalse .build.ok; then echo "Build (last lines):"; list '.build.tail'; fi
+      warnings
       if isfalse .guard.ok; then echo "Guard:"; list '.guard.output'; fi
       echo "Fix it by hand following \`.github/provimux/SYNC.md\`. The next check (every 3 hours, or Actions → provimux-check → Run workflow) updates this issue."
       ;;

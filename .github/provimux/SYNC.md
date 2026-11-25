@@ -52,6 +52,8 @@ It runs every 3 hours and can be started by hand (Actions → provimux-check →
 
 The gate is "no worse than upstream", because upstream does not gate its releases on tests. Upstream always has failing tests of its own, so the waivers are exercised on every run; the issue lists them.
 
+**Warnings from the tests.** A test that finds something a person should see, but that must not stop an automatic sync, reports it and skips (or logs) instead of failing, with a line holding `provimux-warning: <text>`. The verdict copies those lines from the candidate's raw `go test -json` output (`testwarn.jq`: data only, the text after the marker in a restricted character set, at most 400 characters, at most 20 lines) into `result.json` (`warnings`: package, test, text), and the issue (`ready to publish` and `failed`) and the verdict job's run summary list them under "Warnings from the candidate's tests". They never decide anything: a pass with warnings still publishes automatically. The only such test so far is the Devin catalog's ("Devin models at the placeholder output limit", below). The text comes from code under test, so it is shown, never trusted.
+
 The verdict job uploads the artifact `provimux-check-<tag>` and binds it to itself: its step "Bind the artifact to the verdict" writes the artifact's id, name and digest as the job's one annotation titled `provimux-check-artifact`. `publish.sh` and `autopublish.sh` take only that artifact (`check_artifact` in `common.sh`): of one given attempt of the run (the attempt whose success was read in the same API call, or for the automatic publish the attempt the event names), the job named `verdict`, exactly one such annotation, and an artifact of that id, of that run, with that name and digest, not expired. The test jobs, which run upstream's and the candidate's code, can upload artifacts of any name in the same run but cannot annotate the verdict job; whatever they upload is never read. The artifact holds:
 
 - `candidate.bundle`: a git bundle of `<tag commit>..candidate`;
@@ -336,6 +338,18 @@ In the owner's credentialed shell this procedure runs only `git`, `gh` and `jq`:
 10. Add a row for each new workflow to `upstream-workflows.md` (a layer commit, `Provimux-Layer: branding`).
 
 Between steps 5 and 8, a check run finds `main` on the new base without a `-pmx` tag and opens "main on base, not released"; the check after step 8 replaces it.
+
+### Devin models at the placeholder output limit
+
+Upstream's Devin catalog (`internal/registry/models/devin_models.json`) gives every Devin model `max_completion_tokens: 64000`, a placeholder. The owner's patch `fix(devin): read each model's max output from Devin's model config` regenerated it with each model's real limit (`go run ./cmd/fetch_devin_models`, which needs a Devin login: the owner's, only on his word each time). A Devin model upstream adds later arrives with the placeholder.
+
+`TestEmbeddedDevinCatalogHasNoOutputLimitPlaceholder` (`internal/registry/devin_models_catalog_test.go`, a layer commit: Provimux's own check, not part of the patch) names such models, ones with no limit too, except those listed in `devinOutputLimitReally64000` (Devin itself says 64000). By default it **skips** with the line `provimux-warning: <n> Devin model(s) carry upstream's placeholder output limit 64000 (or none), not Devin's own: <ids>; regenerate ...`, so the sync stays automatic and the names appear in the sync issue ("Warnings from the tests", above). A release with such models ships them with 64000 until the list is regenerated.
+
+**`PMX_DEVIN_CATALOG_STRICT=1`** makes it fail instead. Whoever regenerates the list (in the patch, through "Change a patch in the stack on `main`") runs it strict, in the credential-free container, to prove nothing is left:
+
+```sh
+git archive HEAD | docker run --rm -i --network none -v pmx-gomod:/go/pkg/mod golang:<go version> sh -c 'mkdir /src && tar -x -C /src && cd /src && PMX_DEVIN_CATALOG_STRICT=1 go test ./internal/registry -run TestEmbeddedDevinCatalogHasNoOutputLimitPlaceholder -v'
+```
 
 ### Run the tests without credentials
 
