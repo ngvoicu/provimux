@@ -39,7 +39,7 @@ A new package `internal/provimux/savings` holds everything. It registers one usa
 | `cw5`, `cw1h` | `Detail.CacheCreation5mTokens`, `CacheCreation1hTokens` | section 3 |
 | `cost`, `ucost`, `costn` | `Detail.CostDetails` | section 4 |
 
-Nothing else is read. `AuthID` is only looked up for the provider and never kept. In particular not `Alias` (the client's name for the model), `Source`, `AuthIndex`, `SessionID`, `ResponseHeaders`, `Fail.Body`.
+Nothing else is read. `AuthID` is only looked up for the provider and never kept. In particular not `Source`, `AuthIndex`, `SessionID`, `ResponseHeaders`, `Fail.Body`. `Alias` (the client's name for the model) was not read either until only-my-names round 2 (2026-11-25): since then a day also keeps, apart from its rows, the requests and tokens per requested name (lower case, without a thinking suffix, at most 2000 names then `~other`), in `requested` of the day's value; the rows, their limit and every number derived from them are unchanged. Days written before have no `requested`. The endpoint gives it with `include=requested_models`.
 
 Tokens of a failed record are counted: a truncated stream was still billed (`PublishFailureWithDetail`, `usage_helpers.go:624-626`).
 
