@@ -569,6 +569,7 @@ func (s *Service) registerResolvedModelsForAuthFenced(a *coreauth.Auth, fence mo
 		clone.ID = modelID
 		normalizedModels = append(normalizedModels, &clone)
 	}
+	normalizedModels = provimuxOnlyMyNames(a, normalizedModels) // Provimux: only-my-names
 	if len(normalizedModels) == 0 {
 		return s.unregisterModelsForAuthFenced(a, fence)
 	}

@@ -315,6 +315,7 @@ func (b *Builder) Build() (*Service, error) {
 	coreManager.SetRoundTripperProvider(newDefaultRoundTripperProvider())
 	coreManager.SetConfig(b.cfg)
 	coreManager.SetOAuthModelAlias(b.cfg.OAuthModelAlias)
+	provimuxSetNamesRule(b.cfg) // Provimux: only-my-names (the first config of a start is not committed)
 	if pluginHost != nil {
 		coreManager.SetPluginScheduler(pluginHost)
 		coreManager.SetHomePluginExecutorResolver(pluginHost)

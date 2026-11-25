@@ -22,6 +22,10 @@ type CatalogSources struct {
 	// model lists of Provimux's login types; their values fill the fields a vendor's list leaves out
 	// for a model the catalog lacks. On unless set to false (Provimux, model-lists.md step P3).
 	PublishedLists *bool `yaml:"published-lists,omitempty" json:"published-lists,omitempty"`
+	// OnlyMyNames serves only the names the owner set: the aliases on his keys and logins, plus the
+	// names under keep. Every other name is treated as excluded. Off when absent (Provimux,
+	// only-my-names.md).
+	OnlyMyNames *OnlyMyNames `yaml:"only-my-names,omitempty" json:"only-my-names,omitempty"`
 }
 
 // provimuxLiveListsDefault is the value of an unset models.live-lists: on, except in a test binary.
