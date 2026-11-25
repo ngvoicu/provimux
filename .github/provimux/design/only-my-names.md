@@ -948,7 +948,17 @@ under that name without `models/`. The list gate now applies the same fallback: 
 `models/gemini-2.5-pro` is left out of the Gemini list (its detail answers 404) unless `gemini-2.5-pro` is served,
 so list, detail and generation agree.
 
-### 18.5 Left
+### 18.5 Usage by requested name keeps the case
+
+Found by the chief running gateway and console together on `940ac40cb`: the requested-name tally (`requestedName`
+in `internal/provimux/savings/requested.go`) went through `cut`, which lower-cases. A tool that sent `B-Coder` showed
+as `b-coder` under "used in the last 30 days", "Keep all used" kept `b-coder`, and `B-Coder` was then refused under
+exact names (17). The tally now stores the name trimmed and cut to 128 bytes in its own case (`cutKeepingCase`);
+`cut` and the rows it feeds are unchanged. Names recorded before this change stay lower case in the stored days;
+nothing rewrites them. Test: `TestRequestedModelsKeepCase` (`B-Coder` sent, `B-Coder` reported, beside a separate
+`b-coder`, in memory and from the store).
+
+### 18.6 Left
 
 K3 does not see a registry method taken as a method value at package level (the review's note 7): left.
 
