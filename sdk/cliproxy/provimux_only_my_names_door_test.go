@@ -316,8 +316,9 @@ func TestProvimuxOnlyMyNamesDoorRefusesEveryRoute(t *testing.T) {
 	// The Responses websocket executes through the same path. In this setup upstream answers a name
 	// it cannot route, held back or unknown alike, by closing the socket without an error event; the
 	// test requires that nothing reaches the vendor, and the setting's message if an event comes.
-	for _, model := range []string{"held-codex", "nobody-offers-this"} {
-		wsURL := "ws" + strings.TrimPrefix(d.server.URL, "http") + "/v1/responses"
+	for _, ws := range []struct{ path, model string }{{"/v1/responses", "held-codex"}, {"/v1/responses", "nobody-offers-this"}, {"/backend-api/codex/responses", "held-codex"}} {
+		model := ws.model
+		wsURL := "ws" + strings.TrimPrefix(d.server.URL, "http") + ws.path
 		conn, _, err := websocket.DefaultDialer.Dial(wsURL, http.Header{"Authorization": {"Bearer " + namesClientKey}})
 		if err != nil {
 			t.Fatalf("websocket: %v", err)
@@ -334,7 +335,7 @@ func TestProvimuxOnlyMyNamesDoorRefusesEveryRoute(t *testing.T) {
 		case errRead == nil && !strings.Contains(string(message), "error"):
 			t.Fatalf("websocket answered %s: %s", model, message)
 		}
-		report = append(report, fmt.Sprintf("GET /v1/responses (websocket, %s) -> %v %s", model, errRead, message))
+		report = append(report, fmt.Sprintf("GET %s (websocket, %s) -> %v %s", ws.path, model, errRead, message))
 		if seen := d.vendor.seen(); len(seen) != 0 {
 			t.Fatalf("the websocket reached the stand-in vendor: %v", seen)
 		}
@@ -421,6 +422,7 @@ func TestProvimuxOnlyMyNamesDoorServesHisNames(t *testing.T) {
 		if tc.want != "" && !strings.HasPrefix(seen[before], tc.want) {
 			t.Fatalf("%s: the vendor saw %q, want %q", tc.model, seen[before], tc.want)
 		}
+
 	}
 	// Both members of the pool stay registered, in the same order of providers.
 	if count := registry.GetGlobalRegistry().GetModelCount("pool"); count != 2 {
@@ -462,12 +464,31 @@ func TestProvimuxOnlyMyNamesDoorListsOnlyHisNames(t *testing.T) {
 	if got := ids(body, "id"); status != 200 || !slices.Equal(got, namesServed) {
 		t.Fatalf("/v1/models: %d %v", status, got)
 	}
-	// The Claude shape writes Claude-like ids of upstream's own; the names are the display names.
+	// The Claude shape lists upstream's generated Claude-like id for each served name (decision I of
+	// round 2): the ids, one per served name, each resolving to the model behind one of his names.
 	status, body = d.do("GET", "/v1/models", http.Header{"Anthropic-Version": {"2023-06-01"}}, "")
 	noHeld("/v1/models (Claude)", body)
-	if got := slices.Compact(ids(body, "display_name")); status != 200 || !slices.Equal(got, []string{"mine", "mine-t", "pool"}) {
-		t.Fatalf("/v1/models (Claude): %d %v %s", status, got, body)
+	claudeIDs := ids(body, "id")
+	if status != 200 || len(claudeIDs) != len(namesServed) {
+		t.Fatalf("/v1/models (Claude): %d %v", status, claudeIDs)
 	}
+	behind := map[string]bool{"up-mine": true, "up-pool-a": true, "up-pool-b": true, "up-t": true}
+	for _, id := range claudeIDs {
+		before := len(d.vendor.seen())
+		status, answer := d.do("POST", "/v1/messages", http.Header{"Anthropic-Version": {"2023-06-01"}},
+			`{"model":"`+id+`","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`)
+		seen := d.vendor.seen()
+		if len(seen) != before+1 {
+			t.Fatalf("Claude id %s: %d %s, vendor saw %v", id, status, answer, seen[before:])
+		}
+		_, model, _ := strings.Cut(seen[before], " ")
+		if !behind[model] {
+			t.Fatalf("Claude id %s reached %q, not a model behind one of his names", id, model)
+		}
+	}
+	d.vendor.mu.Lock()
+	d.vendor.requests = nil
+	d.vendor.mu.Unlock()
 	status, body = d.do("GET", "/v1/models?include=accounts", nil, "")
 	if got := ids(body, "id"); status != 200 || !slices.Equal(got, namesServed) {
 		t.Fatalf("/v1/models?include=accounts: %d %v", status, got)
@@ -502,5 +523,91 @@ func TestProvimuxOnlyMyNamesDoorListsOnlyHisNames(t *testing.T) {
 	}
 	if len(d.vendor.seen()) != 0 {
 		t.Fatalf("listing reached the vendor: %v", d.vendor.seen())
+	}
+}
+
+// namesRouteInventory classifies every client-facing route the server registers (management routes
+// aside). A route upstream adds is not in it, and TestProvimuxOnlyMyNamesDoorRouteInventory fails
+// until it is classified, and walked when it takes a model.
+var namesRouteInventory = map[string]string{
+	// Walked by D2 (namesDoorRoutes): a model in the request, refused while held back.
+	"POST /v1/chat/completions": "d2", "POST /v1/completions": "d2", "POST /v1/images/generations": "d2",
+	"POST /v1/images/edits": "d2", "POST /v1/videos": "d2", "POST /v1/videos/generations": "d2",
+	"POST /v1/videos/edits": "d2", "POST /v1/videos/extensions": "d2", "POST /v1/audio/speech": "d2",
+	"POST /v1/tts": "d2", "POST /v1/messages": "d2", "POST /v1/messages/count_tokens": "d2",
+	"POST /v1/responses": "d2", "POST /v1/responses/compact": "d2", "POST /v1/alpha/search": "d2",
+	"POST /openai/v1/videos": "d2", "POST /backend-api/codex/responses": "d2",
+	"POST /backend-api/codex/responses/compact": "d2", "POST /backend-api/codex/alpha/search": "d2",
+	"POST /v1beta/interactions": "d2", "POST /v1beta/models/*action": "d2",
+	// Walked by D2 separately: the Responses websocket, and video retrieval by id (default model).
+	"GET /v1/responses": "websocket", "GET /backend-api/codex/responses": "websocket",
+	"GET /v1/videos/:request_id": "default-model", "GET /openai/v1/videos/:video_id": "default-model",
+	"GET /openai/v1/videos/:video_id/content": "default-model",
+	// Lists, walked by D1.
+	"GET /v1/models": "list", "GET /v1/models/*model": "list", "GET /v1beta/models": "list",
+	"GET /v1beta/models/*action": "list", "GET /muse-code/models": "list",
+	// Not covered by the switch (README, "What the switch does not cover"): they choose a login
+	// without the registry.
+	"GET /v1/realtime": "outside", "POST /v1/realtime": "outside", "POST /v1/realtime/calls": "outside",
+	"GET /v1/realtime/calls/:call_id": "outside", "POST /v1/realtime/client_secrets": "outside",
+	"POST /v1/realtime/sessions": "outside", "POST /v1/realtime/transcription_sessions": "outside",
+	"GET /v1/realtime/translations": "outside", "POST /v1/realtime/translations": "outside",
+	"POST /v1/realtime/translations/client_secrets": "outside", "POST /v1/realtime/calls/:call_id/hangup": "outside",
+	"POST /v1/realtime/calls/:call_id/accept": "outside", "POST /v1/realtime/calls/:call_id/reject": "outside",
+	"POST /v1/realtime/calls/:call_id/refer": "outside", "POST /v1/live": "outside", "GET /v1/live/:call_id": "outside",
+	// No model: a Meta login's auxiliary relays, the websocket tunnel, OAuth callbacks, root and health.
+	"GET /muse-code/config": "no-model", "POST /muse-code/search": "no-model", "POST /muse-code/browser_open": "no-model",
+	"GET /v1/tunnel": "no-model", "POST /v1/tunnel": "no-model", "PUT /v1/tunnel": "no-model", "PATCH /v1/tunnel": "no-model",
+	"DELETE /v1/tunnel": "no-model", "HEAD /v1/tunnel": "no-model", "TRACE /v1/tunnel": "no-model", "CONNECT /v1/tunnel": "no-model",
+	"GET /": "no-model", "GET /healthz": "no-model", "HEAD /healthz": "no-model", "GET /callback": "no-model",
+	"GET /anthropic/callback": "no-model", "GET /codex/callback": "no-model", "GET /antigravity/callback": "no-model",
+	"GET /devin/callback": "no-model",
+}
+
+// namesRouteMatches reports whether a concrete path matches a gin pattern (:param, *wildcard).
+func namesRouteMatches(pattern, path string) bool {
+	patternParts, pathParts := strings.Split(pattern, "/"), strings.Split(path, "/")
+	for i, part := range patternParts {
+		if strings.HasPrefix(part, "*") {
+			return i < len(pathParts)
+		}
+		if i >= len(pathParts) || (!strings.HasPrefix(part, ":") && part != pathParts[i]) {
+			return false
+		}
+	}
+	return len(patternParts) == len(pathParts)
+}
+
+// G: D2's route table against the routes the server really registers.
+func TestProvimuxOnlyMyNamesDoorRouteInventory(t *testing.T) {
+	d := newNamesDoor(t, true)
+	live := map[string]bool{}
+	for _, route := range d.service.server.ProvimuxRoutes() {
+		if strings.Contains(route, "/management") {
+			continue
+		}
+		live[route] = true
+		if _, ok := namesRouteInventory[route]; !ok {
+			t.Errorf("route %s is not classified (only-my-names test D2): walk it if it takes a model", route)
+		}
+	}
+	for route, class := range namesRouteInventory {
+		if !live[route] {
+			t.Errorf("route %s is classified but the server does not register it", route)
+		}
+		if class != "d2" {
+			continue
+		}
+		method, pattern, _ := strings.Cut(route, " ")
+		walked := false
+		for _, r := range namesDoorRoutes() {
+			path, _, _ := strings.Cut(r.path, "?")
+			if r.method == method && namesRouteMatches(pattern, path) {
+				walked = true
+			}
+		}
+		if !walked {
+			t.Errorf("route %s takes a model and D2 does not walk it", route)
+		}
 	}
 }
