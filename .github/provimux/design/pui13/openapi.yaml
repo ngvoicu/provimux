@@ -932,7 +932,8 @@ components:
           description: |
             Enabled accounts (and plugin executors) that register the name exactly now; 0 when nothing registers
             that spelling (a request for a kept "MINE" can still reach a registered "mine" through upstream's
-            lower-case lookup).
+            lower-case lookup). While a login is being replaced by another it can be one read behind; the next
+            read is right.
         copies:
           type: array
           description: |
