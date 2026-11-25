@@ -2,6 +2,8 @@
 
 Design, 2026-11-25. This is the design only: no code exists yet. The status endpoint's contract is added to `pui13/openapi.yaml` with it (path `/provimux/names`).
 
+**Amended the same day by section 16**, which moves the rule from where accounts register to where names are read. Where sections 1 to 15 and section 16 differ, section 16 holds; 16.9 lists the places.
+
 **The owner's words (2026-11-25).** "In the Models page can we have a setting where only 'names' I set are available through Provimux? The rest are like excluded?"
 
 **Read from.**
@@ -485,3 +487,293 @@ Taken from the review of N1 and N2 and from a run of the gateway with the consol
   now says the refusal counter names the name as the gateway resolved it), upper and lower case (K; R4 corrected).
 - **Warnings**: an ignored `keep` entry is logged at every reload; the zero-names warning says that a login's own
   aliases are still served.
+
+## 16. Amendment: the rule is applied where names are read, not where accounts register
+
+2026-11-25, after two reviews of the build ended "not ready" on the same part. This section replaces the mechanism of sections 3.1, 8 and 15 and the parts of 3.2, 3.3, 4, 9, 11 and 14 named in 16.9. What the owner sees (sections 1, 2, 5, 6, 10) stays, with one change of meaning (16.3, the alias of a login's own file).
+
+**Read from.** Provimux branch `only-my-names` at `e337b95c9`; every `file:line` below is in that commit. The console at `074f924d` (provimux-ui, branch `only-my-names`). Tags as in the head of this document.
+
+### 16.1 The decision
+
+**The switch no longer changes what is registered.** Accounts register exactly as with the switch off. The rule is one immutable value, built from a config and put in force with one atomic store when that config is committed. It is applied in four places where a name is read: the two loops that build every model list, the one function every handler passes before it executes a request, the function that asks plugin routers, and the alpha-search route. The status endpoint is computed from the same value and the same registry when it is asked.
+
+Why this shape and not the built one: every finding of both reviews came from the rule living in registration. Registration is per account, asynchronous and fenced, so the rule took effect account by account some time after the config; a second structure (the record) had to remember what the registry no longer held; and the status tried to describe that process. With the rule at the reads there is no process: the rule is in force for the next list and the next request, a late or rejected registration cannot matter because registration does not consult the rule, there is nothing to remember (what is not served is what is registered and not his), and nothing to report as "applying".
+
+**The gate is by name, never by account.** The chief's question was whether the gate can be closed if it sits where the registry is read. Per account it cannot; by name it can.
+
+| Found | Evidence |
+|---|---|
+| The registry's read methods are called from 42 places in 28 of upstream's files (outside the registry's own file, tests and the layer) | [ran] a search for the eleven read methods |
+| The scheduler keeps its own copy of each account's model set and rebuilds it only when that account registers again | `sdk/cliproxy/auth/scheduler.go:1097-1105`, `:1205-1225`, `:1329-1338` [read]. A per-account gate inside a registry read is frozen into that copy at the last registration, which brings back the lag; a gate outside it is not consulted on the fast path (`conductor_selection.go:2788`, `:3129`) |
+| Every handler execution passes one function before any account is chosen | `providersForExecution`, `sdk/api/handlers/handlers_routing.go:129`, called at `handlers_execution.go:70`, `:159`, `handlers_stream.go:45`, `:375`; the only calls of the manager's `Execute`, `ExecuteCount` and `ExecuteStream` outside `sdk/cliproxy/auth` are behind them (`handlers_execution.go:123`, `:203`, `handlers_stream.go:435`, `:648`) [ran: a search; read] |
+| The plugin-executor branch is taken before that function, from one source of decisions | `applyModelRouter`, `handlers_routing.go:369`; its five callers (`handlers_execution.go:62`, `:155`, `handlers_stream.go:40`, `:363`, `handlers_context.go:177`) [read] |
+| One client route chooses a login for a named model by itself | alpha search: `internal/api/server_routes.go:403-418` (`SelectAuthWithCredentialPolicy`) [read] |
+| Every model list a client receives is built by two loops | `buildAvailableModelsLocked` (`internal/registry/model_registry.go:1734`) behind `GetAvailableModels`: the OpenAI, Responses, Claude and Gemini lists, the Codex client catalog, `/v1/models/<id>`, `/v1beta/models/<id>`, and `auto` (`GetFirstAvailableModel`, `:2222`). `GetAvailableModelInfos` (`:1715`): Grok's list and Muse Code's [read] |
+
+So a by-name gate needs the door (one function), the routers (one function), alpha search (one line of its own) and two loops. Everything else that reads the registry either runs for a request that already passed the door, or serves no client's model name (16.7, test K3).
+
+**The two other shapes, and why not.**
+
+| Shape | Why not |
+|---|---|
+| A gate inside each registry read, honouring a login's own alias per account | Not closable: the scheduler's copy above. Honouring an alias per account at selection needs the copy to carry the alias flag, which is an edit of upstream's scheduler, not an addition |
+| The fallback: keep the rule in registration, drop the record and `applied` | Keeps the window between the config and the registrations, and the gap the second review showed in it (a registration computed under the old rule publishes after the new one: the fence at `sdk/cliproxy/model_registry.go:110` does not know the rule). And it loses `others` while the switch is on, which is the Models page's "Not served" section and its **Keep** |
+
+**What it costs.**
+
+1. **An alias in a login's own file is by name, like every other name he set** (16.3). As built it was scoped to its login. The difference shows only when another account registers a model under the same spelling: that account now serves the name too, as it does with the switch off. Decision 2 of section 11 already says this for every other kind of name.
+2. **More inserted lines in upstream's files, in fewer files**: 24 lines in 7 files, all pure additions, against 14 lines in 9 files as built (one of them a changed line). Eight of the 24 are in `internal/registry/model_registry.go`, which the layer did not touch before: one field on `ModelInfo` and two three-line checks.
+3. **What reads the registry outside the gate now sees every registered name while the switch is on**: upstream's management views (the models of an auth file, which the console's Routing page shows per credential; `registered_models` of `GET /provimux/model-lists`), the scheduler, cooldown state. For the gateway this is a gain: a model that is not served keeps its state, and a path that uses a login without naming a model (Muse Code's relay picks a Meta login by its registered models, `internal/client/musecode/relay.go:359-420`) no longer loses the login when all its names are refused. For the console it is a wording matter: those views say what an account offers, not what is served.
+4. **With the switch on**, building a list asks, for each registered name that is not literally his, whether some account registers it as an alias or as a prefixed copy: one map lookup per account. 20 accounts with 500 such names is 10,000 lookups per uncached list. With the switch off the cost is one atomic load per list and per request (16.7).
+
+### 16.2 What is removed from the build
+
+After the change these five upstream files are byte-identical to `9ffc2a244` (the commit before the build): a reviewer checks it with `git diff 9ffc2a244 -- <file>`.
+
+| File | Removed |
+|---|---|
+| `sdk/cliproxy/service_executors.go` | the line `normalizedModels = provimuxOnlyMyNames(a, normalizedModels)` (`:572`) |
+| `sdk/cliproxy/antigravity_models.go` | the line `models = provimuxOnlyMyNames(current, models)` (`:888`) |
+| `internal/pluginhost/adapters_executors.go` | the line `registration.models = registry.ProvimuxOnlyMyNames(...)` (`:276`) |
+| `internal/pluginhost/model_router.go` | the three lines `if provimuxRouteHeld(nextReq) { continue }` (`:68-70`) |
+| `internal/watcher/config_reload.go` | the clause `\|\| config.ProvimuxOnlyMyNamesChanged(oldConfig, newConfig)` (`:171`): nothing has to register again when the rule changes |
+
+In upstream's `sdk/api/handlers/handlers_routing.go`: the line `body = provimuxNotServedBody(body, baseModel)` (`:216`).
+
+In the layer's own files:
+
+| File | Removed |
+|---|---|
+| `internal/registry/provimux_only_my_names.go` | the records and everything that serves them: `provimuxRecord`, `provimuxOffered`, the `records`, `gcAt`, `applied`, `appliedGen` fields and the one mutex over rule and records; `ProvimuxOnlyMyNames`, `provimuxStaleLocked`, `provimuxSweepLocked`, `provimuxHeldLocked`, `provimuxRegisteredLocked`, `ProvimuxRouteHeld`, `provimuxAppliedLocked`, `ProvimuxNamesApplied`, `ProvimuxNamesState`, `ProvimuxNamesRecords`, `ProvimuxApplied`, `(*ProvimuxNamesRule).registers` |
+| `internal/config/provimux_only_my_names.go` | `ProvimuxOnlyMyNamesChanged`, `provimuxNameKeys`, `sameNameSet`. `ProvimuxNamesRule` and `provimuxAliasNames` stay |
+| `sdk/cliproxy/provimux_only_my_names.go` | `provimuxOnlyMyNames`. `provimuxSetNamesRule` stays |
+| `sdk/api/handlers/provimux_only_my_names.go` | `provimuxNotServedBody` |
+| `internal/pluginhost/provimux_only_my_names.go` and its test | the whole files |
+| `internal/api/handlers/management/provimux_model_routes.go` | the `Applied` field of the response, its assignment (`:91`) and `provimuxNamesAppliedNow` |
+| `sdk/cliproxy/provimux_only_my_names_writers_test.go` | replaced by test K5 (16.7): the writers must not mention the rule at all |
+
+The Savings change of round 2 (requests by requested name) is not touched.
+
+### 16.3 The gate
+
+**The value.** `ProvimuxNamesRule`, immutable once set: `enabled`, `home`, `source` (the config's SHA-256, the config API's ETag), `generation` (a counter given when it is set), `names` (the lower-cased names of the config: rows 1, 2 and 4 of section 2.2, each with its spelling and `set_by`), the ignored `keep` entries. It is held in one `atomic.Pointer`. It **applies** when it is not nil, `enabled` is true and `home` is false. Nothing else is state, except the refusal counter of section 5 (at most 256 names, its own small lock, touched only when a request is refused or the status is read).
+
+**Three facts per registered model**, all already on the model as its account registered it:
+
+| Fact | Where it comes from |
+|---|---|
+| `ID` | the registered name |
+| `OAuthAlias` | upstream sets it on every alias of an `oauth-model-alias` row and of a login's own file, and keeps it on the copy under the account's prefix (`sdk/cliproxy/service_models.go:1445-1446`) |
+| `PrefixedFrom` (new) | the id a prefixed copy copies: `opus` on `team-a/opus`. Set where upstream makes the copy (16.4). Empty on every other model. It is a fact about the model, written with the switch on or off; no name is added or removed by it |
+
+**A name `n` is his** when one of these holds:
+
+1. `n`, trimmed and lower-cased, is in the value's names;
+2. some account registers a model with `ID` `n` whose `OAuthAlias` is not empty;
+3. some account registers a model with `ID` `n` whose `PrefixedFrom`, lower-cased, is in the value's names.
+
+For 2 and 3 the registry is asked for `n` as given and, when `n` has upper-case letters and nothing is registered under it, for its lower-case form, as upstream's own lookup does (`internal/util/provider.go:65-70`). Case therefore decides nothing new: whether a request's spelling reaches a registered model stays upstream's (round 2, K).
+
+**A name is served** when the rule does not apply, or the name is his. That is the whole gate: one function of the value and the registry, called by the lists, the door, the routers, alpha search, `model-routes` and the status. No caller has its own variant.
+
+| Case | What the gate does |
+|---|---|
+| Switch off, absent, or Home mode | returns "served" after one atomic load; reads nothing else |
+| A thinking suffix, `opus(high)` | the door checks the name without the suffix (`thinking.ParseSuffix`), then, if that is not his, the name as sent (an exact route registered with its suffix) |
+| `auto` | not a name he set. With the rule applying, the door replaces `auto` (its suffix kept) by the first available of his names: `GetFirstAvailableModel("")`, which reads the gated list. If none is available the request is refused as upstream refuses an `auto` it cannot resolve. A router is not asked about `auto` |
+| An account's `prefix` | `team-a/opus` is his when `opus` is, through `PrefixedFrom`; with `force-model-prefix` too, since the copy carries the fact whether or not `opus` itself is registered |
+| The `devin/…` and `copilot/…` namespaces, OpenRouter's `vendor/model` | part of the id, not a prefix: his only when an alias names it or `keep` lists it in full (R7) |
+| An alias in a login's own file | his, by fact 2, **for every account that registers the spelling**. This is the change of cost 1 |
+| A plugin executor's own models | registered as with the switch off; his only by literal name |
+| A name nobody registers | not his unless the config names it. A request for it is answered as upstream answers an unknown model; it is not counted as refused |
+
+**Where it is applied.**
+
+| # | Place | With the rule applying |
+|---|---|---|
+| G1 | the two list loops of the registry | a registered name that is not his is skipped. `auto` and every list follow |
+| G2 | the door: the first statement of `providersForExecution` | the requested name, and the model a router's decision names if it names one, must be his; otherwise HTTP 400 with upstream's unknown-model body (`type: invalid_request_error`, `code: model_not_found`, `param: model`). The message is section 5's when an account registers the name, and the refusal is then counted under the name without its suffix; otherwise upstream's "unknown provider for model …". This covers the registry path, a forced provider and a router's provider decision alike, so decision 6 of section 11 is gone: all three get the setting's message |
+| G3 | `applyModelRouter`, after `var decision` | for a requested name that is not his it returns the empty decision: no router is asked, no plugin executor is chosen, and the request goes on to G2 |
+| G4 | alpha search, after the router's answer | the requested model and the selection model must be his; otherwise 400 in that route's error shape, with the same message rule and counting (as built this route answered 503 "no auth available") |
+
+**Lock rules.** The value is read with one atomic load. G1 runs under the registry's lock, which its caller holds, and takes no other. The other callers take the registry's read lock only for a name that is not literally in the value, and release it before touching the refusal counter. Nothing calls the auth manager, so there is no order between its lock and the registry's to get wrong.
+
+**Setting the value.** `SetProvimuxNamesRule` takes the registry's lock, stores the pointer, clears the registry's list cache (`invalidateAvailableModelsCacheLocked`, which the layer's file may call: same package) and releases the lock. A list is built and cached under that lock and G1 reads the pointer inside it, so no list built with the old value exists once the call returns, and no list mixes two values. The refusal counter starts again when the rule starts applying and is dropped when it stops. Warnings (an ignored `keep` entry, zero names) are logged only when the rule applies; with the switch off a reload logs nothing about the setting.
+
+### 16.4 What is added
+
+**Upstream's files: every line inserted.** No line is changed or removed in any of them beyond 16.2.
+
+| File | Place | Inserted |
+|---|---|---|
+| `internal/registry/model_registry.go` | in `ModelInfo`, after `OAuthAliasSource` (`:50`) | a comment line and `PrefixedFrom string` with the tag `json:"-"` (2 lines) |
+| `internal/registry/model_registry.go` | `GetAvailableModelInfos`, after the `if !available …` block (`:1723-1725`) | `if r.provimuxHeld(registration.Info) { continue }` (3 lines) |
+| `internal/registry/model_registry.go` | `buildAvailableModelsLocked`, after the `if !available …` block (`:1743-1745`) | the same 3 lines |
+| `sdk/cliproxy/service_models.go` | `applyModelPrefixes`, after `clone.ID = prefixedID` (`:832`) | `clone.PrefixedFrom = baseID` (1 line). Every prefixed copy is made here: the six registration calls, the plugin-supplied models and Antigravity's catalog all call this function (`service_models.go:278-357`, `service_executors.go:767`, `antigravity_models.go:828`) [ran: a search] |
+| `sdk/api/handlers/handlers_routing.go` | `providersForExecution`, first statement (`:130`) | `if errMsg := h.provimuxDoor(&modelName, originalRequestedModel, routeDecision); errMsg != nil { return nil, "", errMsg }` (3 lines) |
+| `sdk/api/handlers/handlers_routing.go` | `applyModelRouter`, after `var decision modelRouteDecision` (`:370`) | `if provimuxNoRouter(modelName) { return decision }` (3 lines) |
+| `internal/api/server_routes.go` | `codexAlphaSearch`, after the `if errRoute != nil` block (`:404-408`) | `if s.provimuxRefused(c, routing.Model, selectionModel) { return }` (3 lines) |
+| `sdk/cliproxy/service_config.go` | `:181` | stays: `provimuxSetNamesRule(newCfg)` |
+| `sdk/cliproxy/builder.go` | `:318` | stays: `provimuxSetNamesRule(b.cfg)` |
+| `internal/registry/catalog_config.go` | `:25-28` | stays: the `OnlyMyNames` field |
+
+Each inserted statement ends with the comment `// Provimux: only-my-names`, as the built ones do.
+
+**The layer's files.**
+
+| File | Holds |
+|---|---|
+| `internal/registry/provimux_only_my_names.go` (rewritten) | the value and its pointer; `SetProvimuxNamesRule`; the gate; the refusal counter and message; the status view. About a third of its 598 lines remain |
+| `sdk/api/handlers/provimux_only_my_names.go` (rewritten) | `provimuxDoor`, `provimuxNoRouter` |
+| `internal/api/server_provimux.go` | `provimuxRefused` for alpha search, beside the route and `ProvimuxRoutes` |
+| `internal/api/handlers/management/provimux_names.go` | the answer of 16.6, from the status view |
+| `internal/api/handlers/management/provimux_model_routes.go` | skips an id the gate does not serve; with the rule not applying the code path is the one of `9ffc2a244` after one atomic load |
+| `config.example.yaml`, `.github/README.md` (`:397-470`, `:499`) | the words of 16.1, 16.3 and 16.8 in place of "an account's model is registered only under a name you set", the "as applied" status and the per-login alias |
+
+Signatures the build is checked against:
+
+```go
+// internal/registry
+
+// SetProvimuxNamesRule puts rule in force: under the registry's lock, one atomic store and the list cache cleared.
+func SetProvimuxNamesRule(rule *ProvimuxNamesRule)
+
+// ProvimuxServes reports whether name may be listed and asked for: true when the rule does not apply
+// or name is the owner's (only-my-names.md 16.3). name has no thinking suffix.
+func ProvimuxServes(name string) bool
+
+// ProvimuxRefuse reports whether a request for name is refused. offered: an account registers the
+// name; the refusal was then counted and the caller answers with ProvimuxNotServedMessage(name).
+// Otherwise the caller answers as for a model nobody offers.
+func ProvimuxRefuse(name string) (refused, offered bool)
+
+func ProvimuxNotServedMessage(name string) string
+
+// provimuxHeld is the list gate. The caller holds the registry's lock.
+func (r *ModelRegistry) provimuxHeld(info *ModelInfo) bool
+
+// ProvimuxRegistered is one model one client registers, with the facts the rule reads.
+type ProvimuxRegistered struct{ ClientID, ID, OAuthAlias, PrefixedFrom string }
+
+// ProvimuxNamesView is the rule in force and, from one pass under one read lock and without cloning
+// model metadata, every model the given clients and every plugin executor register.
+func ProvimuxNamesView(clientIDs []string) (rule *ProvimuxNamesRule, registered []ProvimuxRegistered)
+
+// sdk/api/handlers
+
+// provimuxDoor refuses a request whose name, or whose router target, is not the owner's. With the
+// rule applying it replaces "auto" in *modelName by the first available of his names.
+func (h *BaseAPIHandler) provimuxDoor(modelName *string, originalRequestedModel string, decision modelRouteDecision) *interfaces.ErrorMessage
+
+// provimuxNoRouter reports whether no plugin router may be asked about modelName.
+func provimuxNoRouter(modelName string) bool
+```
+
+### 16.5 The second review's findings under it
+
+| Finding | Becomes |
+|---|---|
+| 1. The status reports the new rule as settled while a late-registering login still lists and serves a refused model | Gone by construction. Registration does not consult the rule, so when a login registers cannot matter: its model is skipped by G1 and refused by G2 from the store of the pointer. The status reads that pointer |
+| 1. Two writes without a status read report the rule of two generations ago | Gone: there is no "applied" rule kept beside the current one, and nothing advances on a read |
+| 1. A rejected registration leaves `applying: true` for ever | Gone: nothing compares the registry with an expectation. `applying` is the constant `false` |
+| 4. A plugin with no registered models executes a name that only a login-file alias serves | Changes meaning, and stays to be decided with cost 1. The guard is no longer "does any provider register the spelling" but "is the name his" (G3): for a name that is not his, no router is asked at all. A name that is an alias in a login's file is his, by name, so a router may act on it exactly as with the switch off: the router is the owner's plugin, acting on a name the owner set. If the chief wants the alias scoped to its login instead, see the first row of "the two other shapes" in 16.1 |
+| 5. A rejected writer replaces a live offer with an obsolete one; 250 add, reject and remove cycles leave 250 records | Gone: no record exists. The layer keeps nothing per account. What accounts offer is read from the registry, which upstream already cleans on removal |
+| 6. After a stale Antigravity refresh is rejected, a served name is also in `others` | Gone: `names` and `others` are one pass over the registry with one predicate, so a registered name is in exactly one of them (test K7) |
+| 13. A prefixed copy that is itself on `keep` disappears from its base name's `copies` | Gone: `copies` of a name are the registered ids whose `PrefixedFrom` is that name, whatever else is true of the id. A copy that is also kept in full is in `copies` and has its own row |
+| The cost: the `model-routes` probe at 3.2 ms and 7.6 MB with the switch off | Gone: the marker computation is removed from that endpoint; with the switch off it does what it did at `9ffc2a244` after one atomic load (test O2) |
+| 7 (noted there): the status comparison folds case and breaks a case-only alias edit | Gone with the comparison |
+| 10 (the route inventory skips any path containing `/management`) | Not changed by this section, and the closure rests on it: test K1 states the fix |
+| 14 (Savings counts some requests under the resolved name) | Not changed by this section |
+
+### 16.6 The contract after it
+
+`pui13/openapi.yaml` is updated in the commit that adds this section. The shape of `GET /provimux/names` is unchanged, so the console at `074f924d` needs no code change to keep working; two meanings change and one field leaves `model-routes`.
+
+| Field | Stays | Meaning after |
+|---|---|---|
+| `only_my_names.enabled`, `applies`, `not_applied` | yes | of the rule in force |
+| `applied.config_etag` | yes | the ETag of the config whose rule is in force: the value every list and request is checked against as the answer is made. The console's wait (`namesApplied.ts`) ends at the first read where it equals the write's ETag |
+| `applied.applying` | yes | always `false`. Kept so the console needs no change |
+| `applied.generation` | yes | counts the rules put in force since the start |
+| `names[].name`, `set_by`, `accounts` | yes | unchanged, except `login-file`: an alias a login registers from its own file, served by every account that registers the spelling |
+| `names[].copies` | yes | the registered ids that copy the name under an account's prefix; a copy kept in full is here and has its own row |
+| `keep_ignored` | yes | unchanged |
+| `others` | yes | every name an enabled account or a plugin executor registers now that is not his. Read from the registry, not from a record. A spelling that is a login-file alias on one account is no longer here for another account |
+| `refused` | yes | counted only when an account registers the refused name; a router's target can be the name |
+| `applied` of `GET /provimux/model-routes` | **removed** | the console reads it and does not use it (`normalize.ts:139`; the page waits on the one of `/provimux/names`, `ModelsPage.tsx:193`, `:220`) [read] |
+| `models` of `GET /provimux/model-routes` | yes | served names only, by the gate, as the answer is made |
+| `registered_models` of `GET /provimux/model-lists` | yes | what the account registers, the same with the switch on or off (test S5 now asserts that nothing moves) |
+
+A write of the config answers before its config is committed (the reload runs in its own goroutine, `internal/api/handlers/management/handler.go:304-320`) [read]. Until the commit the old rule is in force and the status says so: `applied.config_etag` is still the old one. The status is never ahead of what is served, and never behind it.
+
+### 16.7 The tests
+
+Tests R1 to R12, C1 to C5, D1 to D5 and S1 to S6 of section 9 stay, reworded from "registered" to "listed and served" where they say it; R12 and C4 are replaced by K5 and K6, and S5 asserts the opposite of before. New or changed:
+
+**The gate is closed.**
+
+| | Proves |
+|---|---|
+| K1 | The route inventory (`TestProvimuxOnlyMyNamesDoorRouteInventory`): every route the server registers is in D1's table (lists models), D2's (takes a model), the table of routes that name none, or under the management API. A route is management only when its path starts with the management base path, not when it contains the word (second review, 10) |
+| K2 | D2 for every route of its table with a name that is not his: refused, the stand-in vendor receives nothing, and the answer carries the setting's message. Added rows: a forced provider, a router's provider decision with a target that is not his, a router's decision for its own executor, alpha search (400) |
+| K3 | A source test, as R12 was for the writers: every call of the registry's eleven read methods (`GetAvailableModels`, `GetAvailableModelInfos`, `GetAvailableModelsByProvider`, `GetModelCount`, `GetModelProviders`, `GetModelInfo`, `GetFirstAvailableModel`, `GetModelsAndEpochForClient`, `GetModelsForClient`, `ClientSupportsModel`, `LookupClientModelRoute`) outside tests and the registry's own file is in a table in the test, with its class: **list** (reads a gated loop), **after the door** (runs for a request `providersForExecution` let through, or decides a capability and executes nothing), **no client name** (management, state and cooldown reconciliation, the scheduler's copy, Muse Code's relay, verification, the translators' metadata lookups). `GetAvailableModelsByProvider` is not gated and is in the third class: its callers are the Antigravity translators' metadata lookups, the registry's static-definition helper and a management handler. A call that is not in the table fails the test and names this section, and so does an exported method of `ModelRegistry` the test does not know, so an upstream release that adds a reader or a read method fails the sync check |
+| K4 | A source test: `buildAvailableModelsLocked` and `GetAvailableModelInfos` each contain the gate line; `provimuxDoor` is the first statement of `providersForExecution`; `applyModelRouter` and `codexAlphaSearch` contain theirs |
+| K5 | The switch never changes what is registered: for the same accounts every client's registered models are deep-equal with the switch off and on, and across off, on, off with no registration in between; the source of the three writers does not contain "Provimux" |
+| K6 | No lag. `SetProvimuxNamesRule` alone, with registration paused throughout: the next list and the next request follow, and a list cached before is gone. Then the second review's schedules as regressions: a login whose registration was computed before the rule and publishes after it; two writes with no status read between them; a registration the fence rejects; 250 add, reject and remove cycles (the layer's state is the pointer and at most 256 counted names, before and after); a stale Antigravity refresh; a case-only alias edit |
+| K7 | A property test over generated registries and rules: every registered id is in exactly one of `names` (as a name or a copy) and `others`; the ids under `names` are exactly the ids the lists show and the door lets through; the ids under `others` are exactly the ones skipped and refused. The status and the gate cannot disagree because the test fails if they call different predicates |
+| K8 | After a write through the config API, the first status read whose `applied.config_etag` is the write's ETag is followed at once, with no wait and with registration paused, by a list and a request that obey the new rule. 100 rounds |
+
+**Off is today.**
+
+| | Proves |
+|---|---|
+| O1 | With the key absent, and with `enabled: false` and a filled `keep`: the three list shapes, a chat by alias, by a vendor name and by an unknown name, and every client's registered models are equal to a golden file produced by running the same test at `9ffc2a244` |
+| O2 | Benchmarks, each run on `9ffc2a244` and on the new head with the same file, switch off, 20 accounts of 500 names: the `model-routes?model=` probe (the review measured 1.36 µs and 2,688 bytes before the build), the registration of 100 models (418 allocations at the base), `GetAvailableModelInfos`. Required: allocations and bytes per operation equal to the base; time within 10%. And `provimuxDoor` alone: no allocation |
+| O3 | With the switch off the gate reads nothing but the pointer: a registry whose lock is held by the test does not block `ProvimuxServes`, `provimuxNoRouter` or the door |
+| O4 | With the switch off a reload logs nothing about the setting |
+| O5 | The five files of 16.2 are byte-identical to `9ffc2a244`; upstream's tests are unchanged and the sync check is no worse than upstream |
+
+**With the switch on**, one bound: an uncached list over 20 accounts of 500 names not his, under 1 ms; the door for one of his names allocates nothing.
+
+### 16.8 What stays documented as not covered
+
+- **The realtime and live routes** (`/v1/realtime*`, `/v1/live`): they choose a Codex login without naming a registered model (`internal/client/codex/live/live.go:525`).
+- **A plugin executor reached through a router, for one of his names**: the plugin decides what it runs. For a name that is not his no router is asked.
+- **A plugin that rewrites the final model list** (`sdk/api/handlers/handlers_interceptors.go`): what it adds is shown; a request for it is still refused.
+- **The Responses websocket** may close without the message: the refusal now reaches it as an execution error, and what the client then sees is upstream's; D2 records it [infer].
+- **Media names and Claude's generated ids** are resolved by their handlers before the rule sees a name (round 2, I and J).
+- **An exchange under way when the rule changes** (a stream, a websocket session's follow-up on its pinned login) finishes under the rule it started with [infer; K6 names what it observes].
+- **Between a write's answer and its commit** the old rule is in force; the status says which.
+- **Home mode**: the rule does not apply.
+- **Upstream's management views** show what accounts register, which with the switch on includes names that are refused (cost 3).
+
+### 16.9 What this replaces in sections 1 to 15
+
+| Section | Now |
+|---|---|
+| 1, the table's first row; 3.1 | The rule is applied at the reads (16.3), not in the three writers. There is no record |
+| 3.2 | The rows that say "no provider registers the name" read "the door refuses the name"; the forced-provider and router row gets the setting's message |
+| 3.3 | A learned model, a plugin's model: "not served unless named" instead of "held back"; `registered_models` does not move |
+| 4, the reload row | The rule is in force at the commit; no account registers again for it; the clause in `config_reload.go` is gone |
+| 2.2 row 3; R5 | An alias in a login's own file is by name |
+| 8 | 16.2 and 16.4 |
+| 9 | 16.7 |
+| 11, decision 6 | Gone: every refusal carries the message |
+| 14 | The bullets on the record, the reload clause and the plugin executor's record no longer hold |
+| 15 | The bullets on the status as applied, the record, `others` and the plugin router are replaced by 16.3, 16.5 and 16.6 |
+
+### 16.10 What I ran, and what I did not verify
+
+**Ran.** The searches named above (the readers, the callers of the manager's three entry points, the callers of `applyModelPrefixes`). `go test ./internal/api/handlers/management -run Provimux` after editing `pui13/openapi.yaml`: ok (the contract tests read that file; the built handler still passes because the shape did not change). No request to any service; nothing on port 8317 or 8787.
+
+**Read**, with the lines given: the scheduler's copy and when it is rebuilt; the four handler entry points and the two functions before them; alpha search; the two list loops, `GetFirstAvailableModel` and the list cache; `applyModelPrefixes`; the config commit and the management write's reload; the console's use of `applied`.
+
+**Not verified, each with its test:**
+
+- that `?include=accounts` annotates only listed ids (`openai_handlers.go:86-92` suggests so): D1;
+- that the Codex client catalog and `/v1beta/models/<id>` are built from the gated list: D1;
+- that no handler outside `sdk/api/handlers` reaches a vendor for a named model without `providersForExecution`, apart from alpha search: K1 with K2;
+- that upstream's caches keyed on the registry's generation (the Codex spawn-agent model list) follow the cache clear at a rule change: K6;
+- that adding a field to `ModelInfo` breaks none of upstream's tests (the ones I read compare single fields, `sdk/cliproxy/service_oauth_model_alias_test.go:295-330`): O5;
+- what a Responses websocket client receives for a refused name: D2.
