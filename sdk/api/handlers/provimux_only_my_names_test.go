@@ -3,10 +3,12 @@ package handlers
 import (
 	"context"
 	"net/http"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/provimux/onlymynames"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
@@ -55,8 +57,8 @@ const namesNotServed = "is not served: this Provimux serves only the names its o
 
 func namesD5Rule(t *testing.T, enabled bool) {
 	t.Helper()
-	rule := registry.NewProvimuxNamesRule(enabled, false)
-	rule.AddName("names-d5-mine", registry.ProvimuxNameSetByAlias)
+	rule := onlymynames.NewRule(enabled, false)
+	rule.AddName("names-d5-mine", onlymynames.SetByAlias)
 	registry.SetProvimuxNamesRule(rule)
 }
 
@@ -156,15 +158,16 @@ func TestProvimuxOnlyMyNamesDoorRefusesEveryExecutionPath(t *testing.T) {
 	if body, status := execute(retargeted)("names-d5-mine"); status != http.StatusBadRequest || !strings.Contains(body, "model names-d5-held "+namesNotServed) || exec.calls.Load() != before {
 		t.Fatalf("a router's target that is not his: %d %s", status, body)
 	}
-	// A name no account registers keeps upstream's words and is not counted.
-	if body, status := execute(plain)("nobody-offers-this"); status != http.StatusBadRequest || !strings.Contains(body, "unknown provider for model nobody-offers-this") {
+	// A name no account registers is refused like any other, with the setting's message, and counted: the door
+	// judges the rule and the name, and reads no registration (section 18).
+	if body, status := execute(plain)("nobody-offers-this"); status != http.StatusBadRequest || !strings.Contains(body, "model nobody-offers-this "+namesNotServed) {
 		t.Fatalf("unknown: %d %s", status, body)
 	}
 	counted := map[string]int{}
-	for _, name := range registry.ProvimuxRefusedNow().Names {
+	for _, name := range onlymynames.RefusedNow().Names {
 		counted[name.Name] = name.Requests
 	}
-	if counted["names-d5-held"] < 6 || counted["nobody-offers-this"] != 0 || len(counted) != 1 {
+	if counted["names-d5-held"] < 6 || counted["nobody-offers-this"] != 1 || len(counted) != 2 {
 		t.Fatalf("counted %v", counted)
 	}
 
@@ -238,8 +241,8 @@ func BenchmarkProvimuxOnlyMyNamesDoorOff(b *testing.B) {
 func BenchmarkProvimuxOnlyMyNamesDoorOnHisName(b *testing.B) {
 	registry.ResetProvimuxNames()
 	b.Cleanup(registry.ResetProvimuxNames)
-	rule := registry.NewProvimuxNamesRule(true, false)
-	rule.AddName("claude-opus-5-5", registry.ProvimuxNameSetByKeep)
+	rule := onlymynames.NewRule(true, false)
+	rule.AddName("claude-opus-5-5", onlymynames.SetByKeep)
 	registry.SetProvimuxNamesRule(rule)
 	h := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
 	b.ReportAllocs()
@@ -263,7 +266,7 @@ func TestProvimuxOnlyMyNamesAutoIsNeverKept(t *testing.T) {
 	h := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
 	h.SetModelRouterHost(executorHost)
 	for _, keep := range [][]string{nil, {"auto"}} {
-		rule := registry.NewProvimuxNamesRule(true, false)
+		rule := onlymynames.NewRule(true, false)
 		rule.AddKeep(keep)
 		registry.SetProvimuxNamesRule(rule)
 		executorHost.called, executorHost.lastPluginID = false, ""
@@ -271,5 +274,125 @@ func TestProvimuxOnlyMyNamesAutoIsNeverKept(t *testing.T) {
 		if errMsg == nil || errMsg.StatusCode != http.StatusBadRequest || executorHost.called || executorHost.lastPluginID != "" {
 			t.Fatalf("keep %v: auto: %v, router asked %v, plugin %q", keep, errMsg, executorHost.called, executorHost.lastPluginID)
 		}
+	}
+}
+
+// 2 of section 18 (the fourth review's finding 12): one request, one rule value. Rule A owns only the submitted
+// name, rule B only the router's target. A commit of B between the door's judgement of the submitted name and of
+// the target does not let the request through: both are judged under A, the value the door loaded first. The
+// controls: A alone refuses (the target), B alone refuses (the name), a rule owning both serves.
+func TestProvimuxOnlyMyNamesOneRuleValuePerRequest(t *testing.T) {
+	registry.ResetProvimuxNames()
+	t.Cleanup(registry.ResetProvimuxNames)
+	manager := coreauth.NewManager(nil, nil, nil)
+	exec := &namesCountingExecutor{provider: "claude"}
+	manager.RegisterExecutor(exec)
+	auth := &coreauth.Auth{ID: "names-one-rule-key", Provider: "claude", Attributes: map[string]string{"api_key": "sk-one"}}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatal(err)
+	}
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, "claude", []*registry.ModelInfo{{ID: "names-submitted", OwnedBy: "anthropic"}, {ID: "names-target", OwnedBy: "anthropic"}})
+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
+	host := &handlerRouterOnlyTestHost{hasRouters: true, route: func(context.Context, pluginapi.ModelRouteRequest) (pluginapi.ModelRouteResponse, bool) {
+		return pluginapi.ModelRouteResponse{Handled: true, TargetKind: pluginapi.ModelRouteTargetProvider, Target: "claude", TargetModel: "names-target"}, true
+	}}
+	h := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+	h.SetModelRouterHost(host)
+	ruleOf := func(names ...string) *onlymynames.Rule {
+		rule := onlymynames.NewRule(true, false)
+		rule.AddKeep(names)
+		return rule
+	}
+	run := func() int {
+		before := exec.calls.Load()
+		_, _, errMsg := h.ExecuteWithAuthManager(contextWithHeaders(http.Header{}), "openai", "names-submitted", []byte(`{"model":"names-submitted"}`), "")
+		if errMsg != nil {
+			if exec.calls.Load() != before {
+				t.Fatal("refused after reaching the provider")
+			}
+			return errMsg.StatusCode
+		}
+		return http.StatusOK
+	}
+	for _, control := range []struct {
+		names []string
+		want  int
+	}{{[]string{"names-submitted"}, 400}, {[]string{"names-target"}, 400}, {[]string{"names-submitted", "names-target"}, 200}} {
+		registry.SetProvimuxNamesRule(ruleOf(control.names...))
+		if got := run(); got != control.want {
+			t.Fatalf("control %v: %d", control.names, got)
+		}
+	}
+	previous := provimuxDoorBetween
+	t.Cleanup(func() { provimuxDoorBetween = previous })
+	committed := 0
+	provimuxDoorBetween = func() {
+		committed++
+		registry.SetProvimuxNamesRule(ruleOf("names-target")) // B, between the two judgements
+	}
+	registry.SetProvimuxNamesRule(ruleOf("names-submitted")) // A
+	before := exec.calls.Load()
+	if got := run(); got != http.StatusBadRequest || committed != 1 || exec.calls.Load() != before {
+		t.Fatalf("A then B between the judgements: %d (commits %d, calls %d)", got, committed, exec.calls.Load()-before)
+	}
+	if onlymynames.Current().Has("names-submitted") {
+		t.Fatal("premise: B is in force after the request")
+	}
+}
+
+// The fourth review's router alternation (finding 12), uninstrumented: rules owning only the submitted name and
+// only the router's target alternate as fast as they can while requests run. Neither rule owns both, so no request
+// may reach the provider.
+func TestProvimuxOnlyMyNamesRouterUnderAlternatingRules(t *testing.T) {
+	if os.Getenv("PROVIMUX_G3_G2_ONE_VALUE") == "" {
+		// Open (only-my-names.md 18.2): G3 and the door load the rule separately; carrying one value between
+		// them needs one more inserted upstream line, or the fallback. Run with PROVIMUX_G3_G2_ONE_VALUE=1.
+		t.Skip("open decision: one rule value across the router check and the door")
+	}
+	registry.ResetProvimuxNames()
+	t.Cleanup(registry.ResetProvimuxNames)
+	manager := coreauth.NewManager(nil, nil, nil)
+	exec := &namesCountingExecutor{provider: "claude"}
+	manager.RegisterExecutor(exec)
+	auth := &coreauth.Auth{ID: "names-alternating-key", Provider: "claude", Attributes: map[string]string{"api_key": "sk-alt"}}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatal(err)
+	}
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, "claude", []*registry.ModelInfo{{ID: "names-submitted", OwnedBy: "anthropic"}, {ID: "names-target", OwnedBy: "anthropic"}})
+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
+	h := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+	h.SetModelRouterHost(&handlerRouterOnlyTestHost{hasRouters: true, route: func(context.Context, pluginapi.ModelRouteRequest) (pluginapi.ModelRouteResponse, bool) {
+		return pluginapi.ModelRouteResponse{Handled: true, TargetKind: pluginapi.ModelRouteTargetProvider, Target: "claude", TargetModel: "names-target"}, true
+	}})
+	a, b := onlymynames.NewRule(true, false), onlymynames.NewRule(true, false)
+	a.AddKeep([]string{"names-submitted"})
+	b.AddKeep([]string{"names-target"})
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if i%2 == 0 {
+				registry.SetProvimuxNamesRule(a)
+			} else {
+				registry.SetProvimuxNamesRule(b)
+			}
+		}
+	}()
+	served := 0
+	for range 2000 {
+		if _, _, errMsg := h.ExecuteWithAuthManager(contextWithHeaders(http.Header{}), "openai", "names-submitted", []byte(`{"model":"names-submitted"}`), ""); errMsg == nil {
+			served++
+		}
+	}
+	close(stop)
+	<-done
+	if served != 0 || exec.calls.Load() != 0 {
+		t.Fatalf("%d requests served, %d provider calls, under rules that each refuse them", served, exec.calls.Load())
 	}
 }

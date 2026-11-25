@@ -7,11 +7,13 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 )
@@ -89,7 +91,7 @@ func TestProvimuxOnlyMyNamesRemovedGlobalAliasAtTheCommit(t *testing.T) {
 	d := reviewDoor(t, setup, vendor)
 	login := reviewLogin(t, d, map[string]string{"priority": "-99", "base_url": vendor.URL + "/local-oauth"})
 	before := reviewManagement(d.namesHarness, "GET", "provimux/names", "").Body.String()
-	if registry.GetGlobalRegistry().GetModelCount("held-compat") != 2 || ojson.Get(before, `names.#(name=="held-compat").accounts`).Int() != 2 || !registry.ProvimuxServes("held-compat") {
+	if registry.GetGlobalRegistry().GetModelCount("held-compat") != 2 || ojson.Get(before, `names.#(name=="held-compat").accounts`).Int() != 2 || !namesServes("held-compat") {
 		t.Fatalf("premise: held-compat is a config alias on two accounts: %s", ojson.Get(before, "names"))
 	}
 	resume := reviewHoldReload(d.namesHarness)
@@ -191,5 +193,87 @@ func TestProvimuxOnlyMyNamesSuffixedIdIsJudgedAsTheDoorJudgesIt(t *testing.T) {
 	if ojson.Get(answer, `others.#(name=="local-base(high)")`).Exists() || !ojson.Get(answer, `names.#(name=="local-base").copies.#(id=="local-base(high)")`).Exists() ||
 		!strings.Contains(list, `"local-base(high)"`) {
 		t.Fatalf("status %s / others %s, listed %v", ojson.Get(answer, "names"), ojson.Get(answer, "others.#.name"), strings.Contains(list, "local-base(high)"))
+	}
+}
+
+// Section 18, the fourth review's finding 11: one PUT removes the alias mine and gives the key offering raw mine
+// the prefix crew. Rule A (before) and rule B (after) both refuse crew/mine. A request holds right after its door
+// loaded A, while the PUT commits B and the key registers crew/mine; resumed, it is refused, and the stand-in
+// receives nothing: the judgement reads the rule value and the name, never the registrations.
+func TestProvimuxOnlyMyNamesOldRuleNewPrefixedRegistration(t *testing.T) {
+	const requested = "crew/mine"
+	d := newNamesDoor(t, true)
+	reg := registry.GetGlobalRegistry()
+	chat := func() int {
+		status, _ := d.do("POST", "/v1/chat/completions", nil, namesChat(requested, false))
+		return status
+	}
+	if chat() != http.StatusBadRequest || reg.GetModelCount(requested) != 0 {
+		t.Fatal("premise: rule A refuses crew/mine and nothing registers it")
+	}
+	entered, release := make(chan struct{}), make(chan struct{})
+	var held atomic.Bool
+	var releaseOnce sync.Once
+	restore := handlers.ProvimuxDoorHoldAfterLoad(func() {
+		if held.CompareAndSwap(false, true) { // the first request only
+			close(entered)
+			<-release
+		}
+	})
+	defer restore()
+	defer releaseOnce.Do(func() { close(release) })
+	done := make(chan int, 1)
+	go func() { done <- chat() }()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the request never reached the door")
+	}
+	write := reviewManagement(d.namesHarness, "PUT", "config/api-keys/openai-compatibility", fmt.Sprintf(`[{"name":"standin","base-url":%q,"prefix":"crew","models":[{"name":"mine"}],"keys":[{"api-key":"sk-standin"}]}]`, d.vendor.URL+"/v1"))
+	if write.Code != http.StatusOK {
+		t.Fatal(write.Body.String())
+	}
+	reviewAwaitETag(t, d.namesHarness, write.Header().Get("ETag"))
+	deadline := time.Now().Add(10 * time.Second)
+	for reg.GetModelCount(requested) != 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("B's registration never arrived")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if chat() != http.StatusBadRequest {
+		t.Fatal("rule B serves crew/mine")
+	}
+	releaseOnce.Do(func() { close(release) })
+	if overlap := <-done; overlap != http.StatusBadRequest || len(d.vendor.seen()) != 0 {
+		t.Fatalf("the held request: %d, vendor %v", overlap, d.vendor.seen())
+	}
+}
+
+// Section 18, the fourth review's finding 2: an ordinary Gemini key with the alias models/gemini-2.5-pro. The
+// Gemini format shows it as the resource models/gemini-2.5-pro, whose generation name is gemini-2.5-pro, which
+// the config does not name. List, detail and generation agree: not listed in that format, detail 404, generation
+// 400, the stand-in receives nothing. The other formats list the alias, and a request for the alias as written
+// is served.
+func TestProvimuxOnlyMyNamesGeminiResourceAlias(t *testing.T) {
+	vendor := newNamesVendor(t)
+	setup := strings.Replace(namesDoorConfig(vendor.URL, true), "        - name: held-gemini\n", "        - name: held-gemini\n        - name: up-gemini\n          alias: models/gemini-2.5-pro\n", 1)
+	d := reviewDoor(t, setup, vendor)
+	deadline := time.Now().Add(10 * time.Second)
+	for registry.GetGlobalRegistry().GetModelCount("models/gemini-2.5-pro") == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("premise: the alias is registered")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	_, list := d.do("GET", "/v1beta/models", nil, "")
+	detail, _ := d.do("GET", "/v1beta/models/gemini-2.5-pro", nil, "")
+	generate, body := d.do("POST", "/v1beta/models/gemini-2.5-pro:generateContent", nil, `{"contents":[{"parts":[{"text":"hi"}]}]}`)
+	_, openai := d.do("GET", "/v1/models", nil, "")
+	if strings.Contains(list, "gemini-2.5-pro") || detail != http.StatusNotFound || generate != http.StatusBadRequest || !strings.Contains(body, namesNotServed) || len(d.vendor.seen()) != 0 {
+		t.Fatalf("gemini: listed %v, detail %d, generate %d %s, vendor %v", strings.Contains(list, "gemini-2.5-pro"), detail, generate, body, d.vendor.seen())
+	}
+	if !strings.Contains(openai, `"models/gemini-2.5-pro"`) {
+		t.Fatal("the OpenAI list does not show the alias")
 	}
 }
