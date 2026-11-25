@@ -2,6 +2,7 @@ package cliproxy
 
 import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/provimux/onlymynames"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 )
 
@@ -10,7 +11,7 @@ import (
 // never consults the rule: the rule is applied where names are read.
 
 // provimuxNamesRuleOf is the rule of cfg: its alias rows, keep, the switch and Home mode.
-func provimuxNamesRuleOf(cfg *config.Config) *registry.ProvimuxNamesRule {
+func provimuxNamesRuleOf(cfg *config.Config) *onlymynames.Rule {
 	return config.ProvimuxNamesRule(cfg)
 }
 
