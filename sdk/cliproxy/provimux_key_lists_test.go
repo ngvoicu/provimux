@@ -631,6 +631,13 @@ func TestProvimuxKeyFailuresKeepTheHeldList(t *testing.T) {
 	}
 }
 
+// The Claude key tests' fixture: provimux-test-gateway-only is a model only the gateway lists, which the
+// Claude catalog lacks.
+func TestProvimuxClaudeKeyFixtureAgainstTheCatalog(t *testing.T) {
+	provimuxFixtureAgainstTheCatalog(t, "claude", "claude-models.json", keyFixture(t, "claude-models.json"),
+		nil, []string{"provimux-test-gateway-only"})
+}
+
 func TestProvimuxKeyClaudeRequest(t *testing.T) {
 	provimuxLiveReset(t)
 	var more atomic.Bool
@@ -654,15 +661,15 @@ func TestProvimuxKeyClaudeRequest(t *testing.T) {
 		request.Header.Get("X-Gw") != "1" || (request.Header.Get("Authorization") == "" && request.Header.Get("X-Api-Key") == "") {
 		t.Fatalf("request = %s %v", request.URL, request.Header)
 	}
-	if got := provimuxRegistered(key); !slices.Equal(got, []string{"claude-gateway-only-1", "opus"}) {
+	if got := provimuxRegistered(key); !slices.Equal(got, []string{"opus", "provimux-test-gateway-only"}) {
 		t.Fatalf("registered = %v", got)
 	}
 	// A gateway's list never teaches the catalog.
-	if registry.LookupStaticModelInfoByChannel("claude-gateway-only-1", "claude") != nil {
+	if registry.LookupStaticModelInfoByChannel("provimux-test-gateway-only", "claude") != nil {
 		t.Fatal("a key's list fed the catalog's learned models")
 	}
 	for _, model := range registry.GetGlobalRegistry().GetModelsForClient(key.ID) {
-		if model.ID == "claude-gateway-only-1" && model.DisplayName != "Gateway Only 1" {
+		if model.ID == "provimux-test-gateway-only" && model.DisplayName != "Provimux Test Gateway Only" {
 			t.Fatalf("display name = %q", model.DisplayName)
 		}
 	}

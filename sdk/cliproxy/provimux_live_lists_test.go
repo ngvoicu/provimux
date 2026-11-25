@@ -224,6 +224,44 @@ func TestProvimuxDevinFixtureAgainstTheCatalog(t *testing.T) {
 	}
 }
 
+// provimuxFixtureAgainstTheCatalog states, in one place per provider, what a fixture assumes of upstream's
+// embedded catalog of a section: each id of inCatalog is a model of that catalog (or one Provimux adds in
+// code), each id of learned is not. A learned id is always provimux-test-…, a name no vendor ships, so a
+// catalog update can only break the first list, and then here, with the fixture named, instead of in the
+// tests that use it. data, when given, is the fixture, which must name every id.
+func provimuxFixtureAgainstTheCatalog(t *testing.T, section, fixture string, data []byte, inCatalog, learned []string) {
+	t.Helper()
+	provimuxLiveReset(t) // no learned model of an earlier test
+	catalog := provimuxCatalogIDs(section)
+	builtins := liveModelListBuiltins(section)
+	known := func(id string) bool {
+		_, inSection := catalog[strings.ToLower(id)]
+		_, builtin := builtins[strings.ToLower(id)]
+		return inSection || builtin
+	}
+	if len(catalog) == 0 {
+		t.Fatalf("upstream's %s catalog is empty", section)
+	}
+	for _, id := range append(append([]string(nil), inCatalog...), learned...) {
+		if data != nil && !strings.Contains(string(data), `"`+id+`"`) && !strings.Contains(string(data), `/`+id+`"`) { // Gemini: "models/<id>"
+			t.Errorf("%s does not name %s", fixture, id)
+		}
+	}
+	for _, id := range inCatalog {
+		if !known(id) {
+			t.Errorf("%s: its catalog model %s is no longer in upstream's %s catalog; give the fixture a model the catalog has", fixture, id, section)
+		}
+	}
+	for _, id := range learned {
+		if !strings.HasPrefix(id, "provimux-test-") {
+			t.Errorf("%s: its learned model %s must be named provimux-test-…, an id no vendor ships", fixture, id)
+		}
+		if known(id) {
+			t.Errorf("%s: its learned model %s is in upstream's %s catalog", fixture, id, section)
+		}
+	}
+}
+
 func TestProvimuxDevinParser(t *testing.T) {
 	list, err := parseDevinLiveModelList(provimuxDevinRecorded, time.Unix(100, 0))
 	if err != nil {
@@ -431,6 +469,13 @@ func TestProvimuxDevinCacheOf810(t *testing.T) {
 
 // --- Kimi --------------------------------------------------------------------------------------
 
+// The Kimi tests' fixture: kimi-k2.8 and kimi-k2.8-code are catalog models (the catalog's values win, one
+// learned model of three), provimux-test-kimi-learned is learned.
+func TestProvimuxKimiFixtureAgainstTheCatalog(t *testing.T) {
+	provimuxFixtureAgainstTheCatalog(t, "kimi", "kimi-models.json", provimuxFixture(t, "kimi-models.json"),
+		[]string{"kimi-k2.8", "kimi-k2.8-code"}, []string{"provimux-test-kimi-learned"})
+}
+
 func TestProvimuxKimiParser(t *testing.T) {
 	list, err := parseKimiLiveModelList(provimuxFixture(t, "kimi-models.json"), time.Unix(100, 0))
 	if err != nil {
@@ -468,7 +513,7 @@ func TestProvimuxKimiFetchKeepsTheCatalogsValues(t *testing.T) {
 	svc.registerModelsForAuth(t.Context(), auth)
 	catalogK28 := registry.LookupStaticModelInfoByChannel("kimi-k2.8", "kimi")
 	provimuxRefresh(svc, executor, false)
-	if got := strings.Join(provimuxRegistered(auth), ","); got != "kimi-k2.8,kimi-k2.8-code,kimi-k3-neon" {
+	if got := strings.Join(provimuxRegistered(auth), ","); got != "kimi-k2.8,kimi-k2.8-code,provimux-test-kimi-learned" {
 		t.Fatalf("registered = %s", got)
 	}
 	var k28 *ModelInfo
@@ -480,22 +525,30 @@ func TestProvimuxKimiFetchKeepsTheCatalogsValues(t *testing.T) {
 	if !reflect.DeepEqual(k28, catalogK28) {
 		t.Fatalf("a catalog model keeps the catalog's values:\n got %+v\nwant %+v", k28, catalogK28)
 	}
-	if !registry.ProvimuxIsLearned("kimi", "kimi-k3-neon") || registry.LookupStaticModelInfoByChannel("kimi-k3-neon", "kimi") == nil {
+	if !registry.ProvimuxIsLearned("kimi", "provimux-test-kimi-learned") || registry.LookupStaticModelInfoByChannel("provimux-test-kimi-learned", "kimi") == nil {
 		t.Fatal("the learned model must be recorded for the lookups")
 	}
-	if slices.ContainsFunc(registry.GetKimiModels(), func(m *ModelInfo) bool { return m.ID == "kimi-k3-neon" }) {
+	if slices.ContainsFunc(registry.GetKimiModels(), func(m *ModelInfo) bool { return m.ID == "provimux-test-kimi-learned" }) {
 		t.Fatal("the catalog a login without a live list takes must not contain learned models")
 	}
 }
 
 // --- xAI ---------------------------------------------------------------------------------------
 
+// The xAI tests' fixtures (the two answers, and TestProvimuxSectionRules' list): grok-imagine-image is one of
+// Provimux's own xAI models, provimux-test-xai-learned is learned.
+func TestProvimuxXAIFixtureAgainstTheCatalog(t *testing.T) {
+	answers := append(provimuxFixture(t, "xai-language-models.json"), provimuxFixture(t, "xai-models.json")...)
+	provimuxFixtureAgainstTheCatalog(t, "xai", "xai-language-models.json and xai-models.json", answers,
+		[]string{"grok-imagine-image"}, []string{"provimux-test-xai-learned"})
+}
+
 func TestProvimuxXAIParser(t *testing.T) {
 	list, err := parseXAILiveModelList(provimuxFixture(t, "xai-language-models.json"), provimuxFixture(t, "xai-models.json"), time.Unix(100, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(provimuxSortedKeys(list.ids), ","); got != "grok-4.7,grok-5-neon" {
+	if got := strings.Join(provimuxSortedKeys(list.ids), ","); got != "grok-4.7,provimux-test-xai-learned" {
 		t.Fatalf("only chat models of /language-models are listed: %s", got)
 	}
 	grok := hasLiveID(list.extra, "grok-4.7")
@@ -503,7 +556,7 @@ func TestProvimuxXAIParser(t *testing.T) {
 		grok.Thinking == nil || strings.Join(grok.Thinking.Levels, ",") != "none,low,medium,high" || !grok.Thinking.ZeroAllowed {
 		t.Fatalf("grok = %+v %+v", grok, grok.Thinking)
 	}
-	if neon := hasLiveID(list.extra, "grok-5-neon"); neon.Thinking != nil || neon.ContextLength != 256000 {
+	if neon := hasLiveID(list.extra, "provimux-test-xai-learned"); neon.Thinking != nil || neon.ContextLength != 256000 {
 		t.Fatalf("neon = %+v", neon)
 	}
 	models := provimuxFixture(t, "xai-models.json")
@@ -547,7 +600,7 @@ func TestProvimuxXAIPartialFetchChangesNothing(t *testing.T) {
 	modelsFail.Store(false)
 	provimuxRefresh(svc, executor, true)
 	before := provimuxRegistered(auth)
-	if !slices.Contains(before, "grok-5-neon") || !slices.Contains(before, "grok-imagine-image") {
+	if !slices.Contains(before, "provimux-test-xai-learned") || !slices.Contains(before, "grok-imagine-image") {
 		t.Fatalf("registered = %v", before)
 	}
 	modelsFail.Store(true)
@@ -573,17 +626,23 @@ func TestProvimuxXAIBaseIsTheAPIHost(t *testing.T) {
 
 // --- Gemini keys -------------------------------------------------------------------------------
 
+// The Gemini key tests' fixture: provimux-test-gemini-learned is learned.
+func TestProvimuxGeminiFixtureAgainstTheCatalog(t *testing.T) {
+	provimuxFixtureAgainstTheCatalog(t, "gemini", "gemini-page2.json", provimuxFixture(t, "gemini-page2.json"),
+		nil, []string{"provimux-test-gemini-learned"})
+}
+
 func TestProvimuxGeminiParser(t *testing.T) {
 	pages := [][]byte{provimuxFixture(t, "gemini-page1.json"), provimuxFixture(t, "gemini-page2.json")}
 	list, err := parseGeminiLiveModelList(pages, time.Unix(100, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(provimuxSortedKeys(list.ids), ","); got != "gemini-2.5-flash,gemini-3-flash-preview,gemini-4-neon" {
+	if got := strings.Join(provimuxSortedKeys(list.ids), ","); got != "gemini-2.5-flash,gemini-3-flash-preview,provimux-test-gemini-learned" {
 		t.Fatalf("ids over both pages, chat models only: %s", got)
 	}
-	neon := hasLiveID(list.extra, "gemini-4-neon")
-	if neon.InputTokenLimit != 2097152 || neon.OutputTokenLimit != 131072 || neon.Name != "models/gemini-4-neon" || neon.Thinking != nil {
+	neon := hasLiveID(list.extra, "provimux-test-gemini-learned")
+	if neon.InputTokenLimit != 2097152 || neon.OutputTokenLimit != 131072 || neon.Name != "models/provimux-test-gemini-learned" || neon.Thinking != nil {
 		t.Fatalf("neon = %+v", neon)
 	}
 	if _, errPartial := parseGeminiLiveModelList(pages[:1], time.Now()); errPartial == nil {
@@ -632,8 +691,11 @@ func TestProvimuxGeminiKeyFollowsPages(t *testing.T) {
 		t.Fatalf("the key is asked on Google's own host: %v", executor.paths)
 	}
 	ids := provimuxRegistered(auth)
-	if !slices.Contains(ids, "gemini-4-neon") || slices.Contains(ids, "text-embedding-005") || len(ids) != 3 {
+	if !slices.Contains(ids, "provimux-test-gemini-learned") || slices.Contains(ids, "text-embedding-005") || len(ids) != 3 {
 		t.Fatalf("registered = %v", ids)
+	}
+	if !registry.ProvimuxIsLearned("gemini", "provimux-test-gemini-learned") {
+		t.Fatal("the model the catalog lacks must be learned")
 	}
 	own := &coreauth.Auth{Provider: "gemini", Attributes: map[string]string{"api_key": "k", "base_url": "https://proxy.example/v1beta"}}
 	if liveModelListProvider(own) != "" {
@@ -642,6 +704,20 @@ func TestProvimuxGeminiKeyFollowsPages(t *testing.T) {
 }
 
 // --- Copilot and Antigravity -------------------------------------------------------------------
+
+// The Copilot test's fixture: claude-fable-5 is a catalog model (an account's catalog routes only ids the
+// section names), provimux-test-copilot-learned and provimux-test-copilot-disabled are not.
+func TestProvimuxCopilotFixtureAgainstTheCatalog(t *testing.T) {
+	provimuxFixtureAgainstTheCatalog(t, "copilot", "copilot-models.json", provimuxFixture(t, "copilot-models.json"),
+		[]string{"claude-fable-5"}, []string{"provimux-test-copilot-learned", "provimux-test-copilot-disabled"})
+}
+
+// The Antigravity test's fixture: gemini-4-argon-high is a catalog model, provimux-test-antigravity-learned
+// is learned.
+func TestProvimuxAntigravityFixtureAgainstTheCatalog(t *testing.T) {
+	provimuxFixtureAgainstTheCatalog(t, "antigravity", "antigravity-models.json", provimuxFixture(t, "antigravity-models.json"),
+		[]string{"gemini-4-argon-high"}, []string{"provimux-test-antigravity-learned"})
+}
 
 func TestProvimuxCopilotLearnsOfferedModels(t *testing.T) {
 	provimuxLiveReset(t)
@@ -653,10 +729,10 @@ func TestProvimuxCopilotLearnsOfferedModels(t *testing.T) {
 	}
 	provimuxNoteCopilotList("copilot-a", payload.Models, time.Unix(100, 0))
 	learned := registry.ProvimuxLearnedModels("copilot")
-	if len(learned) != 1 || learned[0].ID != "gpt-copilot-neon" || learned[0].ContextLength != 400000 || learned[0].OutputTokenLimit != 128000 {
+	if len(learned) != 1 || learned[0].ID != "provimux-test-copilot-learned" || learned[0].ContextLength != 400000 || learned[0].OutputTokenLimit != 128000 {
 		t.Fatalf("only offered chat models the section lacks are learned: %+v", learned)
 	}
-	if registry.LookupStaticModelInfoByChannel("gpt-copilot-neon", "copilot") == nil {
+	if registry.LookupStaticModelInfoByChannel("provimux-test-copilot-learned", "copilot") == nil {
 		t.Fatal("the resolver's lookup must find the learned model")
 	}
 	account := copilot.NewCatalog(payload.Models, time.Now())
@@ -664,26 +740,26 @@ func TestProvimuxCopilotLearnsOfferedModels(t *testing.T) {
 	for _, route := range provimuxCopilotRoutes(provimuxOn(), account) {
 		routed = append(routed, route.Info.ID)
 	}
-	if !slices.Contains(routed, "gpt-copilot-neon") || !slices.Contains(routed, "claude-fable-5") || slices.Contains(routed, "gpt-disabled-neon") {
+	if !slices.Contains(routed, "provimux-test-copilot-learned") || !slices.Contains(routed, "claude-fable-5") || slices.Contains(routed, "provimux-test-copilot-disabled") {
 		t.Fatalf("routes = %v", routed)
 	}
 	for _, route := range provimuxCopilotRoutes(provimuxOn(), copilot.PresetCatalog) {
-		if route.Info.ID == "gpt-copilot-neon" {
+		if route.Info.ID == "provimux-test-copilot-learned" {
 			t.Fatal("a login whose account has not answered must not offer learned models")
 		}
 	}
 	off := &config.Config{}
 	off.Models.LiveLists = new(false)
 	for _, route := range provimuxCopilotRoutes(off, copilot.PresetCatalog) {
-		if route.Info.ID == "gpt-copilot-neon" {
+		if route.Info.ID == "provimux-test-copilot-learned" {
 			t.Fatal("with live lists off no learned model is offered")
 		}
 	}
 	// GET /v8/management/routing/model-definitions/copilot lists the learned model, as on 8.1.0-pmx.2.
-	if !slices.Contains(liveIDs(registry.GetStaticModelDefinitionsByChannel("copilot")), "gpt-copilot-neon") {
+	if !slices.Contains(liveIDs(registry.GetStaticModelDefinitionsByChannel("copilot")), "provimux-test-copilot-learned") {
 		t.Fatal("the copilot section's definitions must include learned models")
 	}
-	if slices.Contains(liveIDs(registry.ProvimuxCatalogModels("copilot")), "gpt-copilot-neon") {
+	if slices.Contains(liveIDs(registry.ProvimuxCatalogModels("copilot")), "provimux-test-copilot-learned") {
 		t.Fatal("the catalog alone has no learned model")
 	}
 	provimuxForgetForeignLists(func(string) bool { return false })
@@ -710,14 +786,14 @@ func TestProvimuxAntigravityLearnsWithTheVendorsFields(t *testing.T) {
 		ids = append(ids, model.ID)
 	}
 	slices.Sort(ids)
-	if strings.Join(ids, ",") != "gemini-4-argon-high,gemini-5-neon" {
+	if strings.Join(ids, ",") != "gemini-4-argon-high,provimux-test-antigravity-learned" {
 		t.Fatalf("models = %v (internal ids are never added)", ids)
 	}
-	neon := hasLiveID(models, "gemini-5-neon")
-	if neon.DisplayName != "Gemini 4 Neon" || neon.ContextLength != 2097152 || neon.MaxCompletionTokens != 131072 || neon.Thinking != nil {
+	neon := hasLiveID(models, "provimux-test-antigravity-learned")
+	if neon.DisplayName != "Provimux Test Antigravity Learned" || neon.ContextLength != 2097152 || neon.MaxCompletionTokens != 131072 || neon.Thinking != nil {
 		t.Fatalf("neon = %+v", neon)
 	}
-	if registry.LookupStaticModelInfoByChannel("gemini-5-neon", "antigravity") == nil {
+	if registry.LookupStaticModelInfoByChannel("provimux-test-antigravity-learned", "antigravity") == nil {
 		t.Fatal("learned Antigravity model not recorded")
 	}
 	off := &config.Config{}
@@ -738,15 +814,15 @@ func TestProvimuxSectionRules(t *testing.T) {
 		{ID: "grok-imagine-image", Type: "xai"},
 		{ID: "grok-sparse", Type: "xai", MaxCompletionTokens: 8000},
 	}
-	list := liveModelList{ids: map[string]struct{}{"grok-4.7": {}, "grok-5-neon": {}, "grok-sparse": {}}, extra: []*ModelInfo{
+	list := liveModelList{ids: map[string]struct{}{"grok-4.7": {}, "provimux-test-xai-learned": {}, "grok-sparse": {}}, extra: []*ModelInfo{
 		{ID: "grok-4.7", ContextLength: 2000000, Thinking: &registry.ThinkingSupport{Levels: []string{"low", "high"}}},
 		{ID: "grok-sparse", ContextLength: 131072, MaxCompletionTokens: 4000, SupportedInputModalities: []string{"text"},
 			Thinking: &registry.ThinkingSupport{Levels: []string{"low"}}},
-		{ID: "grok-5-neon", ContextLength: 256000},
+		{ID: "provimux-test-xai-learned", ContextLength: 256000},
 	}}
 	out := filterByLiveModelList("xai", catalog, list)
 	// Row 3: a login with a live list offers exactly the models it names, plus Provimux's own.
-	if got := strings.Join(liveIDs(out), ","); got != "grok-4.7,grok-imagine-image,grok-sparse,grok-5-neon" {
+	if got := strings.Join(liveIDs(out), ","); got != "grok-4.7,grok-imagine-image,grok-sparse,provimux-test-xai-learned" {
 		t.Fatalf("models = %s", got)
 	}
 	// Row 2: a model the catalog has keeps the catalog's values (the very entry); the vendor fills
@@ -758,18 +834,18 @@ func TestProvimuxSectionRules(t *testing.T) {
 		strings.Join(sparse.SupportedInputModalities, ",") != "text" || sparse.Thinking != nil || catalog[3].ContextLength != 0 {
 		t.Fatalf("sparse = %+v", sparse)
 	}
-	if neon := hasLiveID(out, "grok-5-neon"); neon.MaxCompletionTokens != 0 || neon.Thinking != nil {
+	if neon := hasLiveID(out, "provimux-test-xai-learned"); neon.MaxCompletionTokens != 0 || neon.Thinking != nil {
 		t.Fatalf("a field no source states stays unknown: %+v", neon)
 	}
 	// Row 1: the learned model is recorded in the section; row 4: a login without a list does not get it.
 	list.provider, list.identity, list.fetchedAt = "xai", "x", time.Now()
 	liveModelLists.put("xai-a", list)
 	provimuxUpdateLearnedModels("xai")
-	if !registry.ProvimuxIsLearned("xai", "grok-5-neon") {
+	if !registry.ProvimuxIsLearned("xai", "provimux-test-xai-learned") {
 		t.Fatal("learned model not in the section")
 	}
 	without := &coreauth.Auth{ID: "xai-b", Provider: "xai", Attributes: map[string]string{"auth_kind": "oauth"}, Metadata: map[string]any{"account_id": "acct-2"}}
-	if got := applyLiveModelList(provimuxOn(), without, registry.GetXAIModels()); slices.ContainsFunc(got, func(m *ModelInfo) bool { return m.ID == "grok-5-neon" }) {
+	if got := applyLiveModelList(provimuxOn(), without, registry.GetXAIModels()); slices.ContainsFunc(got, func(m *ModelInfo) bool { return m.ID == "provimux-test-xai-learned" }) {
 		t.Fatal("a login without a live list must not offer learned models")
 	}
 }
@@ -779,13 +855,13 @@ func TestProvimuxExclusionsStillApply(t *testing.T) {
 	provimuxAsk(t, "kimi")
 	server := provimuxServe(t, map[string]func(http.ResponseWriter, *http.Request){"/coding/v1/models": provimuxBody(provimuxFixture(t, "kimi-models.json"))})
 	cfg := provimuxOn()
-	cfg.OAuthExcludedModels = map[string][]string{"kimi": {"kimi-k3-neon"}}
+	cfg.OAuthExcludedModels = map[string][]string{"kimi": {"provimux-test-kimi-learned"}}
 	executor := &liveListExecutor{provider: "kimi"}
 	svc, auth := provimuxService(t, cfg, executor, &coreauth.Auth{ID: "kimi-excl-test", Provider: "kimi",
 		Attributes: map[string]string{"auth_kind": "oauth", "base_url": server.URL + "/coding"}, Metadata: map[string]any{"email": "office@providers.dev"}})
 	svc.registerModelsForAuth(t.Context(), auth)
 	provimuxRefresh(svc, executor, false)
-	if ids := provimuxRegistered(auth); slices.Contains(ids, "kimi-k3-neon") || !slices.Contains(ids, "kimi-k2.8") {
+	if ids := provimuxRegistered(auth); slices.Contains(ids, "provimux-test-kimi-learned") || !slices.Contains(ids, "kimi-k2.8") {
 		t.Fatalf("Row 5: the user's exclusions apply on top: %v", ids)
 	}
 }
@@ -803,21 +879,21 @@ func TestProvimuxSevenDayLimit(t *testing.T) {
 	liveModelListNow = func() time.Time { return start }
 	svc.registerModelsForAuth(t.Context(), auth)
 	provimuxRefresh(svc, executor, false)
-	if !slices.Contains(provimuxRegistered(auth), "kimi-k3-neon") {
+	if !slices.Contains(provimuxRegistered(auth), "provimux-test-kimi-learned") {
 		t.Fatal("list not applied")
 	}
 	server.Close()
 	liveModelListNow = func() time.Time { return start.Add(liveModelListMaxAge - time.Minute) }
 	provimuxRefresh(svc, executor, true)
-	if !slices.Contains(provimuxRegistered(auth), "kimi-k3-neon") {
+	if !slices.Contains(provimuxRegistered(auth), "provimux-test-kimi-learned") {
 		t.Fatal("a list that cannot be refreshed stays in use for 7 days")
 	}
 	liveModelListNow = func() time.Time { return start.Add(liveModelListMaxAge + time.Minute) }
 	provimuxRefresh(svc, executor, true)
-	if slices.Contains(provimuxRegistered(auth), "kimi-k3-neon") {
+	if slices.Contains(provimuxRegistered(auth), "provimux-test-kimi-learned") {
 		t.Fatal("after 7 days the login takes the catalog")
 	}
-	if registry.ProvimuxIsLearned("kimi", "kimi-k3-neon") {
+	if registry.ProvimuxIsLearned("kimi", "provimux-test-kimi-learned") {
 		t.Fatal("an expired list's models are no longer learned")
 	}
 	if again := liveModelLists.newlyExpired(liveModelListNow()); len(again) != 0 {
@@ -876,7 +952,7 @@ func TestProvimuxRestartWithoutNetworkKeepsTheLastLists(t *testing.T) {
 	if after := provimuxRegistered(auth2); !slices.Equal(after, before) {
 		t.Fatalf("restart without network: %v, last run %v", after, before)
 	}
-	if !registry.ProvimuxIsLearned("kimi", "kimi-k3-neon") {
+	if !registry.ProvimuxIsLearned("kimi", "provimux-test-kimi-learned") {
 		t.Fatal("learned models come back from the cache")
 	}
 	provimuxRefresh(svc2, executor, false)
@@ -896,13 +972,13 @@ func TestProvimuxCacheOfAnotherAccountIsIgnored(t *testing.T) {
 	liveModelLists.cache.Store(store)
 	ada := &coreauth.Auth{ID: "kimi-cache", Provider: "kimi", Attributes: map[string]string{"auth_kind": "oauth"}, Metadata: map[string]any{"email": "office@providers.dev"}}
 	bob := &coreauth.Auth{ID: "kimi-cache", Provider: "kimi", Attributes: map[string]string{"auth_kind": "oauth"}, Metadata: map[string]any{"account_id": "acct-2"}}
-	if err := store.WriteLive("kimi", liveModelListIdentity(ada), time.Now(), []string{"kimi-k3-neon"}, []*ModelInfo{{ID: "kimi-k3-neon"}}); err != nil {
+	if err := store.WriteLive("kimi", liveModelListIdentity(ada), time.Now(), []string{"provimux-test-kimi-learned"}, []*ModelInfo{{ID: "provimux-test-kimi-learned"}}); err != nil {
 		t.Fatal(err)
 	}
 	if got := applyLiveModelList(provimuxOn(), bob, []*ModelInfo{{ID: "kimi-k2.8"}}); strings.Join(liveIDs(got), ",") != "kimi-k2.8" {
 		t.Fatalf("another account's cached list must not apply: %v", liveIDs(got))
 	}
-	if got := applyLiveModelList(provimuxOn(), ada, []*ModelInfo{{ID: "kimi-k2.8"}}); strings.Join(liveIDs(got), ",") != "kimi-k3-neon" {
+	if got := applyLiveModelList(provimuxOn(), ada, []*ModelInfo{{ID: "kimi-k2.8"}}); strings.Join(liveIDs(got), ",") != "provimux-test-kimi-learned" {
 		t.Fatalf("the account's own cached list applies: %v", liveIDs(got))
 	}
 }
@@ -1015,7 +1091,7 @@ func TestProvimuxFetchDeadline(t *testing.T) {
 	svc.registerModelsForAuth(t.Context(), auth)
 	provimuxRefresh(svc, executor, false)
 	before := provimuxRegistered(auth)
-	if !slices.Contains(before, "gemini-4-neon") {
+	if !slices.Contains(before, "provimux-test-gemini-learned") {
 		t.Fatalf("registered = %v", before)
 	}
 	hang.Store(true)

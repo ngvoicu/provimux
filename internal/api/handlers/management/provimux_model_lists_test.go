@@ -88,9 +88,9 @@ func provimuxModelListFixture(t *testing.T) (*Handler, *provimuxFakeModelListSou
 			Models: []ProvimuxModelListModel{
 				{ID: "devin/swe-2", Name: "SWE-2", Source: "live", Context: 262000, Output: 128000, Inputs: []string{"text"},
 					Levels: []string{"medium"}, Sources: map[string]string{"context": "live", "reasoning_levels": "built-in"}},
-				{ID: "devin/gemini-4-neon", Source: "live", Learned: true},
+				{ID: "devin/provimux-test-learned", Source: "live", Learned: true},
 			},
-			Live: []ProvimuxVendorModel{{ID: "devin/swe-2", Name: "SWE-2", Context: 262000}, {ID: "devin/gemini-4-neon"}}},
+			Live: []ProvimuxVendorModel{{ID: "devin/swe-2", Name: "SWE-2", Context: 262000}, {ID: "devin/provimux-test-learned"}}},
 		"vertex-project.json": {Source: "built-in"},
 	}}
 	provimuxUseModelListSource(t, source)
@@ -154,7 +154,7 @@ func TestProvimuxModelListsOneLogin(t *testing.T) {
 		t.Fatalf("only the named login: %s", raw)
 	}
 	models := logins[0].(map[string]any)["models"].([]any)
-	if len(models) != 2 || models[0].(map[string]any)["id"] != "devin/gemini-4-neon" {
+	if len(models) != 2 || models[0].(map[string]any)["id"] != "devin/provimux-test-learned" {
 		t.Fatalf("models sorted by id: %v", models)
 	}
 	swe := models[1].(map[string]any)
@@ -179,7 +179,7 @@ func TestProvimuxModelListsViewLive(t *testing.T) {
 	logins := body["logins"].([]any)
 	devin, vertex := logins[0].(map[string]any), logins[1].(map[string]any)
 	list, ok := devin["live_list"].([]any)
-	if !ok || len(list) != 2 || list[0].(map[string]any)["id"] != "devin/gemini-4-neon" {
+	if !ok || len(list) != 2 || list[0].(map[string]any)["id"] != "devin/provimux-test-learned" {
 		t.Fatalf("live_list = %v", devin["live_list"])
 	}
 	if value, present := vertex["live_list"]; !present || value != nil {

@@ -76,10 +76,46 @@ func provimuxRegisteredModels(t *testing.T, cfg *config.Config, provider, execut
 	return models, exec.calls.Load()
 }
 
+// provimuxCatalogModel returns the catalog model a test's case needs: prefer, the model the case was
+// written for, while the catalog still has it as the case needs it, else the first model that fits. A
+// test that needs a real catalog model takes it here instead of naming it, so a catalog update that drops
+// or changes that model breaks nothing; only a catalog with no model that fits fails, with the need named.
+func provimuxCatalogModel(t *testing.T, catalog string, models []*ModelInfo, prefer, need string, fits func(*ModelInfo) bool) *ModelInfo {
+	t.Helper()
+	for _, model := range models {
+		if model != nil && strings.EqualFold(model.ID, prefer) && fits(model) {
+			return model
+		}
+	}
+	for _, model := range models {
+		if model != nil && fits(model) {
+			return model
+		}
+	}
+	t.Fatalf("no model of upstream's %s catalog is %s, which this test's case needs", catalog, need)
+	return nil
+}
+
+// provimuxTakesImages: a catalog model whose inputs are text and images.
+func provimuxTakesImages(model *ModelInfo) bool {
+	return strings.Join(model.SupportedInputModalities, ",") == "text,image"
+}
+
+// provimuxThinkingCanBeOff: a catalog model with a thinking block that allows thinking off.
+func provimuxThinkingCanBeOff(model *ModelInfo) bool {
+	return model.Thinking != nil && model.Thinking.ZeroAllowed
+}
+
 // Parity with e5cf5a2d5, whose live path returned the catalog's entry untouched and whose Kimi and
 // xAI logins were never asked: what a login registers with live lists on equals, field for field,
 // what the same login registers with them off (the catalog through the same registration path).
+// The answers name a catalog model taken from the catalog ({id}): one that takes images (and, for
+// Claude, allows thinking off), as claude-sonnet-5-5, gpt-6.1-sol and muse-spark-1.3 did when written.
 func TestProvimuxParityWithTheCatalog(t *testing.T) {
+	claude := provimuxCatalogModel(t, "claude", registry.GetClaudeModels(), "claude-sonnet-5-5", "taking images with thinking that can be off",
+		func(m *ModelInfo) bool { return provimuxTakesImages(m) && provimuxThinkingCanBeOff(m) }).ID
+	codex := provimuxCatalogModel(t, "codex pro", registry.GetCodexProModels(), "gpt-6.1-sol", "taking images", provimuxTakesImages).ID
+	meta := provimuxCatalogModel(t, "meta", registry.GetMetaModels(), "muse-spark-1.3", "taking images", provimuxTakesImages).ID
 	for _, tc := range []struct {
 		provider, executor, answer, target string
 	}{
@@ -90,16 +126,17 @@ func TestProvimuxParityWithTheCatalog(t *testing.T) {
 		{"xai", "xai", "", ""},
 		// The review's answers: Claude without image support and with one effort level, Codex
 		// without input modalities, Meta with ids only.
-		{"claude", "claude", `{"data":[{"id":"claude-sonnet-5-5","capabilities":{"effort":{"low":{"supported":true}},"thinking":{"supported":true}}}]}`, "claude-sonnet-5-5"},
-		{"codex", "codex", `{"models":[{"slug":"gpt-6.1-sol","visibility":"list"}]}`, "gpt-6.1-sol"},
-		{"meta", "meta", `{"data":[{"id":"muse-spark-1.3"}]}`, "muse-spark-1.3"},
+		{"claude", "claude", `{"data":[{"id":"{id}","capabilities":{"effort":{"low":{"supported":true}},"thinking":{"supported":true}}}]}`, claude},
+		{"codex", "codex", `{"models":[{"slug":"{id}","visibility":"list"}]}`, codex},
+		{"meta", "meta", `{"data":[{"id":"{id}"}]}`, meta},
 		// Answers that state other values for every field they have: the catalog's stay.
-		{"claude", "claude", `{"data":[{"id":"claude-sonnet-5-5","display_name":"Other","created_at":"2020-01-01T00:00:00Z",
+		{"claude", "claude", `{"data":[{"id":"{id}","display_name":"Other","created_at":"2020-01-01T00:00:00Z",
 			"max_input_tokens":1000,"max_tokens":10,"capabilities":{"image_input":{"supported":false},
-			"effort":{"low":{"supported":true}},"thinking":{"supported":true,"types":{"disabled":{"supported":false},"adaptive":{"supported":false}}}}}]}`, "claude-sonnet-5-5"},
-		{"codex", "codex", `{"models":[{"slug":"gpt-6.1-sol","visibility":"list","display_name":"Other","context_window":1000,
-			"input_modalities":["text"],"supported_reasoning_levels":[{"effort":"low"}]}]}`, "gpt-6.1-sol"},
+			"effort":{"low":{"supported":true}},"thinking":{"supported":true,"types":{"disabled":{"supported":false},"adaptive":{"supported":false}}}}}]}`, claude},
+		{"codex", "codex", `{"models":[{"slug":"{id}","visibility":"list","display_name":"Other","context_window":1000,
+			"input_modalities":["text"],"supported_reasoning_levels":[{"effort":"low"}]}]}`, codex},
 	} {
+		tc.answer = strings.ReplaceAll(tc.answer, "{id}", tc.target)
 		t.Run(tc.provider+"/"+tc.target, func(t *testing.T) {
 			want, _ := provimuxRegisteredModels(t, provimuxOff(), tc.provider, tc.executor, "")
 			got, calls := provimuxRegisteredModels(t, provimuxOn(), tc.provider, tc.executor, tc.answer)
@@ -136,11 +173,8 @@ func TestProvimuxParityWithTheCatalog(t *testing.T) {
 // levels, all give the catalog's thinking for a model the catalog has.
 func TestProvimuxClaudeThinkingOffIsTheCatalogs(t *testing.T) {
 	catalog := registry.GetClaudeModels()
-	const id = "claude-sonnet-5-5"
-	base := hasLiveID(catalog, id)
-	if base == nil || base.Thinking == nil || !base.Thinking.ZeroAllowed {
-		t.Fatal("the catalog's entry must allow thinking off")
-	}
+	base := provimuxCatalogModel(t, "claude", catalog, "claude-sonnet-5-5", "with thinking that can be off", provimuxThinkingCanBeOff)
+	id := base.ID
 	effort := `,"effort":{"low":{"supported":true}}`
 	for _, tc := range []struct{ name, thinking string }{
 		{"false", `"thinking":{"types":{"disabled":{"supported":false}}}`},
