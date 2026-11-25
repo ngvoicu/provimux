@@ -469,6 +469,10 @@ models:
   provider-native name; for an alias spelled `models/gemini-2.5-pro`, the resource `models/gemini-2.5-pro`, which a
   Gemini client generates as `gemini-2.5-pro`). When that name is not yours, the Gemini list leaves the model out and
   its detail answers 404, as its generation is refused; the other formats list the name you kept.
+- **A Gemini key whose alias is a full resource name** (`models/gemini-2.5-pro`): keeping the short name
+  (`gemini-2.5-pro`) lists the resource and answers its detail, but generation under it is refused, because no account
+  registers the short name; CLIProxyAPI routes such an alias the same way with the switch off. Keep the alias's full
+  name, or write the alias without `models/`.
 - **A plugin that rewrites the final model list** a client receives: what it adds is shown (the switch filters the
   lists the gateway builds, not what a plugin writes over them); a request for it is still refused.
 - **The Responses WebSocket** (`GET /v1/responses`): a prewarm (`response.create` with `generate: false`) for a name
@@ -484,6 +488,14 @@ models:
   did not keep is served through it.
 - **An exchange under way when the rule changes** (a stream, a WebSocket session's follow-up on its login) finishes
   under the rule it started with.
+- **A request for `auto` already under way when the switch is turned on** is resolved from the names served after the
+  save: it may be answered by another of your names than a moment before, or, if none is eligible, refused with
+  CLIProxyAPI's own error.
+- **A login being replaced by another**: the account count the status shows for a name can be one read behind while
+  the replacement happens; the next read is right.
+- **A name no account offers**: with the switch on it gets the setting's message instead of CLIProxyAPI's
+  unknown-model words, and takes one of the 256 slots of the refusal count. The machine-readable fields are as before:
+  HTTP 400, `invalid_request_error`, `model_not_found`, `param: model`.
 - **Between a save's answer and its reload** the previous rule is in force; `GET /provimux/names` says which.
 - **Home mode**: the switch does not apply.
 - **CLIProxyAPI's own management views** (the models of an auth file, `registered_models` of
