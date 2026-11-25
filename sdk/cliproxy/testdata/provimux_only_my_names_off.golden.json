@@ -1,0 +1,47 @@
+{
+  "lists": {
+    "claude": [
+      "claude-fable-5-dd-edualc-dleh",
+      "claude-fable-5-dd-enim",
+      "claude-fable-5-dd-t-enim",
+      "claude-fable-5-dd-t-enim/a-maet",
+      "claude-fable-5-dd-tapmoc-dleh",
+      "claude-mine"
+    ],
+    "gemini": [
+      "models/claude-mine",
+      "models/held-claude",
+      "models/held-compat",
+      "models/mine",
+      "models/mine-t",
+      "models/team-a/mine-t"
+    ],
+    "openai": [
+      "claude-mine",
+      "held-claude",
+      "held-compat",
+      "mine",
+      "mine-t",
+      "team-a/mine-t"
+    ]
+  },
+  "chats": {
+    "held-compat": "200 | vendor: /v1/chat/completions held-compat",
+    "mine": "200 | vendor: /v1/chat/completions up-mine",
+    "nobody-offers-this": "400 {\"error\":{\"message\":\"unknown provider for model nobody-offers-this\",\"type\":\"invalid_request_error\",\"code\":\"model_not_found\",\"param\":\"model\"}} | vendor: "
+  },
+  "registered": {
+    "claude": [
+      "{\"display_name\":\"claude-up\",\"id\":\"claude-mine\",\"object\":\"model\",\"owned_by\":\"anthropic\",\"type\":\"claude\"}",
+      "{\"display_name\":\"held-claude\",\"id\":\"held-claude\",\"object\":\"model\",\"owned_by\":\"anthropic\",\"type\":\"claude\"}"
+    ],
+    "openai-compatible-standin/standin": [
+      "{\"display_name\":\"held-compat\",\"id\":\"held-compat\",\"object\":\"model\",\"owned_by\":\"standin\",\"thinking\":{\"levels\":[\"low\",\"medium\",\"high\"]},\"type\":\"openai-compatibility\"}",
+      "{\"display_name\":\"mine\",\"id\":\"mine\",\"object\":\"model\",\"owned_by\":\"standin\",\"thinking\":{\"levels\":[\"low\",\"medium\",\"high\"]},\"type\":\"openai-compatibility\"}"
+    ],
+    "openai-compatible-teamed/teamed": [
+      "{\"display_name\":\"mine-t\",\"id\":\"mine-t\",\"object\":\"model\",\"owned_by\":\"teamed\",\"thinking\":{\"levels\":[\"low\",\"medium\",\"high\"]},\"type\":\"openai-compatibility\"}",
+      "{\"display_name\":\"mine-t\",\"id\":\"team-a/mine-t\",\"object\":\"model\",\"owned_by\":\"teamed\",\"thinking\":{\"levels\":[\"low\",\"medium\",\"high\"]},\"type\":\"openai-compatibility\"}"
+    ]
+  }
+}

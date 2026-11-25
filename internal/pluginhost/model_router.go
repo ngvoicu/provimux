@@ -65,9 +65,6 @@ func (h *Host) RouteModelExcept(ctx context.Context, req pluginapi.ModelRouteReq
 				log.WithFields(log.Fields{"plugin_id": record.id, "target_plugin_id": resp.Target}).Warn("pluginhost: model router returned unavailable executor plugin")
 				continue
 			}
-			if provimuxRouteHeld(nextReq) { // Provimux: only-my-names
-				continue
-			}
 			return resp, true
 		default:
 			log.WithFields(log.Fields{"plugin_id": record.id, "target_kind": resp.TargetKind}).Warn("pluginhost: model router returned unsupported target kind")

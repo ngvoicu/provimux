@@ -18,7 +18,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 )
 
-// D1-D4 (only-my-names.md section 9): a full server (the real Service, watcher, API server and
+// D1-D4, K1 and K2 (only-my-names.md sections 9 and 16.7): a full server (the real Service, watcher, API server and
 // handlers) over one stand-in vendor that counts every request it receives. Every key family points
 // at it. The server listens on a local test port only for the websocket route.
 
@@ -132,7 +132,7 @@ models:
 
 var namesHeld = []string{"held-compat", "held-claude", "held-gemini", "held-interactions", "held-codex", "grok-imagine-image", "grok-imagine-video", "grok-tts"}
 
-var namesServed = []string{"mine", "mine-t", "pool", "team-a/mine-t"}
+var namesServedIDs = []string{"mine", "mine-t", "pool", "team-a/mine-t"}
 
 type namesDoor struct {
 	*namesHarness
@@ -147,55 +147,40 @@ func newNamesDoor(t *testing.T, on bool) *namesDoor {
 	server := httptest.NewServer(h.handler)
 	t.Cleanup(server.Close)
 	door := &namesDoor{namesHarness: h, vendor: vendor, server: server}
-	if !on {
-		deadline := time.Now().Add(10 * time.Second)
-		for _, name := range namesHeld {
-			for registry.GetGlobalRegistry().GetModelCount(name) == 0 {
-				if time.Now().After(deadline) {
-					t.Fatalf("off: %s is not registered", name)
-				}
-				time.Sleep(20 * time.Millisecond)
+	// Every name is registered whatever the switch says (K5); with it on, the names that are not his are in
+	// others and not listed.
+	deadline := time.Now().Add(10 * time.Second)
+	for _, name := range append(append([]string(nil), namesHeld...), namesServedIDs...) {
+		for registry.GetGlobalRegistry().GetModelCount(name) == 0 {
+			if time.Now().After(deadline) {
+				t.Fatalf("%s is not registered", name)
 			}
+			time.Sleep(20 * time.Millisecond)
 		}
+	}
+	if !on {
 		return door
 	}
-	// Every held-back name is offered by an account (served with the switch off), and none is registered.
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		ids := map[string]bool{}
-		for _, other := range namesOthersOfAll(h) {
-			ids[other] = true
-		}
-		missing := []string{}
-		for _, name := range namesHeld {
-			if !ids[name] {
-				missing = append(missing, name)
-			}
-		}
-		if len(missing) == 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("names not offered by any account: %v (others %v)", missing, ids)
-		}
-		time.Sleep(20 * time.Millisecond)
+	others := map[string]bool{}
+	for _, other := range namesOthersOfAll() {
+		others[other] = true
 	}
 	for _, name := range namesHeld {
-		if count := registry.GetGlobalRegistry().GetModelCount(name); count != 0 {
-			t.Fatalf("%s is registered on %d accounts", name, count)
+		if !others[name] || registry.ProvimuxServes(name) {
+			t.Fatalf("%s: in others %v, served %v", name, others[name], registry.ProvimuxServes(name))
 		}
 	}
 	return door
 }
 
-func namesOthersOfAll(h *namesHarness) []string {
-	var ids []string
-	for _, auth := range h.service.coreManager.List() {
-		ids = append(ids, auth.ID)
-	}
+func namesOthersOfAll() []string {
+	rule, registered := registry.ProvimuxNamesView()
+	index := registry.NewProvimuxIndex(registered)
 	var names []string
-	for _, other := range registry.ProvimuxNamesState(ids).Others {
-		names = append(names, other.Name)
+	for _, entry := range registered {
+		if !rule.His(entry.ID, index) {
+			names = append(names, entry.ID)
+		}
 	}
 	return names
 }
@@ -226,8 +211,8 @@ const namesNotServed = "is not served: this Provimux serves only the names its o
 type namesRoute struct {
 	method, path, body string
 	header             http.Header
-	// message: the answer carries the setting's message (the route reaches the unknown-model
-	// refusal); false: the account-selection gate refuses it ("no auth available", decision 6).
+	// message: the answer carries the setting's message. Every route that takes a model does (16.3: the door,
+	// and alpha search's own check); decision 6 of section 11 is gone.
 	message bool
 }
 
@@ -258,11 +243,11 @@ func namesDoorRoutes() []namesRoute {
 		{"POST", "/v1/responses", `{"model":"held-codex","input":"hi"}`, nil, true},
 		{"POST", "/v1/responses", `{"model":"held-codex","input":"hi","stream":true}`, nil, true},
 		{"POST", "/v1/responses/compact", `{"model":"held-codex","input":"hi"}`, nil, true},
-		{"POST", "/v1/alpha/search", `{"model":"held-codex","id":"s"}`, nil, false},
+		{"POST", "/v1/alpha/search", `{"model":"held-codex","id":"s"}`, nil, true},
 		{"POST", "/openai/v1/videos", `{"model":"sora-2","prompt":"x"}`, nil, true},
 		{"POST", "/backend-api/codex/responses", `{"model":"held-codex","input":"hi"}`, nil, true},
 		{"POST", "/backend-api/codex/responses/compact", `{"model":"held-codex","input":"hi"}`, nil, true},
-		{"POST", "/backend-api/codex/alpha/search", `{"model":"held-codex","id":"s"}`, nil, false},
+		{"POST", "/backend-api/codex/alpha/search", `{"model":"held-codex","id":"s"}`, nil, true},
 		{"POST", "/v1beta/interactions", `{"model":"held-interactions","input":"hi"}`, nil, true},
 		{"POST", "/v1beta/models/held-gemini:generateContent", `{"contents":[{"parts":[{"text":"hi"}]}]}`, nil, true},
 		{"POST", "/v1beta/models/held-gemini:streamGenerateContent", `{"contents":[{"parts":[{"text":"hi"}]}]}`, nil, true},
@@ -270,9 +255,10 @@ func namesDoorRoutes() []namesRoute {
 	}
 }
 
-// D2 and D3: every route of server_routes.go that takes a model, asked for a held-back name, is
-// refused, and the stand-in vendor receives nothing. The refusal is HTTP 400, model_not_found, with
-// the setting's message in each client format's wrapping; a name no account offers keeps upstream's.
+// K2, D2 and D3: every route of server_routes.go that takes a model, asked for a name that is not his,
+// is refused, the stand-in vendor receives nothing, and the answer carries the setting's message. The
+// refusal is HTTP 400, model_not_found, in each client format's wrapping; a name no account offers keeps
+// upstream's.
 func TestProvimuxOnlyMyNamesDoorRefusesEveryRoute(t *testing.T) {
 	d := newNamesDoor(t, true)
 	routes := namesDoorRoutes()
@@ -301,11 +287,11 @@ func TestProvimuxOnlyMyNamesDoorRefusesEveryRoute(t *testing.T) {
 	}
 
 	// Routes that name no model but execute with a default one (video retrieval by id uses
-	// grok-imagine-video): refused while that name is held back.
+	// grok-imagine-video): refused while that name is not his, with the message.
 	for _, path := range []string{"/v1/videos/vid_names", "/openai/v1/videos/vid_names", "/openai/v1/videos/vid_names/content"} {
 		status, body := d.do("GET", path, nil, "")
 		report = append(report, fmt.Sprintf("GET %s (no model named) -> %d %s", path, status, strings.TrimSpace(body)))
-		if status < 400 {
+		if status < 400 || !strings.Contains(body, namesNotServed) {
 			t.Errorf("GET %s: %d %s", path, status, body)
 		}
 		if seen := d.vendor.seen(); len(seen) != 0 {
@@ -313,9 +299,9 @@ func TestProvimuxOnlyMyNamesDoorRefusesEveryRoute(t *testing.T) {
 		}
 	}
 
-	// The Responses websocket executes through the same path. In this setup upstream answers a name
-	// it cannot route, held back or unknown alike, by closing the socket without an error event; the
-	// test requires that nothing reaches the vendor, and the setting's message if an event comes.
+	// The Responses websocket executes through the same path, so the door refuses there too; what the
+	// client then receives is upstream's (16.8). The test requires that nothing reaches the vendor, and
+	// the setting's message if an event comes; the report records what came.
 	for _, ws := range []struct{ path, model string }{{"/v1/responses", "held-codex"}, {"/v1/responses", "nobody-offers-this"}, {"/backend-api/codex/responses", "held-codex"}} {
 		model := ws.model
 		wsURL := "ws" + strings.TrimPrefix(d.server.URL, "http") + ws.path
@@ -362,9 +348,8 @@ func TestProvimuxOnlyMyNamesDoorRefusesEveryRoute(t *testing.T) {
 	}
 
 	// The refusals were counted per name, as the client sent it without a thinking suffix.
-	snapshot := registry.ProvimuxNamesState(nil)
 	counted := map[string]int{}
-	for _, name := range snapshot.Refused.Names {
+	for _, name := range registry.ProvimuxRefusedNow().Names {
 		counted[name.Name] = name.Requests
 	}
 	if counted["held-compat"] < 4 || counted["held-claude"] < 3 || counted["nobody-offers-this"] != 0 {
@@ -377,7 +362,7 @@ func TestProvimuxOnlyMyNamesDoorRefusesEveryRoute(t *testing.T) {
 // The control: the same routes, with the switch off, reach the stand-in vendor, or an account for
 // the name (auth_unavailable: the stand-in's one canned answer puts an account in cooldown for the
 // routes that follow), so each refusal above is the rule's. Alpha search needs a Codex login, which
-// this setup does not have: it is refused by account selection either way.
+// this setup does not have: with the switch off it is refused by account selection.
 func TestProvimuxOnlyMyNamesDoorControlSwitchOff(t *testing.T) {
 	d := newNamesDoor(t, false)
 	var report []string
@@ -391,7 +376,7 @@ func TestProvimuxOnlyMyNamesDoorControlSwitchOff(t *testing.T) {
 		}
 		routed := reached || strings.Contains(body, "auth_unavailable")
 		report[len(report)-1] += fmt.Sprintf(", an account was chosen or tried: %v", routed)
-		if !routed && r.message {
+		if !routed && !strings.Contains(r.path, "alpha/search") {
 			t.Errorf("off: %s %s did not reach the vendor: %d %s", r.method, r.path, status, body)
 		}
 	}
@@ -461,7 +446,7 @@ func TestProvimuxOnlyMyNamesDoorListsOnlyHisNames(t *testing.T) {
 		}
 	}
 	status, body := d.do("GET", "/v1/models", nil, "")
-	if got := ids(body, "id"); status != 200 || !slices.Equal(got, namesServed) {
+	if got := ids(body, "id"); status != 200 || !slices.Equal(got, namesServedIDs) {
 		t.Fatalf("/v1/models: %d %v", status, got)
 	}
 	// The Claude shape lists upstream's generated Claude-like id for each served name (decision I of
@@ -469,7 +454,7 @@ func TestProvimuxOnlyMyNamesDoorListsOnlyHisNames(t *testing.T) {
 	status, body = d.do("GET", "/v1/models", http.Header{"Anthropic-Version": {"2023-06-01"}}, "")
 	noHeld("/v1/models (Claude)", body)
 	claudeIDs := ids(body, "id")
-	if status != 200 || len(claudeIDs) != len(namesServed) {
+	if status != 200 || len(claudeIDs) != len(namesServedIDs) {
 		t.Fatalf("/v1/models (Claude): %d %v", status, claudeIDs)
 	}
 	behind := map[string]bool{"up-mine": true, "up-pool-a": true, "up-pool-b": true, "up-t": true}
@@ -490,7 +475,7 @@ func TestProvimuxOnlyMyNamesDoorListsOnlyHisNames(t *testing.T) {
 	d.vendor.requests = nil
 	d.vendor.mu.Unlock()
 	status, body = d.do("GET", "/v1/models?include=accounts", nil, "")
-	if got := ids(body, "id"); status != 200 || !slices.Equal(got, namesServed) {
+	if got := ids(body, "id"); status != 200 || !slices.Equal(got, namesServedIDs) {
 		t.Fatalf("/v1/models?include=accounts: %d %v", status, got)
 	}
 	if status, _ := d.do("GET", "/v1/models/held-compat", nil, ""); status != http.StatusNotFound {
@@ -559,7 +544,7 @@ var namesRouteInventory = map[string]string{
 	"GET /muse-code/config": "no-model", "POST /muse-code/search": "no-model", "POST /muse-code/browser_open": "no-model",
 	"GET /v1/tunnel": "no-model", "POST /v1/tunnel": "no-model", "PUT /v1/tunnel": "no-model", "PATCH /v1/tunnel": "no-model",
 	"DELETE /v1/tunnel": "no-model", "HEAD /v1/tunnel": "no-model", "TRACE /v1/tunnel": "no-model", "CONNECT /v1/tunnel": "no-model",
-	"GET /": "no-model", "GET /healthz": "no-model", "HEAD /healthz": "no-model", "GET /callback": "no-model",
+	"GET /management.html": "no-model", "GET /": "no-model", "GET /healthz": "no-model", "HEAD /healthz": "no-model", "GET /callback": "no-model",
 	"GET /anthropic/callback": "no-model", "GET /codex/callback": "no-model", "GET /antigravity/callback": "no-model",
 	"GET /devin/callback": "no-model",
 }
@@ -578,17 +563,30 @@ func namesRouteMatches(pattern, path string) bool {
 	return len(patternParts) == len(pathParts)
 }
 
-// G: D2's route table against the routes the server really registers.
+// namesManagementPath reports whether path is under the management API: its base paths, not any path that
+// contains the word (K1; the second review's finding 10).
+func namesManagementPath(path string) bool {
+	for _, base := range []string{"/v0/management", "/v8/management"} {
+		if path == base || strings.HasPrefix(path, base+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// K1: D2's route table against the routes the server really registers. Every route is in D1's table (lists
+// models), D2's (takes a model), the table of routes that name none, or under the management API.
 func TestProvimuxOnlyMyNamesDoorRouteInventory(t *testing.T) {
 	d := newNamesDoor(t, true)
 	live := map[string]bool{}
 	for _, route := range d.service.server.ProvimuxRoutes() {
-		if strings.Contains(route, "/management") {
+		_, path, _ := strings.Cut(route, " ")
+		if namesManagementPath(path) {
 			continue
 		}
 		live[route] = true
 		if _, ok := namesRouteInventory[route]; !ok {
-			t.Errorf("route %s is not classified (only-my-names test D2): walk it if it takes a model", route)
+			t.Errorf("route %s is not classified (only-my-names.md 16.7, K1): walk it in D2 if it takes a model", route)
 		}
 	}
 	for route, class := range namesRouteInventory {
@@ -608,6 +606,12 @@ func TestProvimuxOnlyMyNamesDoorRouteInventory(t *testing.T) {
 		}
 		if !walked {
 			t.Errorf("route %s takes a model and D2 does not walk it", route)
+		}
+	}
+	// The management test itself: a client path that merely contains the word is not management.
+	for path, want := range map[string]bool{"/v8/management/config": true, "/v0/management": true, "/v1/management-preview": false, "/management.html": false, "/v1/x/management": false} {
+		if namesManagementPath(path) != want {
+			t.Errorf("namesManagementPath(%q) = %v", path, !want)
 		}
 	}
 }
