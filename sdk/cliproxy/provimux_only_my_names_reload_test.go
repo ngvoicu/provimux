@@ -2,6 +2,7 @@ package cliproxy
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -262,4 +264,112 @@ func TestProvimuxOnlyMyNamesAliasOnAKeyOpensALoginsName(t *testing.T) {
 	awaitLogin("alias added on the key", []string{c1})
 	h.put("api-keys/claude", claude(`[{"name":"up-a","alias":"mine"},{"name":"plain-a"},{"name":"x","alias":"y"}]`))
 	awaitLogin("alias removed", nil)
+}
+
+// A (the reviewer's paused reload): between the write's 200 and the accounts' new registration, the
+// status still describes what is served, says applying, and carries the previous config's ETag; once
+// the registry follows, it carries the ETag the write returned. /provimux/model-routes carries the
+// same marker.
+func TestProvimuxOnlyMyNamesStatusNeverAheadOfTheRegistry(t *testing.T) {
+	vendor := newNamesVendor(t)
+	h := newNamesHarness(t, strings.Replace(namesDoorConfig(vendor.URL, false), "enabled: false", "enabled: false\n    keep: []", 1))
+	server := httptest.NewServer(h.handler)
+	defer server.Close()
+	d := &namesDoor{namesHarness: h, server: server, vendor: vendor}
+	type marker struct {
+		Generation uint64  `json:"generation"`
+		ConfigETag *string `json:"config_etag"`
+		Applying   bool    `json:"applying"`
+	}
+	type status struct {
+		OnlyMyNames struct {
+			Enabled bool `json:"enabled"`
+		} `json:"only_my_names"`
+		Applied marker `json:"applied"`
+		Others  []struct {
+			Name string `json:"name"`
+		} `json:"others"`
+	}
+	get := func(path string, into any) {
+		t.Helper()
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		request.Header.Set("Authorization", "Bearer "+namesManagementKey)
+		h.handler.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("GET %s: %d", path, recorder.Code)
+		}
+		if err := json.Unmarshal(recorder.Body.Bytes(), into); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var before status
+	get("/v8/management/provimux/names", &before)
+	if before.OnlyMyNames.Enabled || before.Applied.Applying || before.Applied.ConfigETag == nil {
+		t.Fatalf("before: %+v", before)
+	}
+
+	svc := h.service
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	defer unblock()
+	svc.updateServerClientsContextFn = func(ctx context.Context, cfg *config.Config) bool {
+		ok := svc.server.UpdateClientsContext(ctx, cfg)
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		<-release // the new rule is committed; the accounts have not registered again yet
+		return ok
+	}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPut, "/v8/management/config/models/only-my-names", strings.NewReader(`{"enabled":true,"keep":[]}`))
+	request.Header.Set("Authorization", "Bearer "+namesManagementKey)
+	h.handler.ServeHTTP(recorder, request)
+	written := recorder.Header().Get("ETag")
+	if recorder.Code != http.StatusOK || written == "" {
+		t.Fatalf("PUT: %d %q", recorder.Code, written)
+	}
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the reload did not start")
+	}
+	var during status
+	get("/v8/management/provimux/names", &during)
+	var routes struct {
+		Applied marker `json:"applied"`
+	}
+	get("/v8/management/provimux/model-routes", &routes)
+	_, list := d.do("GET", "/v1/models", nil, "")
+	if !strings.Contains(list, `"held-compat"`) {
+		t.Fatal("premise: the old rule still serves held-compat")
+	}
+	if during.OnlyMyNames.Enabled || !during.Applied.Applying || *during.Applied.ConfigETag == written || *during.Applied.ConfigETag != *before.Applied.ConfigETag {
+		t.Fatalf("during: the status is ahead of the registry: %+v (written %s)", during, written)
+	}
+	if routes.Applied.Applying != during.Applied.Applying || routes.Applied.Generation != during.Applied.Generation || *routes.Applied.ConfigETag != *during.Applied.ConfigETag {
+		t.Fatalf("model-routes marker %+v, names %+v", routes.Applied, during.Applied)
+	}
+	unblock()
+	deadline := time.Now().Add(10 * time.Second)
+	var after status
+	for {
+		get("/v8/management/provimux/names", &after)
+		if !after.Applied.Applying && after.Applied.ConfigETag != nil && *after.Applied.ConfigETag == written {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("never applied: %+v (written %s)", after, written)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !after.OnlyMyNames.Enabled || registry.GetGlobalRegistry().GetModelCount("held-compat") != 0 || after.Applied.Generation <= before.Applied.Generation {
+		t.Fatalf("after: %+v, held-compat accounts %d", after, registry.GetGlobalRegistry().GetModelCount("held-compat"))
+	}
+	if status, _ := d.do("POST", "/v1/chat/completions", nil, namesChat("held-compat", false)); status != http.StatusBadRequest {
+		t.Fatalf("after: held-compat answered %d", status)
+	}
 }
