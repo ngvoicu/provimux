@@ -576,9 +576,10 @@ management key later hides the endpoint (404) but recording continues: the total
   ID, an account email or a base URL beyond its host. Stock CLIProxyAPI answers 404 on the path.
 - Rows count a request under the model the account ran: an alias's traffic under the vendor's model, without an
   account's prefix. `include=requested_models` adds `requested_models`: requests and tokens by the name the client
-  sent (an alias, a prefixed name, without a thinking suffix), over the whole range, filters aside. It is recorded since
-  the version that added it; `requested_models.from` is the first day that has it, and earlier days count only in the
-  rows. Nothing else in the answer changes.
+  sent (an alias, a prefixed name, without a thinking suffix, in the case it was sent), over the whole range, filters
+  aside. It is recorded since the version that added it; `requested_models.from` is the first day that has it, and
+  earlier days count only in the rows. Names recorded before the version that kept their case are lower case: a
+  tool that sent `B-Coder` then shows as `b-coder`, which only-my-names (exact names) does not take for `B-Coder`. Nothing else in the answer changes.
 
 The contract is [`openapi.yaml`](provimux/design/savings/openapi.yaml), with example answers next to it.
 
