@@ -16,7 +16,9 @@ import (
 // limit and every number the Savings page shows are unchanged.
 
 // requestedName is the name the client sent (Record.Alias: the executor's requested-model alias, the
-// model itself when there is none), without a thinking suffix, lower case, cut like a row's model.
+// model itself when there is none), without a thinking suffix, trimmed and cut to a row's length, in
+// its own case: only-my-names compares names exactly, so "keep all used" must keep what was sent
+// (B-Coder, not b-coder). Days recorded before this change hold the names in lower case.
 func requestedName(record coreusage.Record) string {
 	name := strings.TrimSpace(record.Alias)
 	if name == "" {
@@ -25,7 +27,7 @@ func requestedName(record coreusage.Record) string {
 	if base := strings.TrimSpace(thinking.ParseSuffix(name).ModelName); base != "" {
 		name = base
 	}
-	return cut(name, 128)
+	return cutKeepingCase(name, 128)
 }
 
 // askedCounters keeps of a request's counters what the requested-name tally needs.
