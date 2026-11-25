@@ -95,6 +95,27 @@ func TestRulePrefixesFromTheConfig(t *testing.T) {
 	}
 }
 
+// 1 (section 18): upstream's copy is the exact concatenation prefix + "/" + name. Only the whole name is
+// trimmed, once, as a request is; a space after the slash (or before it) makes another name, not a copy.
+func TestRuleCopyIsTheExactConcatenation(t *testing.T) {
+	r := rule(true, []string{"mine-t"}, []string{"opus"}, "team-a", "data team")
+	for name, want := range map[string]bool{"team-a/mine-t": true, " team-a/mine-t ": true, "team-a/mine-t(high)": true,
+		"data team/opus": true, "team-a/ mine-t": false, "team-a/mine-t x": false, "team-a /mine-t": false,
+		"team-a/ mine-t(high)": false, "team-a/\tmine-t": false, "data team/ opus": false, "data team /opus": false} {
+		if got := r.Serves(name); got != want {
+			t.Errorf("Serves(%q) = %v", name, got)
+		}
+	}
+	for _, id := range []string{"team-a/ mine-t", "team-a/\u00a0mine-t", "team-a/\nmine-t"} {
+		if name, ok := r.CopyOf(id); ok {
+			t.Errorf("CopyOf(%q) = %q", id, name)
+		}
+	}
+	if name, ok := r.CopyOf(" team-a/mine-t "); !ok || name != "mine-t" {
+		t.Fatalf("CopyOf of the trimmed whole: %q %v", name, ok)
+	}
+}
+
 // F: keep takes exact names; *, empty and auto are ignored and reported; auto is never served.
 func TestRuleKeepIgnoredAndAuto(t *testing.T) {
 	r := rule(true, []string{"auto"}, []string{"claude-*", "  ", "auto", "gpt"})

@@ -277,3 +277,39 @@ func TestProvimuxOnlyMyNamesGeminiResourceAlias(t *testing.T) {
 		t.Fatal("the OpenAI list does not show the alias")
 	}
 }
+
+// Section 18, 1: upstream's copy is the exact concatenation prefix + "/" + name. The owner's alias mine-t sits on
+// the team-a key; another key offers the raw model "team-a/ mine-t" (a space after the slash), no alias. That id
+// is no copy of mine-t: it is refused with the setting's message, not listed, and the stand-in receives nothing
+// for it, while the real copy team-a/mine-t reaches its key's upstream.
+func TestProvimuxOnlyMyNamesSpaceAfterThePrefixIsNoCopy(t *testing.T) {
+	const spaced, copied = "team-a/ mine-t", "team-a/mine-t"
+	vendor := newNamesVendor(t)
+	d := reviewDoor(t, strings.Replace(namesDoorConfig(vendor.URL, true), "name: held-compat", "name: '"+spaced+"'", 1), vendor)
+	deadline := time.Now().Add(10 * time.Second)
+	for registry.GetGlobalRegistry().GetModelCount(spaced) == 0 || registry.GetGlobalRegistry().GetModelCount(copied) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("premise: both ids are registered")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	_, list := d.do("GET", "/v1/models", nil, "")
+	if strings.Contains(list, fmt.Sprintf("%q", spaced)) || !strings.Contains(list, fmt.Sprintf("%q", copied)) {
+		t.Fatalf("list: spaced %v, copy %v", strings.Contains(list, fmt.Sprintf("%q", spaced)), strings.Contains(list, fmt.Sprintf("%q", copied)))
+	}
+	for _, stream := range []bool{false, true} {
+		status, body := d.do("POST", "/v1/chat/completions", nil, namesChat(spaced, stream))
+		if status != http.StatusBadRequest || !strings.Contains(body, namesNotServed) || ojson.Get(body, "error.code").String() != "model_not_found" {
+			t.Fatalf("stream=%v: %d %s", stream, status, body)
+		}
+	}
+	if seen := vendor.seen(); len(seen) != 0 {
+		t.Fatalf("the stand-in received %v", seen)
+	}
+	if status, body := d.do("POST", "/v1/chat/completions", nil, namesChat(copied, false)); status != http.StatusOK {
+		t.Fatalf("the copy: %d %s", status, body)
+	}
+	if seen := vendor.seen(); len(seen) != 1 || seen[0] != "/t/v1/chat/completions up-t" {
+		t.Fatalf("the copy reached %v", seen)
+	}
+}
