@@ -40,10 +40,11 @@ models:
   # offers. providers.dev unreachable never blocks a start or
   # empties a list; the last accepted document is kept on disk (model-lists/published.json).
   # published-lists: false
-  # Serve only my names (Provimux): the aliases on my keys and logins, plus the names under keep (models kept
-  # under their vendor's name; exact names, an entry with * is ignored). Every other name is treated as
-  # excluded: not listed, and refused with a message that names this setting. By name: every account that
-  # answers one of my names serves it. Off unless enabled is true. In force from the reload that loads it; the
+  # Serve only my names (Provimux): the aliases of this file (key models rows, oauth-model-alias), plus the
+  # names under keep (models kept under their vendor's name, or a login file's alias; exact names, compared
+  # exactly; an entry with * or auto is ignored). Every other name is treated as excluded: not listed, and
+  # refused with a message that names this setting. By name: every account that answers one of my names
+  # serves it. Off unless enabled is true. In force from the reload that loads it; the
   # accounts keep registering what they offer. Nothing else in this file changes.
   # GET /v8/management/provimux/names shows what would stop being served before it goes on.
   # only-my-names:
