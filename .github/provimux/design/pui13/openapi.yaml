@@ -127,6 +127,27 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /provimux/names:
+    get:
+      operationId: provimuxNames
+      summary: The names the owner set, every other name his accounts offer, and what was asked for and refused
+      description: |
+        The state of models.only-my-names (design: only-my-names.md). The answer has the same shape whether the
+        switch is on or off: with it off, `others` is what would stop being served. Usage is not here: join
+        `others` with GET /provimux/savings?group=model.
+      responses:
+        "200":
+          description: The names and the state of the switch.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NamesResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/Absent"
 components:
   securitySchemes:
     managementKey:
@@ -789,3 +810,135 @@ components:
             Whether the service's held list names the model: true for a learned model; for a row, whether the
             list names the model the row names (false marks a row the service no longer lists; rows are never
             dropped). Null without a list in use, and for a plugin's model.
+    NamesResponse:
+      type: object
+      required: [observed_at, only_my_names, names, keep_ignored, others, refused]
+      properties:
+        observed_at:
+          $ref: "#/components/schemas/Timestamp"
+        only_my_names:
+          $ref: "#/components/schemas/OnlyMyNamesState"
+        names:
+          type: array
+          description: Every name the owner set, as the gateway reads the config and the logins. Sorted by name.
+          items:
+            $ref: "#/components/schemas/OwnName"
+        keep_ignored:
+          type: array
+          description: Entries of models.only-my-names.keep the gateway ignores.
+          items:
+            $ref: "#/components/schemas/KeepIgnored"
+        others:
+          type: array
+          description: |
+            Every other name an enabled account offers, with those accounts. Held back (not listed, refused)
+            when only_my_names.enabled and applies; served otherwise. Sorted by name.
+          items:
+            $ref: "#/components/schemas/OtherName"
+        refused:
+          oneOf:
+            - $ref: "#/components/schemas/RefusedNames"
+            - type: "null"
+          description: Null while the switch is off or does not apply.
+    OnlyMyNamesState:
+      type: object
+      required: [enabled, applies, not_applied]
+      properties:
+        enabled:
+          type: boolean
+          description: models.only-my-names.enabled of the loaded config.
+        applies:
+          type: boolean
+          description: False when the gateway does not decide names itself; then nothing is held back.
+        not_applied:
+          type: [string, "null"]
+          description: Why it does not apply; null when it does. Clients treat a value they do not know as not applying.
+          enum: [home, null]
+    OwnName:
+      type: object
+      required: [name, set_by, accounts]
+      properties:
+        name:
+          type: string
+          description: The name as written where it was set. Names are compared trimmed and without case.
+        set_by:
+          type: array
+          minItems: 1
+          description: |
+            alias: an alias row of the config (an API key's models row whose alias differs from its name, or an
+            oauth-model-alias row). keep: models.only-my-names.keep. login-file: an alias in a login's own file,
+            served on that login only.
+          items:
+            type: string
+            enum: [alias, keep, login-file]
+        accounts:
+          type: integer
+          minimum: 0
+          description: Enabled accounts that register the name now; 0 when nothing answers it.
+    KeepIgnored:
+      type: object
+      required: [value, reason]
+      properties:
+        value:
+          type: string
+        reason:
+          type: string
+          enum: [pattern, empty]
+          description: "pattern: the entry contains *. empty: nothing but spaces."
+    OtherName:
+      type: object
+      required: [name, accounts]
+      properties:
+        name:
+          type: string
+          description: The model id as a client would send it, namespace and prefix included.
+        accounts:
+          type: array
+          minItems: 1
+          description: Highest priority first, then provider, kind, login label, auth_index.
+          items:
+            $ref: "#/components/schemas/NameAccount"
+    NameAccount:
+      type: object
+      required: [auth_index, provider, kind, priority, host, login]
+      description: An account that offers the name, identified as a route of GET /provimux/model-routes is.
+      properties:
+        auth_index:
+          type: [string, "null"]
+        provider:
+          type: string
+        kind:
+          type: [string, "null"]
+          description: oauth for a subscription login, apikey for an API key.
+        priority:
+          type: integer
+        host:
+          type: [string, "null"]
+          description: The host of an API key's base URL; null for a login.
+        login:
+          $ref: "#/components/schemas/Login"
+    RefusedNames:
+      type: object
+      required: [since, names, truncated]
+      properties:
+        since:
+          $ref: "#/components/schemas/Timestamp"
+          description: When counting began (the switch went on, or the process started with it on).
+        names:
+          type: array
+          description: Requests refused because the name is held back. Most recent first. In memory only.
+          items:
+            type: object
+            required: [name, requests, last_at]
+            properties:
+              name:
+                type: string
+                description: As the client sent it, without a thinking suffix.
+              requests:
+                type: integer
+                minimum: 1
+              last_at:
+                $ref: "#/components/schemas/Timestamp"
+        truncated:
+          type: boolean
+          description: More than 256 names were refused; the rest are not counted.
