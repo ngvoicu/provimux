@@ -130,8 +130,8 @@ notify() {
       echo "| ref | state |"
       echo "|---|---|"
       echo "| \`main\` | $(what_main) |"
-      echo "| \`$tag\` | ${base_now:+\`$base_now\`}${base_now:-absent} |"
-      jq -r '.[] | "| `\(.tag)` | `\(.sha[0:12])`; release: \(.release); release run for that commit: \(.run) |"' "$tmp/rel.json"
+      if [[ -n "$base_now" ]]; then echo "| \`$tag\` | \`$base_now\` |"; else echo "| \`$tag\` | absent |"; fi
+      jq -r "$PMX_RUN_TEXT"' .[] | "| `\(.tag)` | `\(.sha[0:12])`; release: \(.release); release run for that commit: \(.run | run_text) |"' "$tmp/rel.json"
       [[ "$rs" != none ]] || echo "| \`$tag-pmx.*\` | absent |"
     } >"$tmp/facts.md"
   fi
