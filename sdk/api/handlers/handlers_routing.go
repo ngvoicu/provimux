@@ -214,6 +214,7 @@ func (h *BaseAPIHandler) getRequestDetailsWithOptions(modelName string, allowIma
 		if errSet != nil {
 			body = `{"error":{"message":"unknown provider for model","type":"invalid_request_error","code":"model_not_found","param":"model"}}`
 		}
+		body = provimuxNotServedBody(body, baseModel) // Provimux: only-my-names
 		return nil, "", &interfaces.ErrorMessage{
 			StatusCode: http.StatusBadRequest,
 			Error:      errors.New(body),

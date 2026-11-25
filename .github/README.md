@@ -61,6 +61,9 @@ server's address, see [For a team](#for-a-team)). Docker, release archives and b
 - **[Model lists for API keys that keep themselves up to date](#model-lists-for-api-keys).** A key with its own
   models (every OpenAI-compatible entry, such as OpenRouter) also offers the models its service lists, without a
   save in the console; `excluded-models` and `fixed-models` keep it to what you want.
+- **[Serve only my names](#serve-only-my-names).** One switch, off by default: only the names you set (your aliases,
+  and the names you keep) are listed and served; every other name is treated as excluded, and a tool that asks for one
+  is told why.
 - **[The right context and output limits](#the-right-context-and-output-limits-for-configured-models)** for the
   models you declare under an API key, and **[Devin's real output limits](#devin-real-output-limits-and-a-quota-pause-per-model)**
   with a quota pause per model.
@@ -391,6 +394,47 @@ account serving a model.
 - `models.live-lists: false` turns this off for every key and login. A service that lists non-chat models
   (embeddings, speech) offers them too; hide them with `excluded-models`.
 
+### Serve only my names
+
+**What you get.** With `models.only-my-names.enabled: true`, an account's model is served only under a name you set;
+every other name is treated on that account as an excluded model is: it is not listed to clients, and a request for it
+is refused. A name you set is:
+
+1. the `alias` of a `models` row of an API key or an `openai-compatibility` entry, when it differs from the row's `name`;
+2. the `alias` of an `oauth-model-alias` row;
+3. an alias written in a login's own file, on that login only;
+4. a name under `models.only-my-names.keep`: a model kept under its vendor's name (`claude-opus-5-5`,
+   `devin/claude-opus-4.6`, `team-a/gpt-5.5`). Exact names only, compared without case; an entry with `*` is ignored
+   (a pattern would let tomorrow's models in without your word).
+
+**Why it matters.** Logins, live lists and keys that learn their service's list offer hundreds of names. With the
+switch on, your tools see the names you chose and nothing else, and a model a provider adds tomorrow stays out until
+you name it.
+
+**How to use it.**
+
+```yaml
+models:
+  only-my-names:
+    enabled: true
+    keep:
+      - claude-opus-5-5
+```
+
+- It is by name, not by route: when a name is yours, every account that answers it serves it, in the same order and
+  pool as before. An account's `prefix` belongs to the account: `team-a/opus` is served when `opus` is yours.
+- Applied on reload, without a restart; `enabled: false` (or removing the key) brings every name back, and `keep` stays
+  for the next time. With the switch on and no name set, nothing is served, and the log says so at every reload.
+- A refused name gets the same HTTP 400 and `model_not_found` as an unknown model, with a message that says why:
+  `model gpt-5.5 is not served: this Provimux serves only the names its owner set (models.only-my-names). Keep it on
+  the console's Models page, or ask for a served name (GET /v1/models).` A name no account offers keeps the usual
+  message.
+- Before turning it on, `GET /v8/management/provimux/names` shows your names and every other name your accounts offer
+  (what would stop being served), with the accounts behind each; once it is on, also which names tools asked for and
+  were refused (in memory, up to 256 names). The console's Models page uses it.
+- The management API and the console never depend on the switch: they are the way back. In Home mode the switch does
+  not apply.
+
 ### Model routes and live-list status for the console
 
 **What you get.** Read-only management endpoints that the Provimux console,
@@ -422,6 +466,9 @@ current or failing, without reading the log.
   `model-lists`: per login, `source` (`live` or `catalog`), when the list was fetched, how many models it listed and
   how many the login serves, and the last failed fetch as a category (`http_status`, `credentials`,
   `invalid_response`, `network`, `other`) with the provider's HTTP status. The reason in words stays in the log.
+- `GET /v8/management/provimux/names`: the state of [`models.only-my-names`](#serve-only-my-names): the switch, your
+  names with who set each (`alias`, `keep`, `login-file`) and how many accounts serve it, the `keep` entries it
+  ignores, every other name an account offers with those accounts, and the names refused since the switch went on.
 - They report what Provimux has recorded. They do not predict the router: they don't say which route a request
   would get, whether a route is selectable right now, which route answered last, or when a list is fetched next.
 - No response carries an API key, a token, an auth ID, a base URL beyond its host, or any provider error text. Stock
