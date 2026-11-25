@@ -1,8 +1,8 @@
 # Only my names: the gateway serves the names the owner set, and nothing else
 
-Design, 2026-11-25. This is the design only: no code exists yet. The status endpoint's contract is added to `pui13/openapi.yaml` with it (path `/provimux/names`).
+Design, 2026-11-25. Written before the code (built since: sections 14, 15, 16.11 and 17). The status endpoint's contract is added to `pui13/openapi.yaml` with it (path `/provimux/names`).
 
-**Amended the same day by section 16**, which moves the rule from where accounts register to where names are read. Where sections 1 to 15 and section 16 differ, section 16 holds; 16.9 lists the places.
+**Amended the same day by section 16**, which moves the rule from where accounts register to where names are read. Where sections 1 to 15 and section 16 differ, section 16 holds; 16.9 lists the places. **Section 17** (after the third review) narrows a name the owner set to what the config says, compared exactly; where it differs from the sections before it, section 17 holds.
 
 **The owner's words (2026-11-25).** "In the Models page can we have a setting where only 'names' I set are available through Provimux? The rest are like excluded?"
 
@@ -19,7 +19,7 @@ Every `file:line` of Provimux below is in that commit; console lines are in `b26
 
 ## 1. The design in one page
 
-**The rule.** With `models.only-my-names.enabled: true`, an account's model is registered only under a name the owner set; every other name is treated on that account exactly as an excluded model is today: it is not listed to clients and a request for it is refused as an unknown model, with a message that names the setting.
+**The rule.** (As first designed; sections 16 and 17 replace the mechanism: nothing registered changes, names are read through a gate.) With `models.only-my-names.enabled: true`, an account's model is registered only under a name the owner set; every other name is treated on that account exactly as an excluded model is today: it is not listed to clients and a request for it is refused as an unknown model, with a message that names the setting.
 
 **A name the owner set** is one of four things, compared trimmed and without case (section 2):
 
@@ -322,8 +322,8 @@ All against stand-ins: `httptest` servers for vendors, temporary config files an
 | R1 | switch off: every model registered; the record says what would be held back |
 | R2 | a key row with an alias: the alias is served, the model's own name is not; a row whose alias equals its name, or without one, gives no name |
 | R3 | an `oauth-model-alias` row without `fork`: alias served. With `fork`: alias served, the model's name held back; then `keep` the name: both served |
-| R4 | case and spaces decide whether a name is his: `Opus` in the config makes a model registered as `opus` his; ` gpt-5.5 ` on `keep` keeps `GPT-5.5`. Matching a request's name to a registered model stays upstream's and exact (round 2, decision K) |
-| R5 | an alias in a login's own file is served on that login and makes no other account's model served |
+| R4 | (corrected by section 17) names are compared trimmed and exactly: ` gpt-5.5 ` on `keep` keeps `gpt-5.5`, not `GPT-5.5`; `Opus` in the config does not make `opus` his. The status never shows an account for a spelling the door refuses |
+| R5 | (corrected by section 17) an alias in a login's own file is not his unless `keep` lists it; it is under `others` |
 | R6 | by name: an alias `gpt-5.5` on a Codex login also leaves a key's own `gpt-5.5` served; a pool keeps every member and its order |
 | R7 | prefixes: `prefix: team-a` serves `team-a/opus` (and `opus` unless `force-model-prefix`); `devin/x` is held back, served when `keep` has `devin/x`, not when it has `x` |
 | R8 | `keep` with `claude-*` and with an empty entry: ignored, reported, nothing served by it |
@@ -810,3 +810,73 @@ byte-identical to `9ffc2a244`. Where the build differs from 16.1 to 16.7, and wh
   benchmarks are in files that use upstream's API only. O3 holds the registry's lock in the registry's tests (the
   door, off, calls only the atomic load they test). O5 is checked with `git diff 9ffc2a244 -- <file>`, not by a test.
 - **The Responses WebSocket**, asked for a name that is not his, still closes with 1006 and no event (D2 records it).
+
+## 17. Amendment after the third review: a name is his only if the config says so, compared exactly
+
+2026-11-25, after the review of the gate (`640d87e08`) ended "not ready". Decided by the chief; where this section
+differs from the sections before it, it holds.
+
+### 17.1 The two conveniences dropped
+
+**A. The registry's alias flag no longer makes a name his.** A name is the owner's when the committed config names it:
+the alias of a key's models row (differing from its name), the alias of an `oauth-model-alias` row, or an entry of
+`keep`. `OAuthAlias` on a registered model is no longer read: it marks global aliases and login-file aliases alike,
+so a commit that deleted a global alias kept its name served until the login registered again (third review, 1), and
+an unavailable login-file alias appeared in both `names` and `others` (3, first case). An alias that exists only in a
+login's own file is now an ordinary name: under `others`, refused while the switch applies, his once `keep` lists it.
+The rule is a pure function of the committed config. `set_by: login-file` is no longer produced; the value stays in
+the contract's enum so a console written for it needs no change (the smaller change).
+
+The one fact still read from the registry is `PrefixedFrom`: `team-a/opus` is served when `opus` is his, because an
+account registers it as a copy of `opus`. That is not ownership of a spelling but the account's prefix (3.3); whether
+`opus` is his still comes from the config alone.
+
+**B. Names are compared exactly: trimmed, nothing else, as upstream matches a request.** No case folding in the
+rule, the gate or the status. `keep: [mixed-case]` does not own `Mixed-Case`; `names[].accounts` counts the accounts
+that register the name exactly; `others` keeps spellings that differ only in case apart. A request is judged as
+sent: upstream's lower-case fallback (a request `MINE` reaching a registered `mine`) is not honoured by the door,
+which refuses `MINE` unless the config names it (with upstream's unknown-model words when nothing registers `MINE`).
+R4 and R5 of section 9 are corrected accordingly.
+
+### 17.2 The fixes
+
+**C. One predicate, the door's, everywhere.** A name `n` is served when the rule does not apply, or `n` is his, or `n`
+without a thinking suffix is his (a request for `opus(high)` runs `opus`). His: the config names it exactly, or some
+account registers it as a prefixed copy of a config name. `auto` is never his. The two list loops, the door, the
+router check, alpha search, `model-routes` and the status all call this predicate (`serves`); a registered id such as
+`local-base(high)` is therefore listed, served and shown under `names` (among the base's `copies`) when `local-base`
+is kept. `copies` now holds every registered id served through a name that is not the name itself: its prefixed
+copies and its spellings with a thinking suffix.
+
+**D. One rule per answer.** `GET /provimux/names` reads the rule, its refusal counter and the registrations under one
+read lock of the registry (a rule is put in force under the write lock), and builds the whole answer from that
+reading. `GET /provimux/model-routes` loads the rule once and decides every id under it (`ProvimuxServesUnder`).
+
+**E. The Gemini format.** It names a model by `Name`. The list gate takes the handler type (the argument of the line
+already inserted in `buildAvailableModelsLocked`; `""` in `GetAvailableModelInfos`): in the Gemini list a model whose
+`Name` (without `models/`) differs from its id is listed only when that name is served too. A plugin executor's model
+kept by its public id and registered with a different provider-native name is therefore left out of the Gemini list,
+and the Gemini detail (which reads that list) answers 404 for both spellings; the other formats list the kept id.
+Documented in the README's "What the switch does not cover". No upstream line was added: the two inserted lines changed
+their argument.
+
+**F. Small.** `auto` on `keep` is ignored like `*`, with the same warning, under `keep_ignored` with the new reason
+`reserved`. The index of facts is dropped when the rule stops applying, and a commit with the rule not applying before
+or after no longer clears the list cache. K3 also catches a read method taken as a method value (two existing ones
+are classified: the Codex client catalog's providers lookup and Devin's name check, both on ids of the gated list).
+The reload tests compare registrations without `Created`.
+
+**G, H, I.** Documented: a Responses WebSocket prewarm (`generate: false`) for a name that is not his is acknowledged
+by upstream without a provider call; alpha search asks its router before the check. The cost of a commit with the
+setting absent (about 10 µs) is accepted.
+
+### 17.3 Tests
+
+The third review's reproductions are regressions in `sdk/cliproxy/provimux_only_my_names_review_test.go` (the deleted
+global alias with registration paused, refused at the first status read that shows the write's ETag; the unavailable
+login-file alias; the exact keep; the case-only save; the suffixed id) and
+`internal/pluginhost/provimux_only_my_names_test.go` (the Gemini native name). K7 now generates spellings that differ
+only in case, spellings with a thinking suffix, prefixed copies, `auto` and alias flags, and checks the account counts
+too. The registry's tests cover exact names, the alias flag, suffixed spellings, the Gemini names, `auto` and the
+index's release; the endpoint's, one rule per answer.
+
