@@ -777,3 +777,36 @@ Tests R1 to R12, C1 to C5, D1 to D5 and S1 to S6 of section 9 stay, reworded fro
 - that upstream's caches keyed on the registry's generation (the Codex spawn-agent model list) follow the cache clear at a rule change: K6;
 - that adding a field to `ModelInfo` breaks none of upstream's tests (the ones I read compare single fields, `sdk/cliproxy/service_oauth_model_alias_test.go:295-330`): O5;
 - what a Responses websocket client receives for a refused name: D2.
+
+### 16.11 As built
+
+Section 16 is built. The upstream lines are the 24 of 16.4, in its 7 files, all inserted; the five files of 16.2 are
+byte-identical to `9ffc2a244`. Where the build differs from 16.1 to 16.7, and why:
+
+- **The facts are read from an index, not one lookup per account.** Cost 4 of 16.1 counted 10,000 lookups; a name is
+  looked up once per account, so 20 accounts of 500 names is 200,000, and the uncached list took 3.4 ms against the
+  bound of 1 ms. The registry's side of the predicate now reads an index of the ids some live client registers as an
+  alias or as a prefixed copy of a name of the rule, built in one pass and kept for one registry generation and one
+  rule (every change of what a client registers moves the generation, and so does putting a rule in force). The
+  uncached list with the switch on is 0.57 ms; the predicate is the same function for the gate and the status.
+- **`ProvimuxRefuseSent(base, sent)`** sits beside `ProvimuxRefuse`: a request is refused when neither the name
+  without its suffix nor the name as sent is his, and counted under the name without the suffix.
+- **`ProvimuxNamesView()` takes no client list**: it returns every registration, so the status decides what is his
+  over the same registrations the gate reads; the endpoint shows the enabled accounts and the plugin executors among
+  them. `ProvimuxIndex` and `(*ProvimuxNamesRule).His` give the endpoint the gate's predicate.
+- **Names the door lets pass**: an empty name (it names no model). A refused name no account registers gets upstream's
+  unknown-model words and is not counted. `auto` with none of his names available stays `auto` and is refused as
+  upstream refuses it.
+- **Alpha search**: the router is asked before the check (G4 sits after its answer, as 16.4 places it), and an empty
+  model passes.
+- **The status's names**: a login-file name comes from the enabled logins' files, and from a registered alias the
+  config does not name; an id that is his but neither a name nor a copy of one (registered by a client the status does
+  not show) gets its own row, so every registered id is in exactly one of names and others. Counts and `others` group
+  spellings that differ only in case, as before; K7 generates lower-case ids.
+- **A refusal racing a rule change** is counted only when the rule that refused it is still in force.
+- **Tests**: K1, K2 (D2 and the handler paths), K6 and K8 at the service and the handlers; K3, K4 and the source half
+  of K5 in `sdk/cliproxy/provimux_only_my_names_source_test.go`; K7 at the endpoint; O1's golden file is
+  `sdk/cliproxy/testdata/provimux_only_my_names_off.golden.json`, written by the same test file at `9ffc2a244`; the O2
+  benchmarks are in files that use upstream's API only. O3 holds the registry's lock in the registry's tests (the
+  door, off, calls only the atomic load they test). O5 is checked with `git diff 9ffc2a244 -- <file>`, not by a test.
+- **The Responses WebSocket**, asked for a name that is not his, still closes with 1006 and no event (D2 records it).
