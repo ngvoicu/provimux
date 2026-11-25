@@ -55,8 +55,8 @@ func namesGoFiles(t *testing.T, root string, visit func(rel string, file *ast.Fi
 	}
 }
 
-// namesRegistryReaders classifies every call of the registry's eleven read methods outside tests and the
-// registry's own file (file, function, method -> class). list: it reads a gated loop (G1). after the door: it
+// namesRegistryReaders classifies every use of the registry's eleven read methods outside tests and the
+// registry's own file, called or taken as a method value (file, function, method -> class). list: it reads a gated loop (G1). after the door: it
 // runs for a request providersForExecution let through, or decides a capability and executes nothing. no
 // client name: management, state and cooldown reconciliation, the scheduler's copy, Muse Code's relay,
 // verification, the translators' metadata lookups.
@@ -73,6 +73,8 @@ var namesRegistryReaders = map[string]string{
 	"internal/client/musecode/models.go ModelInputsFromGlobalRegistry GetAvailableModelInfos":                                                                           "list",
 	"internal/client/musecode/models.go ModelInputsFromGlobalRegistry GetModelInfo":                                                                                     "list", // for the ids of the gated list
 	"internal/client/musecode/models.go ModelInputsFromGlobalRegistry GetModelProviders":                                                                                "list", // for the ids of the gated list
+	"internal/client/codex/models/provimux_devin_name.go provimuxServedBeyondDevin GetModelProviders":                                                                   "list", // a method value: providers of the ids of the gated list (Codex client catalog names)
+	"sdk/api/handlers/openai/codex_client_models.go codexClientModelsResponse GetModelProviders":                                                                        "list", // a method value: metadata of the ids of the gated list
 	"internal/client/musecode/relay.go metaCandidateModels GetModelsForClient":                                                                                          "no client name",
 	"internal/pluginhost/adapters_executors.go modelHasNativeExecutor GetModelProviders":                                                                                "after the door",
 	"internal/pluginhost/auth_callbacks.go buildHostAuthModels GetModelsForClient":                                                                                      "no client name",
@@ -154,12 +156,10 @@ func TestProvimuxOnlyMyNamesRegistryReaders(t *testing.T) {
 			if rel == "internal/registry/model_registry.go" {
 				continue
 			}
+			// Every selector of a read method, called or taken as a method value (a reader stored as a function
+			// and called later is a reader too).
 			ast.Inspect(fn.Body, func(n ast.Node) bool {
-				call, ok := n.(*ast.CallExpr)
-				if !ok {
-					return true
-				}
-				if sel, ok := call.Fun.(*ast.SelectorExpr); ok && eleven[sel.Sel.Name] {
+				if sel, ok := n.(*ast.SelectorExpr); ok && eleven[sel.Sel.Name] {
 					found[rel+" "+fn.Name.Name+" "+sel.Sel.Name] = true
 				}
 				return true

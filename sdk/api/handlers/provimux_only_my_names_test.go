@@ -248,3 +248,28 @@ func BenchmarkProvimuxOnlyMyNamesDoorOnHisName(b *testing.B) {
 		_ = h.provimuxDoor(&model, model, modelRouteDecision{})
 	}
 }
+
+// F (section 17, the third review's note 6): auto is reserved. A literal auto on keep is ignored, so with none
+// of his names available a request for auto is refused and no router is asked, keep or no keep.
+func TestProvimuxOnlyMyNamesAutoIsNeverKept(t *testing.T) {
+	registry.ResetProvimuxNames()
+	t.Cleanup(registry.ResetProvimuxNames)
+	manager := coreauth.NewManager(nil, nil, nil)
+	executorHost := &handlerDirectExecutorRouteHost{}
+	executorHost.hasRouters = true
+	executorHost.route = func(context.Context, pluginapi.ModelRouteRequest) (pluginapi.ModelRouteResponse, bool) {
+		return pluginapi.ModelRouteResponse{Handled: true, TargetKind: pluginapi.ModelRouteTargetSelf, Target: "names-plugin"}, true
+	}
+	h := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+	h.SetModelRouterHost(executorHost)
+	for _, keep := range [][]string{nil, {"auto"}} {
+		rule := registry.NewProvimuxNamesRule(true, false)
+		rule.AddKeep(keep)
+		registry.SetProvimuxNamesRule(rule)
+		executorHost.called, executorHost.lastPluginID = false, ""
+		_, _, errMsg := h.ExecuteWithAuthManager(contextWithHeaders(http.Header{}), "openai", "auto", []byte(`{"model":"auto"}`), "")
+		if errMsg == nil || errMsg.StatusCode != http.StatusBadRequest || executorHost.called || executorHost.lastPluginID != "" {
+			t.Fatalf("keep %v: auto: %v, router asked %v, plugin %q", keep, errMsg, executorHost.called, executorHost.lastPluginID)
+		}
+	}
+}

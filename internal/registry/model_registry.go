@@ -1725,7 +1725,7 @@ func (r *ModelRegistry) GetAvailableModelInfos() []*ModelInfo {
 		if !available || registration == nil || registration.Info == nil {
 			continue
 		}
-		if r.provimuxHeld(registration.Info) { // Provimux: only-my-names
+		if r.provimuxHeld(registration.Info, "") { // Provimux: only-my-names
 			continue
 		}
 		result = append(result, cloneModelInfo(registration.Info))
@@ -1748,7 +1748,7 @@ func (r *ModelRegistry) buildAvailableModelsLocked(handlerType string, now time.
 		if !available || registration == nil {
 			continue
 		}
-		if r.provimuxHeld(registration.Info) { // Provimux: only-my-names
+		if r.provimuxHeld(registration.Info, handlerType) { // Provimux: only-my-names
 			continue
 		}
 

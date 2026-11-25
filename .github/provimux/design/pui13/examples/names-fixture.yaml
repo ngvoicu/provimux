@@ -1,8 +1,9 @@
 # The shared fixture of only-my-names.md test S2: a config whose names the gateway (GET /provimux/names,
 # names with set_by alias) and the console's Models page (Your names, rows.ts) must agree on.
-# Expected, sorted: Fast, gpt-5.5 (alias and keep), my-opus, team-sonnet, vertex-flash, work-fast
-# (alias); claude-opus-5-5 and devin/claude-opus-4.6 (keep). Not names: rows without an alias, rows
-# whose alias equals their name, display-name, excluded-models; "claude-*" and "" in keep are ignored.
+# Expected, sorted without case: Fast, gpt-5.5, my-opus, team-sonnet, vertex-flash, work-fast (alias);
+# claude-opus-5-5, devin/claude-opus-4.6 and GPT-5.5 (keep). Names are compared exactly (only-my-names.md
+# section 17), so GPT-5.5 on keep and the alias gpt-5.5 are two names. Not names: rows without an alias, rows
+# whose alias equals their name, display-name, excluded-models; "claude-*", "" and "auto" in keep are ignored.
 api-keys:
   claude:
     - name: claude-team
@@ -55,4 +56,5 @@ models:
       - GPT-5.5
       - claude-*
       - ""
+      - auto
 config-version: 8

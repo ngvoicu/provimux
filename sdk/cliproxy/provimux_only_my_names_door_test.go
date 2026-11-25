@@ -174,11 +174,11 @@ func newNamesDoor(t *testing.T, on bool) *namesDoor {
 }
 
 func namesOthersOfAll() []string {
-	rule, registered := registry.ProvimuxNamesView()
+	rule, registered, _ := registry.ProvimuxNamesView()
 	index := registry.NewProvimuxIndex(registered)
 	var names []string
 	for _, entry := range registered {
-		if !rule.His(entry.ID, index) {
+		if !rule.Serves(entry.ID, index) {
 			names = append(names, entry.ID)
 		}
 	}
