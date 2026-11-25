@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/kvstore"
@@ -54,7 +56,7 @@ func TestRequestedModels(t *testing.T) {
 		with := env.query(t, "period=7d&group=model&include=requested_models")
 		got := with.RequestedModels
 		if got == nil || got.From == nil || *got.From != today || len(got.Models) != 2 ||
-			got.Models[0] != (RequestedModel{Model: "mine", Requests: 2, Tokens: 8}) ||
+			got.Models[0] != (RequestedModel{Model: "Mine", Requests: 2, Tokens: 8}) ||
 			got.Models[1] != (RequestedModel{Model: "team-a/mine", Requests: 1, Tokens: 2}) {
 			t.Fatalf("%s: requested_models %+v", when, got)
 		}
@@ -70,4 +72,36 @@ func TestRequestedModels(t *testing.T) {
 	if _, err := ParseRequest(map[string][]string{"include": {"nothing"}}); err == nil {
 		t.Fatal("an unknown include value is accepted")
 	}
+}
+
+// The requested-name tally keeps the name as sent, trimmed and cut, in its own case: a tool that sent
+// B-Coder is reported as B-Coder (only-my-names compares names exactly; "keep all used" keeps what is
+// reported). b-coder sent too is another name. Rows keep their lower-case model.
+func TestRequestedModelsKeepCase(t *testing.T) {
+	store := openTestStore(t, "")
+	env := newTestEnv(t, store)
+	upper := claudeRecord("claude-opus-5-5", "key-a", 1, 0, 0, 1)
+	upper.Alias = "  B-Coder "
+	lower := claudeRecord("claude-opus-5-5", "key-a", 1, 0, 0, 1)
+	lower.Alias = "b-coder"
+	long := claudeRecord("claude-opus-5-5", "key-a", 1, 0, 0, 1)
+	long.Alias = "Long-" + strings.Repeat("X", 200)
+	env.record(upper)
+	env.record(upper)
+	env.record(lower)
+	env.record(long)
+	check := func(when string) {
+		t.Helper()
+		got := env.query(t, "period=7d&group=model&include=requested_models").RequestedModels
+		want := []RequestedModel{{Model: "B-Coder", Requests: 2, Tokens: 4}, {Model: "Long-" + strings.Repeat("X", 123), Requests: 1, Tokens: 2}, {Model: "b-coder", Requests: 1, Tokens: 2}}
+		if got == nil || !slices.Equal(got.Models, want) {
+			t.Fatalf("%s: requested_models %+v", when, got)
+		}
+		if rows := env.query(t, "period=7d&group=model").Breakdowns[0].Rows; len(rows) != 1 || *rows[0].Model != "claude-opus-5-5" {
+			t.Fatalf("%s: rows %+v", when, rows)
+		}
+	}
+	check("in memory")
+	env.round()
+	check("from the store")
 }

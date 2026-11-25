@@ -103,7 +103,13 @@ func hostOf(baseURL string) string {
 
 // cut trims, lower-cases and cuts at limit bytes, on a character boundary. Empty is "unknown".
 func cut(value string, limit int) string {
-	value = strings.ToLower(strings.TrimSpace(value))
+	return cutKeepingCase(strings.ToLower(value), limit)
+}
+
+// cutKeepingCase is cut without lower-casing: trimmed, cut to limit bytes at a rune boundary, "unknown"
+// when empty. The requested-name tally uses it.
+func cutKeepingCase(value string, limit int) string {
+	value = strings.TrimSpace(value)
 	if len(value) > limit {
 		end := limit
 		for end > 0 && !utf8.RuneStart(value[end]) {
