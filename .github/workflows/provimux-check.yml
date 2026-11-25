@@ -257,7 +257,9 @@ jobs:
         if: ${{ always() }}
         run: |
           if [ -f "$PMX_CHECK_OUT/result.json" ]; then
-            jq -r '"### provimux-check: \(.status) \(.upstream.tag // "")", "", (.reasons[]? | "- " + .)' "$PMX_CHECK_OUT/result.json" | tr -d '`' >> "$GITHUB_STEP_SUMMARY"
+            jq -r '"### provimux-check: \(.status) \(.upstream.tag // "")", "", (.reasons[]? | "- " + .),
+              (if (.warnings // []) | length > 0 then "", "Warnings from the candidate tests (not counted):", "", (.warnings[] | "- \(.test): \(.text)") else empty end)' \
+              "$PMX_CHECK_OUT/result.json" | tr -d '`' >> "$GITHUB_STEP_SUMMARY"
           fi
       # The artifact publish.sh reads. The run succeeds only if this upload does, and an
       # artifact name is unique in a run, so a run that succeeded has this job's copy.
