@@ -132,9 +132,11 @@ paths:
       operationId: provimuxNames
       summary: The names the owner set, every other name his accounts offer, and what was asked for and refused
       description: |
-        The state of models.only-my-names (design: only-my-names.md). The answer has the same shape whether the
-        switch is on or off: with it off, `others` is what would stop being served. Usage is not here: join
-        `others` with GET /provimux/savings?group=model.
+        The state of models.only-my-names (design: only-my-names.md, section 16). The answer has the same shape
+        whether the switch is on or off: with it off, `others` is what would stop being served. It is computed
+        when asked, from the rule in force and from what the accounts register at that moment: the same rule
+        value and the same registry every model list and every request are checked against. Usage is not here:
+        join `others` with GET /provimux/savings?group=model&include=requested_models.
       responses:
         "200":
           description: The names and the state of the switch.
@@ -353,14 +355,12 @@ components:
           $ref: "#/components/schemas/Timestamp"
         models:
           type: array
-          description: Sorted by id. Every model at least one enabled credential registered, also while all its routes are cooling.
+          description: |
+            Sorted by id. Every model at least one enabled credential registered, also while all its routes are
+            cooling. While models.only-my-names applies, only the names it serves (GET /provimux/names lists the
+            rest under others); the rule is read as the answer is made.
           items:
             $ref: "#/components/schemas/Model"
-        applied:
-          $ref: "#/components/schemas/NamesApplied"
-          description: |
-            The models.only-my-names marker, the same as GET /provimux/names gives. Absent from a Provimux older
-            than it.
     LiveListFailure:
       type: object
       description: The latest fetch attempt of the login's current account, when it failed. Codes only, no error text.
@@ -819,10 +819,11 @@ components:
       type: object
       required: [observed_at, only_my_names, applied, names, keep_ignored, others, refused]
       description: |
-        The rule as applied: what the registry serves now. After a write of the setting (or of an alias, or
-        of keep), the answer keeps describing the rule before it until every account has registered again
-        under the new one; compare applied.config_etag with the ETag the write returned, and wait while
-        applied.applying is true.
+        The rule in force and what the accounts register, both read as the answer is made. The rule in force
+        is the one of the last config the gateway committed; lists and requests follow it from that instant,
+        whatever the accounts are doing. A write of the config answers just before its config is committed:
+        the answer reflects a write once applied.config_etag equals the ETag the write returned. Every
+        registered name is in exactly one of names (as a name or one of its copies) and others.
       properties:
         observed_at:
           $ref: "#/components/schemas/Timestamp"
@@ -833,8 +834,8 @@ components:
         names:
           type: array
           description: |
-            Every name the owner set, as the gateway reads the applied config and the enabled logins. A name some
-            account serves under the rule is here, never in others. Sorted by name.
+            Every name the owner set: the names of the config in force (alias rows and keep), and the aliases
+            the enabled logins register from their own files. Never also in others. Sorted by name.
           items:
             $ref: "#/components/schemas/OwnName"
         keep_ignored:
@@ -845,24 +846,24 @@ components:
         others:
           type: array
           description: |
-            Every other name an enabled account (or a plugin executor) offers that no account serves under the
-            rule, with the accounts that offer it. Held back (not listed, refused) when only_my_names.enabled and
-            applies; served otherwise (then it is what would stop being served). A name an account registers
-            while the rule applies is never here. Sorted by name.
+            Every name an enabled account (or a plugin executor) registers now that is not one of the owner's
+            names nor a copy of one under an account's prefix, with the accounts that register it. Not listed to
+            clients and refused when only_my_names.enabled and applies; served otherwise (then it is what would
+            stop being served). Sorted by name.
           items:
             $ref: "#/components/schemas/OtherName"
         refused:
           oneOf:
             - $ref: "#/components/schemas/RefusedNames"
             - type: "null"
-          description: Null while the applied rule is off or does not apply.
+          description: Null while the rule in force is off or does not apply.
     OnlyMyNamesState:
       type: object
       required: [enabled, applies, not_applied]
       properties:
         enabled:
           type: boolean
-          description: models.only-my-names.enabled of the applied rule (see NamesApplied), not of a write still applying.
+          description: models.only-my-names.enabled of the rule in force (see NamesApplied).
         applies:
           type: boolean
           description: False when the gateway does not decide names itself; then nothing is held back.
@@ -874,28 +875,31 @@ components:
       type: object
       required: [generation, config_etag, applying]
       description: |
-        Which rule of models.only-my-names the registry serves now. A write of the config answers with an ETag;
-        the answer reflects that write once config_etag equals it and applying is false.
+        Which rule of models.only-my-names is in force: the one every model list and every request is checked
+        against as this answer is made. A write of the config answers with an ETag; the answer reflects that
+        write once config_etag equals it.
       properties:
         generation:
           type: integer
           minimum: 0
-          description: Counts the rules the gateway has read since it started (one per config reload); the applied one's.
+          description: Counts the rules the gateway has put in force since it started (one per config commit); this one's.
         config_etag:
           type: [string, "null"]
-          description: The config API's ETag (quoted SHA-256 of the file) of the applied rule's config; null when not known.
+          description: The config API's ETag (quoted SHA-256 of the file) of the config whose rule is in force; null when not known.
         applying:
           type: boolean
           description: |
-            True while a newer rule, or a registration, is still on its way to the registry (usually tens of
-            milliseconds after a reload); the answer then describes the rule before it.
+            Always false: a rule is in force from the instant it is set, and nothing is on its way. Kept so that
+            a console written for the earlier answer needs no change.
     ServedCopy:
       type: object
       required: [id, accounts]
       properties:
         id:
           type: string
-          description: The name under an account's prefix, as clients send it ("team-a/opus" for "opus").
+          description: |
+            The name under an account's prefix, as clients send it ("team-a/opus" for "opus"). A copy that is
+            itself one of the owner's names (kept in full) is listed here and also has its own row in names.
         accounts:
           type: integer
           minimum: 1
@@ -912,8 +916,8 @@ components:
           minItems: 1
           description: |
             alias: an alias row of the config (an API key's models row whose alias differs from its name, or an
-            oauth-model-alias row). keep: models.only-my-names.keep. login-file: an alias in a login's own file,
-            served on that login only.
+            oauth-model-alias row). keep: models.only-my-names.keep. login-file: an alias in a login's own file.
+            A name is the owner's or it is not: every account that registers it serves it, as with the switch off.
           items:
             type: string
             enum: [alias, keep, login-file]
@@ -979,7 +983,9 @@ components:
           description: When counting began (the switch went on, or the process started with it on).
         names:
           type: array
-          description: Requests refused because the name is held back. Most recent first. In memory only.
+          description: |
+            Requests refused because the name is not one of the owner's and an account registers it. A name
+            nobody registers is refused as unknown and is not counted. Most recent first. In memory only.
           items:
             type: object
             required: [name, requests, last_at]
@@ -988,7 +994,8 @@ components:
                 type: string
                 description: |
                   The name as the gateway resolved it, without a thinking suffix: what the client sent, except that
-                  speech and video routes turn tts-1 into grok-tts and sora-2 into grok-imagine-video first.
+                  speech and video routes turn tts-1 into grok-tts and sora-2 into grok-imagine-video first; or
+                  the model a plugin's router sent the request to, when that is the name refused.
               requests:
                 type: integer
                 minimum: 1
