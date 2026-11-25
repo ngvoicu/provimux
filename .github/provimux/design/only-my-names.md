@@ -165,7 +165,7 @@ models:
 | Reload | every config commit re-registers every account (`sdk/cliproxy/service_config.go:239-247`, `forceReplaceAuths`) [read]. So the switch, a `keep` entry and an alias row all take effect at the reload that carries them, with no restart; an alias added on one key also opens the same name on another account at that reload. `configChangeForcesAuthRefresh` (`internal/watcher/config_reload.go:164-172`) gains the setting, as it already carries `live-lists` |
 | Written by | the config API the console already uses: `PUT /v8/management/config/models/only-my-names` with the whole object and `If-Match` (the path writer and its reload are the ones `live-lists` uses; `provimux_live_lists_config_test.go`). That the writer accepts an object at a new path is [infer]; test C2 |
 | Off again | `enabled: false`. The next reload registers every name. `keep` stays in the file for the next time |
-| Zero names | the rule applies as written: nothing is served. The log warns at every reload ("only-my-names is on and no name is set: no model is served"), the status endpoint shows an empty `names`, and the console does not offer the switch while he has no names (decision 3) |
+| Zero names | the rule applies as written: nothing is served. The log warns at every reload ("only-my-names is on and no name is set in the config: only aliases in a login's own file are served"), the status endpoint shows an empty `names`, and the console does not offer the switch while he has no names (decision 3) |
 
 Validation at load: `keep` entries are trimmed; an empty entry or one with `*` is ignored, never an error, so a typo cannot stop a start.
 
@@ -320,7 +320,7 @@ All against stand-ins: `httptest` servers for vendors, temporary config files an
 | R1 | switch off: every model registered; the record says what would be held back |
 | R2 | a key row with an alias: the alias is served, the model's own name is not; a row whose alias equals its name, or without one, gives no name |
 | R3 | an `oauth-model-alias` row without `fork`: alias served. With `fork`: alias served, the model's name held back; then `keep` the name: both served |
-| R4 | case and spaces: `Opus` in the config, `opus` requested; ` gpt-5.5 ` on `keep` |
+| R4 | case and spaces decide whether a name is his: `Opus` in the config makes a model registered as `opus` his; ` gpt-5.5 ` on `keep` keeps `GPT-5.5`. Matching a request's name to a registered model stays upstream's and exact (round 2, decision K) |
 | R5 | an alias in a login's own file is served on that login and makes no other account's model served |
 | R6 | by name: an alias `gpt-5.5` on a Codex login also leaves a key's own `gpt-5.5` served; a pool keeps every member and its order |
 | R7 | prefixes: `prefix: team-a` serves `team-a/opus` (and `opus` unless `force-model-prefix`); `devin/x` is held back, served when `keep` has `devin/x`, not when it has `x` |
@@ -451,3 +451,37 @@ the build differs from sections 1 to 9, and why:
   API server, which `test/` cannot reach); D5 runs at the handlers; S5 runs beside the model-lists source.
 - **The shared fixture of S2** is `pui13/examples/names-fixture.yaml`; `pui13/examples/names.json` is an example
   answer checked against the contract.
+
+## 15. Round 2 (review and console run, 2026-11-25)
+
+Taken from the review of N1 and N2 and from a run of the gateway with the console.
+
+- **The status is the rule as applied** (finding A). `GET /provimux/names` describes what the registry serves now:
+  after a save it keeps describing the rule before it until every account has registered again under the new one.
+  A block `applied` (`generation`, `config_etag`: the config API's ETag of the applied rule's config, `applying`) tells
+  the console when its write has taken effect; `GET /provimux/model-routes` carries the same block. The registry is
+  compared with what the current rule says each account registers; the applied rule moves only when they all match.
+  The config writer is upstream's: it still answers before the accounts have registered again (usually tens of
+  milliseconds); the console waits on `applied`.
+- **The record** (finding B) is one map under one lock, written by the writers and read by the status and the refusal;
+  a read never drops a record. A record carries the registry's epoch for its account just before the writer published;
+  every registration or removal moves that epoch by one, so an epoch past it plus one means the account was removed
+  or emptied by a path that does not pass a writer (removal, disabling, every model excluded, a plugin unloaded): the
+  record is stale, ignored at once and dropped by a sweep that runs when the records double (bounded by twice the
+  accounts). An account that offers nothing leaves no record.
+- **A served name is never "not served"** (finding C): `others` holds only names that no account serves under the rule
+  (a login's own alias counts on its login) and, with the rule applying, that no account registers.
+- **Prefixed copies** (finding D): each name lists `copies`, the ids it is served under an account's prefix.
+- **Usage by requested name** (finding E): Savings keeps, apart from its rows, the requests per name the client sent
+  (`Record.Alias`, without a thinking suffix), given with `include=requested_models`; rows and every existing field are
+  unchanged; days recorded before have none (`requested_models.from`).
+- **A plugin's own models** (finding F): a model router's decision to run a held-back name on a plugin executor is
+  dropped (three inserted lines in `internal/pluginhost/model_router.go`), and the request is refused with the
+  setting's message. A router that rewrites to a provider or another model, and a plugin that rewrites the final model
+  list, are not covered (the latter is upstream's `handlers_interceptors.go`); the README says so.
+- **Test D2** compares its table with the routes the server registers (`TestProvimuxOnlyMyNamesDoorRouteInventory`);
+  D1 checks the Claude shape by id: each listed id resolves to the model behind one of his names.
+- **Decided, not changed**: the Claude shape's generated ids (I), the fixed speech and video names (J; the contract
+  now says the refusal counter names the name as the gateway resolved it), upper and lower case (K; R4 corrected).
+- **Warnings**: an ignored `keep` entry is logged at every reload; the zero-names warning says that a login's own
+  aliases are still served.

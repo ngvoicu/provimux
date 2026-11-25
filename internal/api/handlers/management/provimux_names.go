@@ -19,6 +19,7 @@ import (
 type provimuxNamesResponse struct {
 	ObservedAt  string                    `json:"observed_at"`
 	OnlyMyNames provimuxOnlyMyNamesState  `json:"only_my_names"`
+	Applied     provimuxNamesApplied      `json:"applied"`
 	Names       []provimuxOwnName         `json:"names"`
 	KeepIgnored []provimuxKeepIgnored     `json:"keep_ignored"`
 	Others      []provimuxOtherName       `json:"others"`
@@ -32,9 +33,33 @@ type provimuxOnlyMyNamesState struct {
 }
 
 type provimuxOwnName struct {
-	Name     string   `json:"name"`
-	SetBy    []string `json:"set_by"`
-	Accounts int      `json:"accounts"`
+	Name     string               `json:"name"`
+	SetBy    []string             `json:"set_by"`
+	Accounts int                  `json:"accounts"`
+	Copies   []provimuxServedCopy `json:"copies"`
+}
+
+// provimuxServedCopy is a name served under an account's prefix ("team-a/opus" for "opus").
+type provimuxServedCopy struct {
+	ID       string `json:"id"`
+	Accounts int    `json:"accounts"`
+}
+
+// provimuxNamesApplied tells the console whether the answer already reflects a write it made: the
+// config's ETag (the config API's) and generation of the rule the registry matches, and applying while
+// a newer rule or a registration is still on its way to the registry.
+type provimuxNamesApplied struct {
+	Generation uint64  `json:"generation"`
+	ConfigETag *string `json:"config_etag"`
+	Applying   bool    `json:"applying"`
+}
+
+func provimuxNamesAppliedOf(applied registry.ProvimuxApplied) provimuxNamesApplied {
+	out := provimuxNamesApplied{Generation: applied.Generation, Applying: applied.Applying}
+	if applied.Source != "" {
+		out.ConfigETag = provimuxString(configV8ETag(applied.Source))
+	}
+	return out
 }
 
 type provimuxKeepIgnored struct {
@@ -92,18 +117,15 @@ func (h *Handler) provimuxNamesAnswer() provimuxNamesResponse {
 	}
 	snapshot := registry.ProvimuxNamesState(ids)
 
-	cfg := h.configSnapshot()
+	// The rule as applied: what the registry serves now, not the config a write just saved.
 	enabled, home := snapshot.Enabled, snapshot.Home
-	if cfg != nil {
-		enabled = cfg.Models.OnlyMyNames != nil && cfg.Models.OnlyMyNames.Enabled
-		home = home || cfg.Home.Enabled
-	}
 	if manager != nil && manager.HomeEnabled() {
 		home = true
 	}
 	response := provimuxNamesResponse{
 		ObservedAt:  provimuxTime(provimuxNow()),
 		OnlyMyNames: provimuxOnlyMyNamesState{Enabled: enabled, Applies: !home},
+		Applied:     provimuxNamesAppliedOf(snapshot.Applied),
 		Names:       []provimuxOwnName{},
 		KeepIgnored: []provimuxKeepIgnored{},
 		Others:      []provimuxOtherName{},
@@ -150,20 +172,40 @@ func (h *Handler) provimuxNamesAnswer() provimuxNamesResponse {
 			}
 		}
 	}
+	// accounts: the enabled accounts (and plugin executors) that register the name now; copies: the
+	// same under an account's prefix.
 	registered := map[string]int{}
+	copies := map[string]map[string]int{}
 	modelRegistry := registry.GetGlobalRegistry()
-	for _, auth := range auths {
+	clients := append(append([]string(nil), ids...), snapshot.Plugins...)
+	for _, id := range clients {
+		prefix := ""
+		if auth := byID[id]; auth != nil {
+			prefix = strings.ToLower(strings.TrimSpace(auth.Prefix))
+		}
 		seen := map[string]struct{}{}
-		for _, model := range modelRegistry.GetModelsForClient(auth.ID) {
+		for _, model := range modelRegistry.GetModelsForClient(id) {
 			if model == nil {
 				continue
 			}
-			key := strings.ToLower(strings.TrimSpace(model.ID))
+			modelID := strings.TrimSpace(model.ID)
+			key := strings.ToLower(modelID)
 			if _, dup := seen[key]; dup || key == "" {
 				continue
 			}
 			seen[key] = struct{}{}
-			registered[key]++
+			if _, own := own[key]; own {
+				registered[key]++
+				continue
+			}
+			if prefix != "" && strings.HasPrefix(key, prefix+"/") {
+				if base := key[len(prefix)+1:]; own[base] != nil {
+					if copies[base] == nil {
+						copies[base] = map[string]int{}
+					}
+					copies[base][modelID]++
+				}
+			}
 		}
 	}
 	sort.Slice(order, func(i, j int) bool { return provimuxNameLess(own[order[i]].name, own[order[j]].name) })
@@ -171,7 +213,12 @@ func (h *Handler) provimuxNamesAnswer() provimuxNamesResponse {
 		entry := own[key]
 		setBy := entry.setBy
 		sort.Slice(setBy, func(i, j int) bool { return provimuxSetByRank(setBy[i]) < provimuxSetByRank(setBy[j]) })
-		response.Names = append(response.Names, provimuxOwnName{Name: entry.name, SetBy: setBy, Accounts: registered[key]})
+		name := provimuxOwnName{Name: entry.name, SetBy: setBy, Accounts: registered[key], Copies: []provimuxServedCopy{}}
+		for id, accounts := range copies[key] {
+			name.Copies = append(name.Copies, provimuxServedCopy{ID: id, Accounts: accounts})
+		}
+		sort.Slice(name.Copies, func(i, j int) bool { return provimuxNameLess(name.Copies[i].ID, name.Copies[j].ID) })
+		response.Names = append(response.Names, name)
 	}
 
 	for _, ignored := range snapshot.KeepIgnored {
@@ -206,7 +253,7 @@ func (h *Handler) provimuxNamesAnswer() provimuxNamesResponse {
 	}
 	sort.SliceStable(response.Others, func(i, j int) bool { return provimuxNameLess(response.Others[i].Name, response.Others[j].Name) })
 
-	if snapshot.Refused != nil && !home {
+	if snapshot.Refused != nil && !home && enabled {
 		refused := &provimuxRefusedNamesBody{Since: provimuxTime(snapshot.Refused.Since), Names: []provimuxRefusedName{}, Truncated: snapshot.Refused.Truncated}
 		for _, name := range snapshot.Refused.Names {
 			refused.Names = append(refused.Names, provimuxRefusedName{Name: name.Name, Requests: name.Requests, LastAt: provimuxTime(name.LastAt)})
