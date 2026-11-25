@@ -8,7 +8,8 @@ import (
 )
 
 // Provimux: the names the owner set in the config, for models.only-my-names (only-my-names.md 2.2).
-// Rows 1, 2 and 4 of the gateway's rule; row 3, an alias in a login's own file, is read on the model.
+// Rows 1, 2 and 4 of the gateway's rule. An alias in a login's own file is not a name of the config, so it
+// is not the owner's unless keep lists it (section 17): the rule is a function of the committed config alone.
 
 // ProvimuxNamesRule builds the rule of models.only-my-names from cfg: the switch, Home mode, the
 // alias of every API key's models row whose alias differs from its name (every key family and every

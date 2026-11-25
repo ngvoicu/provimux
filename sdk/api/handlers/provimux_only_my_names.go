@@ -54,20 +54,16 @@ func (h *BaseAPIHandler) provimuxDoor(modelName *string, originalRequestedModel 
 	return nil
 }
 
-// provimuxDoorCheck refuses name unless it is the owner's: the name without its thinking suffix, or, when that
-// is not his, the name as sent (an exact route registered with its suffix).
+// provimuxDoorCheck refuses name unless it is served: the name as sent, or the name without its thinking
+// suffix, is the owner's (registry.ProvimuxRefuse, the predicate of the lists and the status).
 func provimuxDoorCheck(name string) *interfaces.ErrorMessage {
-	base := strings.TrimSpace(thinking.ParseSuffix(name).ModelName)
-	if base == "" {
-		base = name
-	}
-	refused, offered := registry.ProvimuxRefuseSent(base, name)
+	refused, offered := registry.ProvimuxRefuse(name)
 	if !refused {
 		return nil
 	}
 	message := "unknown provider for model " + name
 	if offered {
-		message = registry.ProvimuxNotServedMessage(base)
+		message = registry.ProvimuxNotServedMessage(registry.ProvimuxBase(name))
 	}
 	body := `{"error":{"message":"","type":"invalid_request_error","code":"model_not_found","param":"model"}}`
 	body, errSet := ojson.Set(body, "error.message", message)
@@ -78,22 +74,12 @@ func provimuxDoorCheck(name string) *interfaces.ErrorMessage {
 }
 
 // provimuxNoRouter reports whether no plugin router may be asked about modelName: the rule applies and the
-// name (without its thinking suffix, or as sent) is not the owner's. "auto" is not his, so no router is
-// asked about it while the rule applies. The request then goes on to the door, which refuses it.
+// name is not served (registry.ProvimuxServes). "auto" is never the owner's, so no router is asked about it
+// while the rule applies. The request then goes on to the door, which refuses it.
 func provimuxNoRouter(modelName string) bool {
 	if !registry.ProvimuxApplies() {
 		return false
 	}
 	name := strings.TrimSpace(modelName)
-	if name == "" {
-		return false
-	}
-	base := strings.TrimSpace(thinking.ParseSuffix(name).ModelName)
-	if base == "" {
-		base = name
-	}
-	if registry.ProvimuxServes(base) {
-		return false
-	}
-	return base == name || !registry.ProvimuxServes(name)
+	return name != "" && !registry.ProvimuxServes(name)
 }

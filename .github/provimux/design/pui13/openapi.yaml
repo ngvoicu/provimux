@@ -834,8 +834,9 @@ components:
         names:
           type: array
           description: |
-            Every name the owner set: the names of the config in force (alias rows and keep), and the aliases
-            the enabled logins register from their own files. Never also in others. Sorted by name.
+            Every name the owner set: the names of the config in force (alias rows and keep), exactly as written
+            (trimmed). An alias that exists only in a login's own file is not one of them: it is under others
+            until keep lists it. Never also in others. Sorted by name, without case.
           items:
             $ref: "#/components/schemas/OwnName"
         keep_ignored:
@@ -846,10 +847,12 @@ components:
         others:
           type: array
           description: |
-            Every name an enabled account (or a plugin executor) registers now that is not one of the owner's
-            names nor a copy of one under an account's prefix, with the accounts that register it. Not listed to
-            clients and refused when only_my_names.enabled and applies; served otherwise (then it is what would
-            stop being served). Sorted by name.
+            Every name an enabled account (or a plugin executor) registers now that a request could not be
+            served under (not one of the owner's names, nor a copy of one under an account's prefix, nor one of
+            them with a thinking suffix), with the accounts that register it; an alias in a login's own file
+            included. Spellings that differ only in case are different names. Not listed to clients and refused
+            when only_my_names.enabled and applies; served otherwise (then it is what would stop being served).
+            Sorted by name, without case.
           items:
             $ref: "#/components/schemas/OtherName"
         refused:
@@ -898,8 +901,9 @@ components:
         id:
           type: string
           description: |
-            The name under an account's prefix, as clients send it ("team-a/opus" for "opus"). A copy that is
-            itself one of the owner's names (kept in full) is listed here and also has its own row in names.
+            The id as clients send it: the name under an account's prefix ("team-a/opus" for "opus"), or the name
+            with a thinking suffix registered as an id ("opus(high)"). A copy that is itself one of the owner's names
+            (kept in full) is listed here and also has its own row in names.
         accounts:
           type: integer
           minimum: 1
@@ -910,13 +914,14 @@ components:
       properties:
         name:
           type: string
-          description: The name as written where it was set. Names are compared trimmed and without case.
+          description: The name as written where it was set, trimmed. Names are compared exactly, as a request is matched.
         set_by:
           type: array
           minItems: 1
           description: |
             alias: an alias row of the config (an API key's models row whose alias differs from its name, or an
-            oauth-model-alias row). keep: models.only-my-names.keep. login-file: an alias in a login's own file.
+            oauth-model-alias row). keep: models.only-my-names.keep. login-file is no longer given (an alias in a
+            login's own file is not a name of the config); the value stays in the enum for older consoles.
             A name is the owner's or it is not: every account that registers it serves it, as with the switch off.
           items:
             type: string
@@ -927,7 +932,10 @@ components:
           description: Enabled accounts (and plugin executors) that register the name exactly now; 0 when nothing answers it.
         copies:
           type: array
-          description: The name served under accounts' prefixes; prefixed copies are not counted in accounts. Sorted by id.
+          description: |
+            The registered ids served through the name that are not the name itself: its copies under accounts'
+            prefixes ("team-a/opus"), and its spellings with a thinking suffix that an account registers as ids
+            ("opus(high)"). Not counted in accounts. Sorted by id.
           items:
             $ref: "#/components/schemas/ServedCopy"
     KeepIgnored:
@@ -938,8 +946,8 @@ components:
           type: string
         reason:
           type: string
-          enum: [pattern, empty]
-          description: "pattern: the entry contains *. empty: nothing but spaces."
+          enum: [pattern, empty, reserved]
+          description: "pattern: the entry contains *. empty: nothing but spaces. reserved: auto, which clients send for the first available model and is never a name."
     OtherName:
       type: object
       required: [name, accounts]
