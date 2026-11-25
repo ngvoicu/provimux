@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,6 +19,15 @@ func namesReset(t *testing.T) {
 	t.Helper()
 	ResetProvimuxNames()
 	t.Cleanup(ResetProvimuxNames)
+}
+
+// namesRegister hands models to the registry through the rule, as a writer does.
+func namesRegister(t *testing.T, clientID, prefix string, models []*ModelInfo) []*ModelInfo {
+	t.Helper()
+	served := ProvimuxOnlyMyNames(clientID, prefix, models)
+	GetGlobalRegistry().RegisterClient(clientID, "test", served)
+	t.Cleanup(func() { GetGlobalRegistry().UnregisterClient(clientID) })
+	return served
 }
 
 func namesRule(enabled bool, aliases []string, keep ...string) *ProvimuxNamesRule {
@@ -177,7 +187,7 @@ func TestProvimuxNamesRefusedCounter(t *testing.T) {
 	for i := range 300 {
 		held = append(held, fmt.Sprintf("held-%03d", i))
 	}
-	ProvimuxOnlyMyNames("acct", "", namesModels(append(held, "mine", "Claude-Opus-5-5")...))
+	namesRegister(t, "acct", "", namesModels(append(held, "mine", "Claude-Opus-5-5")...))
 
 	if msg := ProvimuxNotServedMessage("mine"); msg != "" {
 		t.Fatalf("a served name: %q", msg)
@@ -247,17 +257,149 @@ func TestProvimuxNamesHomeDoesNotApply(t *testing.T) {
 	}
 }
 
-// The record of an account that is no longer given is dropped; a plugin executor's stays.
-func TestProvimuxNamesRecordsOfOtherClientsDropped(t *testing.T) {
+// B: a record goes with its account. Removed from the registry by a path that does not pass a writer
+// (removal, disabling, every model excluded, a plugin unloaded), it stops holding a name at once, and
+// a sweep drops it; an account that offers nothing leaves no record; churn does not grow the records.
+func TestProvimuxNamesRecordsFollowTheirAccounts(t *testing.T) {
 	namesReset(t)
 	SetProvimuxNamesRule(namesRule(true, nil))
-	ProvimuxOnlyMyNames("gone", "", namesModels("a"))
-	ProvimuxOnlyMyNames("plugin:p:prov:executor", "", namesModels("b"))
-	ProvimuxNamesState([]string{"kept"})
-	if msg := ProvimuxNotServedMessage("a"); msg != "" {
-		t.Fatalf("a dropped record still holds a name: %q", msg)
+	namesRegister(t, "gone", "", namesModels("a"))
+	namesRegister(t, "plugin:p:prov:executor", "", namesModels("b"))
+	if ProvimuxNotServedMessage("a") == "" || ProvimuxNotServedMessage("b") == "" {
+		t.Fatal("held names without the message")
 	}
-	if msg := ProvimuxNotServedMessage("b"); msg == "" {
-		t.Fatal("a plugin executor's record was dropped")
+	GetGlobalRegistry().UnregisterClient("gone")
+	if msg := ProvimuxNotServedMessage("a"); msg != "" {
+		t.Fatalf("a removed account still holds a name: %q", msg)
+	}
+	GetGlobalRegistry().UnregisterClient("plugin:p:prov:executor")
+	if msg := ProvimuxNotServedMessage("b"); msg != "" {
+		t.Fatalf("an unloaded plugin still holds a name: %q", msg)
+	}
+	if snapshot := ProvimuxNamesState(nil); len(snapshot.Others) != 0 || ProvimuxNamesRecords() != 0 {
+		t.Fatalf("records after removal: %d, others %+v", ProvimuxNamesRecords(), snapshot.Others)
+	}
+	// An account that offers nothing any more leaves no record.
+	namesRegister(t, "empties", "", namesModels("c"))
+	namesRegister(t, "empties", "", nil)
+	if ProvimuxNamesRecords() != 0 {
+		t.Fatalf("an empty offer left a record")
+	}
+	// With the switch off and nobody reading, 1000 accounts added and removed leave a bounded record.
+	SetProvimuxNamesRule(namesRule(false, nil))
+	for i := range 1000 {
+		id := fmt.Sprintf("churn-%d", i)
+		GetGlobalRegistry().RegisterClient(id, "test", ProvimuxOnlyMyNames(id, "", namesModels("m")))
+		GetGlobalRegistry().UnregisterClient(id)
+	}
+	if n := ProvimuxNamesRecords(); n > 64 {
+		t.Fatalf("churn left %d records", n)
+	}
+}
+
+// B: a status read that overlaps a registration never loses the new account's offer (the reviewer's
+// overlapping GET): records are dropped only when the registry shows them stale, never because a
+// reader did not know the account.
+func TestProvimuxNamesReadDoesNotDropANewOffer(t *testing.T) {
+	namesReset(t)
+	SetProvimuxNamesRule(namesRule(true, nil))
+	ids := []string{} // the reader listed the accounts before the new one existed
+	namesRegister(t, "late", "", namesModels("late-model"))
+	ProvimuxNamesState(ids)
+	if msg := ProvimuxNotServedMessage("late-model"); msg == "" {
+		t.Fatal("the read dropped the new account's offer")
+	}
+	if others := ProvimuxNamesState([]string{"late"}).Others; len(others) != 1 || others[0].Name != "late-model" {
+		t.Fatalf("others %+v", others)
+	}
+}
+
+// A: the snapshot describes the rule the registry matches. A newer rule is reported, and applying
+// cleared, only once every account has registered under it.
+func TestProvimuxNamesAppliedMarker(t *testing.T) {
+	namesReset(t)
+	off := namesRule(false, []string{"mine"})
+	off.SetSource("hash-off")
+	SetProvimuxNamesRule(off)
+	namesRegister(t, "acct", "", namesModels("mine", "theirs"))
+	first := ProvimuxNamesState([]string{"acct"})
+	if first.Enabled || first.Applied.Applying || first.Applied.Source != "hash-off" {
+		t.Fatalf("settled off: %+v", first.Applied)
+	}
+	on := namesRule(true, []string{"mine"})
+	on.SetSource("hash-on")
+	SetProvimuxNamesRule(on)
+	pending := ProvimuxNamesState([]string{"acct"})
+	if pending.Enabled || !pending.Applied.Applying || pending.Applied.Source != "hash-off" || pending.Applied.Generation != first.Applied.Generation {
+		t.Fatalf("before the account registered again: enabled %v %+v", pending.Enabled, pending.Applied)
+	}
+	if len(pending.Others) != 1 || pending.Others[0].Name != "theirs" {
+		t.Fatalf("the preview stays: %+v", pending.Others)
+	}
+	// Recorded, not yet published: still applying.
+	ProvimuxOnlyMyNames("acct", "", namesModels("mine", "theirs"))
+	if marker := ProvimuxNamesApplied([]string{"acct"}); !marker.Applying {
+		t.Fatalf("recorded, not published: %+v", marker)
+	}
+	GetGlobalRegistry().RegisterClient("acct", "test", namesModels("mine"))
+	settled := ProvimuxNamesState([]string{"acct"})
+	if !settled.Enabled || settled.Applied.Applying || settled.Applied.Source != "hash-on" || settled.Applied.Generation <= first.Applied.Generation {
+		t.Fatalf("settled on: enabled %v %+v", settled.Enabled, settled.Applied)
+	}
+}
+
+// C: a name one account serves under the rule (a login's own alias) is not reported as not served
+// because another account offers the same spelling.
+func TestProvimuxNamesServedNameIsNeverAnOther(t *testing.T) {
+	namesReset(t)
+	SetProvimuxNamesRule(namesRule(true, nil))
+	namesRegister(t, "login", "", []*ModelInfo{{ID: "work-fast", OAuthAlias: "work-fast"}})
+	namesRegister(t, "key", "", namesModels("work-fast", "other"))
+	others := ProvimuxNamesState([]string{"login", "key"}).Others
+	if len(others) != 1 || others[0].Name != "other" {
+		t.Fatalf("others %+v", others)
+	}
+}
+
+// B under concurrency: writers, removals, status reads and refusals at once (run with -race); every
+// account that still exists keeps its offer.
+func TestProvimuxNamesConcurrentWritersAndReaders(t *testing.T) {
+	namesReset(t)
+	SetProvimuxNamesRule(namesRule(true, []string{"mine"}))
+	var wg sync.WaitGroup
+	for w := range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range 200 {
+				id := fmt.Sprintf("conc-%d-%d", w, i%5)
+				GetGlobalRegistry().RegisterClient(id, "test", ProvimuxOnlyMyNames(id, "", namesModels("mine", "held-"+id)))
+				if i%3 == 0 {
+					GetGlobalRegistry().UnregisterClient(id)
+				}
+			}
+		}()
+	}
+	for range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 200 {
+				ProvimuxNamesState(nil)
+				ProvimuxNotServedMessage("held-conc-0-1")
+			}
+		}()
+	}
+	wg.Wait()
+	for w := range 8 {
+		for i := range 5 {
+			id := fmt.Sprintf("conc-%d-%d", w, i)
+			registered := len(GetGlobalRegistry().GetModelsForClient(id)) > 0
+			held := ProvimuxNotServedMessage("held-"+id) != ""
+			if registered != held {
+				t.Errorf("%s: registered %v, its held name refused with the message %v", id, registered, held)
+			}
+			GetGlobalRegistry().UnregisterClient(id)
+		}
 	}
 }

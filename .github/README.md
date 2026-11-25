@@ -404,8 +404,12 @@ is refused. A name you set is:
 2. the `alias` of an `oauth-model-alias` row;
 3. an alias written in a login's own file, on that login only;
 4. a name under `models.only-my-names.keep`: a model kept under its vendor's name (`claude-opus-5-5`,
-   `devin/claude-opus-4.6`, `team-a/gpt-5.5`). Exact names only, compared without case; an entry with `*` is ignored
+   `devin/claude-opus-4.6`, `team-a/gpt-5.5`). Exact names only; an entry with `*` is ignored, with a warning in the log
    (a pattern would let tomorrow's models in without your word).
+
+Whether a name is yours is decided without regard to case (`Opus` in the config makes `opus` yours). How a request's
+name is matched to a registered model is CLIProxyAPI's, and it is exact: with an alias `Mine`, a request for `mine` is
+refused, with the switch off too; ask for the name as you wrote it.
 
 **Why it matters.** Logins, live lists and keys that learn their service's list offer hundreds of names. With the
 switch on, your tools see the names you chose and nothing else, and a model a provider adds tomorrow stays out until
@@ -423,17 +427,43 @@ models:
 
 - It is by name, not by route: when a name is yours, every account that answers it serves it, in the same order and
   pool as before. An account's `prefix` belongs to the account: `team-a/opus` is served when `opus` is yours.
-- Applied on reload, without a restart; `enabled: false` (or removing the key) brings every name back, and `keep` stays
-  for the next time. With the switch on and no name set, nothing is served, and the log says so at every reload.
+- Applied on reload, without a restart, usually within tens of milliseconds of the save; until every account has
+  registered again the previous rule still serves. `enabled: false` (or removing the key) brings every name back, and
+  `keep` stays for the next time. With the switch on and no name in the config, only aliases in a login's own file are
+  served, and the log says so at every reload.
 - A refused name gets the same HTTP 400 and `model_not_found` as an unknown model, with a message that says why:
   `model gpt-5.5 is not served: this Provimux serves only the names its owner set (models.only-my-names). Keep it on
   the console's Models page, or ask for a served name (GET /v1/models).` A name no account offers keeps the usual
   message.
-- Before turning it on, `GET /v8/management/provimux/names` shows your names and every other name your accounts offer
-  (what would stop being served), with the accounts behind each; once it is on, also which names tools asked for and
-  were refused (in memory, up to 256 names). The console's Models page uses it.
+- Before turning it on, `GET /v8/management/provimux/names` shows your names (with the copies served under an
+  account's prefix) and every other name your accounts offer (what would stop being served), with the accounts behind
+  each; once it is on, also which names tools asked for and were refused (in memory, up to 256 names). It describes what
+  is served now: after a save it keeps describing the rule before it until the accounts have registered again, and its
+  `applied` block (the config's ETag, `applying`) says when the save has taken effect. The console's Models page uses
+  it, with Savings' requests by the name your tools sent (`include=requested_models`).
 - The management API and the console never depend on the switch: they are the way back. In Home mode the switch does
   not apply.
+
+**What the switch does not cover, or covers differently.**
+
+- **Realtime and live** (`/v1/realtime…`, `/v1/live`): these routes choose a Codex login without consulting the model
+  list, and no account lists their names (`gpt-realtime`, `gpt-live-1-codex`), so with a Codex login they are served
+  whatever the switch says.
+- **A plugin's model router** that rewrites a request to a provider, or to another model: the rewritten target decides
+  (a request rewritten to one of your names is served; to a held-back name on a provider, it is refused with
+  "no auth available", not with the setting's message). A router that sends a held-back name to a plugin's own
+  executor is ignored, and the request is refused as above. A plugin that rewrites the final model list a client
+  receives can add names to it: the switch filters the lists the gateway builds, not what a plugin writes over them.
+- **The Responses WebSocket** (`GET /v1/responses`): a name the gateway cannot route, held back or unknown alike, closes
+  the socket without an error event, so the setting's message does not reach a WebSocket client. Nothing reaches a
+  provider.
+- **Speech and video names**: `/v1/audio/speech` and `/v1/tts` turn `tts-1` and the like into `grok-tts`, and
+  `/openai/v1/videos` turns `sora-2` into `grok-imagine-video`, before the switch looks at the name. Keep the fixed
+  name (`grok-tts`, `grok-imagine-video`); a refusal, and its count, name it too. Fetching a video by id uses
+  `grok-imagine-video`, so it is refused while that name is held back.
+- **Claude-shaped model lists** (`GET /v1/models` with `Anthropic-Version`, or Claude Code): CLIProxyAPI shows its own
+  generated Claude-like id for each served name and accepts it; it reaches the model behind your name, so nothing you
+  did not keep is served through it.
 
 ### Model routes and live-list status for the console
 
@@ -466,9 +496,11 @@ current or failing, without reading the log.
   `model-lists`: per login, `source` (`live` or `catalog`), when the list was fetched, how many models it listed and
   how many the login serves, and the last failed fetch as a category (`http_status`, `credentials`,
   `invalid_response`, `network`, `other`) with the provider's HTTP status. The reason in words stays in the log.
-- `GET /v8/management/provimux/names`: the state of [`models.only-my-names`](#serve-only-my-names): the switch, your
-  names with who set each (`alias`, `keep`, `login-file`) and how many accounts serve it, the `keep` entries it
-  ignores, every other name an account offers with those accounts, and the names refused since the switch went on.
+- `GET /v8/management/provimux/names`: the state of [`models.only-my-names`](#serve-only-my-names) as applied: the
+  switch, your names with who set each (`alias`, `keep`, `login-file`), how many accounts serve each and its copies
+  under an account's prefix, the `keep` entries it ignores, every other name an account offers with those accounts,
+  the names refused since the switch went on, and `applied` (the config's ETag and generation the answer describes,
+  and `applying` while a change is on its way). `model-routes` carries the same `applied` block.
 - They report what Provimux has recorded. They do not predict the router: they don't say which route a request
   would get, whether a route is selectable right now, which route answered last, or when a list is fetched next.
 - No response carries an API key, a token, an auth ID, a base URL beyond its host, or any provider error text. Stock
@@ -515,6 +547,11 @@ management key later hides the endpoint (404) but recording continues: the total
 - A client key appears as an id only this server can compute (an HMAC with a secret in the local store) and, for a key
   of 16 characters or more, its last 4 characters. No response, log or stored value carries a key, a token, an auth
   ID, an account email or a base URL beyond its host. Stock CLIProxyAPI answers 404 on the path.
+- Rows count a request under the model the account ran: an alias's traffic under the vendor's model, without an
+  account's prefix. `include=requested_models` adds `requested_models`: requests and tokens by the name the client
+  sent (an alias, a prefixed name, without a thinking suffix), over the whole range, filters aside. It is recorded since
+  the version that added it; `requested_models.from` is the first day that has it, and earlier days count only in the
+  rows. Nothing else in the answer changes.
 
 The contract is [`openapi.yaml`](provimux/design/savings/openapi.yaml), with example answers next to it.
 

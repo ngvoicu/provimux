@@ -16,3 +16,17 @@ func (s *Server) registerProvimuxRoutes(v8 *gin.RouterGroup) {
 	v8.GET("/provimux/savings", s.mgmt.ProvimuxSavings)
 	v8.GET("/provimux/names", s.mgmt.ProvimuxNames)
 }
+
+// ProvimuxRoutes lists the method and path of every route the server registered, for Provimux's tests
+// that must notice a route upstream adds (only-my-names test D2).
+func (s *Server) ProvimuxRoutes() []string {
+	if s == nil || s.engine == nil {
+		return nil
+	}
+	routes := s.engine.Routes()
+	out := make([]string, 0, len(routes))
+	for _, route := range routes {
+		out = append(out, route.Method+" "+route.Path)
+	}
+	return out
+}

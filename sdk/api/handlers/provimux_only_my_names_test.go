@@ -10,6 +10,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
@@ -18,6 +19,7 @@ import (
 type namesCountingExecutor struct {
 	provider string
 	calls    atomic.Int32
+	alias    atomic.Value // the requested-model alias the usage record will carry
 }
 
 func (e *namesCountingExecutor) Identifier() string { return e.provider }
@@ -25,6 +27,7 @@ func (e *namesCountingExecutor) Identifier() string { return e.provider }
 func (e *namesCountingExecutor) Execute(ctx context.Context, _ *coreauth.Auth, req coreexecutor.Request, _ coreexecutor.Options) (coreexecutor.Response, error) {
 	coreexecutor.MarkUpstreamAttempt(ctx)
 	e.calls.Add(1)
+	e.alias.Store(coreusage.RequestedModelAliasFromContext(ctx))
 	return coreexecutor.Response{Payload: []byte(`{"served":"` + req.Model + `"}`)}, nil
 }
 
@@ -108,5 +111,16 @@ func TestProvimuxOnlyMyNamesRouterAndForcedProviderCannotReachAHeldName(t *testi
 	}
 	if !host.called {
 		t.Fatal("the router was not asked")
+	}
+
+	// E: the usage record of a request carries the name the client sent (Record.Alias comes from this
+	// context), suffix included; Savings keeps it, without the suffix, apart from its rows.
+	for _, model := range []string{"names-d5-mine", "names-d5-mine(high)"} {
+		if _, _, errMsg := plain.ExecuteWithAuthManager(contextWithHeaders(http.Header{}), "openai", model, []byte(`{"model":"`+model+`"}`), ""); errMsg != nil {
+			t.Fatalf("%s: %v", model, errMsg.Error)
+		}
+		if got, _ := exec.alias.Load().(string); got != model {
+			t.Fatalf("%s: the usage alias is %q", model, got)
+		}
 	}
 }

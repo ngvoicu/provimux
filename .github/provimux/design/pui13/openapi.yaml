@@ -356,6 +356,11 @@ components:
           description: Sorted by id. Every model at least one enabled credential registered, also while all its routes are cooling.
           items:
             $ref: "#/components/schemas/Model"
+        applied:
+          $ref: "#/components/schemas/NamesApplied"
+          description: |
+            The models.only-my-names marker, the same as GET /provimux/names gives. Absent from a Provimux older
+            than it.
     LiveListFailure:
       type: object
       description: The latest fetch attempt of the login's current account, when it failed. Codes only, no error text.
@@ -812,15 +817,24 @@ components:
             dropped). Null without a list in use, and for a plugin's model.
     NamesResponse:
       type: object
-      required: [observed_at, only_my_names, names, keep_ignored, others, refused]
+      required: [observed_at, only_my_names, applied, names, keep_ignored, others, refused]
+      description: |
+        The rule as applied: what the registry serves now. After a write of the setting (or of an alias, or
+        of keep), the answer keeps describing the rule before it until every account has registered again
+        under the new one; compare applied.config_etag with the ETag the write returned, and wait while
+        applied.applying is true.
       properties:
         observed_at:
           $ref: "#/components/schemas/Timestamp"
         only_my_names:
           $ref: "#/components/schemas/OnlyMyNamesState"
+        applied:
+          $ref: "#/components/schemas/NamesApplied"
         names:
           type: array
-          description: Every name the owner set, as the gateway reads the config and the logins. Sorted by name.
+          description: |
+            Every name the owner set, as the gateway reads the applied config and the enabled logins. A name some
+            account serves under the rule is here, never in others. Sorted by name.
           items:
             $ref: "#/components/schemas/OwnName"
         keep_ignored:
@@ -831,22 +845,24 @@ components:
         others:
           type: array
           description: |
-            Every other name an enabled account offers, with those accounts. Held back (not listed, refused)
-            when only_my_names.enabled and applies; served otherwise. Sorted by name.
+            Every other name an enabled account (or a plugin executor) offers that no account serves under the
+            rule, with the accounts that offer it. Held back (not listed, refused) when only_my_names.enabled and
+            applies; served otherwise (then it is what would stop being served). A name an account registers
+            while the rule applies is never here. Sorted by name.
           items:
             $ref: "#/components/schemas/OtherName"
         refused:
           oneOf:
             - $ref: "#/components/schemas/RefusedNames"
             - type: "null"
-          description: Null while the switch is off or does not apply.
+          description: Null while the applied rule is off or does not apply.
     OnlyMyNamesState:
       type: object
       required: [enabled, applies, not_applied]
       properties:
         enabled:
           type: boolean
-          description: models.only-my-names.enabled of the loaded config.
+          description: models.only-my-names.enabled of the applied rule (see NamesApplied), not of a write still applying.
         applies:
           type: boolean
           description: False when the gateway does not decide names itself; then nothing is held back.
@@ -854,9 +870,39 @@ components:
           type: [string, "null"]
           description: Why it does not apply; null when it does. Clients treat a value they do not know as not applying.
           enum: [home, null]
+    NamesApplied:
+      type: object
+      required: [generation, config_etag, applying]
+      description: |
+        Which rule of models.only-my-names the registry serves now. A write of the config answers with an ETag;
+        the answer reflects that write once config_etag equals it and applying is false.
+      properties:
+        generation:
+          type: integer
+          minimum: 0
+          description: Counts the rules the gateway has read since it started (one per config reload); the applied one's.
+        config_etag:
+          type: [string, "null"]
+          description: The config API's ETag (quoted SHA-256 of the file) of the applied rule's config; null when not known.
+        applying:
+          type: boolean
+          description: |
+            True while a newer rule, or a registration, is still on its way to the registry (usually tens of
+            milliseconds after a reload); the answer then describes the rule before it.
+    ServedCopy:
+      type: object
+      required: [id, accounts]
+      properties:
+        id:
+          type: string
+          description: The name under an account's prefix, as clients send it ("team-a/opus" for "opus").
+        accounts:
+          type: integer
+          minimum: 1
+          description: Enabled accounts that register it now.
     OwnName:
       type: object
-      required: [name, set_by, accounts]
+      required: [name, set_by, accounts, copies]
       properties:
         name:
           type: string
@@ -874,7 +920,12 @@ components:
         accounts:
           type: integer
           minimum: 0
-          description: Enabled accounts that register the name now; 0 when nothing answers it.
+          description: Enabled accounts (and plugin executors) that register the name exactly now; 0 when nothing answers it.
+        copies:
+          type: array
+          description: The name served under accounts' prefixes; prefixed copies are not counted in accounts. Sorted by id.
+          items:
+            $ref: "#/components/schemas/ServedCopy"
     KeepIgnored:
       type: object
       required: [value, reason]
@@ -901,7 +952,9 @@ components:
     NameAccount:
       type: object
       required: [auth_index, provider, kind, priority, host, login]
-      description: An account that offers the name, identified as a route of GET /provimux/model-routes is.
+      description: |
+        An account that offers the name, identified as a route of GET /provimux/model-routes is. A plugin
+        executor's own models have no account: auth_index, kind and host are null, provider is the plugin's.
       properties:
         auth_index:
           type: [string, "null"]
@@ -933,7 +986,9 @@ components:
             properties:
               name:
                 type: string
-                description: As the client sent it, without a thinking suffix.
+                description: |
+                  The name as the gateway resolved it, without a thinking suffix: what the client sent, except that
+                  speech and video routes turn tts-1 into grok-tts and sora-2 into grok-imagine-video first.
               requests:
                 type: integer
                 minimum: 1
