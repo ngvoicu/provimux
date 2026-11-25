@@ -2,7 +2,7 @@
 
 Design, 2026-11-25. Written before the code (built since: sections 14, 15, 16.11 and 17). The status endpoint's contract is added to `pui13/openapi.yaml` with it (path `/provimux/names`).
 
-**Amended the same day by section 16**, which moves the rule from where accounts register to where names are read. Where sections 1 to 15 and section 16 differ, section 16 holds; 16.9 lists the places. **Section 17** (after the third review) narrows a name the owner set to what the config says, compared exactly; where it differs from the sections before it, section 17 holds.
+**Amended the same day by section 16**, which moves the rule from where accounts register to where names are read. Where sections 1 to 15 and section 16 differ, section 16 holds; 16.9 lists the places. **Section 17** (after the third review) narrows a name the owner set to what the config says, compared exactly; **section 18** (after the fourth) makes the request's answer a function of one rule value and the name. Where they differ from the sections before them, the later section holds.
 
 **The owner's words (2026-11-25).** "In the Models page can we have a setting where only 'names' I set are available through Provimux? The rest are like excluded?"
 
@@ -879,4 +879,76 @@ login-file alias; the exact keep; the case-only save; the suffixed id) and
 only in case, spellings with a thinking suffix, prefixed copies, `auto` and alias flags, and checks the account counts
 too. The registry's tests cover exact names, the alias flag, suffixed spellings, the Gemini names, `auto` and the
 index's release; the endpoint's, one rule per answer.
+
+## 18. Amendment after the fourth review: one rule value and the name, nothing else
+
+2026-11-25, after the review of `940ac40cb` ended "not ready". Every case it left had one cause: a request, or a status
+answer, put together two things read at two moments (the rule and the live registrations, or the rule twice). Decided
+by the chief; where this section differs from the sections before it, it holds.
+
+### 18.1 The rule
+
+The rule is one immutable value built at the config commit from the config alone: the names the config sets (17.1),
+and the model prefixes the config declares on its key and provider entries (the `prefix` field of every Gemini,
+Interactions, Claude, Codex, xAI, Meta, Vertex-compat and OpenAI-compatibility entry, trimmed as the synthesizer
+trims it). A name is his when the config names it exactly, or it is `p/n` for a declared prefix `p` and one of his
+names `n`. A name is served when it is his or its name without a thinking suffix is. `auto` never is.
+
+A prefix that exists only in a login's own file is not the config's (no login type takes a prefix from the config):
+a copy under it is his only when its full name is on `keep`, exactly as an alias in a login's own file (it shows
+under `others`). The rule is by name: `crew/mine` is his when `crew` is a declared prefix and `mine` his, whichever
+account registers that spelling.
+
+The rule lives in its own package, `internal/provimux/onlymynames`, which imports only the standard library: it
+cannot read a registration. The live fact index of 16.11 and `ModelInfo.PrefixedFrom` are gone (and with them the
+review's finding 8, an index republished after the switch went off). The two upstream lines that set and declared
+`PrefixedFrom` are removed: `sdk/cliproxy/service_models.go` is again identical to `9ffc2a244`, and the upstream
+lines are 21 in 6 files.
+
+**Upstream's copies equal the rule's.** A generated-config test registers 300 configs (Claude, Codex and
+OpenAI-compatibility entries with and without prefixes, alias and plain rows, `force-model-prefix` on and off, `keep`)
+twice, with and without their prefixes; the ids only the prefixed registration has are upstream's copies. For every
+account the config declares, the copies of his names upstream registers are exactly the copies the rule computes,
+and every copy is served exactly when what it copies is (1,196 copies checked). No case was found where they differ.
+
+### 18.2 The door
+
+The door loads the rule once and judges every name of the request under that value: the submitted name, then a
+router's target. Its judgement (`provimuxDoorJudge`) calls nothing but the rule and the standard library. So the
+answer to a name is the rule value and the name: a name nobody registers is refused like any other, with the
+setting's message, and counted. Resolving `auto` reads what is available (the newest available model the request's
+rule value serves); that is a choice of name, not a judgement, and the chosen name is then judged like any other.
+
+Alpha search loads the rule once for both its names; `model-routes` once per answer; a list once per build (under
+the registry's lock, under which a rule is put in force).
+
+**What is left open.** The router check (G3, in `applyModelRouter`) and the door (G2, in `providersForExecution`)
+are two places in upstream's code with no value passing between them in our lines. G3 decides whether a router is
+asked; if a commit lands between the two, G3 may skip the router under rule B and the door serve the submitted name
+under rule A, which with A in force alone would have been routed to a target A refuses. A test that alternates two
+such rules shows it. Carrying the value needs one more inserted line in upstream's `handlers_routing.go` (a field of
+`modelRouteDecision`), or the fallback of 18 (judge only the submitted name, the router's target under "What the
+switch does not cover"); the chief decides.
+
+### 18.3 The status
+
+`GET /provimux/names` reads the rule, its counter and the registrations under one read lock, then the accounts.
+An account enters the auth manager before its models enter the registry, so every registration read is matched to
+its account and a count is right at the first answer carrying a rule's ETag (the review's finding 3). An id is
+placed by the door's predicate under the same value. A name kept with its thinking suffix has its own row and stays
+among its base's `copies`, as a prefixed copy kept in full does.
+
+`accounts` counts exact registrations. With `MINE` kept and only `mine` registered, `MINE` shows no account, while a
+request for `MINE` reaches `mine` through upstream's lower-case lookup; this is left as it is.
+
+### 18.4 The Gemini format
+
+The Gemini list shows a model under its `Name`, or its id when `Name` is empty, and a Gemini client generates it
+under that name without `models/`. The list gate now applies the same fallback: an alias spelled
+`models/gemini-2.5-pro` is left out of the Gemini list (its detail answers 404) unless `gemini-2.5-pro` is served,
+so list, detail and generation agree.
+
+### 18.5 Left
+
+K3 does not see a registry method taken as a method value at package level (the review's note 7): left.
 
