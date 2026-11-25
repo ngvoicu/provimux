@@ -197,31 +197,48 @@ func provimuxDevinAnswer(variants ...provimuxDevinVariant) []byte {
 	return out
 }
 
+// provimuxDevinRecorded is a recorded Devin answer with one catalog model (swe-2) and two models the
+// catalog lacks. The learned ones are named provimux-test-*, ids no vendor's catalog holds: a fixture
+// that borrowed a plausible name (gemini-4-neon) broke when upstream's 8.1.4 catalog added that model.
 var provimuxDevinRecorded = provimuxDevinAnswer(
 	provimuxDevinVariant{id: "swe-2-medium", label: "SWE-2 Medium", context: 262000, output: 128000, multimodal: true, vendor: 1},
 	provimuxDevinVariant{id: "swe-2-high", label: "SWE-2 High", context: 262000, output: 128000, multimodal: true, vendor: 1},
-	provimuxDevinVariant{id: "gemini-4-neon-low", label: "Gemini 4 Neon Low", context: 1048576, output: 65536, multimodal: true, vendor: 4},
-	provimuxDevinVariant{id: "gemini-4-neon-medium", label: "Gemini 4 Neon Medium", context: 1048576, output: 65536, multimodal: true, vendor: 4},
-	provimuxDevinVariant{id: "gemini-4-neon-high", label: "Gemini 4 Neon High", context: 1048576, output: 65536, multimodal: true, vendor: 4},
-	provimuxDevinVariant{id: "gemini-4-neon-high", label: "duplicate", context: 1, vendor: 4},
-	provimuxDevinVariant{id: "kimi-k9", label: "Kimi K9", context: 262144, vendor: 7},
+	provimuxDevinVariant{id: "provimux-test-learned-low", label: "Provimux Test Learned Low", context: 1048576, output: 65536, multimodal: true, vendor: 4},
+	provimuxDevinVariant{id: "provimux-test-learned-medium", label: "Provimux Test Learned Medium", context: 1048576, output: 65536, multimodal: true, vendor: 4},
+	provimuxDevinVariant{id: "provimux-test-learned-high", label: "Provimux Test Learned High", context: 1048576, output: 65536, multimodal: true, vendor: 4},
+	provimuxDevinVariant{id: "provimux-test-learned-high", label: "duplicate", context: 1, vendor: 4},
+	provimuxDevinVariant{id: "provimux-test-unstated", label: "Provimux Test Unstated", context: 262144, vendor: 7},
 )
+
+// The Devin tests' fixture holds only if upstream's catalog has swe-2 and none of the test ids; this
+// says so in one place when a catalog update breaks that, instead of as six unrelated failures.
+func TestProvimuxDevinFixtureAgainstTheCatalog(t *testing.T) {
+	provimuxLiveReset(t) // no learned model of an earlier test
+	if registry.LookupDevinModel("swe-2") == nil {
+		t.Fatal("the fixture's catalog model swe-2 is no longer in upstream's Devin catalog")
+	}
+	for _, id := range []string{"provimux-test-learned", "provimux-test-learned-high", "provimux-test-unstated"} {
+		if model := registry.LookupDevinModel(id); model != nil {
+			t.Fatalf("the fixture's learned model %s is in the catalog: %+v", id, model)
+		}
+	}
+}
 
 func TestProvimuxDevinParser(t *testing.T) {
 	list, err := parseDevinLiveModelList(provimuxDevinRecorded, time.Unix(100, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(provimuxSortedKeys(list.ids), ","); got != "gemini-4-neon,kimi-k9,swe-2" {
+	if got := strings.Join(provimuxSortedKeys(list.ids), ","); got != "provimux-test-learned,provimux-test-unstated,swe-2" {
 		t.Fatalf("ids = %s", got)
 	}
-	neon := hasLiveID(list.extra, "gemini-4-neon")
+	neon := hasLiveID(list.extra, "provimux-test-learned")
 	if neon == nil || neon.ContextLength != 1048576 || neon.MaxCompletionTokens != 65536 || neon.OwnedBy != "google" ||
 		neon.Thinking == nil || strings.Join(neon.Thinking.Levels, ",") != "low,medium,high" ||
-		strings.Join(neon.SupportedInputModalities, ",") != "text,image" || neon.DisplayName != "Gemini 4 Neon" {
+		strings.Join(neon.SupportedInputModalities, ",") != "text,image" || neon.DisplayName != "Provimux Test Learned" {
 		t.Fatalf("neon = %+v thinking=%+v", neon, neon.Thinking)
 	}
-	if k9 := hasLiveID(list.extra, "kimi-k9"); k9 == nil || k9.MaxCompletionTokens != 0 || k9.Thinking != nil {
+	if k9 := hasLiveID(list.extra, "provimux-test-unstated"); k9 == nil || k9.MaxCompletionTokens != 0 || k9.Thinking != nil {
 		t.Fatalf("no output limit is assumed where the answer states none: %+v", k9)
 	}
 	if _, errEmpty := parseDevinLiveModelList(nil, time.Now()); errEmpty == nil {
@@ -273,7 +290,7 @@ func TestProvimuxDevinFetchRegistersLearnedModel(t *testing.T) {
 	svc, auth := provimuxService(t, provimuxOn(), executor, &coreauth.Auth{ID: "devin-live-test", Provider: "devin",
 		Attributes: map[string]string{"auth_kind": "oauth"}, Metadata: map[string]any{"api_key": "devin-session", "email": "office@providers.dev"}})
 	svc.registerModelsForAuth(t.Context(), auth)
-	if slices.Contains(provimuxRegistered(auth), "devin/gemini-4-neon") {
+	if slices.Contains(provimuxRegistered(auth), "devin/provimux-test-learned") {
 		t.Fatal("before the first fetch the catalog applies")
 	}
 	provimuxRefresh(svc, executor, false)
@@ -281,25 +298,25 @@ func TestProvimuxDevinFetchRegistersLearnedModel(t *testing.T) {
 		t.Fatalf("requests=%d headers=%v", requests.Load(), seen)
 	}
 	ids := provimuxRegistered(auth)
-	if !slices.Contains(ids, "devin/gemini-4-neon") || !slices.Contains(ids, "devin/swe-2") || !slices.Contains(ids, "devin/swe-1-6-slow") {
+	if !slices.Contains(ids, "devin/provimux-test-learned") || !slices.Contains(ids, "devin/swe-2") || !slices.Contains(ids, "devin/swe-1-6-slow") {
 		t.Fatalf("registered = %v", ids)
 	}
 	if len(ids) != 4 {
 		t.Fatalf("a login with a live list offers exactly its list plus Provimux's own models: %v", ids)
 	}
 	// The executor resolves a variant through LookupDevinModel: the learned model must be found.
-	if model := registry.LookupDevinModel("gemini-4-neon"); model == nil || strings.Join(model.Thinking.Levels, ",") != "low,medium,high" {
+	if model := registry.LookupDevinModel("provimux-test-learned"); model == nil || strings.Join(model.Thinking.Levels, ",") != "low,medium,high" {
 		t.Fatalf("learned Devin model not found by the executor's lookup: %+v", model)
 	}
-	if model := registry.LookupDevinModel("gemini-4-neon-high"); model == nil {
+	if model := registry.LookupDevinModel("provimux-test-learned-high"); model == nil {
 		t.Fatal("a learned model's variant id must resolve to it")
 	}
 
 	// 8.1.1: the Devin catalog and the list hold bare ids; the login registers them as devin/<id>.
-	if model := registry.LookupStaticModelInfoByChannel("devin/gemini-4-neon", "devin"); model == nil || model.ID != "devin/gemini-4-neon" {
+	if model := registry.LookupStaticModelInfoByChannel("devin/provimux-test-learned", "devin"); model == nil || model.ID != "devin/provimux-test-learned" {
 		t.Fatalf("a channel-qualified id finds the learned model, qualified: %+v", model)
 	}
-	if model := registry.LookupStaticModelInfoByChannel("gemini-4-neon", "devin"); model == nil || model.ID != "gemini-4-neon" {
+	if model := registry.LookupStaticModelInfoByChannel("provimux-test-learned", "devin"); model == nil || model.ID != "provimux-test-learned" {
 		t.Fatalf("a bare id finds the learned model: %+v", model)
 	}
 	for _, model := range registry.GetGlobalRegistry().GetModelsForClient(auth.ID) {
@@ -314,11 +331,11 @@ func TestProvimuxDevinFetchRegistersLearnedModel(t *testing.T) {
 	sources := map[string]string{}
 	for _, model := range state.Models {
 		sources[model.ID] = model.Source
-		if learned := model.ID == "devin/gemini-4-neon" || model.ID == "devin/kimi-k9"; model.Learned != learned {
+		if learned := model.ID == "devin/provimux-test-learned" || model.ID == "devin/provimux-test-unstated"; model.Learned != learned {
 			t.Fatalf("learned %s = %v", model.ID, model.Learned)
 		}
 	}
-	if sources["devin/swe-2"] != "live" || sources["devin/gemini-4-neon"] != "live" || sources["devin/swe-1-6-slow"] != "provimux" {
+	if sources["devin/swe-2"] != "live" || sources["devin/provimux-test-learned"] != "live" || sources["devin/swe-1-6-slow"] != "provimux" {
 		t.Fatalf("status sources = %v", sources)
 	}
 	for _, vendor := range state.Live {
@@ -340,10 +357,10 @@ func TestProvimuxDevinAliasStatus(t *testing.T) {
 		registered        []string
 	}{
 		{"catalog, fork under the bare name", "devin/swe-2", "swe-2", true, false, 0, nil},
-		{"live, fork a learned model under its bare name", "devin/gemini-4-neon", "gemini-4-neon", true, true, 2,
-			[]string{"devin/gemini-4-neon", "devin/kimi-k9", "devin/swe-1-6-slow", "devin/swe-2", "gemini-4-neon"}},
-		{"live, fork an unrelated model under a listed bare name", "devin/swe-2", "gemini-4-neon", true, true, 2,
-			[]string{"devin/gemini-4-neon", "devin/kimi-k9", "devin/swe-1-6-slow", "devin/swe-2", "gemini-4-neon"}},
+		{"live, fork a learned model under its bare name", "devin/provimux-test-learned", "provimux-test-learned", true, true, 2,
+			[]string{"devin/provimux-test-learned", "devin/provimux-test-unstated", "devin/swe-1-6-slow", "devin/swe-2", "provimux-test-learned"}},
+		{"live, fork an unrelated model under a listed bare name", "devin/swe-2", "provimux-test-learned", true, true, 2,
+			[]string{"devin/provimux-test-learned", "devin/provimux-test-unstated", "devin/swe-1-6-slow", "devin/swe-2", "provimux-test-learned"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			provimuxLiveReset(t)
@@ -402,12 +419,12 @@ func TestProvimuxDevinCacheOf810(t *testing.T) {
 	liveModelLists.cache.Store(store)
 	auth := &coreauth.Auth{ID: "devin-cache-810", Provider: "devin", Attributes: map[string]string{"auth_kind": "oauth"},
 		Metadata: map[string]any{"api_key": "devin-session", "email": "office@providers.dev"}}
-	if err := store.WriteLive("devin", liveModelListIdentity(auth), time.Now(), []string{"devin/gemini-4-neon", "devin/swe-2"},
-		[]*ModelInfo{{ID: "devin/gemini-4-neon", DisplayName: "Gemini 4 Neon"}, {ID: "devin/swe-2", DisplayName: "SWE-2"}}); err != nil {
+	if err := store.WriteLive("devin", liveModelListIdentity(auth), time.Now(), []string{"devin/provimux-test-learned", "devin/swe-2"},
+		[]*ModelInfo{{ID: "devin/provimux-test-learned", DisplayName: "Provimux Test Learned"}, {ID: "devin/swe-2", DisplayName: "SWE-2"}}); err != nil {
 		t.Fatal(err)
 	}
 	got := applyLiveModelList(provimuxOn(), auth, []*ModelInfo{{ID: "swe-2"}, {ID: "swe-1-5"}, {ID: "swe-1-6-slow"}})
-	if ids := strings.Join(liveIDs(got), ","); ids != "swe-2,swe-1-6-slow,gemini-4-neon" {
+	if ids := strings.Join(liveIDs(got), ","); ids != "swe-2,swe-1-6-slow,provimux-test-learned" {
 		t.Fatalf("ids = %s", ids)
 	}
 }
@@ -911,7 +928,7 @@ func TestProvimuxLogLine(t *testing.T) {
 		t.Fatal(err)
 	}
 	line := provimuxLiveLogLine("devin", auth, list)
-	if !strings.Contains(line, "model list for devin login ") || !strings.Contains(line, ": live, 3 models, 2 not in the catalog yet (devin/gemini-4-neon, devin/kimi-k9)") {
+	if !strings.Contains(line, "model list for devin login ") || !strings.Contains(line, ": live, 3 models, 2 not in the catalog yet (devin/provimux-test-learned, devin/provimux-test-unstated)") {
 		t.Fatalf("line = %q", line)
 	}
 	if strings.Contains(line, "office@providers.dev") || strings.Contains(line, "devin-log") {
