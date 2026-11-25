@@ -820,10 +820,12 @@ jobs:
             since="on CLIProxyAPI ${BASE}"
           fi
           # Layer commits carry the trailer "Provimux-Layer: branding" (guard.sh); the
-          # owner's patches below the layer do not.
+          # owner's patches below the layer do not. Subjects lose board numbers
+          # ("(T-<digits>)"; subject.jq): the commits keep them, the public notes do not.
           patches=() layer=()
           for c in $(git rev-list --reverse --topo-order "$range"); do
-            line="$(git log -1 --format='- %s (%h)' "$c")"
+            subject="$(git log -1 --format=%s "$c" | jq -R -r -f .github/provimux/subject.jq)"
+            line="- ${subject} ($(git log -1 --format=%h "$c"))"
             if git log -1 --format='%(trailers:key=Provimux-Layer,valueonly)' "$c" | sed 's/[[:space:]]*$//' | grep -qx 'branding'; then
               layer+=("$line")
             else
