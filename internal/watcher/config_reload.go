@@ -168,5 +168,5 @@ func configChangeForcesAuthRefresh(oldConfig, newConfig *config.Config) bool {
 	retryConfigChanged := oldConfig.RequestRetry != newConfig.RequestRetry || oldConfig.MaxRetryInterval != newConfig.MaxRetryInterval || oldConfig.MaxRetryCredentials != newConfig.MaxRetryCredentials
 	return oldConfig.ForceModelPrefix != newConfig.ForceModelPrefix || !reflect.DeepEqual(oldConfig.OAuthModelAlias, newConfig.OAuthModelAlias) ||
 		!reflect.DeepEqual(oldConfig.OAuthSettings, newConfig.OAuthSettings) || retryConfigChanged ||
-		oldConfig.Models.LiveListsOn() != newConfig.Models.LiveListsOn() || oldConfig.Models.PublishedListsOn() != newConfig.Models.PublishedListsOn()
+		oldConfig.Models.LiveListsOn() != newConfig.Models.LiveListsOn() || oldConfig.Models.PublishedListsOn() != newConfig.Models.PublishedListsOn() || config.ProvimuxOnlyMyNamesChanged(oldConfig, newConfig)
 }
