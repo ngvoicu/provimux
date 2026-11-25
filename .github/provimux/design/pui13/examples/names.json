@@ -27,6 +27,10 @@
       "accounts": 2,
       "copies": [
         {
+          "id": "opus(high)",
+          "accounts": 1
+        },
+        {
           "id": "team-a/opus",
           "accounts": 1
         }
@@ -35,7 +39,7 @@
     {
       "name": "work-fast",
       "set_by": [
-        "login-file"
+        "keep"
       ],
       "accounts": 1,
       "copies": []

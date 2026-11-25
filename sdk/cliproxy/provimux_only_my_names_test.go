@@ -121,7 +121,7 @@ func namesServed(t *testing.T, auth *coreauth.Auth) []string {
 // namesOthers is the status's others (ids that are not his), with the clients that register each, read
 // through the same view and predicate as GET /provimux/names.
 func namesOthers(ids ...string) map[string][]string {
-	rule, registered := registry.ProvimuxNamesView()
+	rule, registered, _ := registry.ProvimuxNamesView()
 	index := registry.NewProvimuxIndex(registered)
 	wanted := map[string]bool{}
 	for _, id := range ids {
@@ -129,7 +129,7 @@ func namesOthers(ids ...string) map[string][]string {
 	}
 	out := map[string][]string{}
 	for _, entry := range registered {
-		if wanted[entry.ClientID] && !rule.His(entry.ID, index) {
+		if wanted[entry.ClientID] && !rule.Serves(entry.ID, index) {
 			out[entry.ID] = append(out[entry.ID], entry.ClientID)
 		}
 	}
@@ -150,7 +150,7 @@ func TestProvimuxOnlyMyNamesKeyRows(t *testing.T) {
 	without := &config.Config{ClaudeKey: []config.ClaudeKey{namesClaudeKey("", rows...)}}
 	svc, auths := namesService(t, without)
 	key := auths[0]
-	stock := registry.GetGlobalRegistry().GetModelsForClient(key.ID)
+	stock := namesRegisteredStable(key.ID)
 	if got := namesServed(t, key); !slices.Equal(got, []string{"mine", "plain", "same"}) {
 		t.Fatalf("no setting: %v", got)
 	}
@@ -158,7 +158,7 @@ func TestProvimuxOnlyMyNamesKeyRows(t *testing.T) {
 	off := &config.Config{ClaudeKey: []config.ClaudeKey{namesClaudeKey("", rows...)}}
 	off.Models.OnlyMyNames = &registry.OnlyMyNames{Enabled: false, Keep: []string{"plain"}}
 	namesReconfigure(svc, off, auths)
-	if got := registry.GetGlobalRegistry().GetModelsForClient(key.ID); !reflect.DeepEqual(got, stock) {
+	if got := namesRegisteredStable(key.ID); !reflect.DeepEqual(got, stock) {
 		t.Fatalf("off differs from no setting:\n off %+v\nnone %+v", got, stock)
 	}
 	if got := namesServed(t, key); !slices.Equal(got, []string{"mine", "plain", "same"}) {
@@ -171,7 +171,7 @@ func TestProvimuxOnlyMyNamesKeyRows(t *testing.T) {
 	on := &config.Config{ClaudeKey: []config.ClaudeKey{namesClaudeKey("", rows...)}}
 	on.Models.OnlyMyNames = namesOn()
 	namesReconfigure(svc, on, auths)
-	if got := registry.GetGlobalRegistry().GetModelsForClient(key.ID); !reflect.DeepEqual(got, stock) {
+	if got := namesRegisteredStable(key.ID); !reflect.DeepEqual(got, stock) {
 		t.Fatalf("K5: on changed what is registered:\n  on %+v\nnone %+v", got, stock)
 	}
 	if got := namesServed(t, key); !slices.Equal(got, []string{"mine"}) {
@@ -181,7 +181,7 @@ func TestProvimuxOnlyMyNamesKeyRows(t *testing.T) {
 		t.Fatalf("not served: %v", others)
 	}
 	namesReconfigure(svc, off, auths)
-	if got := registry.GetGlobalRegistry().GetModelsForClient(key.ID); !reflect.DeepEqual(got, stock) {
+	if got := namesRegisteredStable(key.ID); !reflect.DeepEqual(got, stock) {
 		t.Fatalf("off again differs: %+v", got)
 	}
 	if got := namesServed(t, key); len(got) != 3 {
@@ -219,24 +219,32 @@ func TestProvimuxOnlyMyNamesOAuthAliasAndFork(t *testing.T) {
 	}
 }
 
-// R5, as amended (16.3, cost 1): an alias in a login's own file is the owner's by name: the login serves it,
-// and so does every other account that registers the same spelling.
+// R5, as amended by section 17 (A): an alias in a login's own file is not a name the config sets. It is not
+// served, on the login or on another account that registers the spelling, until keep lists it; then every
+// account that registers it serves it.
 func TestProvimuxOnlyMyNamesLoginFileAlias(t *testing.T) {
 	namesReset(t)
 	c1, _ := namesClaudeCatalog(t)
 	login := namesLogin("names-login-file", "claude", map[string]string{"model_aliases": fmt.Sprintf(`[{"name":%q,"alias":"work-fast"}]`, c1)})
-	cfg := &config.Config{ClaudeKey: []config.ClaudeKey{namesClaudeKey("", config.ClaudeModel{Name: "work-fast"}, config.ClaudeModel{Name: "key-only"})}}
-	cfg.Models.OnlyMyNames = namesOn()
-	_, auths := namesService(t, cfg, login)
-	if got := namesServed(t, login); !slices.Equal(got, []string{"work-fast"}) {
-		t.Fatalf("login: %v", got)
+	build := func(keep ...string) *config.Config {
+		cfg := &config.Config{ClaudeKey: []config.ClaudeKey{namesClaudeKey("", config.ClaudeModel{Name: "work-fast"}, config.ClaudeModel{Name: "key-only"})}}
+		cfg.Models.OnlyMyNames = namesOn(keep...)
+		return cfg
+	}
+	svc, auths := namesService(t, build(), login)
+	if got := provimuxRegistered(login); !slices.Contains(got, "work-fast") {
+		t.Fatalf("premise: the login registers its alias: %v", got)
 	}
 	key := auths[0]
-	if got := namesServed(t, key); !slices.Equal(got, []string{"work-fast"}) {
-		t.Fatalf("the key's own work-fast, by name: %v", got)
+	if got, other := namesServed(t, login), namesServed(t, key); len(got) != 0 || len(other) != 0 {
+		t.Fatalf("a login-file alias alone serves: login %v, key %v", got, other)
 	}
-	if count := registry.GetGlobalRegistry().GetModelCount("work-fast"); count != 2 {
-		t.Fatalf("work-fast has %d accounts, want both", count)
+	if others := namesOthers(login.ID, key.ID); len(others["work-fast"]) != 2 {
+		t.Fatalf("others %v", others)
+	}
+	namesCommit(svc, build("work-fast"))
+	if got, other := namesServed(t, login), namesServed(t, key); !slices.Equal(got, []string{"work-fast"}) || !slices.Equal(other, []string{"work-fast"}) {
+		t.Fatalf("kept: login %v, key %v", got, other)
 	}
 }
 
@@ -390,6 +398,10 @@ func TestProvimuxOnlyMyNamesLearnedModels(t *testing.T) {
 		t.Fatalf("an excluded model is in others: %v", others)
 	}
 	namesCommit(svc, build("learned-a", "LEARNED-LOGIN"))
+	if got := namesServed(t, login); len(got) != 0 {
+		t.Fatalf("keep LEARNED-LOGIN serves %v: names are compared exactly", got)
+	}
+	namesCommit(svc, build("learned-a", "learned-login"))
 	if got := namesServed(t, key); !slices.Equal(got, []string{"learned-a", "mine"}) {
 		t.Fatalf("key, kept: %v", got)
 	}
@@ -414,22 +426,22 @@ func TestProvimuxOnlyMyNamesRuleOfAConfig(t *testing.T) {
 			Models: []config.OpenAICompatibilityModel{{Name: "o-up", Alias: "compat-alias"}}}},
 		OAuthModelAlias: map[string][]config.OAuthModelAlias{"codex": {{Name: "gpt", Alias: "login-alias"}, {Name: "keep-me", Alias: "c-alias"}}},
 	}
-	cfg.Models.OnlyMyNames = namesOn("keep-me", "C-ALIAS", "pat*", "")
+	cfg.Models.OnlyMyNames = namesOn("keep-me", "C-ALIAS", "pat*", "", "auto")
 	provimuxSetNamesRule(cfg)
-	rule, _ := registry.ProvimuxNamesView()
+	rule, _, _ := registry.ProvimuxNamesView()
 	got := map[string][]string{}
 	for _, name := range rule.Names() {
 		got[name.Name] = name.SetBy
 	}
 	want := map[string][]string{
-		"g-alias": {"alias"}, "i-alias": {"alias"}, "c-alias": {"alias", "keep"}, "codex-alias": {"alias"},
+		"g-alias": {"alias"}, "i-alias": {"alias"}, "c-alias": {"alias"}, "C-ALIAS": {"keep"}, "codex-alias": {"alias"},
 		"xai-alias": {"alias"}, "meta-alias": {"alias"}, "vertex-alias": {"alias"}, "compat-alias": {"alias"},
 		"login-alias": {"alias"}, "keep-me": {"keep"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("names:\n got %v\nwant %v", got, want)
 	}
-	if ignored := rule.KeepIgnored(); len(ignored) != 2 || ignored[0].Reason != "pattern" || ignored[1].Reason != "empty" {
+	if ignored := rule.KeepIgnored(); len(ignored) != 3 || ignored[0].Reason != "pattern" || ignored[1].Reason != "empty" || ignored[2].Reason != "reserved" {
 		t.Fatalf("keep_ignored %+v", ignored)
 	}
 	if !rule.Enabled() || rule.Home() {
@@ -439,7 +451,7 @@ func TestProvimuxOnlyMyNamesRuleOfAConfig(t *testing.T) {
 	home.Home.Enabled = true
 	home.Models.OnlyMyNames = namesOn()
 	provimuxSetNamesRule(home)
-	if rule, _ := registry.ProvimuxNamesView(); !rule.Home() || registry.ProvimuxApplies() {
+	if rule, _, _ := registry.ProvimuxNamesView(); !rule.Home() || registry.ProvimuxApplies() {
 		t.Fatal("home mode is not recorded")
 	}
 }
@@ -570,7 +582,7 @@ func TestProvimuxOnlyMyNamesChurn(t *testing.T) {
 			t.Fatalf("%s is still offered after every account went", name)
 		}
 	}
-	_, registered := registry.ProvimuxNamesView()
+	_, registered, _ := registry.ProvimuxNamesView()
 	for _, entry := range registered {
 		if strings.HasPrefix(entry.ClientID, "names-churn-") {
 			t.Fatalf("left behind: %+v", entry)
@@ -578,9 +590,9 @@ func TestProvimuxOnlyMyNamesChurn(t *testing.T) {
 	}
 }
 
-// K6, the review's case-only alias edit: the alias mine becomes Mine. Names are compared without case, so
-// the rule is unchanged for what is served: mine stays served until the account registers Mine, and Mine is
-// served after.
+// K6 and B (section 17), the reviews' case-only alias edit: the alias mine becomes Mine. Names are compared
+// exactly, so from the commit mine is no longer his and is refused, and Mine is served as soon as the account
+// registers it; the status never shows an account for a spelling the door refuses.
 func TestProvimuxOnlyMyNamesCaseOnlyAliasEdit(t *testing.T) {
 	namesReset(t)
 	build := func(alias string) *config.Config {
@@ -590,8 +602,11 @@ func TestProvimuxOnlyMyNamesCaseOnlyAliasEdit(t *testing.T) {
 	}
 	svc, auths := namesService(t, build("mine"))
 	namesCommit(svc, build("Mine"))
-	if got := namesServed(t, auths[0]); !slices.Equal(got, []string{"mine"}) {
+	if got := namesServed(t, auths[0]); len(got) != 0 {
 		t.Fatalf("after the commit: %v", got)
+	}
+	if refused, offered := registry.ProvimuxRefuse("mine"); !refused || !offered {
+		t.Fatal("mine after the commit")
 	}
 	namesReconfigure(svc, build("Mine"), auths)
 	if got := namesServed(t, auths[0]); !slices.Equal(got, []string{"Mine"}) {
@@ -600,7 +615,8 @@ func TestProvimuxOnlyMyNamesCaseOnlyAliasEdit(t *testing.T) {
 }
 
 // Finding 6 of the second review: a stale Antigravity-style replacement that the registry rejects leaves the
-// status describing the registry, and a registered name in exactly one of names and others.
+// status describing the registry, and a registered name in exactly one of names and others (the login-file
+// alias work-fast, not a name of the config, under others only).
 func TestProvimuxOnlyMyNamesRejectedReplacementKeepsTheStatusExact(t *testing.T) {
 	namesReset(t)
 	c1, _ := namesClaudeCatalog(t)
@@ -631,16 +647,16 @@ func TestProvimuxOnlyMyNamesRejectedReplacementKeepsTheStatusExact(t *testing.T)
 	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
+	inOthers := false
 	for _, other := range body.Others {
-		if other.Name == "work-fast" {
-			t.Fatalf("work-fast in others: %s", recorder.Body.String())
+		inOthers = inOthers || other.Name == "work-fast"
+	}
+	for _, name := range body.Names {
+		if name.Name == "work-fast" {
+			t.Fatalf("work-fast in names: %s", recorder.Body.String())
 		}
 	}
-	found := false
-	for _, name := range body.Names {
-		found = found || (name.Name == "work-fast" && name.Accounts == 2)
-	}
-	if !found || !registry.ProvimuxServes("work-fast") {
+	if !inOthers || registry.ProvimuxServes("work-fast") {
 		t.Fatalf("work-fast: %s", recorder.Body.String())
 	}
 }
@@ -696,4 +712,15 @@ func TestProvimuxOnlyMyNamesRuleChangesUnderLoad(t *testing.T) {
 	}
 	close(stop)
 	wg.Wait()
+}
+
+// namesRegisteredStable is what clientID registers, without Created: a configured model takes it from the
+// clock at each registration, so two registrations a second apart differ there alone (the third review's
+// finding 10).
+func namesRegisteredStable(clientID string) []*ModelInfo {
+	models := registry.GetGlobalRegistry().GetModelsForClient(clientID)
+	for _, model := range models {
+		model.Created = 0
+	}
+	return models
 }
