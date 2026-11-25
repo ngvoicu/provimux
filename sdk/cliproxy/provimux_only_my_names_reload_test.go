@@ -11,7 +11,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -24,9 +24,9 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 )
 
-// C1-C3 (only-my-names.md section 9): the switch and the names through the config API the console
-// uses, the watcher's reload, and the registry, with no restart. The keys point at a closed local
-// port; nothing is sent to them.
+// C1-C3 and K8 (only-my-names.md sections 9 and 16.7): the switch and the names through the config API the
+// console uses, the watcher's reload, and the gate, with no restart. The keys point at a closed local port;
+// nothing is sent to them.
 
 const namesManagementKey = "only-my-names-management-key"
 
@@ -80,6 +80,11 @@ func newNamesHarness(t *testing.T, body string) *namesHarness {
 			service.authQueueStop()
 		}
 		_ = watcherWrapper.Stop()
+		// A reload still registering would register the accounts again after they are removed below, for the
+		// tests that follow to see: wait for it (it holds configRuntimeMu while it registers).
+		service.configRuntimeMu.Lock()
+		cancel()
+		service.configRuntimeMu.Unlock()
 		for _, auth := range service.coreManager.List() {
 			registry.GetGlobalRegistry().UnregisterClient(auth.ID)
 		}
@@ -113,14 +118,15 @@ func (h *namesHarness) auth(provider string) *coreauth.Auth {
 	return nil
 }
 
-// await waits until every account's registered names are want (by provider).
+// await waits until every account's served names (registered, listed and let through the door) are want
+// (by provider).
 func (h *namesHarness) await(what string, want map[string][]string) {
 	h.t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		got := map[string][]string{}
 		for provider := range want {
-			got[provider] = provimuxRegistered(h.auth(provider))
+			got[provider] = namesServed(h.t, h.auth(provider))
 			if got[provider] == nil {
 				got[provider] = []string{}
 			}
@@ -129,7 +135,7 @@ func (h *namesHarness) await(what string, want map[string][]string) {
 			return
 		}
 		if time.Now().After(deadline) {
-			h.t.Fatalf("%s: registered %v, want %v", what, got, want)
+			h.t.Fatalf("%s: served %v, want %v", what, got, want)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -154,9 +160,9 @@ const namesReloadConfig = `api-keys:
         - api-key: sk-names-b
 `
 
-// C1 and C2: off, on and off again through PUT /v8/management/config/models/only-my-names; the
-// registry follows each time without a restart, and the last state equals the first. The writer
-// puts the object at a path the file lacked and leaves the rest of the file as it was.
+// C1, C2 and K5: off, on and off again through PUT /v8/management/config/models/only-my-names; what is
+// served follows each time without a restart, what is registered never moves, and the last state equals the
+// first. The writer puts the object at a path the file lacked and leaves the rest of the file as it was.
 func TestProvimuxOnlyMyNamesSwitchThroughTheConfigAPI(t *testing.T) {
 	h := newNamesHarness(t, namesReloadConfig)
 	compat := "standin"
@@ -187,6 +193,9 @@ func TestProvimuxOnlyMyNamesSwitchThroughTheConfigAPI(t *testing.T) {
 		t.Fatalf("C2: added %q", added)
 	}
 	h.await("on", map[string][]string{"claude": {"mine"}, compat: {}})
+	if a, b := registry.GetGlobalRegistry().GetModelsForClient(keyA.ID), registry.GetGlobalRegistry().GetModelsForClient(keyB.ID); !reflect.DeepEqual(a, firstA) || !reflect.DeepEqual(b, firstB) {
+		t.Fatalf("K5: on changed what is registered:\n%+v\n%+v", a, b)
+	}
 
 	h.put("models/only-my-names", `{"enabled":true,"keep":["shared"]}`)
 	h.await("on, keep shared", map[string][]string{"claude": {"mine"}, compat: {"shared"}})
@@ -216,8 +225,9 @@ func TestProvimuxOnlyMyNamesAliasOnOneKeyOpensTheName(t *testing.T) {
 	h.await("alias removed", map[string][]string{"claude": {"mine"}, compat: {}})
 }
 
-// C3 with a login in the auth folder as account B: its file does not change, so only the reload
-// clause (internal/watcher configChangeForcesAuthRefresh) sends it through registration again.
+// C3 with a login in the auth folder as account B: its file does not change and nothing makes it register
+// again (the reload clause of the earlier build is gone); the name it registers is served from the commit
+// that names it.
 func TestProvimuxOnlyMyNamesAliasOnAKeyOpensALoginsName(t *testing.T) {
 	c1, _ := namesClaudeCatalog(t)
 	h := newNamesHarness(t, namesReloadConfig+"models:\n  only-my-names:\n    enabled: true\n")
@@ -249,12 +259,12 @@ func TestProvimuxOnlyMyNamesAliasOnAKeyOpensALoginsName(t *testing.T) {
 		t.Helper()
 		deadline := time.Now().Add(10 * time.Second)
 		for {
-			got := provimuxRegistered(loginAuth)
+			got := namesServed(t, loginAuth)
 			if slices.Equal(got, want) || (len(got) == 0 && len(want) == 0) {
 				return
 			}
 			if time.Now().After(deadline) {
-				t.Fatalf("%s: the login registers %v, want %v", what, got, want)
+				t.Fatalf("%s: the login serves %v, want %v", what, got, want)
 			}
 			time.Sleep(20 * time.Millisecond)
 		}
@@ -266,31 +276,28 @@ func TestProvimuxOnlyMyNamesAliasOnAKeyOpensALoginsName(t *testing.T) {
 	awaitLogin("alias removed", nil)
 }
 
-// A (the reviewer's paused reload): between the write's 200 and the accounts' new registration, the
-// status still describes what is served, says applying, and carries the previous config's ETag; once
-// the registry follows, it carries the ETag the write returned. /provimux/model-routes carries the
-// same marker.
-func TestProvimuxOnlyMyNamesStatusNeverAheadOfTheRegistry(t *testing.T) {
+// K8: after a write through the config API, the first status read whose applied.config_etag is the write's
+// ETag is followed at once, with no wait and with registration paused, by a list and a request that obey the
+// new rule. 100 rounds, the switch turning each round; every other round writes twice with no status read in
+// between (the second review's "two writes"), and the status then shows the second. model-routes has no
+// applied block any more.
+func TestProvimuxOnlyMyNamesStatusAndServedAgreeAfterAWrite(t *testing.T) {
 	vendor := newNamesVendor(t)
 	h := newNamesHarness(t, strings.Replace(namesDoorConfig(vendor.URL, false), "enabled: false", "enabled: false\n    keep: []", 1))
 	server := httptest.NewServer(h.handler)
 	defer server.Close()
 	d := &namesDoor{namesHarness: h, server: server, vendor: vendor}
-	type marker struct {
-		Generation uint64  `json:"generation"`
-		ConfigETag *string `json:"config_etag"`
-		Applying   bool    `json:"applying"`
-	}
 	type status struct {
 		OnlyMyNames struct {
 			Enabled bool `json:"enabled"`
 		} `json:"only_my_names"`
-		Applied marker `json:"applied"`
-		Others  []struct {
-			Name string `json:"name"`
-		} `json:"others"`
+		Applied struct {
+			Generation uint64  `json:"generation"`
+			ConfigETag *string `json:"config_etag"`
+			Applying   bool    `json:"applying"`
+		} `json:"applied"`
 	}
-	get := func(path string, into any) {
+	get := func(path string, into any) []byte {
 		t.Helper()
 		recorder := httptest.NewRecorder()
 		request := httptest.NewRequest(http.MethodGet, path, nil)
@@ -299,77 +306,90 @@ func TestProvimuxOnlyMyNamesStatusNeverAheadOfTheRegistry(t *testing.T) {
 		if recorder.Code != http.StatusOK {
 			t.Fatalf("GET %s: %d", path, recorder.Code)
 		}
-		if err := json.Unmarshal(recorder.Body.Bytes(), into); err != nil {
-			t.Fatal(err)
+		if into != nil {
+			if err := json.Unmarshal(recorder.Body.Bytes(), into); err != nil {
+				t.Fatal(err)
+			}
 		}
+		return recorder.Body.Bytes()
 	}
-	var before status
-	get("/v8/management/provimux/names", &before)
-	if before.OnlyMyNames.Enabled || before.Applied.Applying || before.Applied.ConfigETag == nil {
-		t.Fatalf("before: %+v", before)
+	if routes := get("/v8/management/provimux/model-routes", nil); strings.Contains(string(routes), `"applied"`) {
+		t.Fatalf("model-routes still carries applied: %s", routes)
 	}
-
+	// Registration is paused: every reload stops after its commit, before the accounts register again, until
+	// the test releases it after its checks. Nothing needs the accounts to register again.
 	svc := h.service
-	entered := make(chan struct{}, 1)
-	release := make(chan struct{})
-	var once sync.Once
-	unblock := func() { once.Do(func() { close(release) }) }
-	defer unblock()
+	entered := make(chan struct{}, 1024)
+	release := make(chan struct{}, 1024)
+	var completed atomic.Int64
+	svc.hooks.OnConfigApplied = func(*Service, *config.Config) { completed.Add(1) }
 	svc.updateServerClientsContextFn = func(ctx context.Context, cfg *config.Config) bool {
 		ok := svc.server.UpdateClientsContext(ctx, cfg)
-		select {
-		case entered <- struct{}{}:
-		default:
-		}
-		<-release // the new rule is committed; the accounts have not registered again yet
+		entered <- struct{}{}
+		<-release
 		return ok
 	}
-	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPut, "/v8/management/config/models/only-my-names", strings.NewReader(`{"enabled":true,"keep":[]}`))
-	request.Header.Set("Authorization", "Bearer "+namesManagementKey)
-	h.handler.ServeHTTP(recorder, request)
-	written := recorder.Header().Get("ETag")
-	if recorder.Code != http.StatusOK || written == "" {
-		t.Fatalf("PUT: %d %q", recorder.Code, written)
-	}
-	select {
-	case <-entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the reload did not start")
-	}
-	var during status
-	get("/v8/management/provimux/names", &during)
-	var routes struct {
-		Applied marker `json:"applied"`
-	}
-	get("/v8/management/provimux/model-routes", &routes)
-	_, list := d.do("GET", "/v1/models", nil, "")
-	if !strings.Contains(list, `"held-compat"`) {
-		t.Fatal("premise: the old rule still serves held-compat")
-	}
-	if during.OnlyMyNames.Enabled || !during.Applied.Applying || *during.Applied.ConfigETag == written || *during.Applied.ConfigETag != *before.Applied.ConfigETag {
-		t.Fatalf("during: the status is ahead of the registry: %+v (written %s)", during, written)
-	}
-	if routes.Applied.Applying != during.Applied.Applying || routes.Applied.Generation != during.Applied.Generation || *routes.Applied.ConfigETag != *during.Applied.ConfigETag {
-		t.Fatalf("model-routes marker %+v, names %+v", routes.Applied, during.Applied)
-	}
-	unblock()
-	deadline := time.Now().Add(10 * time.Second)
-	var after status
-	for {
-		get("/v8/management/provimux/names", &after)
-		if !after.Applied.Applying && after.Applied.ConfigETag != nil && *after.Applied.ConfigETag == written {
-			break
+	released := int64(0)
+	releaseOne := func() {
+		t.Helper()
+		select {
+		case <-entered:
+		case <-time.After(10 * time.Second):
+			t.Fatal("a reload did not reach its pause")
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("never applied: %+v (written %s)", after, written)
+		released++
+		release <- struct{}{}
+	}
+	defer func() { // the reloads end before the harness's cleanup unregisters the accounts
+		deadline := time.Now().Add(10 * time.Second)
+		for completed.Load() < released && time.Now().Before(deadline) {
+			time.Sleep(5 * time.Millisecond)
 		}
-		time.Sleep(10 * time.Millisecond)
+	}()
+	put := func(body string) string {
+		t.Helper()
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPut, "/v8/management/config/models/only-my-names", strings.NewReader(body))
+		request.Header.Set("Authorization", "Bearer "+namesManagementKey)
+		h.handler.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusOK || recorder.Header().Get("ETag") == "" {
+			t.Fatalf("PUT: %d %s", recorder.Code, recorder.Body.String())
+		}
+		return recorder.Header().Get("ETag")
 	}
-	if !after.OnlyMyNames.Enabled || registry.GetGlobalRegistry().GetModelCount("held-compat") != 0 || after.Applied.Generation <= before.Applied.Generation {
-		t.Fatalf("after: %+v, held-compat accounts %d", after, registry.GetGlobalRegistry().GetModelCount("held-compat"))
-	}
-	if status, _ := d.do("POST", "/v1/chat/completions", nil, namesChat("held-compat", false)); status != http.StatusBadRequest {
-		t.Fatalf("after: held-compat answered %d", status)
+	var last uint64
+	for round := range 100 {
+		on := round%2 == 0
+		written := put(fmt.Sprintf(`{"enabled":%t,"keep":["round-%d"]}`, on, round))
+		if round%4 == 1 { // two writes, no status read between them: the second is what counts
+			releaseOne() // the first write's reload, once committed (watcher reloads run one at a time)
+			on = !on
+			written = put(fmt.Sprintf(`{"enabled":%t,"keep":["round-%d-b"]}`, on, round))
+		}
+		deadline := time.Now().Add(10 * time.Second)
+		var now status
+		for {
+			get("/v8/management/provimux/names", &now)
+			if now.Applied.ConfigETag != nil && *now.Applied.ConfigETag == written {
+				break
+			}
+			if now.Applied.Applying {
+				t.Fatalf("round %d: applying %+v", round, now.Applied)
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("round %d: the status never showed the write %s: %+v", round, written, now.Applied)
+			}
+			time.Sleep(time.Millisecond)
+		}
+		// At once: no wait, registration paused.
+		_, list := d.do("GET", "/v1/models", nil, "")
+		status, body := d.do("POST", "/v1/chat/completions", nil, namesChat("held-compat", false))
+		listed := strings.Contains(list, `"held-compat"`)
+		refused := status == http.StatusBadRequest && strings.Contains(body, namesNotServed)
+		if now.OnlyMyNames.Enabled != on || listed == on || refused != on || now.Applied.Applying || now.Applied.Generation <= last {
+			t.Fatalf("round %d (on %v): status %+v, held-compat listed %v, refused %v (%d %s)", round, on, now, listed, refused, status, body)
+		}
+		last = now.Applied.Generation
+		releaseOne()
 	}
 }
