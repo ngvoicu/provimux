@@ -331,6 +331,7 @@ type modelRouteDecision struct {
 	ExecutorPluginID string
 	Provider         string
 	Model            string
+	provimuxRule     provimuxRuleValue // Provimux: only-my-names
 }
 
 func routeModel(ctx context.Context, host PluginModelRouterHost, req pluginapi.ModelRouteRequest, skipPluginID string) (pluginapi.ModelRouteResponse, bool) {
@@ -370,7 +371,7 @@ func modelRoutersEnabled(host PluginModelRouterHost, skipPluginID string) bool {
 
 func (h *BaseAPIHandler) applyModelRouter(ctx context.Context, handlerType, modelName string, rawJSON []byte, stream bool, execOptions modelExecutionOptions) modelRouteDecision {
 	var decision modelRouteDecision
-	if provimuxNoRouter(modelName) { // Provimux: only-my-names
+	if provimuxNoRouter(&decision, modelName) { // Provimux: only-my-names
 		return decision
 	}
 	host := h.modelRouterHost()

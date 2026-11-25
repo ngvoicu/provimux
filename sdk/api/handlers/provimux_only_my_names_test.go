@@ -3,7 +3,6 @@ package handlers
 import (
 	"context"
 	"net/http"
-	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -213,7 +212,8 @@ func TestProvimuxOnlyMyNamesDoorAllocatesNothing(t *testing.T) {
 			if errMsg := h.provimuxDoor(&model, name, modelRouteDecision{}); errMsg != nil {
 				t.Fatalf("%s refused", name)
 			}
-			provimuxNoRouter(name)
+			var decision modelRouteDecision
+			provimuxNoRouter(&decision, name)
 		})
 	}
 	if allocs := measure("anything-at-all"); allocs != 0 {
@@ -342,13 +342,9 @@ func TestProvimuxOnlyMyNamesOneRuleValuePerRequest(t *testing.T) {
 
 // The fourth review's router alternation (finding 12), uninstrumented: rules owning only the submitted name and
 // only the router's target alternate as fast as they can while requests run. Neither rule owns both, so no request
-// may reach the provider.
+// may reach the provider. Before the router check handed its value to the door (only-my-names.md 18.2), 449 of
+// 2000 were served: the router skipped under one rule, the door served under the other.
 func TestProvimuxOnlyMyNamesRouterUnderAlternatingRules(t *testing.T) {
-	if os.Getenv("PROVIMUX_G3_G2_ONE_VALUE") == "" {
-		// Open (only-my-names.md 18.2): G3 and the door load the rule separately; carrying one value between
-		// them needs one more inserted upstream line, or the fallback. Run with PROVIMUX_G3_G2_ONE_VALUE=1.
-		t.Skip("open decision: one rule value across the router check and the door")
-	}
 	registry.ResetProvimuxNames()
 	t.Cleanup(registry.ResetProvimuxNames)
 	manager := coreauth.NewManager(nil, nil, nil)
@@ -367,6 +363,7 @@ func TestProvimuxOnlyMyNamesRouterUnderAlternatingRules(t *testing.T) {
 	a, b := onlymynames.NewRule(true, false), onlymynames.NewRule(true, false)
 	a.AddKeep([]string{"names-submitted"})
 	b.AddKeep([]string{"names-target"})
+	registry.SetProvimuxNamesRule(a) // in force before the first request: with no rule the switch is off
 	stop := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
@@ -392,7 +389,54 @@ func TestProvimuxOnlyMyNamesRouterUnderAlternatingRules(t *testing.T) {
 	}
 	close(stop)
 	<-done
+	t.Logf("%d of 2000 requests served under alternating rules", served)
 	if served != 0 || exec.calls.Load() != 0 {
 		t.Fatalf("%d requests served, %d provider calls, under rules that each refuse them", served, exec.calls.Load())
+	}
+}
+
+// A prepared stream route carries the rule value with its decision (only-my-names.md 18.2): the stream is
+// judged under the value its route was prepared under, whatever is committed in between. Prepared under a rule
+// that refuses the name and run after one that serves it: refused, nothing reaches the provider. Prepared under
+// the serving rule and run after the refusing one: the provider is reached.
+func TestProvimuxOnlyMyNamesPreparedStreamCarriesItsRule(t *testing.T) {
+	registry.ResetProvimuxNames()
+	t.Cleanup(registry.ResetProvimuxNames)
+	manager := coreauth.NewManager(nil, nil, nil)
+	exec := &namesCountingExecutor{provider: "claude"}
+	manager.RegisterExecutor(exec)
+	auth := &coreauth.Auth{ID: "names-prepared-key", Provider: "claude", Attributes: map[string]string{"api_key": "sk-prep"}}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatal(err)
+	}
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, "claude", []*registry.ModelInfo{{ID: "names-prepared", OwnedBy: "anthropic"}})
+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
+	h := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+	serves, refuses := onlymynames.NewRule(true, false), onlymynames.NewRule(true, false)
+	serves.AddKeep([]string{"names-prepared"})
+	refuses.AddKeep([]string{"names-other"})
+	run := func(prepared, committed *onlymynames.Rule) (refused bool, calls int32) {
+		t.Helper()
+		before := exec.calls.Load()
+		registry.SetProvimuxNamesRule(prepared)
+		ctx, _ := h.PrepareStreamModelRoute(contextWithHeaders(http.Header{}), "openai", "names-prepared", []byte(`{"model":"names-prepared"}`))
+		registry.SetProvimuxNamesRule(committed)
+		data, _, errs := h.ExecuteStreamWithAuthManager(ctx, "openai", "names-prepared", []byte(`{"model":"names-prepared","stream":true}`), "")
+		if data != nil {
+			for range data {
+			}
+		}
+		for errMsg := range errs {
+			if errMsg != nil && errMsg.Error != nil && strings.Contains(errMsg.Error.Error(), "only-my-names") {
+				refused = true
+			}
+		}
+		return refused, exec.calls.Load() - before
+	}
+	if refused, calls := run(refuses, serves); !refused || calls != 0 {
+		t.Fatalf("prepared under the refusing rule: refused %v, %d provider calls", refused, calls)
+	}
+	if refused, calls := run(serves, refuses); refused || calls == 0 {
+		t.Fatalf("prepared under the serving rule: refused %v, %d provider calls", refused, calls)
 	}
 }
