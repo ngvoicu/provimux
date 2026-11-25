@@ -10,11 +10,12 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
-// Provimux-only: GET /v8/management/provimux/names, the state of models.only-my-names
-// (only-my-names.md section 6; contract: .github/provimux/design/pui13/openapi.yaml, NamesResponse).
-// The same shape with the switch on or off: off, others is what would stop being served. It reports
-// recorded state and predicts nothing. Read-only, in memory; no key, token or error text. The response
-// only grows.
+// Provimux-only: GET /v8/management/provimux/names, the state of models.only-my-names (only-my-names.md
+// sections 6 and 16.6; contract: .github/provimux/design/pui13/openapi.yaml, NamesResponse). Computed when
+// asked, from the rule in force and from what the accounts register at that moment: the same rule value and
+// the same registry every list and every request are checked against, with the same predicate. The same
+// shape with the switch on or off: off, others is what would stop being served. Read-only, in memory; no key,
+// token or error text. The response only grows.
 
 type provimuxNamesResponse struct {
 	ObservedAt  string                    `json:"observed_at"`
@@ -45,21 +46,12 @@ type provimuxServedCopy struct {
 	Accounts int    `json:"accounts"`
 }
 
-// provimuxNamesApplied tells the console whether the answer already reflects a write it made: the
-// config's ETag (the config API's) and generation of the rule the registry matches, and applying while
-// a newer rule or a registration is still on its way to the registry.
+// provimuxNamesApplied says which rule is in force: the config's ETag (the config API's) and its generation.
+// applying is always false: the rule is in force for the next list and request from the commit on.
 type provimuxNamesApplied struct {
 	Generation uint64  `json:"generation"`
 	ConfigETag *string `json:"config_etag"`
 	Applying   bool    `json:"applying"`
-}
-
-func provimuxNamesAppliedOf(applied registry.ProvimuxApplied) provimuxNamesApplied {
-	out := provimuxNamesApplied{Generation: applied.Generation, Applying: applied.Applying}
-	if applied.Source != "" {
-		out.ConfigETag = provimuxString(configV8ETag(applied.Source))
-	}
-	return out
 }
 
 type provimuxKeepIgnored struct {
@@ -100,167 +92,221 @@ func (h *Handler) ProvimuxNames(c *gin.Context) {
 }
 
 func (h *Handler) provimuxNamesAnswer() provimuxNamesResponse {
-	var auths []*coreauth.Auth
+	byID := map[string]*coreauth.Auth{}
 	manager := h.provimuxAuthManager()
 	if manager != nil {
 		for _, auth := range manager.List() {
 			if auth != nil && !auth.Disabled {
-				auths = append(auths, auth)
+				byID[auth.ID] = auth
 			}
 		}
 	}
-	byID := make(map[string]*coreauth.Auth, len(auths))
-	ids := make([]string, 0, len(auths))
-	for _, auth := range auths {
-		byID[auth.ID] = auth
-		ids = append(ids, auth.ID)
-	}
-	snapshot := registry.ProvimuxNamesState(ids)
+	rule, registered := registry.ProvimuxNamesView()
+	index := registry.NewProvimuxIndex(registered)
 
-	// The rule as applied: what the registry serves now, not the config a write just saved.
-	enabled, home := snapshot.Enabled, snapshot.Home
+	enabled, home := rule.Enabled(), rule.Home()
 	if manager != nil && manager.HomeEnabled() {
 		home = true
 	}
 	response := provimuxNamesResponse{
 		ObservedAt:  provimuxTime(provimuxNow()),
 		OnlyMyNames: provimuxOnlyMyNamesState{Enabled: enabled, Applies: !home},
-		Applied:     provimuxNamesAppliedOf(snapshot.Applied),
+		Applied:     provimuxNamesApplied{Generation: rule.Generation()},
 		Names:       []provimuxOwnName{},
 		KeepIgnored: []provimuxKeepIgnored{},
 		Others:      []provimuxOtherName{},
+	}
+	if source := rule.Source(); source != "" {
+		response.Applied.ConfigETag = provimuxString(configV8ETag(source))
 	}
 	if home {
 		response.OnlyMyNames.NotApplied = provimuxString("home")
 	}
 
-	// names: the config's (alias rows, keep), then the aliases in the logins' own files.
+	// What is shown: the enabled accounts and the plugin executors. What is the owner's is decided over every
+	// registration, as the gate decides it.
+	visible := func(clientID string) bool {
+		return byID[clientID] != nil || provimuxPluginExecutorProvider(clientID) != ""
+	}
+
+	// names: the config's (alias rows, keep), then the aliases the logins register from their own files.
 	type ownName struct {
-		name  string
-		setBy []string
+		name    string
+		setBy   []string
+		clients map[string]struct{}
+		copies  map[string]map[string]struct{}
 	}
 	own := map[string]*ownName{}
 	var order []string
-	add := func(name, setBy string) {
+	add := func(name, setBy string) *ownName {
 		name = strings.TrimSpace(name)
 		key := strings.ToLower(name)
 		if key == "" {
-			return
+			return nil
 		}
 		entry, ok := own[key]
 		if !ok {
-			entry = &ownName{name: name}
+			entry = &ownName{name: name, clients: map[string]struct{}{}, copies: map[string]map[string]struct{}{}}
 			own[key] = entry
 			order = append(order, key)
 		}
 		for _, have := range entry.setBy {
 			if have == setBy {
-				return
+				return entry
 			}
 		}
 		entry.setBy = append(entry.setBy, setBy)
+		return entry
 	}
-	for _, name := range snapshot.Names {
+	configNames := map[string]struct{}{}
+	for _, name := range rule.Names() {
+		configNames[strings.ToLower(name.Name)] = struct{}{}
 		for _, setBy := range name.SetBy {
 			add(name.Name, setBy)
 		}
 	}
-	for _, auth := range auths {
+	// A registered alias that the config does not name comes from a login's own file (an oauth-model-alias
+	// row is in the config's names).
+	loginFile := func(alias string) {
+		if _, inConfig := configNames[strings.ToLower(strings.TrimSpace(alias))]; !inConfig {
+			add(alias, registry.ProvimuxNameSetByLoginFile)
+		}
+	}
+	for _, auth := range byID {
 		for _, row := range coreauth.OAuthModelAliasesFromAttributes(auth.Attributes) {
 			if alias := strings.TrimSpace(row.Alias); alias != "" && alias != strings.TrimSpace(row.Name) {
 				add(alias, registry.ProvimuxNameSetByLoginFile)
 			}
 		}
 	}
-	// accounts: the enabled accounts (and plugin executors) that register the name now; copies: the
-	// same under an account's prefix.
-	registered := map[string]int{}
-	copies := map[string]map[string]int{}
-	modelRegistry := registry.GetGlobalRegistry()
-	clients := append(append([]string(nil), ids...), snapshot.Plugins...)
-	for _, id := range clients {
-		prefix := ""
-		if auth := byID[id]; auth != nil {
-			prefix = strings.ToLower(strings.TrimSpace(auth.Prefix))
+	for _, entry := range registered {
+		if entry.OAuthAlias != "" && visible(entry.ClientID) {
+			loginFile(entry.OAuthAlias)
 		}
-		seen := map[string]struct{}{}
-		for _, model := range modelRegistry.GetModelsForClient(id) {
-			if model == nil {
-				continue
+	}
+
+	// Every registered id is in exactly one of names (as a name or a copy) and others: the gate's predicate.
+	type idClients struct {
+		clients []string
+		from    []string // the PrefixedFrom of its registrations
+	}
+	ids := map[string]*idClients{}
+	var idOrder []string
+	for _, entry := range registered {
+		if !visible(entry.ClientID) {
+			continue
+		}
+		group, ok := ids[entry.ID]
+		if !ok {
+			group = &idClients{}
+			ids[entry.ID] = group
+			idOrder = append(idOrder, entry.ID)
+		}
+		group.clients = append(group.clients, entry.ClientID)
+		if entry.PrefixedFrom != "" {
+			group.from = append(group.from, entry.PrefixedFrom)
+		}
+	}
+	others := map[string]*provimuxOtherName{}
+	otherClients := map[string]map[string]struct{}{}
+	for _, id := range idOrder {
+		group := ids[id]
+		key := strings.ToLower(strings.TrimSpace(id))
+		if !rule.His(id, index) {
+			other, ok := others[key]
+			if !ok {
+				other = &provimuxOtherName{Name: id, Accounts: []provimuxNameAccount{}}
+				others[key] = other
+				otherClients[key] = map[string]struct{}{}
 			}
-			modelID := strings.TrimSpace(model.ID)
-			key := strings.ToLower(modelID)
-			if _, dup := seen[key]; dup || key == "" {
-				continue
-			}
-			seen[key] = struct{}{}
-			if _, own := own[key]; own {
-				registered[key]++
-				continue
-			}
-			if prefix != "" && strings.HasPrefix(key, prefix+"/") {
-				if base := key[len(prefix)+1:]; own[base] != nil {
-					if copies[base] == nil {
-						copies[base] = map[string]int{}
-					}
-					copies[base][modelID]++
+			for _, clientID := range group.clients {
+				if _, dup := otherClients[key][clientID]; dup {
+					continue
 				}
+				otherClients[key][clientID] = struct{}{}
+				other.Accounts = append(other.Accounts, h.provimuxNameAccountOf(byID, clientID))
+			}
+			continue
+		}
+		placed := false
+		if entry := own[key]; entry != nil {
+			for _, clientID := range group.clients {
+				entry.clients[clientID] = struct{}{}
+			}
+			placed = true
+		}
+		for _, from := range group.from {
+			if base := own[strings.ToLower(strings.TrimSpace(from))]; base != nil {
+				if base.copies[id] == nil {
+					base.copies[id] = map[string]struct{}{}
+				}
+				for _, clientID := range group.clients {
+					base.copies[id][clientID] = struct{}{}
+				}
+				placed = true
+			}
+		}
+		if !placed { // the owner's by a registration not shown here: listed under its own spelling
+			entry := add(id, registry.ProvimuxNameSetByLoginFile)
+			for _, clientID := range group.clients {
+				entry.clients[clientID] = struct{}{}
 			}
 		}
 	}
+
 	sort.Slice(order, func(i, j int) bool { return provimuxNameLess(own[order[i]].name, own[order[j]].name) })
 	for _, key := range order {
 		entry := own[key]
 		setBy := entry.setBy
-		sort.Slice(setBy, func(i, j int) bool { return provimuxSetByRank(setBy[i]) < provimuxSetByRank(setBy[j]) })
-		name := provimuxOwnName{Name: entry.name, SetBy: setBy, Accounts: registered[key], Copies: []provimuxServedCopy{}}
-		for id, accounts := range copies[key] {
-			name.Copies = append(name.Copies, provimuxServedCopy{ID: id, Accounts: accounts})
+		sort.SliceStable(setBy, func(i, j int) bool { return provimuxSetByRank(setBy[i]) < provimuxSetByRank(setBy[j]) })
+		name := provimuxOwnName{Name: entry.name, SetBy: setBy, Accounts: len(entry.clients), Copies: []provimuxServedCopy{}}
+		for id, clients := range entry.copies {
+			name.Copies = append(name.Copies, provimuxServedCopy{ID: id, Accounts: len(clients)})
 		}
 		sort.Slice(name.Copies, func(i, j int) bool { return provimuxNameLess(name.Copies[i].ID, name.Copies[j].ID) })
 		response.Names = append(response.Names, name)
 	}
 
-	for _, ignored := range snapshot.KeepIgnored {
+	for _, ignored := range rule.KeepIgnored() {
 		response.KeepIgnored = append(response.KeepIgnored, provimuxKeepIgnored{Value: ignored.Value, Reason: ignored.Reason})
 	}
 
-	for _, other := range snapshot.Others {
-		accounts := make([]provimuxNameAccount, 0, len(other.ClientIDs))
-		for _, id := range other.ClientIDs {
-			if auth := byID[id]; auth != nil {
-				accounts = append(accounts, provimuxNameAccount{
-					AuthIndex: provimuxString(lockedAuthIndex(auth)),
-					Provider:  auth.Provider,
-					Kind:      provimuxString(auth.AuthKind()),
-					Priority:  auth.Priority(),
-					Host:      provimuxString(provimuxBaseURLHost(auth)),
-					Login:     provimuxLoginOf(auth),
-				})
-			} else if provider := provimuxPluginExecutorProvider(id); provider != "" {
-				// A plugin executor's own models: no account, the plugin's provider.
-				accounts = append(accounts, provimuxNameAccount{Provider: provider})
-			}
-		}
-		if len(accounts) == 0 {
-			continue
-		}
+	for _, other := range others {
+		accounts := other.Accounts
 		sort.SliceStable(accounts, func(i, j int) bool {
 			return provimuxRouteLess(provimuxRoute{AuthIndex: accounts[i].AuthIndex, Provider: accounts[i].Provider, Kind: accounts[i].Kind, Priority: accounts[i].Priority, Login: accounts[i].Login},
 				provimuxRoute{AuthIndex: accounts[j].AuthIndex, Provider: accounts[j].Provider, Kind: accounts[j].Kind, Priority: accounts[j].Priority, Login: accounts[j].Login})
 		})
-		response.Others = append(response.Others, provimuxOtherName{Name: other.Name, Accounts: accounts})
+		response.Others = append(response.Others, *other)
 	}
 	sort.SliceStable(response.Others, func(i, j int) bool { return provimuxNameLess(response.Others[i].Name, response.Others[j].Name) })
 
-	if snapshot.Refused != nil && !home && enabled {
-		refused := &provimuxRefusedNamesBody{Since: provimuxTime(snapshot.Refused.Since), Names: []provimuxRefusedName{}, Truncated: snapshot.Refused.Truncated}
-		for _, name := range snapshot.Refused.Names {
-			refused.Names = append(refused.Names, provimuxRefusedName{Name: name.Name, Requests: name.Requests, LastAt: provimuxTime(name.LastAt)})
+	if rule.Applies() && !home {
+		if refused := registry.ProvimuxRefusedNow(); refused != nil {
+			body := &provimuxRefusedNamesBody{Since: provimuxTime(refused.Since), Names: []provimuxRefusedName{}, Truncated: refused.Truncated}
+			for _, name := range refused.Names {
+				body.Names = append(body.Names, provimuxRefusedName{Name: name.Name, Requests: name.Requests, LastAt: provimuxTime(name.LastAt)})
+			}
+			response.Refused = body
 		}
-		response.Refused = refused
 	}
 	return response
+}
+
+// provimuxNameAccountOf names a registry client as a route of GET /provimux/model-routes names its account; a
+// plugin executor's own models have no account, only the plugin's provider.
+func (h *Handler) provimuxNameAccountOf(byID map[string]*coreauth.Auth, clientID string) provimuxNameAccount {
+	if auth := byID[clientID]; auth != nil {
+		return provimuxNameAccount{
+			AuthIndex: provimuxString(lockedAuthIndex(auth)),
+			Provider:  auth.Provider,
+			Kind:      provimuxString(auth.AuthKind()),
+			Priority:  auth.Priority(),
+			Host:      provimuxString(provimuxBaseURLHost(auth)),
+			Login:     provimuxLoginOf(auth),
+		}
+	}
+	return provimuxNameAccount{Provider: provimuxPluginExecutorProvider(clientID)}
 }
 
 // provimuxNameLess sorts names without case, then by their bytes, as model-routes sorts ids.

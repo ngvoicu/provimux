@@ -48,6 +48,8 @@ type ModelInfo struct {
 	OAuthAlias string `json:"-"`
 	// OAuthAliasSource is the exact published source of that alias, including any suffix.
 	OAuthAliasSource string `json:"-"`
+	// PrefixedFrom is the id a copy under an account's prefix copies ("opus" on "team-a/opus"). Provimux: only-my-names
+	PrefixedFrom string `json:"-"`
 	// ExplicitThinking indicates thinking/reasoning configuration was explicitly configured for this model.
 	ExplicitThinking bool `json:"-"`
 	// ExplicitInputModalities indicates input modalities were explicitly configured for this model.
@@ -1723,6 +1725,9 @@ func (r *ModelRegistry) GetAvailableModelInfos() []*ModelInfo {
 		if !available || registration == nil || registration.Info == nil {
 			continue
 		}
+		if r.provimuxHeld(registration.Info) { // Provimux: only-my-names
+			continue
+		}
 		result = append(result, cloneModelInfo(registration.Info))
 	}
 	sort.Slice(result, func(i, j int) bool {
@@ -1741,6 +1746,9 @@ func (r *ModelRegistry) buildAvailableModelsLocked(handlerType string, now time.
 			expiresAt = registrationExpiresAt
 		}
 		if !available || registration == nil {
+			continue
+		}
+		if r.provimuxHeld(registration.Info) { // Provimux: only-my-names
 			continue
 		}
 

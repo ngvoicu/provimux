@@ -24,8 +24,6 @@ var provimuxNow = time.Now
 type provimuxModelRoutesResponse struct {
 	ObservedAt string          `json:"observed_at"`
 	Models     []provimuxModel `json:"models"`
-	// Applied is the models.only-my-names marker of GET /provimux/names (Provimux, only-my-names.md).
-	Applied provimuxNamesApplied `json:"applied"`
 }
 
 type provimuxModel struct {
@@ -88,7 +86,6 @@ func (h *Handler) ProvimuxModelRoutes(c *gin.Context) {
 	response := provimuxModelRoutesResponse{
 		ObservedAt: provimuxTime(now),
 		Models:     []provimuxModel{},
-		Applied:    h.provimuxNamesAppliedNow(),
 	}
 	var only map[string]struct{}
 	if values, ok := c.Request.URL.Query()["model"]; ok {
@@ -123,6 +120,12 @@ func (h *Handler) provimuxAuthManager() *coreauth.Manager {
 func provimuxBuildModelRoutes(manager *coreauth.Manager, only map[string]struct{}, now time.Time) []provimuxModel {
 	modelRegistry := registry.GetGlobalRegistry()
 	routesByModel := make(map[string][]provimuxRoute)
+	// models.only-my-names (only-my-names.md 16.4): while the rule applies, only the names it serves, read
+	// as the answer is made; otherwise this is one atomic load.
+	var served map[string]bool
+	if registry.ProvimuxApplies() {
+		served = make(map[string]bool)
+	}
 	for _, auth := range manager.List() {
 		if auth == nil || auth.Disabled {
 			continue
@@ -137,6 +140,9 @@ func provimuxBuildModelRoutes(manager *coreauth.Manager, only map[string]struct{
 				if _, wanted := only[model.ID]; !wanted {
 					continue
 				}
+			}
+			if provimuxGated(served, model.ID) {
+				continue
 			}
 			routeModels = append(routeModels, model.ID)
 		}
@@ -160,6 +166,9 @@ func provimuxBuildModelRoutes(manager *coreauth.Manager, only map[string]struct{
 				if _, wanted := only[model.ID]; !wanted {
 					continue
 				}
+			}
+			if provimuxGated(served, model.ID) {
+				continue
 			}
 			route := base
 			route.Limits = provimuxLimitsOf(model, false)
@@ -339,15 +348,16 @@ func provimuxTime(t time.Time) string {
 	return t.UTC().Format(time.RFC3339Nano)
 }
 
-// provimuxNamesAppliedNow is the only-my-names marker for the enabled accounts.
-func (h *Handler) provimuxNamesAppliedNow() provimuxNamesApplied {
-	var ids []string
-	if manager := h.provimuxAuthManager(); manager != nil {
-		for _, auth := range manager.List() {
-			if auth != nil && !auth.Disabled {
-				ids = append(ids, auth.ID)
-			}
-		}
+// provimuxGated reports whether models.only-my-names leaves id out; served (nil while the rule does not
+// apply) remembers each id's answer for one response.
+func provimuxGated(served map[string]bool, id string) bool {
+	if served == nil {
+		return false
 	}
-	return provimuxNamesAppliedOf(registry.ProvimuxNamesApplied(ids))
+	ok, known := served[id]
+	if !known {
+		ok = registry.ProvimuxServes(id)
+		served[id] = ok
+	}
+	return !ok
 }
