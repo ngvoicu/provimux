@@ -4,12 +4,15 @@ Design, 2026-11-25. This is the design only: no code exists yet.
 
 **The owner's question.** "Should we get from providers.dev also the cache and prices and advertise them? This computer has pi-cache-keeper, which already does that, but other computers might not."
 
-**The answer.** Yes, in two parts that can ship apart, and smaller than "Provimux hands out prices and lifetimes":
+**The owner's objection, the same day.** On a Pi without pi-cache-keeper, or on opencode, advertising prices and lifetimes helps little: a client would have to write its own tool to keep a cache warm or to time compaction.
 
-1. **Provimux says, per account behind a model, which providers.dev entry it is** (`provider` and `model`, providers.dev's own ids). It needs no request to anyone. It is what pi-cache-keeper lacks today for every name the owner sets himself.
-2. **The console shows providers.dev's figures on each account's line** of a name's card: the price per token, and the cache lifetimes with who measured them and when. For that Provimux asks providers.dev for entries, in the round that already asks it for model lists.
+**The answer.** He is right about clients: none of them does anything with a figure it is merely shown (3.2). So the data is worth fetching for what **the gateway** does with it, and showing it comes last. Three parts, in this order:
 
-Provimux does not put the figures into `/v1/models`, acts on none of them, and does not make pi-provimux write a cache lifetime into Pi. Section 3 says why.
+1. **Provimux says, per account behind a model, which providers.dev entry it is** (`provider` and `model`, providers.dev's own ids). It needs no request to anyone. It is not advertising: it repairs the data of the one client that already has its own tool, pi-cache-keeper, which gets nothing today for a name the owner set himself.
+2. **Provimux acts on the cache lifetime, for every client: a conversation that spilled over to a paid key goes back to the preferred account once the key's cache is cold** (3.3, 9.5). Today it stays on the key for as long as it keeps talking. This adds no request and changes none; it only chooses the account. It is the acting feature to build first.
+3. **The console shows the figures** on each account's line of a name's card. On its own this is not worth a build (3.4). After part 2 it explains what the gateway does, and it is cheap, because the data is then already held.
+
+Provimux does not put the figures into `/v1/models`, does not make pi-provimux write a cache lifetime into Pi, and sends no request of its own to keep a cache warm. Section 3 says why.
 
 **Read from.**
 
@@ -54,15 +57,73 @@ Every `file:line` of Provimux below is in `e8b6b74d3`.
 
 ## 3. Whether, and for whom
 
+### 3.1 The readers
+
 | Reader | What it would do with the figures | Verdict |
 |---|---|---|
-| The console's user | Order the accounts in a pool: a subscription first, the cheaper key next, the route whose cache holds longer. See what a key charges before keeping a name. Works whatever client is used | **Yes.** The main reader |
+| **Provimux itself** | It sits in the path of every request, so what it does works for any client. It can choose the account by what is known of the cache (3.3) | **Yes.** The reader that makes the data worth fetching |
 | pi-cache-keeper, on a machine that has it | It needs no figure from Provimux: it reads providers.dev itself. It needs the **entry** of each route, which it gets wrong for the owner's own names (finding 4) | **Yes, the reference only** |
-| pi-provimux, on a machine without pi-cache-keeper | It could write a lifetime into Pi's model (`promptCache`), and Pi's own warmer would then spend tokens on it. On a pooled name it does not know which account will answer; pi-cache-keeper handles that with the answered route and its checks, and pi-provimux would have to copy them | **No.** The answer for such a machine is to install pi-cache-keeper; pi-provimux's README says so |
-| Other clients | Nothing: they ignore unknown fields | Console only |
-| Provimux itself | Nothing. It never refreshes a cache and never picks a route by price | No |
+| The console's user | Order the accounts in a pool once: a subscription first, the cheaper key next. See what a key charges before keeping a name | A link to the entry's page does most of this (3.4) |
+| Clients | 3.2 | Nothing |
 
-So the honest reach is: **the console, and one small field for clients**. The field is worth building even on its own.
+### 3.2 What each client would do with a figure, with no code of its own
+
+"Shown" means the figure were in `/v1/models` or in a header.
+
+| Client | A price | A cache lifetime |
+|---|---|---|
+| **Pi with pi-provimux only** | Nothing new. Pi already shows a cost, from the price pi-provimux takes from models.dev. A price per account would need pi-provimux to choose one of them for a pooled name | Nothing by itself: pi-provimux would have to write it into the model (`promptCache`). Then Pi's own warmer would act on it, where the user turned `cacheWarming` on. It is the one client with a built-in tool. But Pi never checks a warm-up's result, so a lifetime that is too long is paid for as a full cache write each time, silently; and for a pooled name pi-provimux does not know which account will answer. Choosing the value safely is what pi-cache-keeper is |
+| **opencode** | Nothing. It prices from its own model data and configuration | Nothing. It has no warmer and does not time compaction by a lifetime |
+| **Claude Code** | Nothing. It prices from its own table | Nothing. It asks Anthropic for the lifetime it wants and reads no model list for one |
+| **Codex CLI** | Nothing. Its model catalog has no price it reads | Nothing. It sends its cache key and has no warmer |
+
+For opencode, Claude Code and Codex CLI this is from what each is known to do, not from reading their code today [infer]. No client would break: all ignore unknown fields.
+
+So for a Pi without pi-cache-keeper the answer stays "install pi-cache-keeper" (pi-provimux's README says so), and for every other client the answer is 3.3.
+
+### 3.3 What Provimux itself could do with the data
+
+Compaction stays the client's: only the client knows its own context.
+
+**A. Back to the preferred account once the cache is cold. Build it; first.**
+
+| | |
+|---|---|
+| What upstream does today | With `routing.session-affinity: true` a conversation is bound to the account that served it. Every request refreshes the binding; it ends after `session-affinity-ttl` without a request, one hour unless set, the same for every account (`sdk/cliproxy/auth/session_cache.go:122-144`). The binding outranks priority: "once a session is bound, that credential is kept even if a higher-priority credential recovers" (`config.example.yaml:229-232`; `Pick`, `sdk/cliproxy/auth/selector.go:1738-1745`) [read]. The session is found from the headers of Claude Code, Codex, OpenCode and pi, from `X-Session-ID`, a cache key, or the shared start of the conversation (`config.example.yaml:221-228`). So "keep a conversation on the account that holds its cache" exists, for every client, and the owner has it on |
+| What is missing | The way back. A conversation that failed over from a subscription to a paid key (the plan's limit, a cooldown) stays on the key while it keeps talking, and for an hour after. An agent run that never pauses for an hour pays per token until it ends, long after the subscription is available again |
+| The rule | Opt-in. A binding to an account **below the highest priority that is available** is not honoured once the conversation has been quiet for longer than that account's cache lifetime for the model. The request is then routed as a conversation without a binding, and bound where it lands |
+| Why the lifetime is the right moment | Past it, the prompt has to be written to a cache again wherever the request goes. Written on the subscription, it costs quota instead of money. Before it, moving would throw a warm cache away |
+| Which lifetime | First, what the bound account's own last answer in this conversation reported for its cache write, where the vendor reports one (Claude's format does, 5 minutes or 1 hour; the usage record carries it, `internal/provimux/savings/record.go:60`). Else providers.dev's entry for the account: the largest lifetime it states for the entry, in either profile, measured or documented. The largest, because returning late costs nothing new and returning early gives up a warm cache. Unknown: the binding holds as today |
+| Cost in tokens or quota | No request is added and none is changed. A lifetime known too short: one cache write on the preferred account where a cheap read on the key would have done. The preferred account failing again at once: failover as today, back to a key whose cache was cold anyway |
+| Risks | The vendor sees the same requests as today, from the same accounts the owner put behind the name, so nothing about subscription terms changes. The risk is in the code: the rule sits in upstream's selector, a file upstream changed 13 times between v8.0.60 (2026-11-08) and v8.1.3 (2026-11-25) [ran: `git log`]. The edit is an inserted block and a new file (9.5); a rebase conflict is reported by the sync check as for any patch |
+| Why the data fits here | The account a conversation spills to is almost always an API key, and on API keys providers.dev's lifetime is a direct measurement or the documented one. Finding 2's doubt is about logins, which are the account to return **to**, whose lifetime the rule does not need |
+| Who gains | Whoever has a subscription and a paid key behind one name, with any client upstream can tell a conversation of |
+
+**B. Money on the Savings page per account. A separate, small task; not for this data.**
+
+| | |
+|---|---|
+| What exists | Savings stores a day's rows by account kind, provider, host, model and client key, not by account; the record's account is deliberately not read (`internal/provimux/savings/record.go:24-25`). It values tokens at OpenRouter's list price for the maker's model, and shows OpenRouter's real charge where the answer reports one |
+| What "per account" needs | The account's index in the stored row and one more grouping. No providers.dev data. It adds a field to the stored day, which is kept for good, so it wants its own design note |
+| What providers.dev's price would add | The provider's own price by the account's exact entry, in place of a name matched by rewriting, for the latest models only. On first-party keys the two prices are the same number. Size tiers still cannot be applied: a day's totals hold no request sizes |
+| Cost, risk | None in tokens. A second price source in an estimate whose past days must not move |
+| Verdict | Per-account grouping: worth doing when the owner wants to see which key or login spent what; it does not wait for anything here. Prices from providers.dev in Savings: no |
+
+**C. A keep-warm request sent by the gateway. Do not build it.**
+
+| | |
+|---|---|
+| What upstream does | Nothing. No code re-sends a request to keep a cache alive [ran: a search; the matches are a client's own websocket pre-warm and a latency probe] |
+| What it would take | Holding each conversation's last request in memory (megabytes each, up to 65,536 bindings), re-sending it with one output token before the lifetime ends, to the same account, and telling a client's own warm-ups apart so nothing is warmed twice |
+| Cost | A cache read of the whole prompt each time. For a 300,000-token conversation at Claude Opus 5.5's cache-read price ($0.20 per million) $0.06 a warm-up: on a 5-minute cache twelve an hour, $0.72 an hour for a conversation nobody may come back to. On a subscription it is quota and requests against the plan's limits. The gateway cannot know whether the user is still there; Pi's own warmer assumes a 15 % chance while idle and stops at 30 minutes |
+| Risks | The gateway would send a user's content to a vendor in a request no client asked for. On a login that is traffic the vendor's own client would never send, under that client's name: the surest way to put a subscription at risk. A re-sent request can have effects: a stored response, a turn in Devin's session. A request with budget thinking cannot be re-sent this way. And a lifetime that is wrong (finding 2) turns every warm-up into a full cache write |
+| Verdict | No. Where a longer cache is wanted for a client without a warmer, the better tool is the one Provimux already uses on Claude logins: asking the vendor for the longer lifetime in the client's own request. Doing that on an API key, per key and opt-in, changes a request to a vendor, so it is an owner patch and a decision of its own; and the one measurement of it through Provimux held 10 minutes, not an hour (finding 2, last row), so it is to be measured before it is offered |
+
+### 3.4 Is showing the data alone worth a build?
+
+No. The figures in the console (steps E2 and C1 of section 11, two medium steps and a daily request) would serve one decision the user takes once, the order of a pool, and he can read the same figures on providers.dev. E1 gives the console the entry of every account, so each line of a card can link to that entry's page at no cost and with no request.
+
+What is worth a build: E1 with X1, because it makes an existing tool right; then A, because it saves money for any client. Once A holds the data, showing it is a small step and has a second purpose: the card can say why a conversation went back.
 
 **pi-cache-keeper and the console can show different numbers, and that is allowed.** They read the same dataset at different times (Provimux every 6 hours, pi-cache-keeper daily), and the console prints measurements through Provimux where pi-cache-keeper uses the safe value. Both name providers.dev and the date. In Pi, pi-cache-keeper's value is the one in force, because it is the only one that acts; nothing of Provimux's overrides it. They cannot disagree on **which entry** a route is, because that comes from Provimux alone (section 5).
 
@@ -399,6 +460,56 @@ The event stays `model-upstreams`; `entry` is one optional key on an upstream, i
 | C1 | the console's own tests of 9.2; `bun run verify`; the page checked against a stand-in gateway |
 | X1 | pi-provimux: an account with the field, without it, with a malformed one; the event's `entry`. pi-cache-keeper: an upstream with `entry` finds the entry under a name that is not a model id |
 
+### 9.5 Back to the preferred account (3.3 A)
+
+**The setting.** `routing.session-affinity-return: "cold"`. Absent means off: the binding holds as upstream's does. It is read only while `routing.session-affinity` is on, and not in Home mode.
+
+**New files.**
+
+| File | Holds |
+|---|---|
+| `sdk/cliproxy/auth/provimux_affinity_return.go` | the rule; a read of a binding's account and last use that does not refresh it (in this package, so it reads the cache's own entry); the hook for the lifetime |
+| `sdk/cliproxy/provimux_cache_lifetimes.go` | the lifetime of an account's cache for a model: what its last answer in the conversation reported, else the entry's (through `provimuxEntryRefOf` and the held entries) |
+| their `_test.go` files | below |
+
+```go
+// sdk/cliproxy/auth
+
+// ProvimuxCacheLifetime returns how long authID's cache for model is known to live, and false where
+// nothing is known. Set by sdk/cliproxy; nil means nothing is known.
+var ProvimuxCacheLifetime func(authID, model, sessionKey string) (time.Duration, bool)
+
+// provimuxLastUse returns the account a session is bound to and when the binding was last refreshed,
+// without refreshing it.
+func (c *SessionCache) provimuxLastUse(sessionKey string) (authID string, last time.Time, ok bool)
+
+// provimuxBindingCold reports whether the binding of sessionKey should not be honoured: the rule is on,
+// the bound account is below the highest priority among available, and the session has been quiet for
+// longer than the bound account's known cache lifetime.
+func (s *SessionAffinitySelector) provimuxBindingCold(sessionKey, model string, available []*Auth, now time.Time) bool
+```
+
+**Edits to upstream's files: additions only.**
+
+| File | Edit | Lines |
+|---|---|---|
+| `sdk/cliproxy/auth/selector.go` | in `Pick`, before the binding is read and refreshed (`:1738`): if `provimuxBindingCold`, drop the binding and continue as for a session without one | +4 |
+| `sdk/cliproxy/auth/selector.go` | the same where the other paths honour a binding: the fallback key (`:1797`) and the shared-start matcher (`pickLCP`, `:1851`) | to be counted in the step; not read in full |
+| `sdk/cliproxy/service_config.go` | the setting handed to the selector's state, beside the three affinity settings (`:60-63`, `:83-100`) | +4 |
+| `internal/config/config_types.go` | the field, beside `SessionAffinityRebindOn` (`:620`) | +3 |
+| `config.example.yaml`, the README's Provimux part | the setting | text |
+
+No protected path: `sdk/cliproxy/session` is not touched. The line an answer's cache write lifetime is noted on is in the layer's own usage plugin, not in an executor.
+
+**Must hold afterwards.**
+
+- Off, every test of upstream's selector passes unchanged, and `Pick` returns what it returned before for every case of a recorded table.
+- On: a session bound to a key below an available login, quiet for longer than the key's lifetime, is routed to the login and bound there; quiet for less, it stays; with no lifetime known, it stays; bound to the highest available priority, it stays whatever the quiet time; with the login in cooldown, it stays on the key.
+- A lifetime the last answer reported wins over the entry's; the entry's is the largest it states.
+- The weighted strategy's credits are not counted twice when a binding is dropped (the selector's own reservation code decides; a test with `weighted-round-robin`).
+- One log line when a conversation goes back, naming both accounts by index and the quiet time; never the session id in full.
+- The status: `model-routes` is unchanged. The console shows the setting's switch beside the affinity settings, with one sentence.
+
 ## 10. Fit with what is being built
 
 **"Only my names"** (branch `only-my-names`: N1 and N2 built, N3 the console in work).
@@ -408,39 +519,47 @@ The event stays `model-upstreams`; `entry` is one optional key on an upstream, i
 - Shared lines: `internal/api/server_provimux.go` (each adds one route), `pui13/openapi.yaml` (each adds a path), the console's `NameCard.tsx`, `catalog.ts` and the seven locale files. So this lands **after** N3, on top of it. `catalog_config.go` is not touched here.
 - Later, not in this build: the accounts of `/provimux/names`' `others` could carry `providers_dev` too, so the Keep preview can say "paid per token, $2 in". It is growth of that answer.
 
+**Session affinity** is upstream's and stays as it is with the new setting off. With it on, only one decision changes: whether a binding to a lower-priority account is still honoured after a quiet time. `rebind-on`, subagent inheritance, the TTL and failover are untouched.
+
 **Savings** stays on OpenRouter's list. A day keeps the prices it was valued with, and its question is what the tokens would have cost at list price, for every model, also ones providers.dev does not list. The card's price is the entry's, for the account's own provider. Both name their source.
 
 **P3 (listings)** is unchanged. Its Kimi row is the one open point this design found (5.2).
 
 ## 11. The steps
 
-S: up to a day of one worker. M: one to two days.
+S: up to a day of one worker. M: one to two days. L: three to five days.
 
 | Step | Repo | Size | Holds | Depends on | Ships alone |
 |---|---|---|---|---|---|
-| E1 | Provimux | M | the map, the upstream id, `providers_dev` on both account lists, the contract. No request | | yes: clients and the console's link gain at once |
+| E1 | Provimux | M | the map, the upstream id, `providers_dev` on both account lists, the contract. No request | | yes |
 | X1 | pi-provimux, pi-cache-keeper | S each | section 9.3 | E1's contract; can be built against a fixture | yes, with any gateway |
-| E2 | Provimux | M | the entries request, the disk copy, the endpoint, the README part | E1 | yes: nothing shows until the console reads it |
-| C1 | provimux-ui | M | section 9.2 | E2's contract and a stand-in gateway; N3 merged | with E2 released |
-| Review | each | S | one reviewer for E1 and E2 (a figure for a wrong account; the request's privacy; start without network; the sync check no worse than upstream), one for C1 (every line of section 8's "never" table) | | |
-| Release | Provimux, the console, the two extensions | | E1 with the next `-pmx` release; X1 after it; E2 and C1 together | | |
-| W1 | the site, the READMEs | S | the sentences of section 8, after the owner's word on them | C1 released | |
+| C0 | provimux-ui | S | each account's line links to its entry's page on providers.dev, from `providers_dev` | E1 released; N3 merged | yes |
+| E2 | Provimux | M | the entries request, the disk copy, the endpoint, the README part | E1 | yes: it feeds A1 |
+| A1 | Provimux | L | section 9.5: the rule, the lifetime from the answer and from the entry, the setting, the tests; the switch in the console (S, with it) | E1, E2. A first cut can use the answer's own lifetime alone, which covers Claude keys | yes, off unless set |
+| C1 | provimux-ui | M | section 9.2: the figures on the line | E2 released; after A1 | optional |
+| Review | each | S | E1 and E2: a figure or a reference for a wrong account; the request's privacy; start without network; the sync check no worse than upstream. A1: a path that still honours a cold binding or drops a warm one; upstream's selector tests unchanged with the setting off. C1: every line of section 8's "never" table | | |
+| Release | Provimux, the console, the two extensions | | E1 with the next `-pmx` release; X1 and C0 after it; E2 with A1 | | |
+| W1 | the site, the READMEs | S | the sentences of section 8 and one for A1, after the owner's word on them | A1 released | |
 
-**Recommendation: do E1 now, right after "only my names"; E2 and C1 next.** The first step is E1. If only one thing is built, it is E1 with X1: it costs no request, and it repairs data pi-cache-keeper already shows.
+**Recommendation: do E1 and X1 now, right after "only my names"; then E2 and A1; C1 only if wanted after that.** The first step is E1. If only one thing is built, it is E1 with X1: it costs no request and repairs data pi-cache-keeper already acts on. If nothing in the gateway is to act, stop after C0: E2 and C1 are not worth building for the console alone (3.4).
 
 ## 12. Decisions that are the owner's or the chief's
 
 | # | Decision | Recommendation | The other way costs |
 |---|---|---|---|
-| 1 | Build it, and in which shape | **The reference for clients, the figures in the console.** No figure on `/v1/models`, nothing that acts | Figures on `/v1/models` have one possible reader, pi-provimux, which should not act on them (section 3); they can be added later as growth |
+| 1 | Build it, and in which shape | **The reference for clients now; then the gateway acts on the lifetime (3.3 A); the figures in the console last, and only if wanted.** No figure on `/v1/models` | Figures on `/v1/models` have no reader that acts without code (3.2). Showing alone is not worth its two steps and a daily request (3.4) |
+| 1a | The first acting feature | **Back to the preferred account once the cache is cold**, opt-in | A keep-warm from the gateway costs requests on a guess and sends a user's content unasked (3.3 C). Per-account money on Savings needs none of this data and is its own task (3.3 B) |
+| 1b | Which lifetime the return waits for | **The answer's own where it reports one, else the largest the entry states; unknown never returns** | A fixed wait (say 5 minutes) needs no data and returns too early from a 30-minute or 1-hour cache, giving up warm caches on keys that have them |
+| 1c | An inserted block in upstream's selector | **Accept it**: nothing outside the selector can decide which account a bound session gets | Without it there is no way back; the block is small, off by default, and the sync check names a conflict |
 | 2 | Which cache figure a route's line leads with | **A measurement through Provimux where one exists, the safe value named by its client beside it** | The safe value alone is one number and simpler, and for 16 logins today it is not what a request through Provimux gets |
 | 3 | The switch | **`models.published-lists` turns both requests off** | A second key lets a user keep lists and refuse figures; one more setting to explain for one host |
 | 4 | OpenRouter in the request | **Yes**: 400 entries, 85 of them with a measured lifetime, two more pages a day | Without it the paid route most users have shows a price only, from the list Provimux already holds, under a second label |
 | 5 | Kimi, the xAI login, AI Studio, a Meta key | **Empty**, and P3's Kimi row is checked against the login's host | A guess shows another plan's figures as this account's |
 | 6 | The model behind a name becomes visible to a holder of a client key, with `include=accounts` | **Accept**: it is asked for explicitly, and the list already gives provider, kind and host | A setting to hide it; then Pi gets no data for his own names, which is the point of E1 |
-| 7 | pi-provimux writes no cache lifetime into Pi; the README points to pi-cache-keeper | **Yes** | A second, simpler keeper inside pi-provimux that warms a cache on the wrong account's lifetime in a pool |
+| 7 | pi-provimux writes no cache lifetime into Pi; the README points to pi-cache-keeper | **Yes** | Pi's own warmer would act on it, never checks a warm-up, and pays a full cache write each time the lifetime is too long (3.2) |
 | 8 | Savings' prices | **Stay OpenRouter's** | Moving them to providers.dev leaves every model it does not list unpriced |
 | 9 | The public sentences of section 8 | the owner's words; the draft is there | |
+| 10 | Asking for the longer cache on an API key, per key, in the client's own request (3.3 C, verdict) | **Not now**: measure it through the gateway first; it is an owner patch | |
 
 Not asked, worth knowing: pi-cache-keeper uses the safe value on a route through Provimux, and says so in its README. Finding 2 puts numbers on it for Codex and Devin logins, in both directions. Whether it should prefer a measurement made by a coding agent through Provimux is a question for that extension, not for this design.
 
@@ -455,6 +574,8 @@ Not asked, worth knowing: pi-cache-keeper uses the safe value on a route through
 | `GET /api/v1/listings?view=full&limit=40&provider=<the same twelve>` | 10 listings; how many rows have an `entry` (finding 3) |
 | `GET /api/v1/meta` | the editorial rules that leave older models out; `stale_after_days` 90 |
 | Read: Provimux's account list, model routes, the listings client and its round, Savings' prices; "only my names" as built; pi-provimux's tables and `upstreamOf`; pi-cache-keeper's reader | sections 1, 2, 9, 10 |
+| Read: the affinity selector's `Pick` to its cache-hit branch, the session cache, the affinity settings and their comments in `config.example.yaml` | 3.3 A, 9.5 |
+| `git log v8.0.60..v8.1.3` on `selector.go` and `session_cache.go`; a search of the tree for a warm-up | 13 commits; no request is re-sent to keep a cache alive |
 
 **Not verified.**
 
@@ -464,4 +585,9 @@ Not asked, worth knowing: pi-cache-keeper uses the safe value on a route through
 | That a page's `ETag` changes whenever any entry on it changes | E2: the document is also checked by `dataset_version` on every page |
 | That the two client ids stay the only ones that mean "through Provimux" | E2 keeps them as a constant; a new id on providers.dev's side is one line here. If a third appears, a marker on the client in providers.dev's API is the growth to ask for |
 | Which host a Kimi login of the owner uses; whether a Meta key can be told from a Muse Code subscription's key | decision 5 |
+| Every place the selector honours a binding beyond `Pick`'s cache-hit branch (the fallback key, the shared-start matcher, a plugin's lookup, Home mode) | A1: its first task is that list, as a test that fails when upstream adds one |
+| Which vendors' answers report the lifetime of a cache write, beyond Claude's format | A1; where none is reported the entry's is used |
+| That a usage record's session id is the key the selector binds a session under, so an answer's reported lifetime can be found again for that binding | A1; if not, the note is taken where the selector sees the result (`OnResult`) |
+| How often the owner's conversations spill to a paid key and stay there | Savings' split by account kind shows the paid share today; A1's log line counts the returns |
+| What opencode, Claude Code and Codex CLI do with unknown model fields | not needed: nothing is added for them |
 | Nothing was built or run against a gateway | every step's tests |
