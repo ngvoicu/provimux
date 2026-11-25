@@ -16,6 +16,11 @@ import (
 // Provimux: models.only-my-names, the door (G2) and the routers (G3) of only-my-names.md 16.3 and 18. With the
 // rule not applying, each costs one atomic load and allocates nothing.
 
+// provimuxRuleValue is the rule value a request is judged under, carried from the router check (G3) to the door
+// (G2) in modelRouteDecision's one Provimux field, and with the decision in the context of a prepared stream
+// route. Nil when the decision was not made by applyModelRouter: the door then loads the rule itself.
+type provimuxRuleValue = *onlymynames.Rule
+
 // provimuxDoorLoaded runs right after the door loaded its rule value, and provimuxDoorBetween between its
 // judgement of the requested name and of a router's target. Tests commit another rule there, to show that every
 // judgement of the request uses the value the door loaded first.
@@ -41,7 +46,10 @@ func ProvimuxDoorHoldAfterLoad(hold func()) func() {
 // invalid_request_error, model_not_found, param model) with the setting's message, counted under the name
 // without its thinking suffix.
 func (h *BaseAPIHandler) provimuxDoor(modelName *string, originalRequestedModel string, decision modelRouteDecision) *interfaces.ErrorMessage {
-	rule := onlymynames.Current()
+	rule := decision.provimuxRule // the value the router check judged under
+	if rule == nil {
+		rule = onlymynames.Current() // no router check ran for this decision: load once
+	}
 	if !rule.Applies() {
 		return nil
 	}
@@ -90,11 +98,14 @@ func provimuxDoorJudge(rule *onlymynames.Rule, name string) *interfaces.ErrorMes
 	return &interfaces.ErrorMessage{StatusCode: http.StatusBadRequest, Error: errors.New(body)}
 }
 
-// provimuxNoRouter reports whether no plugin router may be asked about modelName: the rule in force applies and
-// does not serve the name. "auto" is never served as a name, so no router is asked about it while the rule
-// applies. The request then goes on to the door, which refuses it.
-func provimuxNoRouter(modelName string) bool {
+// provimuxNoRouter loads the rule in force, stores it on the decision for the door, and reports whether no
+// plugin router may be asked about modelName: the rule applies and does not serve the name. "auto" is never
+// served as a name, so no router is asked about it while the rule applies. The request then goes on to the
+// door, which refuses it under the same value. Whatever applyModelRouter returns carries the value: every
+// return of it passes after this call, and none builds a new decision.
+func provimuxNoRouter(decision *modelRouteDecision, modelName string) bool {
 	rule := onlymynames.Current()
+	decision.provimuxRule = rule
 	name := strings.TrimSpace(modelName)
 	return name != "" && rule.Refuses(name)
 }
