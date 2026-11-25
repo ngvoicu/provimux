@@ -19,16 +19,19 @@ type sample struct {
 	provider, host string
 	model, key     string
 	n              counters
+	asked          string // the model name the client sent, without a thinking suffix; "" when unknown
 }
 
-// sampleOf reduces a record to what is stored. Pure. Nothing else of the record is read: not Alias,
-// Source, AuthID, AuthIndex, SessionID, ResponseHeaders or Fail.Body.
+// sampleOf reduces a record to what is stored. Pure. Nothing else of the record is read: not Source,
+// AuthID, AuthIndex, SessionID, ResponseHeaders or Fail.Body. Alias (the name the client sent) is kept
+// apart from the rows, by requestedName.
 func sampleOf(ctx context.Context, record coreusage.Record, location *time.Location, now time.Time) sample {
 	s := sample{
 		kind:     kindOf(record.AuthType),
 		provider: cut(record.Provider, 64),
 		model:    cut(record.Model, 128),
 		key:      record.APIKey,
+		asked:    requestedName(record),
 	}
 	if strings.TrimSpace(s.key) == "" {
 		s.key = ""
@@ -140,5 +143,8 @@ func (r *recorder) HandleUsage(ctx context.Context, record coreusage.Record) {
 		r.incoming[s.day] = d
 	}
 	d.add(pk, s.n)
+	if s.asked != "" {
+		d.addAsked(s.asked, s.n)
+	}
 	r.inMu.Unlock()
 }

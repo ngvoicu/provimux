@@ -331,6 +331,7 @@ func (r *recorder) saveRound(ctx context.Context) {
 			rows = r.newDayRowsNow()
 		}
 		rows.mergePending(r.deltas[day].rows, state.secret)
+		rows.mergeAsked(r.deltas[day].asked)
 		rows.assignPrices(book)
 		data, errEncode := rows.encode(day)
 		if errEncode != nil {
