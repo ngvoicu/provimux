@@ -408,8 +408,12 @@ is one your config sets, and nothing else:
    for "the first available model"), are ignored, with a warning in the log (a pattern would let tomorrow's models in
    without your word).
 
-An alias written in a login's own file is not one of them: the status lists it with the other names, and one click on
-the console (or a line under `keep`) makes it yours. So which names are yours follows from the saved config alone.
+A copy of one of your names under a `prefix` your config gives a key or provider entry is yours too: with
+`prefix: crew` on an entry and `mine` yours, `crew/mine` is served. An alias written in a login's own file is not
+one of your names, and a prefix written only in a login's own file is not one the config gives: the status lists such
+a name, or such a copy, with the other names, and one click on the console (or the full name under `keep`) makes it
+yours. So what is yours follows from the saved config alone, and a request is answered from the rule of one saved
+config and the name it asks for, whatever the accounts are registering at that moment.
 
 Names are compared exactly, as a request is matched to a model: trimmed, and nothing else. `keep: [mixed-case]` does
 not make `Mixed-Case` yours, and a request must spell the name as you wrote it: with the switch on, `MINE` is refused
@@ -431,7 +435,7 @@ models:
 ```
 
 - It is by name, not by route: when a name is yours, every account that answers it serves it, in the same order and
-  pool as before. An account's `prefix` belongs to the account: `team-a/opus` is served when `opus` is yours.
+  pool as before.
 - Applied on reload, without a restart: the rule is in force for the next list and the next request from the moment
   the reload commits the saved config; no account has to register again. `enabled: false` (or removing the key)
   brings every name back, and `keep` stays for the next time. Removing an alias from the config stops serving its
@@ -439,10 +443,11 @@ models:
   is served, and the log says so at every reload.
 - A refused name gets the same HTTP 400 and `model_not_found` as an unknown model, with a message that says why:
   `model gpt-5.5 is not served: this Provimux serves only the names its owner set (models.only-my-names). Keep it on
-  the console's Models page, or ask for a served name (GET /v1/models).` A name no account offers keeps the usual
-  message.
+  the console's Models page, or ask for a served name (GET /v1/models).` Every refused request gets that message
+  and is counted, whether or not an account offers the name (the check reads the rule and the name, nothing else).
 - Before turning it on, `GET /v8/management/provimux/names` shows your names (with the ids served through each: its
-  copies under an account's prefix, and its spellings with a thinking suffix an account registers) and every other name your accounts offer (what would stop being served), with the accounts behind
+  copies under a prefix your config gives, and its spellings with a thinking suffix an account registers) and every
+  other name your accounts offer (what would stop being served), with the accounts behind
   each; once it is on, also which names tools asked for and were refused (in memory, up to 256 names). It is computed
   when asked, from the rule in force and what the accounts register, with the same check every list and request
   passes; its `applied` block names the config whose rule is in force (its ETag), so a save has taken effect once that
@@ -460,9 +465,10 @@ models:
   setting's message, as is a router's rewrite to a provider or to another model that is not yours. Alpha search
   (`/v1/alpha/search`) asks its router first, as CLIProxyAPI does, and then checks both the requested name and the
   router's choice: the router sees the name, nothing is served under it.
-- **A plugin executor's models in the Gemini format** (`GET /v1beta/models`): that format names a model by its
-  provider-native name. When that name differs from the id you kept, the Gemini list leaves the model out (and its
-  detail answers 404) rather than show a name that would be refused; the other formats list the kept id.
+- **The Gemini format** (`GET /v1beta/models`) names a model by the name it shows a Gemini client (a plugin executor's
+  provider-native name; for an alias spelled `models/gemini-2.5-pro`, the resource `models/gemini-2.5-pro`, which a
+  Gemini client generates as `gemini-2.5-pro`). When that name is not yours, the Gemini list leaves the model out and
+  its detail answers 404, as its generation is refused; the other formats list the name you kept.
 - **A plugin that rewrites the final model list** a client receives: what it adds is shown (the switch filters the
   lists the gateway builds, not what a plugin writes over them); a request for it is still refused.
 - **The Responses WebSocket** (`GET /v1/responses`): a prewarm (`response.create` with `generate: false`) for a name
