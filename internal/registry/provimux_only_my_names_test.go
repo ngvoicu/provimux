@@ -295,32 +295,57 @@ func TestProvimuxNamesConcurrent(t *testing.T) {
 	}
 }
 
-// The bound of 16.7, with the switch on: an uncached list over 20 accounts of 500 names not his, under 1 ms.
+// namesOnOffFactor is how much slower than the switched-off list the switched-on list of the same registry may be.
+// The switch on lists one name and skips 9,999 with one predicate call each, while the switch off lists all
+// 10,000, so on is the faster of the two: 0.22 to 0.37 of off on arm64 and 0.23 to 0.28 on amd64 (2026-11-25), about
+// four times below the factor. Each regression tried fails it: a gate that looks a skipped name up once per account,
+// as the build did before the index (only-my-names.md 16.11), 2.25 to 2.51; one that scans every registration
+// for each name (quadratic), 333.
+const namesOnOffFactor = 1.5
+
+// 16.7, with the switch on: a guard against a gross regression of the list's cost, not a measurement (the
+// benchmarks BenchmarkProvimuxNamesUncachedListOn and BenchmarkProvimuxO2UncachedGetAvailableModels hold the
+// figures). For the same registry of 20 accounts of 500 names not his, the median of 15 uncached lists with the
+// switch on must stay within namesOnOffFactor times the median with the switch off, measured interleaved in the
+// same process, so the machine's speed and load cancel out. A fixed wall-clock bound (it was 1 ms) cannot hold on
+// a shared runner: the same list took 0.8 to 1.5 ms on GitHub's and about 1.1 ms on the owner's Mac.
 func TestProvimuxNamesListBoundSwitchOn(t *testing.T) {
 	if testing.Short() || namesRaceDetector {
 		t.Skip("timing")
 	}
 	namesReset(t)
 	namesBenchAccounts(t, 20, 500)
-	SetProvimuxNamesRule(namesRule(true, []string{"bench-0-0"}))
 	reg := GetGlobalRegistry()
-	best := time.Hour
-	for range 20 {
+	uncached := func(want int) time.Duration {
 		reg.mutex.Lock()
 		reg.invalidateAvailableModelsCacheLocked()
 		reg.mutex.Unlock()
 		start := time.Now()
 		models := reg.GetAvailableModels("openai")
-		if took := time.Since(start); took < best {
-			best = took
+		took := time.Since(start)
+		if len(models) != want {
+			t.Fatalf("listed %d, want %d", len(models), want)
 		}
-		if len(models) != 1 {
-			t.Fatalf("listed %d", len(models))
-		}
+		return took
 	}
-	t.Logf("uncached list, switch on, 20 accounts x 500 names not his: %v (best of 20)", best)
-	if best > time.Millisecond {
-		t.Fatalf("uncached list took %v, bound 1 ms", best)
+	on, off := namesRule(true, []string{"bench-0-0"}), namesRule(false, []string{"bench-0-0"})
+	var onTimes, offTimes []time.Duration
+	for range 15 {
+		SetProvimuxNamesRule(off)
+		offTimes = append(offTimes, uncached(20*500))
+		SetProvimuxNamesRule(on)
+		onTimes = append(onTimes, uncached(1))
+	}
+	median := func(d []time.Duration) time.Duration {
+		slices.Sort(d)
+		return d[len(d)/2]
+	}
+	onMedian, offMedian := median(onTimes), median(offTimes)
+	t.Logf("uncached list, 20 accounts x 500 names not his: switch on %v, switch off %v (medians of 15), ratio %.2f, allowed %.1f",
+		onMedian, offMedian, float64(onMedian)/float64(offMedian), namesOnOffFactor)
+	if float64(onMedian) > namesOnOffFactor*float64(offMedian) {
+		t.Fatalf("the switched-on list took %v, more than %.1f times the switched-off list of the same registry (%v)",
+			onMedian, namesOnOffFactor, offMedian)
 	}
 }
 

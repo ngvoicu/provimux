@@ -738,7 +738,10 @@ Tests R1 to R12, C1 to C5, D1 to D5 and S1 to S6 of section 9 stay, reworded fro
 | O4 | With the switch off a reload logs nothing about the setting |
 | O5 | The five files of 16.2 are byte-identical to `9ffc2a244`; upstream's tests are unchanged and the sync check is no worse than upstream |
 
-**With the switch on**, one bound: an uncached list over 20 accounts of 500 names not his, under 1 ms; the door for one of his names allocates nothing.
+**With the switch on**, the door for one of his names allocates nothing, and the list's cost has a guard and a benchmark:
+
+- **The figure is the benchmark's.** `BenchmarkProvimuxNamesUncachedListOn` (an uncached list over 20 accounts of 500 names not his, switch on) measures it, beside O2's `BenchmarkProvimuxO2UncachedGetAvailableModels` (the same list, switch off); the target is under 1 ms (16.11: 0.57 ms when built). A benchmark is run and read by a person; it decides nothing in the sync check.
+- **The test guards against gross regressions only.** `TestProvimuxNamesListBoundSwitchOn` takes the median of 15 uncached lists with the switch on and 15 with it off, interleaved in one process on the same registry, and fails when on exceeds 1.5 times off. Machine speed and load cancel out of the ratio. Normally on is 0.22 to 0.37 of off (arm64) and 0.23 to 0.28 (amd64): it lists one name, off lists 10,000. It fails a gate that looks a skipped name up once per account, as the first build did (2.25 to 2.51), and one that scans every registration for each name (333). It does not catch a slowdown under about four times, nor one the switched-off list shares. Until 2026-11-25 the test was a 1 ms wall-clock bound; a shared CI runner measured the same list at 0.8 to 1.5 ms, so the bound decided at random whether a sync published (v8.1.4).
 
 ### 16.8 What stays documented as not covered
 
@@ -789,7 +792,7 @@ byte-identical to `9ffc2a244`. Where the build differs from 16.1 to 16.7, and wh
 
 - **The facts are read from an index, not one lookup per account.** Cost 4 of 16.1 counted 10,000 lookups; a name is
   looked up once per account, so 20 accounts of 500 names is 200,000, and the uncached list took 3.4 ms against the
-  bound of 1 ms. The registry's side of the predicate now reads an index of the ids some live client registers as an
+  target of 1 ms. The registry's side of the predicate now reads an index of the ids some live client registers as an
   alias or as a prefixed copy of a name of the rule, built in one pass and kept for one registry generation and one
   rule (every change of what a client registers moves the generation, and so does putting a rule in force). The
   uncached list with the switch on is 0.57 ms; the predicate is the same function for the gate and the status.
