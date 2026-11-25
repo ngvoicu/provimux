@@ -334,7 +334,7 @@ func TestProvimuxDevinBodyDeadline(t *testing.T) {
 		Metadata:   map[string]any{"session_token": "fake-devin-token", "user_id": "fake"}})
 	provimuxRefresh(svc, exec, true)
 	before := provimuxRegistered(auth)
-	if !slices.Contains(before, "devin/gemini-4-neon") {
+	if !slices.Contains(before, "devin/provimux-test-learned") {
 		t.Fatalf("initial list = %v", before)
 	}
 	hang.Store(true)
