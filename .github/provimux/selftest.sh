@@ -101,6 +101,17 @@ lacks() { if grep -qF -- "$3" "$2"; then bad "$1 ('$3' in the output)"; else ok 
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com \
   GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.com
 
+# --- subject.jq: release notes list subjects without board numbers ------------------------------
+echo "# subject.jq: subjects in the release notes"
+subj() { printf '%s\n' "$1" | jq -R -r -f "$here/subject.jq"; }
+expect "a trailing (T-<digits>) goes" "docs(provimux): README as one family with provimux-ui" "$(subj 'docs(provimux): README as one family with provimux-ui (T-9999)')"
+expect "(T-1, T-22) in the middle goes" "fix(x): a b" "$(subj 'fix(x): a (T-1, T-22) b')"
+expect "bare tokens go, leading or between words" "fix: lead and two tokens" "$(subj 'T-5 fix: lead and T-1 T-2 two tokens')"
+expect "look-alikes stay" "fix: XT-9, T-9a, T-, T-shirt, (see T-3x), (notes)" "$(subj 'fix: XT-9, T-9a, T-, T-shirt, (see T-3x), (notes)')"
+expect "a subject without one is unchanged" "ci(provimux): guard  two spaces stay" "$(subj 'ci(provimux): guard  two spaces stay')"
+wf_notes="$(sed -n '/- name: Write release notes/,/release-notes.md$/p' "$here/../workflows/provimux-release.yml")"
+if grep -qF 'jq -R -r -f .github/provimux/subject.jq' <<<"$wf_notes"; then ok "the release notes step uses subject.jq"; else bad "the release notes step uses subject.jq"; fi
+
 # --- testcmp.jq ----------------------------------------------------------------------------------
 # ev ACTION PACKAGE [TEST]: one go test -json result event.
 ev() { if [[ -n "${3:-}" ]]; then printf '{"Action":"%s","Package":"%s","Test":"%s"}\n' "$1" "$2" "$3"; else printf '{"Action":"%s","Package":"%s"}\n' "$1" "$2"; fi; }
