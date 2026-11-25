@@ -885,7 +885,6 @@ func (s *Service) applyAntigravityModelHints(ctx context.Context, auth *coreauth
 				return false
 			}
 			reg := registry.GetGlobalRegistry()
-			models = provimuxOnlyMyNames(current, models) // Provimux: only-my-names
 			appliedEpoch, ok := reg.ReplaceClientModels(current.ID, providerKey, expectedRegEpoch, models)
 			if ok {
 				entry.appliedRevision = hints.revision

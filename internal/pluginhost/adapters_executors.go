@@ -273,7 +273,6 @@ func (h *Host) commitExecutorState(snap *Snapshot, manager executorManager, mode
 		return
 	}
 	for _, registration := range modelClientRegistrations {
-		registration.models = registry.ProvimuxOnlyMyNames(registration.clientID, "", registration.models) // Provimux: only-my-names
 		modelRegistry.RegisterClient(registration.clientID, registration.provider, registration.models)
 	}
 	for _, clientID := range staleModelClients {

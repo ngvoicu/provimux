@@ -406,6 +406,9 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 		c.JSON(clienterror.HTTPStatusFromErrorOr(errRoute, http.StatusServiceUnavailable), gin.H{"error": errRoute.Error()})
 		return
 	}
+	if s.provimuxRefused(c, routing.Model, selectionModel) { // Provimux: only-my-names
+		return
+	}
 	selectionOpts := coreexecutor.Options{Headers: selectionHeaders, OriginalRequest: body}
 	var selection *auth.HomeDispatchSelection
 	var selected *auth.Auth
