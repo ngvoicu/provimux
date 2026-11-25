@@ -132,9 +132,8 @@ func (r *Rule) AddPrefix(prefix string) {
 	if at < len(r.prefixes) && r.prefixes[at] == prefix {
 		return
 	}
-	r.prefixes = append(r.prefixes, "")
-	copy(r.prefixes[at+1:], r.prefixes[at:])
-	r.prefixes[at] = prefix
+	r.prefixes = append(r.prefixes, prefix)
+	sort.Strings(r.prefixes)
 }
 
 // Applies reports whether the rule decides what is served: set, the switch on, not Home mode.
