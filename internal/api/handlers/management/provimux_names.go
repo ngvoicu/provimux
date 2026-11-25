@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/provimux/onlymynames"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
@@ -91,7 +92,17 @@ func (h *Handler) ProvimuxNames(c *gin.Context) {
 	c.JSON(http.StatusOK, h.provimuxNamesAnswer())
 }
 
+// provimuxNamesBeforeAccounts runs between the reading of the registrations and of the accounts. A test
+// registers a login and commits a rule there.
+var provimuxNamesBeforeAccounts = func() {}
+
 func (h *Handler) provimuxNamesAnswer() provimuxNamesResponse {
+	// One rule for the whole answer: the rule in force, its refusal counter and the registrations, read together
+	// (one read lock of the registry, under which a rule is put in force). The accounts are read after: an account
+	// is in the auth manager before its models are in the registry, so every registration read is matched to its
+	// account, and a count is right at the first answer that carries a rule's ETag.
+	rule, registered, refused := registry.ProvimuxNamesView()
+	provimuxNamesBeforeAccounts()
 	byID := map[string]*coreauth.Auth{}
 	if manager := h.provimuxAuthManager(); manager != nil {
 		for _, auth := range manager.List() {
@@ -100,10 +111,6 @@ func (h *Handler) provimuxNamesAnswer() provimuxNamesResponse {
 			}
 		}
 	}
-	// One rule for the whole answer: the rule in force, its refusal counter and the registrations, read
-	// together (16.6; the second review's finding on overlapping reads).
-	rule, registered, refused := registry.ProvimuxNamesView()
-	index := registry.NewProvimuxIndex(registered)
 
 	home := rule.Home()
 	response := provimuxNamesResponse{
@@ -121,14 +128,12 @@ func (h *Handler) provimuxNamesAnswer() provimuxNamesResponse {
 		response.OnlyMyNames.NotApplied = provimuxString("home")
 	}
 
-	// What is shown: the enabled accounts and the plugin executors. Whether an id is served is decided over
-	// every registration, with the predicate the lists and the door use.
+	// What is shown: the enabled accounts and the plugin executors.
 	visible := func(clientID string) bool {
 		return byID[clientID] != nil || provimuxPluginExecutorProvider(clientID) != ""
 	}
 
-	// names: the config's, exactly as written (alias rows and keep). A name is the owner's only when the
-	// config says so.
+	// names: the config's, exactly as written (alias rows and keep).
 	type ownName struct {
 		name    string
 		setBy   []string
@@ -142,41 +147,24 @@ func (h *Handler) provimuxNamesAnswer() provimuxNamesResponse {
 		order = append(order, name.Name)
 	}
 
-	// Every registered id is in exactly one of names (as a name or a copy) and others, by the door's own
-	// predicate: a request for the id is served or refused.
-	type idClients struct {
-		clients []string
-		from    []string // the PrefixedFrom of its registrations
-	}
-	ids := map[string]*idClients{}
+	// Every registered id is judged with the door's predicate under the same rule value: served (in names, as a
+	// name, a copy, or both) or not (in others).
+	ids := map[string][]string{}
 	var idOrder []string
 	for _, entry := range registered {
 		if !visible(entry.ClientID) {
 			continue
 		}
-		group, ok := ids[entry.ID]
-		if !ok {
-			group = &idClients{}
-			ids[entry.ID] = group
+		if _, ok := ids[entry.ID]; !ok {
 			idOrder = append(idOrder, entry.ID)
 		}
-		group.clients = append(group.clients, entry.ClientID)
-		if entry.PrefixedFrom != "" {
-			group.from = append(group.from, entry.PrefixedFrom)
-		}
+		ids[entry.ID] = append(ids[entry.ID], entry.ClientID)
 	}
-	// copyTarget is the name a served id is listed under when it is not itself a name of the config: a copy
-	// under an account's prefix lists under the name it copies; a spelling with a thinking suffix under the
-	// name its base is, or copies.
-	copied := map[string]string{} // id -> the config name some registration of it copies
-	for _, entry := range registered {
-		if from := strings.TrimSpace(entry.PrefixedFrom); from != "" && own[from] != nil && copied[entry.ID] == "" {
-			copied[entry.ID] = from
-		}
-	}
-	prefixedFrom := func(id string) string { return copied[id] }
 	addCopy := func(target, id string, clients []string) {
 		entry := own[target]
+		if entry == nil {
+			return
+		}
 		if entry.copies[id] == nil {
 			entry.copies[id] = map[string]struct{}{}
 		}
@@ -184,44 +172,43 @@ func (h *Handler) provimuxNamesAnswer() provimuxNamesResponse {
 			entry.copies[id][clientID] = struct{}{}
 		}
 	}
+	// copyTarget is the name a served id is listed under besides its own row: the name it copies under a prefix
+	// the config declares, else the name its base (without a thinking suffix) is or copies.
+	copyTarget := func(id string) string {
+		if name, ok := rule.CopyOf(id); ok {
+			return name
+		}
+		if base := onlymynames.Base(id); base != id {
+			if rule.Has(base) {
+				return base
+			}
+			if name, ok := rule.CopyOf(base); ok {
+				return name
+			}
+		}
+		return ""
+	}
 	others := map[string]*provimuxOtherName{}
 	for _, id := range idOrder {
-		group := ids[id]
-		if !rule.Serves(id, index) {
+		clients := ids[id]
+		if !rule.Serves(id) {
 			other := others[id]
 			if other == nil {
 				other = &provimuxOtherName{Name: id, Accounts: []provimuxNameAccount{}}
 				others[id] = other
 			}
-			for _, clientID := range group.clients {
+			for _, clientID := range clients {
 				other.Accounts = append(other.Accounts, provimuxNameAccountOf(byID, clientID))
 			}
 			continue
 		}
-		placed := false
 		if entry := own[id]; entry != nil {
-			for _, clientID := range group.clients {
+			for _, clientID := range clients {
 				entry.clients[clientID] = struct{}{}
 			}
-			placed = true
 		}
-		if target := prefixedFrom(id); target != "" {
-			addCopy(target, id, group.clients)
-			placed = true
-		}
-		if placed {
-			continue
-		}
-		base := registry.ProvimuxBase(id)
-		target := ""
-		switch {
-		case own[base] != nil:
-			target = base
-		case prefixedFrom(base) != "":
-			target = prefixedFrom(base)
-		}
-		if target != "" {
-			addCopy(target, id, group.clients)
+		if target := copyTarget(id); target != "" {
+			addCopy(target, id, clients)
 		}
 	}
 
@@ -287,7 +274,7 @@ func provimuxNameLess(left, right string) bool {
 }
 
 func provimuxSetByRank(setBy string) int {
-	if setBy == registry.ProvimuxNameSetByAlias {
+	if setBy == onlymynames.SetByAlias {
 		return 0
 	}
 	return 1

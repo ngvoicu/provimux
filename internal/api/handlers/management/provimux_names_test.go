@@ -16,6 +16,7 @@ import (
 	"github.com/MoeForge/moego/json"
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/provimux/onlymynames"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
@@ -71,6 +72,19 @@ func namesGet(t *testing.T, h *Handler) (namesAnswer, []byte) {
 	}
 	return answer, recorder.Body.Bytes()
 }
+
+// namesRefuse judges a request for name as the door does, under the rule in force, and counts a refusal.
+func namesRefuse(name string) bool {
+	rule := onlymynames.Current()
+	if !rule.Refuses(name) {
+		return false
+	}
+	onlymynames.Count(rule, name)
+	return true
+}
+
+// namesServes is the door's predicate under the rule in force.
+func namesServes(name string) bool { return !onlymynames.Current().Refuses(name) }
 
 // namesFixture registers accounts with the manager and their models with the registry, as the service
 // does (registration never consults the rule), and puts cfg's rule in force.
@@ -132,7 +146,7 @@ func namesStandardAccounts() []namesAccount {
 func TestProvimuxNamesFollowsTheContract(t *testing.T) {
 	for _, enabled := range []bool{false, true} {
 		h := namesFixture(t, namesCfg(enabled, "claude-*", "keep-me"), namesStandardAccounts()...)
-		registry.ProvimuxRefuse("gpt-5.5")
+		namesRefuse("gpt-5.5")
 		answer, raw := namesGet(t, h)
 		provimuxValidate(t, "NamesResponse", raw)
 		if answer.OnlyMyNames.Enabled != enabled || (answer.Refused != nil) != enabled {
@@ -275,15 +289,18 @@ func TestProvimuxNamesOthersAndServedCoverEveryOfferedName(t *testing.T) {
 // while the switch is off.
 func TestProvimuxNamesRefused(t *testing.T) {
 	clock := time.Date(2026, 11, 25, 10, 4, 0, 0, time.UTC)
-	t.Cleanup(registry.SetProvimuxNamesClock(func() time.Time { return clock }))
+	t.Cleanup(onlymynames.SetClock(func() time.Time { return clock }))
 	h := namesFixture(t, namesCfg(true), namesStandardAccounts()...)
-	registry.ProvimuxRefuse("gpt-5.5")
+	namesRefuse("gpt-5.5")
 	clock = clock.Add(90 * time.Second)
-	registry.ProvimuxRefuse("gpt-5.5")
-	registry.ProvimuxRefuse("nobody-offers-this")
+	namesRefuse("gpt-5.5")
+	namesRefuse("nobody-offers-this")
 	answer, raw := namesGet(t, h)
-	if answer.Refused == nil || answer.Refused.Since != "2026-11-25T10:04:00Z" || len(answer.Refused.Names) != 1 ||
-		answer.Refused.Names[0].Name != "gpt-5.5" || answer.Refused.Names[0].Requests != 2 || answer.Refused.Names[0].LastAt != "2026-11-25T10:05:30Z" || answer.Refused.Truncated {
+	// Every refused request is counted (section 18: the door reads no registration, so it cannot tell a name
+	// some account registers from one nobody does).
+	if answer.Refused == nil || answer.Refused.Since != "2026-11-25T10:04:00Z" || len(answer.Refused.Names) != 2 ||
+		answer.Refused.Names[0].Name != "gpt-5.5" || answer.Refused.Names[0].Requests != 2 || answer.Refused.Names[0].LastAt != "2026-11-25T10:05:30Z" ||
+		answer.Refused.Names[1].Name != "nobody-offers-this" || answer.Refused.Truncated {
 		t.Fatalf("refused: %s", raw)
 	}
 	h = namesFixture(t, namesCfg(false), namesStandardAccounts()...)
@@ -340,9 +357,9 @@ func TestProvimuxNamesLoginFileAliasIsAnOther(t *testing.T) {
 			}
 		}
 		kept := keep != nil
-		if kept && (inNames != 2 || inOthers != 0 || !registry.ProvimuxServes("work-fast")) ||
-			!kept && (inNames != 0 || inOthers != 2 || registry.ProvimuxServes("work-fast")) {
-			t.Fatalf("keep %v: in names %d, in others %d, served %v: %s", keep, inNames, inOthers, registry.ProvimuxServes("work-fast"), raw)
+		if kept && (inNames != 2 || inOthers != 0 || !namesServes("work-fast")) ||
+			!kept && (inNames != 0 || inOthers != 2 || namesServes("work-fast")) {
+			t.Fatalf("keep %v: in names %d, in others %d, served %v: %s", keep, inNames, inOthers, namesServes("work-fast"), raw)
 		}
 	}
 }
@@ -353,7 +370,7 @@ func TestProvimuxNamesOneRulePerAnswer(t *testing.T) {
 	cfgA := namesCfg(true)
 	cfgA.SourceHash = "aaaa"
 	h := namesFixture(t, cfgA, namesStandardAccounts()...)
-	registry.ProvimuxRefuse("gpt-5.5")
+	namesRefuse("gpt-5.5")
 	cfgB := namesCfg(false)
 	cfgB.SourceHash = "bbbb"
 	previous := provimuxNow
@@ -376,11 +393,14 @@ func TestProvimuxNamesOneRulePerAnswer(t *testing.T) {
 	}
 }
 
-// D: a name served under an account's prefix is listed as a copy of the name.
+// D and section 18: a name served under a prefix the config declares is listed as a copy of the name; a copy
+// under a prefix only a login's own file sets is under others.
 func TestProvimuxNamesPrefixedCopies(t *testing.T) {
 	key := &coreauth.Auth{ID: "names-teamed", Provider: "claude", Prefix: "team-a", Attributes: map[string]string{"api_key": "sk-team"}}
-	h := namesFixture(t, namesCfg(true), namesAccount{key, []*registry.ModelInfo{{ID: "opus"}, {ID: "team-a/opus", PrefixedFrom: "opus"},
-		{ID: "team-a/other", PrefixedFrom: "other"}, {ID: "other"}}})
+	login := &coreauth.Auth{ID: "names-login-prefixed", Provider: "codex", Prefix: "solo", Attributes: map[string]string{"auth_kind": "oauth"}}
+	cfg := namesCfg(true)
+	cfg.ClaudeKey[0].Prefix = "team-a"
+	h := namesFixture(t, cfg, namesAccount{key, namesModels("opus", "team-a/opus", "team-a/other", "other")}, namesAccount{login, namesModels("solo/opus")})
 	answer, raw := namesGet(t, h)
 	if len(answer.Names) != 1 || answer.Names[0].Name != "opus" || answer.Names[0].Accounts != 1 {
 		t.Fatalf("names: %s", raw)
@@ -403,7 +423,7 @@ func TestProvimuxNamesPrefixedCopies(t *testing.T) {
 	for _, other := range answer.Others {
 		others = append(others, other.Name)
 	}
-	if !slices.Equal(others, []string{"other", "team-a/other"}) {
+	if !slices.Equal(others, []string{"other", "solo/opus", "team-a/other"}) {
 		t.Fatalf("others %v", others)
 	}
 	provimuxValidate(t, "NamesResponse", raw)
@@ -427,13 +447,10 @@ func TestProvimuxNamesPluginModels(t *testing.T) {
 	if owned != 1 || len(answer.Others) != 1 || answer.Others[0].Name != "plugin-unlisted" || answer.Others[0].Accounts[0].AuthIndex != nil || answer.Others[0].Accounts[0].Provider != "demo" {
 		t.Fatalf("active plugin: %s", raw)
 	}
-	if refused, offered := registry.ProvimuxRefuse("plugin-unlisted"); !refused || !offered {
+	if !namesRefuse("plugin-unlisted") {
 		t.Fatal("the plugin's unlisted model is served")
 	}
 	reg.UnregisterClient(id)
-	if _, offered := registry.ProvimuxRefuse("plugin-unlisted"); offered {
-		t.Fatal("an unloaded plugin still offers a name")
-	}
 	if answer, raw := namesGet(t, h); len(answer.Others) != 0 {
 		t.Fatalf("unloaded plugin: %s", raw)
 	}
@@ -443,7 +460,9 @@ func TestProvimuxNamesPluginModels(t *testing.T) {
 // and has its own row.
 func TestProvimuxNamesKeptCopyStaysACopy(t *testing.T) {
 	key := &coreauth.Auth{ID: "names-teamed-13", Provider: "claude", Prefix: "team-a", Attributes: map[string]string{"api_key": "sk-team"}}
-	h := namesFixture(t, namesCfg(true, "team-a/opus"), namesAccount{key, []*registry.ModelInfo{{ID: "opus"}, {ID: "team-a/opus", PrefixedFrom: "opus"}}})
+	cfg := namesCfg(true, "team-a/opus")
+	cfg.ClaudeKey[0].Prefix = "team-a"
+	h := namesFixture(t, cfg, namesAccount{key, namesModels("opus", "team-a/opus")})
 	_, raw := namesGet(t, h)
 	var body struct {
 		Names []struct {
@@ -497,13 +516,14 @@ func TestProvimuxNamesAppliedIsTheRuleInForce(t *testing.T) {
 // K7 (only-my-names.md 16.7, extended by section 17): a property test over generated registries and rules,
 // with spellings that differ only in case, spellings with a thinking suffix, prefixed copies and login-file
 // aliases. Every registered id is in exactly one of names (a name with accounts, or a copy) and others; the ids
-// under names are exactly the ids the two list loops show and the door lets through (registry.ProvimuxRefuse
+// under names are exactly the ids the two list loops show and the door lets through (onlymynames' Refuses
 // is the door's predicate); the ids under others are exactly the ones skipped and refused.
 func TestProvimuxNamesStatusAndGateAgree(t *testing.T) {
 	random := rand.New(rand.NewPCG(16, 7))
 	pool := []string{"opus", "Opus", "OPUS", "opus(high)", "Opus(high)", "gpt-5.5", "GPT-5.5", "fast", "fast(low)", "sonnet",
 		"devin/x", "learned-a", "team-a/opus", "work-fast", "Mixed-Case", "mixed-case", "auto"}
-	prefixes := []string{"", "", "team-a", "team-b"}
+	// team-a and team-b are declared in the config; team-c only on accounts (as a login's own file sets it).
+	prefixes := []string{"", "", "team-a", "team-b", "team-c"}
 	for round := range 400 {
 		t.Run(fmt.Sprintf("round-%d", round), func(t *testing.T) {
 			cfg := &config.Config{}
@@ -513,7 +533,7 @@ func TestProvimuxNamesStatusAndGateAgree(t *testing.T) {
 					rows = append(rows, config.ClaudeModel{Name: "up-" + name, Alias: name})
 				}
 			}
-			cfg.ClaudeKey = []config.ClaudeKey{{APIKey: "sk-k7", Models: rows}}
+			cfg.ClaudeKey = []config.ClaudeKey{{APIKey: "sk-k7", Models: rows}, {APIKey: "sk-k7-a", Prefix: "team-a"}, {APIKey: "sk-k7-b", Prefix: " team-b "}}
 			var keep []string
 			for _, name := range pool {
 				if random.IntN(6) == 0 {
@@ -541,7 +561,7 @@ func TestProvimuxNamesStatusAndGateAgree(t *testing.T) {
 					}
 					if prefix != "" && !seen[prefix+"/"+name] {
 						seen[prefix+"/"+name] = true
-						models = append(models, &registry.ModelInfo{ID: prefix + "/" + name, OAuthAlias: alias, PrefixedFrom: name})
+						models = append(models, &registry.ModelInfo{ID: prefix + "/" + name, OAuthAlias: alias})
 					}
 				}
 				accounts = append(accounts, namesAccount{auth, models})
@@ -594,7 +614,7 @@ func TestProvimuxNamesStatusAndGateAgree(t *testing.T) {
 				infos[info.ID] = true
 			}
 			for id, count := range registered {
-				refused, offered := registry.ProvimuxRefuse(id)
+				refused := namesRefuse(id)
 				named, other := inNames[id] > 0, inOthers[id] > 0
 				switch {
 				case named == other:
@@ -603,10 +623,80 @@ func TestProvimuxNamesStatusAndGateAgree(t *testing.T) {
 					t.Fatalf("%s: %d accounts shown, %d register it\n%s", id, inNames[id]+inOthers[id], count, raw)
 				case named != listed[id] || named != infos[id]:
 					t.Fatalf("%s: in names %v, listed %v / %v\n%s", id, named, listed[id], infos[id], raw)
-				case other != refused || (refused && !offered):
-					t.Fatalf("%s: in others %v, refused %v (offered %v)\n%s", id, other, refused, offered, raw)
+				case other != refused:
+					t.Fatalf("%s: in others %v, refused %v\n%s", id, other, refused, raw)
 				}
 			}
 		})
+	}
+}
+
+// Note 5 of the fourth review (section 18): a name kept with its thinking suffix has its own row and stays among
+// its base's copies, as a prefixed copy kept in full does (the contract's ServedCopy).
+func TestProvimuxNamesKeptSuffixStaysACopy(t *testing.T) {
+	key := &coreauth.Auth{ID: "names-spruce", Provider: "claude", Attributes: map[string]string{"api_key": "sk-spruce"}}
+	h := namesFixture(t, namesCfg(true, "spruce", "spruce(high)"), namesAccount{key, namesModels("spruce", "spruce(high)")})
+	_, raw := namesGet(t, h)
+	var body struct {
+		Names []struct {
+			Name     string `json:"name"`
+			Accounts int    `json:"accounts"`
+			Copies   []struct {
+				ID string `json:"id"`
+			} `json:"copies"`
+		} `json:"names"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatal(err)
+	}
+	rows := map[string]int{}
+	var copies []string
+	for _, name := range body.Names {
+		rows[name.Name] = name.Accounts
+		if name.Name == "spruce" {
+			for _, copied := range name.Copies {
+				copies = append(copies, copied.ID)
+			}
+		}
+	}
+	if rows["spruce"] != 1 || rows["spruce(high)"] != 1 || !slices.Equal(copies, []string{"spruce(high)"}) {
+		t.Fatalf("names: %s", raw)
+	}
+}
+
+// Review 3 of the fourth review (section 18): the answer reads the accounts after the registrations, so a login
+// that registered, and a rule committed, after the answer began are counted at the first answer that carries the
+// rule's ETag.
+func TestProvimuxNamesCountsAtTheFirstAnswer(t *testing.T) {
+	cfgA := namesCfg(true)
+	h := namesFixture(t, cfgA)
+	cfgB := namesCfg(true, "late-model")
+	cfgB.SourceHash = "bbbb"
+	registry.SetProvimuxNamesRule(config.ProvimuxNamesRule(cfgB))
+	previous := provimuxNamesBeforeAccounts
+	t.Cleanup(func() { provimuxNamesBeforeAccounts = previous })
+	late := &coreauth.Auth{ID: "names-late-login", Provider: "codex", Attributes: map[string]string{"auth_kind": "oauth"}}
+	registered := false
+	// The login enters the manager before its models enter the registry (as the service registers it): here
+	// its models are already in the registry, and the manager is joined after the registrations were read.
+	registry.GetGlobalRegistry().RegisterClient(late.ID, "codex", namesModels("late-model"))
+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(late.ID) })
+	provimuxNamesBeforeAccounts = func() {
+		if !registered {
+			registered = true
+			if _, err := h.authManager.Register(t.Context(), late); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	answer, raw := namesGet(t, h)
+	accounts := -1
+	for _, name := range answer.Names {
+		if name.Name == "late-model" {
+			accounts = name.Accounts
+		}
+	}
+	if !registered || accounts != 1 || !strings.Contains(string(raw), "bbbb") {
+		t.Fatalf("first answer at the ETag: late-model accounts %d: %s", accounts, raw)
 	}
 }

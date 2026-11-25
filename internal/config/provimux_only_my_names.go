@@ -4,31 +4,62 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/provimux/onlymynames"
 )
 
-// Provimux: the names the owner set in the config, for models.only-my-names (only-my-names.md 2.2).
-// Rows 1, 2 and 4 of the gateway's rule. An alias in a login's own file is not a name of the config, so it
-// is not the owner's unless keep lists it (section 17): the rule is a function of the committed config alone.
+// Provimux: the rule of models.only-my-names from a config (only-my-names.md 2.2 and section 18). Rows 1, 2 and 4
+// of the gateway's rule, and the model prefixes the config declares. An alias in a login's own file, and a prefix
+// set only in a login's own file, are not the config's: a name or a copy they give is the owner's only when keep
+// lists it in full. The rule is a function of the committed config alone.
 
-// ProvimuxNamesRule builds the rule of models.only-my-names from cfg: the switch, Home mode, the
-// alias of every API key's models row whose alias differs from its name (every key family and every
-// openai-compatibility entry, disabled ones included), the alias of every oauth-model-alias row, and
-// keep. It is built whether the switch is on or off: off, it is the preview.
-func ProvimuxNamesRule(cfg *Config) *registry.ProvimuxNamesRule {
+// ProvimuxNamesRule builds the rule of models.only-my-names from cfg: the switch, Home mode, the alias of every
+// API key's models row whose alias differs from its name (every key family and every openai-compatibility entry,
+// disabled ones included), the alias of every oauth-model-alias row, keep, and the prefix of every key and
+// provider entry (the copies of his names under those prefixes are his). It is built whether the switch is on or
+// off: off, it is the preview.
+func ProvimuxNamesRule(cfg *Config) *onlymynames.Rule {
 	if cfg == nil {
 		return nil
 	}
 	only := cfg.Models.OnlyMyNames
-	rule := registry.NewProvimuxNamesRule(only != nil && only.Enabled, cfg.Home.Enabled)
+	rule := onlymynames.NewRule(only != nil && only.Enabled, cfg.Home.Enabled)
 	rule.SetSource(cfg.SourceHash)
 	for _, name := range provimuxAliasNames(cfg) {
-		rule.AddName(name, registry.ProvimuxNameSetByAlias)
+		rule.AddName(name, onlymynames.SetByAlias)
 	}
 	if only != nil {
 		rule.AddKeep(only.Keep)
 	}
+	for _, prefix := range provimuxPrefixes(cfg) {
+		rule.AddPrefix(prefix)
+	}
 	return rule
+}
+
+// provimuxPrefixes lists the prefix of every entry the config synthesizes an account from (the families of
+// internal/watcher/synthesizer/config.go, which trims it as AddPrefix does), disabled entries included.
+func provimuxPrefixes(cfg *Config) []string {
+	var out []string
+	for _, entries := range [][]GeminiKey{cfg.GeminiKey, cfg.InteractionsKey} {
+		for _, entry := range entries {
+			out = append(out, entry.Prefix)
+		}
+	}
+	for _, entry := range cfg.ClaudeKey {
+		out = append(out, entry.Prefix)
+	}
+	for _, entries := range [][]CodexKey{cfg.CodexKey, cfg.XAIKey, cfg.MetaKey} {
+		for _, entry := range entries {
+			out = append(out, entry.Prefix)
+		}
+	}
+	for _, entry := range cfg.VertexCompatAPIKey {
+		out = append(out, entry.Prefix)
+	}
+	for _, entry := range cfg.OpenAICompatibility {
+		out = append(out, entry.Prefix)
+	}
+	return out
 }
 
 // provimuxAliasNames lists the aliases of rows 1 and 2, in config order.

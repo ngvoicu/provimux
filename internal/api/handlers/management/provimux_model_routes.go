@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/provimux/onlymynames"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
@@ -122,7 +123,7 @@ func provimuxBuildModelRoutes(manager *coreauth.Manager, only map[string]struct{
 	routesByModel := make(map[string][]provimuxRoute)
 	// models.only-my-names (only-my-names.md 16.4): while the rule applies, only the names it serves. The rule
 	// is loaded once, and the whole answer is decided under it; with it not applying this is one atomic load.
-	rule := registry.ProvimuxRuleNow()
+	rule := onlymynames.Current()
 	var served map[string]bool
 	if rule.Applies() {
 		served = make(map[string]bool)
@@ -351,13 +352,13 @@ func provimuxTime(t time.Time) string {
 
 // provimuxGated reports whether rule leaves id out; served (nil while the rule does not apply) remembers each
 // id's answer for one response.
-func provimuxGated(rule *registry.ProvimuxNamesRule, served map[string]bool, id string) bool {
+func provimuxGated(rule *onlymynames.Rule, served map[string]bool, id string) bool {
 	if served == nil {
 		return false
 	}
 	ok, known := served[id]
 	if !known {
-		ok = registry.ProvimuxServesUnder(rule, id)
+		ok = rule.Serves(id)
 		served[id] = ok
 	}
 	return !ok

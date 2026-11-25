@@ -92,7 +92,7 @@ var namesRegistryReaders = map[string]string{
 	"sdk/api/handlers/openai/openai_models_accounts.go modelAccounts GetModelsForClient":                                                                                "list",           // annotates the ids of the gated list
 	"sdk/api/handlers/openai/openai_responses_handlers.go Models GetAvailableModels":                                                                                    "list",
 	"sdk/api/handlers/openai/openai_responses_websocket_session.go responsesWebsocketAuthMatchesModel ClientSupportsModel":                                              "after the door",
-	"sdk/api/handlers/provimux_only_my_names.go provimuxDoor GetFirstAvailableModel":                                                                                    "list",
+	"internal/registry/provimux_only_my_names.go ProvimuxFirstServedUnder GetModelCount":                                                                                "list", // auto under the request's rule value: candidates the rule serves
 	"sdk/cliproxy/auth/conductor_cooldown.go markResult GetModelsAndEpochForClient":                                                                                     "no client name",
 	"sdk/cliproxy/auth/conductor_cooldown.go ResetQuota GetModelsAndEpochForClient":                                                                                     "no client name",
 	"sdk/cliproxy/auth/conductor_cooldown.go modelsForRegisteredAuth GetModelsForClient":                                                                                "no client name",
@@ -249,14 +249,6 @@ func TestProvimuxOnlyMyNamesGateLines(t *testing.T) {
 	if len(router.Body.List) < 2 || !namesCalls(router.Body.List[1], "provimuxNoRouter") {
 		t.Error("provimuxNoRouter is not the statement after `var decision` in applyModelRouter (only-my-names.md 16.4)")
 	}
-	// The prefixed copy carries the fact the gate reads.
-	data, err := os.ReadFile(filepath.Join(root, "sdk/cliproxy/service_models.go"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(data), "clone.PrefixedFrom = baseID") {
-		t.Error("applyModelPrefixes does not set PrefixedFrom (only-my-names.md 16.4)")
-	}
 }
 
 // K5 in the source: the ways into the registry never consult the rule.
@@ -284,4 +276,73 @@ func TestProvimuxOnlyMyNamesWritersDoNotReadTheRule(t *testing.T) {
 			}
 		}
 	}
+}
+
+// Section 18, by structure: the door's judgement is a function of one rule value and the name. Every function that
+// judges a name (the door, the router check, alpha search, model-routes' filter, the list gate) calls nothing but
+// the rule package, a method of the rule value it was given, and the standard library; it names no registry and
+// reads no field of the registry it may receive. With the rule package importing no registry
+// (internal/provimux/onlymynames, TestRuleImportsNoRegistry), a judgement cannot read a registration: a change that
+// makes it do so fails here.
+func TestProvimuxOnlyMyNamesJudgementReadsNoRegistry(t *testing.T) {
+	root := namesRepoRoot(t)
+	allowedPackages := map[string]bool{"onlymynames": true, "strings": true, "errors": true, "ojson": true, "fmt": true}
+	for _, judge := range []struct {
+		file, function string
+		values         []string // identifiers whose methods may be called: the rule value, the response writer
+	}{
+		{"sdk/api/handlers/provimux_only_my_names.go", "provimuxDoorJudge", []string{"rule"}},
+		{"sdk/api/handlers/provimux_only_my_names.go", "provimuxNoRouter", []string{"rule"}},
+		{"internal/api/server_provimux.go", "provimuxRefused", []string{"rule", "c"}},
+		{"internal/api/handlers/management/provimux_model_routes.go", "provimuxGated", []string{"rule"}},
+		{"internal/registry/provimux_only_my_names.go", "provimuxHeld", []string{"rule"}},
+	} {
+		fn := namesFunc(t, root, judge.file, judge.function)
+		values := map[string]bool{}
+		for _, value := range judge.values {
+			values[value] = true
+		}
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			switch node := n.(type) {
+			case *ast.Ident:
+				if node.Name == "registry" || node.Name == "GetGlobalRegistry" || node.Name == "reg" {
+					t.Errorf("%s %s names %s: a judgement reads no registry (only-my-names.md 18)", judge.file, judge.function, node.Name)
+				}
+			case *ast.CallExpr:
+				switch fun := node.Fun.(type) {
+				case *ast.SelectorExpr:
+					x, ok := fun.X.(*ast.Ident)
+					if !ok || (!allowedPackages[x.Name] && !values[x.Name]) {
+						t.Errorf("%s %s calls %s: only the rule package, the rule value and the standard library (only-my-names.md 18)", judge.file, judge.function, types(fun))
+					}
+				case *ast.Ident:
+					switch fun.Name {
+					case "len", "string", "append":
+					default:
+						t.Errorf("%s %s calls %s", judge.file, judge.function, fun.Name)
+					}
+				}
+			}
+			return true
+		})
+	}
+	// The door loads the rule once (onlymynames.Current) and hands that value to every judgement.
+	door := namesFunc(t, root, "sdk/api/handlers/provimux_only_my_names.go", "provimuxDoor")
+	loads := 0
+	ast.Inspect(door.Body, func(n ast.Node) bool {
+		if sel, ok := n.(*ast.SelectorExpr); ok && sel.Sel.Name == "Current" {
+			loads++
+		}
+		return true
+	})
+	if loads != 1 {
+		t.Errorf("provimuxDoor loads the rule %d times, want once (only-my-names.md 18)", loads)
+	}
+}
+
+func types(sel *ast.SelectorExpr) string {
+	if x, ok := sel.X.(*ast.Ident); ok {
+		return x.Name + "." + sel.Sel.Name
+	}
+	return "?." + sel.Sel.Name
 }

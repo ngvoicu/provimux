@@ -5,8 +5,8 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/provimux/onlymynames"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/provimux/savings"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 )
 
 // registerProvimuxRoutes adds Provimux's own management endpoints to the authenticated v8 group,
@@ -36,29 +36,21 @@ func (s *Server) ProvimuxRoutes() []string {
 }
 
 // provimuxRefused is models.only-my-names for alpha search (G4 of only-my-names.md 16.3), which chooses a
-// login for a named model by itself: the requested model and the model its router chose must be served. The
-// route asks its router first (upstream's order), so the router sees the name before the check.
-// Otherwise it answers 400 in the route's own error shape, with the setting's message when an account
-// registers the name (the refusal is then counted) and upstream's unknown-model words when none does. An
-// empty name names no model and passes. With the rule not applying it is one atomic load.
+// login for a named model by itself: the requested model and the model its router chose must be served, both
+// judged under the one rule value loaded here. The route asks its router first (upstream's order), so the router
+// sees the name before the check. Otherwise it answers 400 in the route's own error shape with the setting's
+// message (counted). An empty name names no model and passes. With the rule not applying it is one atomic load.
 func (s *Server) provimuxRefused(c *gin.Context, requested, selectionModel string) bool {
-	if !registry.ProvimuxApplies() {
+	rule := onlymynames.Current()
+	if !rule.Applies() {
 		return false
 	}
-	requested, selectionModel = strings.TrimSpace(requested), strings.TrimSpace(selectionModel)
-	for i, name := range [2]string{requested, selectionModel} {
-		if name == "" || (i == 1 && name == requested) {
+	for _, name := range [2]string{strings.TrimSpace(requested), strings.TrimSpace(selectionModel)} {
+		if name == "" || !rule.Refuses(name) {
 			continue
 		}
-		refused, offered := registry.ProvimuxRefuse(name)
-		if !refused {
-			continue
-		}
-		message := "unknown provider for model " + name
-		if offered {
-			message = registry.ProvimuxNotServedMessage(registry.ProvimuxBase(name))
-		}
-		c.JSON(http.StatusBadRequest, gin.H{"error": message})
+		onlymynames.Count(rule, name)
+		c.JSON(http.StatusBadRequest, gin.H{"error": onlymynames.NotServedMessage(name)})
 		return true
 	}
 	return false
