@@ -206,6 +206,14 @@ release_run_state() {
   esac
 }
 
+# The words for a release_run_state in an issue: succeeded, running, failed, cancelled
+# (any other conclusion as itself), none, unknown (cannot be read). PMX_RUN_TEXT is the
+# same as a jq function: run_text.
+run_state_text() { jq -rn --arg s "$1" "$PMX_RUN_TEXT"' $s | run_text'; }
+PMX_RUN_TEXT='def run_text: if type != "string" then "unknown (cannot be read)" elif . == "success" then "succeeded"
+  elif startswith("failure:") then (.[8:] | if . == "failure" then "failed" elif . == "" then "ended" else . end)
+  elif . == "unknown" then "unknown (cannot be read)" else . end;'
+
 # release_run_id TAG SHA: the id of that run, or "".
 release_run_id() {
   local json
@@ -311,10 +319,10 @@ releases_status() {
       elif [[ "$run" == running ]]; then st=in-progress
       else
         st=incomplete
-        echo "tag $t (${sha:0:12}) exists but its release is $s and its release run for that commit is $run" >>"$rfile"
+        echo "tag $t (${sha:0:12}) exists but its release is $s and its release run for that commit is $(run_state_text "$run")" >>"$rfile"
       fi
     elif [[ "$s" != complete || "$run" != success ]]; then
-      echo "tag $t (${sha:0:12}) did not complete (release $s, release run $run); $newest replaces it" >>"$rfile"
+      echo "tag $t (${sha:0:12}) did not complete (release $s, release run $(run_state_text "$run")); $newest replaces it" >>"$rfile"
     fi
   done
   jq -s '.' "$json.tmp" >"$json"
