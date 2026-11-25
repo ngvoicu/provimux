@@ -258,7 +258,9 @@ components:
       required: [from, models, truncated]
       description: |
         Requests by the model name the client sent (an alias, a name with an account's prefix), without a
-        thinking suffix, lower case, over the whole range; the filters do not apply. Rows count the same
+        thinking suffix, trimmed and cut to 128 bytes, in the case it was sent ("B-Coder" and "b-coder" are
+        two names, as only-my-names compares them); names recorded before that change are lower case. Over
+        the whole range; the filters do not apply. Rows count the same
         requests under the model the account ran. Present only with include=requested_models.
       properties:
         from:
