@@ -20,6 +20,7 @@ func ProvimuxNamesRule(cfg *Config) *registry.ProvimuxNamesRule {
 	}
 	only := cfg.Models.OnlyMyNames
 	rule := registry.NewProvimuxNamesRule(only != nil && only.Enabled, cfg.Home.Enabled)
+	rule.SetSource(cfg.SourceHash)
 	for _, name := range provimuxAliasNames(cfg) {
 		rule.AddName(name, registry.ProvimuxNameSetByAlias)
 	}

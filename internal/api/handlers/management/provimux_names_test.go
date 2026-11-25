@@ -311,3 +311,92 @@ func TestProvimuxNamesNeedsManagementKey(t *testing.T) {
 		t.Fatalf("answered without a management key: %d", recorder.Code)
 	}
 }
+
+// C (the reviewer's case): a login's own alias work-fast and a key that offers the same spelling. The
+// name is served (on the login), so it is in names with the accounts that serve it, and not in others,
+// with the switch on and off.
+func TestProvimuxNamesAServedNameIsNotAnOther(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		accounts := namesStandardAccounts()
+		accounts[1].models = append(accounts[1].models, &registry.ModelInfo{ID: "work-fast"})
+		h := namesFixture(t, namesCfg(enabled), accounts...)
+		answer, raw := namesGet(t, h)
+		for _, other := range answer.Others {
+			if other.Name == "work-fast" {
+				t.Fatalf("enabled %v: work-fast in others: %s", enabled, raw)
+			}
+		}
+		var accountsNow int
+		for _, name := range answer.Names {
+			if name.Name == "work-fast" {
+				accountsNow = name.Accounts
+			}
+		}
+		want := 1 // on: the login only (the key's own work-fast is held back there)
+		if !enabled {
+			want = 2
+		}
+		if accountsNow != want {
+			t.Fatalf("enabled %v: work-fast accounts %d, want %d: %s", enabled, accountsNow, want, raw)
+		}
+	}
+}
+
+// D: a name served under an account's prefix is listed as a copy of the name.
+func TestProvimuxNamesPrefixedCopies(t *testing.T) {
+	key := &coreauth.Auth{ID: "names-teamed", Provider: "claude", Prefix: "team-a", Attributes: map[string]string{"api_key": "sk-team"}}
+	h := namesFixture(t, namesCfg(true), namesAccount{key, namesModels("opus", "team-a/opus", "team-a/other", "other")})
+	answer, raw := namesGet(t, h)
+	if len(answer.Names) != 1 || answer.Names[0].Name != "opus" || answer.Names[0].Accounts != 1 {
+		t.Fatalf("names: %s", raw)
+	}
+	var body struct {
+		Names []struct {
+			Copies []struct {
+				ID       string `json:"id"`
+				Accounts int    `json:"accounts"`
+			} `json:"copies"`
+		} `json:"names"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatal(err)
+	}
+	if copies := body.Names[0].Copies; len(copies) != 1 || copies[0].ID != "team-a/opus" || copies[0].Accounts != 1 {
+		t.Fatalf("copies: %s", raw)
+	}
+	var others []string
+	for _, other := range answer.Others {
+		others = append(others, other.Name)
+	}
+	if !slices.Equal(others, []string{"other", "team-a/other"}) {
+		t.Fatalf("others %v", others)
+	}
+	provimuxValidate(t, "NamesResponse", raw)
+}
+
+// B and C for plugins: a kept plugin model counts its plugin as an account; an unloaded plugin's
+// models leave the answer and the refusal message at once.
+func TestProvimuxNamesPluginModels(t *testing.T) {
+	h := namesFixture(t, namesCfg(true, "plugin-owned"))
+	reg := registry.GetGlobalRegistry()
+	id := "plugin:unit:demo:executor"
+	reg.RegisterClient(id, "demo", registry.ProvimuxOnlyMyNames(id, "", namesModels("plugin-owned", "plugin-unlisted")))
+	t.Cleanup(func() { reg.UnregisterClient(id) })
+	answer, raw := namesGet(t, h)
+	var owned int
+	for _, name := range answer.Names {
+		if name.Name == "plugin-owned" {
+			owned = name.Accounts
+		}
+	}
+	if owned != 1 || len(answer.Others) != 1 || answer.Others[0].Name != "plugin-unlisted" || answer.Others[0].Accounts[0].AuthIndex != nil {
+		t.Fatalf("active plugin: %s", raw)
+	}
+	reg.UnregisterClient(id)
+	if msg := registry.ProvimuxNotServedMessage("plugin-unlisted"); msg != "" {
+		t.Fatalf("an unloaded plugin still holds a name: %q", msg)
+	}
+	if answer, raw := namesGet(t, h); len(answer.Others) != 0 {
+		t.Fatalf("unloaded plugin: %s", raw)
+	}
+}

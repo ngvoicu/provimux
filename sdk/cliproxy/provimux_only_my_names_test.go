@@ -546,3 +546,34 @@ func TestProvimuxOnlyMyNamesModelListsFields(t *testing.T) {
 		t.Fatalf("registered %v -> %v, learned %v -> %v", offRow["registered_models"], onRow["registered_models"], offRow["learned_models"], onRow["learned_models"])
 	}
 }
+
+// B (the reviewer's case): an account that excludes its last model, then is removed, stops holding a
+// name at once, without a status read; its record is dropped.
+func TestProvimuxOnlyMyNamesAccountNoLongerOffers(t *testing.T) {
+	namesReset(t)
+	c := keyCompatConfig("http://127.0.0.1:1/v1", config.OpenAICompatibilityModel{Name: "old-entry"})
+	c.Models.OnlyMyNames = namesOn()
+	svc, auths := namesService(t, c)
+	a := auths[0]
+	if others := namesOthers(a.ID); others["old-entry"] == nil || registry.ProvimuxNotServedMessage("old-entry") == "" {
+		t.Fatalf("premise: old-entry held back: %v", others)
+	}
+	c2 := c.CloneForRuntime()
+	c2.OpenAICompatibility[0].ExcludedModels = []string{"*"}
+	namesReconfigure(svc, c2, auths)
+	if msg := registry.ProvimuxNotServedMessage("old-entry"); msg != "" {
+		t.Fatalf("an excluded model still says not served: %q", msg)
+	}
+	if others := namesOthers(a.ID); len(others) != 0 {
+		t.Fatalf("excluded: others %v", others)
+	}
+	namesReconfigure(svc, c, auths)
+	svc.applyCoreAuthRemoval(context.Background(), a.ID)
+	if msg := registry.ProvimuxNotServedMessage("old-entry"); msg != "" {
+		t.Fatalf("a removed account still holds a name: %q", msg)
+	}
+	registry.ProvimuxNamesState(nil)
+	if n := registry.ProvimuxNamesRecords(); n != 0 {
+		t.Fatalf("records after removal: %d", n)
+	}
+}

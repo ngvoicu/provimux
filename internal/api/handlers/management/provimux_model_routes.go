@@ -24,6 +24,8 @@ var provimuxNow = time.Now
 type provimuxModelRoutesResponse struct {
 	ObservedAt string          `json:"observed_at"`
 	Models     []provimuxModel `json:"models"`
+	// Applied is the models.only-my-names marker of GET /provimux/names (Provimux, only-my-names.md).
+	Applied provimuxNamesApplied `json:"applied"`
 }
 
 type provimuxModel struct {
@@ -86,6 +88,7 @@ func (h *Handler) ProvimuxModelRoutes(c *gin.Context) {
 	response := provimuxModelRoutesResponse{
 		ObservedAt: provimuxTime(now),
 		Models:     []provimuxModel{},
+		Applied:    h.provimuxNamesAppliedNow(),
 	}
 	var only map[string]struct{}
 	if values, ok := c.Request.URL.Query()["model"]; ok {
@@ -334,4 +337,17 @@ func provimuxValue(value *string) string {
 // or as earlier.
 func provimuxTime(t time.Time) string {
 	return t.UTC().Format(time.RFC3339Nano)
+}
+
+// provimuxNamesAppliedNow is the only-my-names marker for the enabled accounts.
+func (h *Handler) provimuxNamesAppliedNow() provimuxNamesApplied {
+	var ids []string
+	if manager := h.provimuxAuthManager(); manager != nil {
+		for _, auth := range manager.List() {
+			if auth != nil && !auth.Disabled {
+				ids = append(ids, auth.ID)
+			}
+		}
+	}
+	return provimuxNamesAppliedOf(registry.ProvimuxNamesApplied(ids))
 }
