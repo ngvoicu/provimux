@@ -187,7 +187,7 @@ esac
       echo
       list '.reasons[]?'
       echo "Releases:"
-      list '.release[]? | "\(.tag) (\(.sha[0:12] // "?")): release \(.release), release run for that commit \(.run)"'
+      list "$PMX_RUN_TEXT"' .release[]? | "\(.tag) (\(.sha[0:12] // "?")): release \(.release), release run for that commit \(.run | run_text)"'
       echo "Rerun the failed provimux-release run of the newest tag (\`gh run rerun <id> --failed -R $PMX_REPO\`), or cut the next \`-pmx.<n>\`; then check the release (\"Check a release\" in SYNC.md). A later check closes this issue once the newest \`v$base-pmx.*\` release is complete (an earlier one that failed does not count once a later one is complete)."
       ;;
     unreleased)
@@ -241,7 +241,7 @@ sweep() {
         t2="sync: $ob — release incomplete (older base), owner needed"
         { echo "**A Provimux release of the older base \`$ob\` did not complete.** The check now checks \`$label\` and does not look at \`$ob\` again; this issue stays open until its newest \`-pmx\` release is complete (a later check closes it then)."
           echo
-          jq -r '.[] | "- `\(.tag)` (`\(.sha[0:12])`): release \(.release), release run for that commit \(.run)"' "$tmp/o-rel.json"
+          jq -r "$PMX_RUN_TEXT"' .[] | "- `\(.tag)` (`\(.sha[0:12])`): release \(.release), release run for that commit \(.run | run_text)"' "$tmp/o-rel.json"
           echo
           echo '```sh'
           jq -r '.[] | select(.newest) | "\(.tag) \(.sha)"' "$tmp/o-rel.json" | while read -r ot os; do
