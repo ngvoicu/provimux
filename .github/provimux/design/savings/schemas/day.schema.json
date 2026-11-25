@@ -26,6 +26,18 @@
       "type": "array",
       "description": "At most 2000 rows, plus one row with model and key ~other per kind, provider and host once the limit was reached.",
       "items": { "$ref": "#/$defs/row" }
+    },
+    "requested": {
+      "type": "array",
+      "description": "Since only-my-names round 2: requests by the model name the client sent, without a thinking suffix, lower case, apart from the rows (which count them under the model the account ran). At most 2000 names, then ~other. Absent on days written before.",
+      "items": {
+        "type": "object",
+        "required": ["m", "n"],
+        "properties": {
+          "m": { "type": "string", "maxLength": 128 },
+          "n": { "$ref": "#/$defs/counters", "description": "Only req, fail, in (all input tokens) and out are set." }
+        }
+      }
     }
   },
   "$defs": {
