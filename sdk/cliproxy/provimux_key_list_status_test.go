@@ -118,7 +118,7 @@ func TestProvimuxKeyStatus(t *testing.T) {
 		t.Fatalf("failed = %+v", failed)
 	}
 	gw := body.Keys[byProvider["claude/claude/false"]]
-	if gw.Source != "live" || !slices.Equal(gw.Key.LearnedIDs, []string{"claude-gateway-only-1"}) || *gw.Key.Unlisted != 0 {
+	if gw.Source != "live" || !slices.Equal(gw.Key.LearnedIDs, []string{"provimux-test-gateway-only"}) || *gw.Key.Unlisted != 0 {
 		t.Fatalf("claude gateway = %+v", gw)
 	}
 	fixed := body.Keys[byProvider["claude/claude/true"]]

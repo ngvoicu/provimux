@@ -1,7 +1,7 @@
 {"object":"list","data":[
  {"id":"auto","name":"Auto","model_picker_enabled":true,"policy":{"state":"enabled"},"capabilities":{"type":"chat"},"supported_endpoints":["/chat/completions"]},
- {"id":"gpt-copilot-neon","name":"GPT Copilot Neon","model_picker_enabled":true,"policy":{"state":"enabled"},"supported_endpoints":["/responses"],"capabilities":{"type":"chat","limits":{"max_context_window_tokens":400000,"max_prompt_tokens":272000,"max_output_tokens":128000},"supports":{"vision":true,"reasoning_effort":["low","medium","high"]}}},
+ {"id":"provimux-test-copilot-learned","name":"Provimux Test Copilot Learned","model_picker_enabled":true,"policy":{"state":"enabled"},"supported_endpoints":["/responses"],"capabilities":{"type":"chat","limits":{"max_context_window_tokens":400000,"max_prompt_tokens":272000,"max_output_tokens":128000},"supports":{"vision":true,"reasoning_effort":["low","medium","high"]}}},
  {"id":"claude-fable-5","name":"Claude Fable 5","model_picker_enabled":true,"policy":{"state":"enabled"},"supported_endpoints":["/v1/messages","/chat/completions"],"capabilities":{"type":"chat","limits":{"max_context_window_tokens":1000000,"max_prompt_tokens":936000,"max_output_tokens":64000},"supports":{"vision":true}}},
  {"id":"text-embedding-3-small","name":"Embedding","model_picker_enabled":false,"capabilities":{"type":"embeddings"}},
- {"id":"gpt-disabled-neon","name":"Disabled","model_picker_enabled":true,"policy":{"state":"disabled"},"supported_endpoints":["/chat/completions"],"capabilities":{"type":"chat"}}
+ {"id":"provimux-test-copilot-disabled","name":"Disabled","model_picker_enabled":true,"policy":{"state":"disabled"},"supported_endpoints":["/chat/completions"],"capabilities":{"type":"chat"}}
 ]}

@@ -1,5 +1,5 @@
 {"object":"list","data":[
  {"id":"kimi-k2.8","object":"model","created":1792022400,"owned_by":"moonshot","display_name":"Kimi K2.8 (live)","context_length":262144,"supports_reasoning":true,"supports_image_in":true,"supports_video_in":true},
  {"id":"kimi-k2.8-code","object":"model","created":1785888000,"owned_by":"moonshot","display_name":"Kimi K2.8 Code","context_length":262144,"supports_reasoning":true,"supports_image_in":false,"supports_video_in":false},
- {"id":"kimi-k3-neon","object":"model","created":1795000000,"owned_by":"moonshot","display_name":"Kimi K3 Neon (preview)","context_length":524288,"supports_reasoning":true,"supports_image_in":false,"supports_video_in":false}
+ {"id":"provimux-test-kimi-learned","object":"model","created":1795000000,"owned_by":"moonshot","display_name":"Provimux Test Kimi Learned (preview)","context_length":524288,"supports_reasoning":true,"supports_image_in":false,"supports_video_in":false}
 ]}
