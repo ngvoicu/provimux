@@ -86,6 +86,22 @@ func TestProvimuxAffinityPinAcrossBuilds(t *testing.T) {
 	}
 
 	aliases := compactSessionAliases(mergeSessionAliases([]string{sessionID}, entry.aliases...))`, "whole"},
+		{"the third review's edit: the generic session header folded to lower case", info,
+			"if sid := sessionHeaderValue(headers, \"X-Session-ID\"); sid != \"\" {\n", "if sid := sessionHeaderValue(headers, \"X-Session-ID\"); sid != \"\" {\n\t\tsid = strings.ToLower(sid)\n", "kinds: header"},
+		{"the third review's edit: an expired entry still used for two seconds", cache,
+			`	if !now.Before(entry.expiresAt) {
+		c.removeAliasGroupLocked(entry)
+		return "", false
+	}
+
+	aliases := compactSessionAliases(mergeSessionAliases([]string{sessionID}, entry.aliases...))`, `	if !now.Before(entry.expiresAt.Add(2 * time.Second)) {
+		c.removeAliasGroupLocked(entry)
+		return "", false
+	}
+
+	aliases := compactSessionAliases(mergeSessionAliases([]string{sessionID}, entry.aliases...))`, "whole"},
+		{"the third review's edit: a smaller default capacity", cache,
+			"defaultMaxSessionEntries = 65536", "defaultMaxSessionEntries = 4", "whole"},
 		{"harmless: a hit's own renewal (Pick binds again at once, with one TTL)", cache,
 			`c.replaceAliasGroupsLocked(entry.authID, now.Add(c.ttl), aliases, entry.binding, entry)
 	return entry.authID, true`, `c.replaceAliasGroupsLocked(entry.authID, now.Add(2*c.ttl), aliases, entry.binding, entry)

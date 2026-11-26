@@ -47,9 +47,9 @@ server's address, see [For a team](#for-a-team)). Docker, release archives and b
   `prompt_cache_options.ttl` (for example `"12h"`) is forwarded instead of removed.
 - **[A Codex WebSocket replay that stays a replay](#codex-websocket-a-full-replay-stays-a-replay)**: a re-sent
   conversation is no longer merged into a double transcript billed at about twice the input.
-- **[Conversations keep their account across a restart](#conversations-keep-their-account-across-a-restart)**: with
-  session affinity, a conversation that sends its session id goes back to the account whose cache holds it after an
-  upgrade or a restart.
+- **[Conversations keep their account across a restart](#conversations-keep-their-account-across-a-restart)**: when
+  turned on, a conversation that sends its session id goes back to the account whose cache holds it after an upgrade
+  or a restart.
 
 **Clarity: you see which account has which models, which one answered, and why a route is paused.**
 
@@ -805,81 +805,68 @@ incremental request that names no model still appends, and pending tool calls an
 
 ### Conversations keep their account across a restart
 
-**What you get.** With session affinity on, a conversation that sends its own session id (Pi, Claude Code, the Codex
-CLI, any client that sends a session header or a prompt cache key) goes back to the account it was on after a restart
-(an upgrade, `brew services restart`), so the provider reads its prompt cache instead of writing it again on another
-account.
+**What you get.** When you turn this on, a conversation that sends its own session id (Pi, Claude Code, the Codex CLI,
+any client that sends a session header or a prompt cache key) goes back after a restart (an upgrade, `brew services
+restart`) to the account it was on, so the provider reads its prompt cache instead of writing it again on another
+account. CLIProxyAPI keeps session affinity's bindings in memory only: without this, a restart sends about half the
+conversations behind a name with two accounts to the other account, whose cache is cold.
 
-**Why it matters.** CLIProxyAPI keeps session affinity's bindings in memory only, so a restart sends every
-conversation back to the routing strategy, and with two accounts behind one name about half of them land on the other
-account, whose cache is cold. What the provider sees of the conversation itself (the session and cache keys
-CLIProxyAPI sends) does not change across a restart; only the account did.
-
-**How to turn it on.** It is on whenever `routing.session-affinity` is on. `routing.session-affinity-persist: false`
-turns it off. It does not apply in Home mode or with `kv-store.disabled: true`. Whenever it does not apply, for any of
-these reasons, no file is written and Provimux's files from an earlier run are removed. The console reads and writes
-the setting at `/v8/management/config/routing/session-affinity-persist`, and `GET
-/v8/management/provimux/session-affinity-persist` says whether it is in effect and, if not, why
-(`session-affinity-off`, `home-mode`, `kv-store-off`, `switch-off`, or one of the file reasons below).
+**How to turn it on.** It is off unless you turn it on, in the configuration or in the console
+(`/v8/management/config/routing/session-affinity-persist`). It needs `routing.session-affinity: true`, and it does not
+apply in Home mode or with `kv-store.disabled: true`. Whenever it does not apply, for any reason, nothing is written
+and Provimux's own files from an earlier run are removed (unless another running Provimux uses the same store). `GET
+/v8/management/provimux/session-affinity-persist` says whether it is in effect and, if not, why.
 
 ```yaml
 routing:
   session-affinity: true
-  # session-affinity-persist: false   # on unless set to false
+  session-affinity-persist: true
 ```
 
-- **When it writes.** When Provimux is told to stop, before it waits for the answers still being streamed, and every 5
-  minutes while it runs. Nothing is read or written while a request is routed. On a disk that does not respond, the
-  write at stop is given up after 1.5 seconds and the last file written stays. What the answers still being finished
-  change after the write at stop is not in it.
-- **After a crash.** The file is not deleted when it is read at start; it stays until the next write replaces it. So
-  after a crash, or two in a row, routing returns to the last file written, up to 5 minutes old: a conversation bound
-  after it starts afresh.
-- **What it writes.** Two files beside the KV store, named after it: `kv.db.affinity` and `kv.db.affinity-key` (for a
-  store at another path, that path followed by `.affinity` and `.affinity-key`). The key is made once for this
-  installation and, on macOS and Linux, is readable by its owner only. The first file is encrypted with that key: a
-  copy or backup of it alone tells nothing. Whoever can read the directory can read both, as they can read the login
-  files already there. With both, it reads as: the session ids clients sent, the provider and model names, for a
-  conversation without an id the hash CLIProxyAPI derived from its opening, the times, Provimux's own fixed sample
-  requests (see across upgrades), and for each account a keyed hash of its vendor identity. No client key, no login
-  file name, no e-mail address and no conversation content is in it.
-- **Never another program's file.** Provimux replaces or removes a file at those two names only when it begins with
-  Provimux's own header. When something else is there (a database, a link), it writes nothing, restores nothing and
-  removes nothing, and the state says `foreign-file`. A key file owned by another user, or one that cannot be made
-  readable by its owner only, is not used (`key-not-private`); a key of the right owner that others can read is set to
-  owner-only, and the state says so. In a directory Provimux cannot write, nothing is restored, because the file could
-  never be replaced (`directory-not-writable`).
-- **What comes back.** At the next start, before anything is served, each binding with lifetime left is put back in
-  memory, to the same account, with the lifetime it had, never longer than its last use plus the
-  `session-affinity-ttl` configured now. From there on a binding lives in memory by CLIProxyAPI's rules, as if there
-  had been no restart: a 429 that moved a conversation keeps it moved, `session-affinity-rebind-on` applies, subagents
-  inherit as `session-affinity-subagents` says, and a binding whose account was disabled or demoted meanwhile is
-  handled as CLIProxyAPI handles it in a process that never stopped.
-- **Conversations without an id.** On a gateway with client keys (`access.api-keys`), CLIProxyAPI matches a
-  conversation without an id by its turns, and that matcher is not kept: after a restart such a conversation is bound
-  afresh, as a new one is. On a gateway without client keys, CLIProxyAPI names it by a hash of its opening, which is
-  kept: it goes back to its account; a fork that keeps the opening follows it, and after a compaction (a new opening)
-  it is bound afresh, as in a process that never stopped.
-- **Only to the same account.** A binding comes back only to an account whose own vendor identity is the one recorded:
-  for an API key, the key and its host; for a Claude login, its account and organization ids; for a Codex login, its
-  workspace and user ids; for a Devin login, its user id. A login file replaced by another account's while Provimux is
-  stopped is not the same account. One replaced while Provimux runs keeps its conversations in memory, as in
-  CLIProxyAPI; Provimux notices the change within 5 seconds and leaves out of the file the bindings last used before
-  it noticed, so after a restart those start afresh. Logins without such an identity (Meta's) start afresh after a
-  restart.
-- **Across upgrades.** A file written by one build is used by the next only as far as both name and keep
-  conversations the same way. Each file carries fixed sample requests and what the writing build's session affinity
-  made of them (the keys, the bindings, their order and lifetimes), and the new build runs the same samples. Where the
-  samples of one kind of conversation differ (those with a Claude Code session id, say), the bindings of that kind
-  are left out; where the rules all bindings follow differ (their order, lifetimes, expiry), the file is ignored. A
-  file older than `session-affinity-ttl` or dated in the future is ignored too.
-- **What is not kept.** Which accounts were cooling down after a 429 is forgotten at a restart unless
-  `routing.cooldown.save-cooldown-status: true`, so a restarted Provimux may try an account the old process was
-  avoiding. The weighted strategy's credits and the round-robin position start afresh, as before. Devin's per-session
-  request counter, a field of each Devin request, starts again at 0, as it does when Devin's own client restarts.
-- **A limit of session affinity itself.** For a conversation that sends its own session id, CLIProxyAPI binds the
-  session id without the client key, so two client keys that send the same session id share one account; a restart
-  keeps that as it was and adds nothing to it.
+**What is written, and where.** When Provimux is told to stop, and every 5 minutes while it runs, two files beside the
+KV store: `kv.db.affinity` and `kv.db.affinity-key` (for a store at another path, that path followed by `.affinity`
+and `.affinity-key`). Nothing is read or written while a request is routed.
+
+- The first file is encrypted with the key in the second: a copy of it alone tells nothing. On macOS and Linux,
+  Provimux creates the key readable by its owner only and checks its owner and mode each time it uses it; it does not
+  inspect access control lists or the permissions of the directory, which already holds the login files under the same
+  protection.
+- With both files, one can read the session ids clients sent (an e-mail address a client sends as its session id
+  included), the provider and model names, for a conversation without an id the hash CLIProxyAPI derived from its
+  opening, the times, Provimux's own fixed sample requests (see the limits), and for each account a keyed hash of its
+  vendor identity. No client key, login file name, login e-mail address or conversation content is in them.
+- Provimux replaces or removes a file at those two names only when it authenticates with that key. Anything else
+  there, a damaged file of Provimux's included, is left as it is, nothing is restored or written, and the state says
+  so: a damaged snapshot must be removed by hand.
+
+**What comes back.** At the next start, before anything is served, each binding with lifetime left goes back to the
+same account, with the lifetime it had, never longer than its last use plus the `session-affinity-ttl` configured now.
+From there on CLIProxyAPI's own rules apply, as if there had been no restart. The file stays until the next write
+replaces it, so after a crash routing returns to the last file written, up to 5 minutes old.
+
+**What does not come back.**
+
+- A conversation without an id on a gateway with client keys (`access.api-keys`): CLIProxyAPI matches it by its turns,
+  and that matcher is not kept, so it is bound afresh, as a new one is. Without client keys, such a conversation is
+  named by a hash of its opening, and it comes back.
+- A conversation whose account was not the same vendor account at every check (every 5 seconds) from its last use to
+  the write: a login file replaced by another account's, or unreadable, while Provimux runs has all its bindings left
+  out for the rest of the run, and one replaced while Provimux was stopped gets nothing. Logins without a stable
+  vendor identity (Meta's) start afresh.
+- Which accounts were cooling down after a 429 (unless `routing.cooldown.save-cooldown-status: true`), the weighted
+  strategy's credits and the round-robin position. Devin's per-session request counter starts again at 0, as it does
+  when Devin's own client restarts.
+
+**Limits.**
+
+- After an upgrade, a conversation goes back only when both builds name it the same way: Provimux compares them on
+  fixed sample requests and leaves out what differs ([design](provimux/design/session-affinity-persist.md)). A change
+  upstream makes to how it names a conversation that the samples do not cover can send that conversation to another
+  account once after an upgrade, where its cache is cold; it is never an error.
+- Two client keys that send the same session id share one account in CLIProxyAPI's memory; a restart keeps that as it
+  was.
+- What the answers still being streamed change after the write at stop is not in the file. On a disk that does not
+  respond, the write at stop is given up after 1.5 seconds, and it never lands later.
 
 **A restart in the middle of an answer.** By default (`server.shutdown-timeout: 0`) a restart closes the answers being
 streamed at that moment: the client gets a truncated answer. `brew services restart` stops the service with SIGTERM
