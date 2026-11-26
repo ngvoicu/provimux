@@ -37,6 +37,20 @@
       ]
     },
     {
+      "id": "gpt-6.1-sol",
+      "object": "model",
+      "created": 1769904000,
+      "owned_by": "openai",
+      "accounts": [
+        {
+          "provider": "codex",
+          "kind": "oauth",
+          "priority": 0,
+          "entry": "openai-codex/gpt-6.1-sol"
+        }
+      ]
+    },
+    {
       "id": "claude-opus-4-8",
       "object": "model",
       "created": 1769904000,
@@ -69,9 +83,9 @@
     "contract": 1,
     "source": "https://providers.dev",
     "state": "held",
-    "dataset_version": "89105175cb0af1aa",
-    "generated_at": "2026-11-25T09:49:05Z",
-    "fetched_at": "2026-11-25T12:00:03Z",
+    "dataset_version": "c37885999c67cfaa",
+    "generated_at": "2026-11-26T11:31:15Z",
+    "fetched_at": "2026-11-26T12:00:03Z",
     "entries": {
       "anthropic/claude-opus-5-5": {
         "provider": "anthropic",
@@ -97,7 +111,7 @@
           "tiers": [],
           "other_rates": true,
           "source": "models.dev",
-          "date": "2026-11-24",
+          "date": "2026-11-26",
           "sources_differ": false
         },
         "cache": {
@@ -125,9 +139,9 @@
             "through_provimux": []
           },
           "long": {
-            "rely_on_s": 600,
-            "basis": "measured_through_provimux",
-            "date": "2026-11-04",
+            "rely_on_s": 3600,
+            "basis": "measured",
+            "date": "2026-11-17",
             "safe": {
               "seconds": 3600,
               "basis": "measured",
@@ -147,6 +161,7 @@
               {
                 "client": "cliproxyapi",
                 "label": "Requests sent through Provimux",
+                "counts": false,
                 "lifetime_s": 600,
                 "date": "2026-11-04",
                 "checks": 20,
@@ -164,13 +179,13 @@
           "tokens": 1000000,
           "at_least": false,
           "source": "models.dev",
-          "date": "2026-11-24"
+          "date": "2026-11-26"
         },
         "max_output": {
           "tokens": 128000,
           "at_least": false,
           "source": "models.dev",
-          "date": "2026-11-24"
+          "date": "2026-11-26"
         }
       },
       "claude-subscription/claude-opus-5-5": {
@@ -197,7 +212,7 @@
           "tiers": [],
           "other_rates": true,
           "source": "models.dev",
-          "date": "2026-11-24",
+          "date": "2026-11-26",
           "sources_differ": false
         },
         "cache": {
@@ -205,7 +220,7 @@
           "retention": "unknown",
           "short": {
             "rely_on_s": 3600,
-            "basis": "measured_through_provimux",
+            "basis": "measured",
             "date": "2026-11-16",
             "safe": {
               "seconds": 3600,
@@ -226,6 +241,7 @@
               {
                 "client": "cliproxyapi",
                 "label": "Requests sent through Provimux",
+                "counts": false,
                 "lifetime_s": 3600,
                 "date": "2026-11-16",
                 "checks": 40,
@@ -237,7 +253,7 @@
           },
           "long": {
             "rely_on_s": 3600,
-            "basis": "measured_through_provimux",
+            "basis": "measured",
             "date": "2026-11-16",
             "safe": {
               "seconds": 3600,
@@ -258,6 +274,7 @@
               {
                 "client": "cliproxyapi",
                 "label": "Requests sent through Provimux",
+                "counts": false,
                 "lifetime_s": 3600,
                 "date": "2026-11-16",
                 "checks": 40,
@@ -282,6 +299,117 @@
           "at_least": false,
           "source": "measured",
           "date": "2026-11-08"
+        }
+      },
+      "openai-codex/gpt-6.1-sol": {
+        "provider": "openai-codex",
+        "model": "gpt-6.1-sol",
+        "url": "https://providers.dev/entries/openai-codex/gpt-6.1-sol/",
+        "access": "subscription",
+        "price": {
+          "billing": "reference",
+          "reference": "openai/gpt-6.1-sol",
+          "input": 2,
+          "output": 10,
+          "cache_read": 0.1,
+          "cache_write": [
+            {
+              "lifetime_s": 1800,
+              "price": 2.5
+            },
+            {
+              "lifetime_s": 43200,
+              "price": 5
+            }
+          ],
+          "tiers": [
+            {
+              "input_tokens_above": 272000,
+              "input": 4,
+              "output": 15,
+              "cache_read": 0.2,
+              "cache_write": null
+            }
+          ],
+          "other_rates": true,
+          "source": "models.dev",
+          "date": "2026-11-26",
+          "sources_differ": false
+        },
+        "cache": {
+          "documented": "yes",
+          "retention": "unknown",
+          "short": {
+            "rely_on_s": 1800,
+            "basis": "measured_through_provimux",
+            "date": "2026-11-07",
+            "safe": {
+              "seconds": 450,
+              "basis": "measured",
+              "source": "providers.dev",
+              "date": "2026-11-24",
+              "measured_with": [
+                {
+                  "client": "codex-cli",
+                  "label": "OpenAI's Codex CLI",
+                  "kind": "own_client"
+                }
+              ]
+            },
+            "documented_s": null,
+            "documented_status": null,
+            "through_provimux": [
+              {
+                "client": "cliproxyapi",
+                "label": "Requests sent through Provimux",
+                "counts": false,
+                "lifetime_s": 0,
+                "date": "2026-11-17",
+                "checks": 86,
+                "hits": 56,
+                "first_miss_s": 150,
+                "asked": null
+              },
+              {
+                "client": "agent+cliproxyapi",
+                "label": "A coding agent, through Provimux",
+                "counts": true,
+                "lifetime_s": 1800,
+                "date": "2026-11-07",
+                "checks": 31,
+                "hits": 21,
+                "first_miss_s": 3600,
+                "asked": null
+              }
+            ]
+          },
+          "long": {
+            "rely_on_s": null,
+            "basis": "none",
+            "date": null,
+            "safe": {
+              "seconds": null,
+              "basis": "none",
+              "source": null,
+              "date": null,
+              "measured_with": []
+            },
+            "documented_s": null,
+            "documented_status": null,
+            "through_provimux": []
+          }
+        },
+        "input_window": {
+          "tokens": 921500,
+          "at_least": true,
+          "source": "measured",
+          "date": "2026-11-17"
+        },
+        "max_output": {
+          "tokens": 128000,
+          "at_least": false,
+          "source": "models.dev",
+          "date": "2026-11-26"
         }
       },
       "openai-codex/gpt-6.2-sol": {
@@ -316,16 +444,16 @@
           ],
           "other_rates": true,
           "source": "models.dev",
-          "date": "2026-11-24",
+          "date": "2026-11-26",
           "sources_differ": false
         },
         "cache": {
           "documented": "yes",
           "retention": "unknown",
           "short": {
-            "rely_on_s": 0,
-            "basis": "measured_through_provimux",
-            "date": "2026-11-17",
+            "rely_on_s": 150,
+            "basis": "measured",
+            "date": "2026-11-24",
             "safe": {
               "seconds": 150,
               "basis": "measured",
@@ -345,6 +473,7 @@
               {
                 "client": "cliproxyapi",
                 "label": "Requests sent through Provimux",
+                "counts": false,
                 "lifetime_s": 0,
                 "date": "2026-11-17",
                 "checks": 10,
@@ -374,13 +503,13 @@
           "tokens": 922000,
           "at_least": false,
           "source": "models.dev",
-          "date": "2026-11-24"
+          "date": "2026-11-26"
         },
         "max_output": {
           "tokens": 128000,
           "at_least": false,
           "source": "models.dev",
-          "date": "2026-11-24"
+          "date": "2026-11-26"
         }
       }
     }
