@@ -1,0 +1,10 @@
+# Known timing tests of upstream (SYNC.md, "Known timing tests"): tests that assert on
+# wall-clock time with a thin margin and fail by chance. When one of them fails on the
+# candidate (first run or package rerun), check.sh retries it alone, in a fresh go test
+# process, up to $PMX_TIMING_RETRIES times (default 2), and the verdict waives it only
+# when a retry passed. A test that fails every time still fails the check.
+#
+# One test per line: <package> <test> <date added> <reason>. Only tests seen failing by
+# chance go here; a name leaves when upstream widens the margin or removes the test, or
+# when 50 runs of its package show no failure of it (SYNC.md, "Known timing tests").
+github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy TestServiceHeartbeatFailoverDoesNotDrainBlockingScope 2026-11-26 waits 1 s for the resubscription after a heartbeat loss, but the retry delay alone is a random 0.5 to 1 s (service_home_retry.go) on top of the time to notice the loss; failed 1 of 6 full-package runs on main (a 950 ms retry) and about 1 run in 3 on a loaded machine, never alone

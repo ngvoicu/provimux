@@ -95,6 +95,7 @@ jobs:
       build: ${{ steps.build.outcome }}
       test: ${{ steps.test.outcome }}
       rerun: ${{ steps.rerun.outcome }}
+      retry: ${{ steps.retry.outcome }}
     env:
       # The release may need a newer Go than the one its go.mod names.
       GOTOOLCHAIN: auto
@@ -135,6 +136,12 @@ jobs:
         id: rerun
         continue-on-error: true
         run: bash .github/provimux/check.sh test candidate rerun
+      # Known timing tests (.github/provimux/timing-tests.txt) that failed above: each alone,
+      # in a fresh process, until it passes (2 times at most); each retry is logged here.
+      - name: go test again, alone, the known timing tests that failed (runs the tree's code)
+        id: retry
+        continue-on-error: true
+        run: bash .github/provimux/check.sh test candidate retry
       - uses: actions/upload-artifact@v4
         id: upload
         if: ${{ always() }}
@@ -251,6 +258,7 @@ jobs:
           PMX_OUTCOME_BUILD: ${{ needs.test-candidate.outputs.build }}
           PMX_OUTCOME_CAND_TEST: ${{ needs.test-candidate.outputs.test }}
           PMX_OUTCOME_RERUN: ${{ needs.test-candidate.outputs.rerun }}
+          PMX_OUTCOME_RETRY: ${{ needs.test-candidate.outputs.retry }}
           PMX_OUTCOME_TAG_TEST: ${{ needs.test-tag.outputs.test }}
         run: bash .github/provimux/check.sh verdict
       - name: Summary
@@ -258,7 +266,8 @@ jobs:
         run: |
           if [ -f "$PMX_CHECK_OUT/result.json" ]; then
             jq -r '"### provimux-check: \(.status) \(.upstream.tag // "")", "", (.reasons[]? | "- " + .),
-              (if (.warnings // []) | length > 0 then "", "Warnings from the candidate tests (not counted):", "", (.warnings[] | "- \(.test): \(.text)") else empty end)' \
+              (if (.warnings // []) | length > 0 then "", "Warnings from the candidate tests (not counted):", "", (.warnings[] | "- \(.test): \(.text)") else empty end),
+              (if (.tests.timing_retries // []) | length > 0 then "", "Known timing tests that failed on the candidate, and their retries (timing-tests.txt):", "", (.tests.timing_retries[] | "- \(.test): \(.retries | if length == 0 then "not retried" else join(", ") end)") else empty end)' \
               "$PMX_CHECK_OUT/result.json" | tr -d '`' >> "$GITHUB_STEP_SUMMARY"
           fi
       # The artifact publish.sh reads. The run succeeds only if this upload does, and an
