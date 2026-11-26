@@ -376,11 +376,18 @@ components:
         The cache lifetime of one profile of an entry.
 
         The rule of `rely_on_s`, in this order:
-        1. providers.dev has measurements of the entry made through Provimux (`through_provimux`
-           is not empty): the lowest of their `lifetime_s`; `basis` is `measured_through_provimux`.
+        1. providers.dev has measurements of the entry made by a real client through Provimux
+           (an item of `through_provimux` with `counts` true): the lowest of their `lifetime_s`;
+           `basis` is `measured_through_provimux`.
         2. else providers.dev's safe value is measured: that value; `basis` is `measured`.
         3. else providers.dev's safe value is documented: that value; `basis` is `documented`.
         4. else null; `basis` is `none`.
+
+        A real client is a program that holds a conversation through the gateway: a coding agent
+        such as Pi. Plain test requests sent through Provimux are not a client: they are listed in
+        `through_provimux` with `counts` false, as evidence, and never give `rely_on_s` by row 1.
+        They can still stand behind row 2, where they are the only measurement providers.dev has
+        of a login; `safe.measured_with` then names them.
 
         0 is a value: it was measured, and no age held on every check. It does not say the
         provider never caches.
@@ -397,7 +404,7 @@ components:
           oneOf:
             - $ref: "#/components/schemas/Day"
             - type: "null"
-          description: The date of the statement `rely_on_s` is taken from; with row 1, of the measurement that gave the lowest value.
+          description: The date of the statement `rely_on_s` is taken from; with row 1, of the measurement that gave the lowest value (of equal ones, the newest).
         safe:
           $ref: "#/components/schemas/SafeLifetime"
         documented_s:
@@ -408,7 +415,10 @@ components:
           description: providers.dev's word on whether a measurement contradicts the documented lifetime, e.g. `not_contradicted`, `contradicted`.
         through_provimux:
           type: array
-          description: providers.dev's measurements of this profile made through Provimux, newest first. Empty where there is none.
+          description: |
+            providers.dev's measurements of this profile made through Provimux, newest first: a
+            real client's (`counts` true) and plain test requests' (`counts` false). Empty where
+            there is none.
           items:
             $ref: "#/components/schemas/Measurement"
     SafeLifetime:
@@ -447,12 +457,19 @@ components:
           description: "`direct`, `own_client` (the vendor's own client) or `proxy`."
     Measurement:
       type: object
-      required: [client, label, lifetime_s, date, checks, hits, first_miss_s, asked]
+      required: [client, label, counts, lifetime_s, date, checks, hits, first_miss_s, asked]
       properties:
         client:
           type: string
+          description: providers.dev's public id of what sent the requests.
         label:
           type: [string, "null"]
+        counts:
+          type: boolean
+          description: |
+            True where the requests were made by a real client holding a conversation (a coding
+            agent), so the measurement can give `rely_on_s` by row 1 of the rule. False for plain
+            test requests: evidence only.
         lifetime_s:
           type: integer
           minimum: 0
