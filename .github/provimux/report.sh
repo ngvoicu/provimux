@@ -123,12 +123,18 @@ warnings() {
   list '.warnings[] | "\(.test): \(.text)"'
 }
 
-# timing_retries: the known timing tests (timing-tests.txt) that failed on the candidate,
-# and each retry alone in a fresh process; a pass on any retry waived the failure.
-timing_retries() {
-  [[ "$(jq '.tests.timing_retries // [] | length' "$r")" != 0 ]] || return 0
-  echo "Known timing tests that failed on the candidate (\`.github/provimux/timing-tests.txt\`; waived only when a retry passed):"
-  list '.tests.timing_retries[] | "\(.test): retries \(.retries | if length == 0 then "none" else join(", ") end)"'
+# flaky_retries: the known flaky tests (flaky-tests.txt) that failed on the candidate, and
+# each retry alone in a fresh process, with the count per test; a pass on any retry waived
+# the failure. A test that needed its last retry gets a line of its own.
+flaky_retries() {
+  [[ "$(jq '.tests.known_flaky_retries // [] | length' "$r")" != 0 ]] || return 0
+  echo "Known flaky tests that failed on the candidate (\`.github/provimux/flaky-tests.txt\`; waived only when a retry passed):"
+  list '.tests.known_flaky_retries[] | "\(.test): \(.retries | length) of \(.allowed) retries used: \(.retries | if length == 0 then "not retried" else join(", ") end)\(if .waived then "" else " (counted as a failure)" end)"'
+  jq -r '.tests.known_flaky_retries[] | select(.last_needed) | .test' "$r" | tr -cd 'A-Za-z0-9 ._/\n-' | while IFS= read -r t; do
+    echo
+    echo "**\`$t\` needed its last retry** ($(jq -r --arg t "$t" '.tests.known_flaky_retries[] | select(.test == $t) | "\(.allowed) of \(.allowed)"' "$r" | head -n 1 | tr -cd '0-9 of')): it may fail more often than its line in \`flaky-tests.txt\` says; measure it again (SYNC.md, \"Known flaky tests\")."
+  done
+  echo
 }
 
 marker="<!-- provimux-sync status=$status candidate=${candidate:-none} -->"
@@ -151,7 +157,7 @@ esac
       echo "| old \`main\` | \`$old_main\` on \`$old_base_tag\` |"
       echo "| candidate | \`$candidate\`, $(j .commits) commits on \`$tag\` |"
       echo "| build | ok |"
-      echo "| tests | $(jq -r '.tests | "candidate: \(.candidate.packages) packages, \(.candidate.passed) tests passed, \(.candidate.failed) failed; tag: \(.tag.packages) packages, \(.tag.passed) passed, \(.tag.failed) failed; new failures: \(.new_failures | length); flaky (passed on the package rerun): \(.flaky | length); known timing tests (passed on a retry): \(.timing // [] | length); failing on the tag too: \(.failing_on_tag_too | length)"' "$r" | tr -cd 'A-Za-z0-9 ,.;:()_-') |"
+      echo "| tests | $(jq -r '.tests | "candidate: \(.candidate.packages) packages, \(.candidate.passed) tests passed, \(.candidate.failed) failed; tag: \(.tag.packages) packages, \(.tag.passed) passed, \(.tag.failed) failed; new failures: \(.new_failures | length); flaky (passed on the package rerun): \(.flaky | length); known flaky tests (passed on a retry): \(.known_flaky // [] | length); failing on the tag too: \(.failing_on_tag_too | length)"' "$r" | tr -cd 'A-Za-z0-9 ,.;:()_-') |"
       echo "| guard | ok |"
       [[ "$(jq -r '.readme // null | type' "$r")" != object ]] || echo "| root READMEs | $(jq -r '.readme | "README commit \(.old[0:12]) -> \(.new[0:12]), in normal form" + (if .reapplied then "; re-applied at the rebase stop (" + (.conflicts | join(", ")) + ")" else "" end)' "$r" | tr -cd 'A-Za-z0-9 ,.;:()_>-') |"
       echo
@@ -175,7 +181,7 @@ esac
       echo
       warnings
       if [[ "$(jq '.tests.flaky | length' "$r")" != 0 ]]; then echo "Flaky on the candidate (failed, then passed when the package was rerun):"; list '.tests.flaky[]'; fi
-      timing_retries
+      flaky_retries
       if [[ "$(jq '.tests.failing_on_tag_too | length' "$r")" != 0 ]]; then echo "Failing on \`$tag\` too (not counted):"; list '.tests.failing_on_tag_too[]'; fi
       ;;
     fail | error)
@@ -196,7 +202,7 @@ esac
                         + ["exit status: candidate \(.candidate.exit), tag \(.tag.exit), package rerun \(.rerun.exit // "none")"]) | join("\n")'
       fi
       if isfalse .build.ok; then echo "Build (last lines):"; list '.build.tail'; fi
-      timing_retries
+      flaky_retries
       warnings
       if isfalse .guard.ok; then echo "Guard:"; list '.guard.output'; fi
       echo "Fix it by hand following \`.github/provimux/SYNC.md\`. The next check (every 3 hours, or Actions → provimux-check → Run workflow) updates this issue."

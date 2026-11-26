@@ -136,9 +136,9 @@ jobs:
         id: rerun
         continue-on-error: true
         run: bash .github/provimux/check.sh test candidate rerun
-      # Known timing tests (.github/provimux/timing-tests.txt) that failed above: each alone,
-      # in a fresh process, until it passes (2 times at most); each retry is logged here.
-      - name: go test again, alone, the known timing tests that failed (runs the tree's code)
+      # Known flaky tests (.github/provimux/flaky-tests.txt) that failed above: each alone, in
+      # a fresh process, until it passes (its line's count at most); each retry is logged here.
+      - name: go test again, alone, the known flaky tests that failed (runs the tree's code)
         id: retry
         continue-on-error: true
         run: bash .github/provimux/check.sh test candidate retry
@@ -267,7 +267,10 @@ jobs:
           if [ -f "$PMX_CHECK_OUT/result.json" ]; then
             jq -r '"### provimux-check: \(.status) \(.upstream.tag // "")", "", (.reasons[]? | "- " + .),
               (if (.warnings // []) | length > 0 then "", "Warnings from the candidate tests (not counted):", "", (.warnings[] | "- \(.test): \(.text)") else empty end),
-              (if (.tests.timing_retries // []) | length > 0 then "", "Known timing tests that failed on the candidate, and their retries (timing-tests.txt):", "", (.tests.timing_retries[] | "- \(.test): \(.retries | if length == 0 then "not retried" else join(", ") end)") else empty end)' \
+              (if (.tests.known_flaky_retries // []) | length > 0 then "", "Known flaky tests that failed on the candidate, and their retries (flaky-tests.txt):", "",
+                (.tests.known_flaky_retries[] | "- \(.test): \(.retries | length) of \(.allowed) retries used: \(.retries | if length == 0 then "not retried" else join(", ") end)\(if .waived then "" else " (counted as a failure)" end)"),
+                (.tests.known_flaky_retries[] | select(.last_needed) | "", "**\(.test) needed its last retry (\(.allowed) of \(.allowed)): it may fail more often than its line in flaky-tests.txt says; measure it again.**")
+               else empty end)' \
               "$PMX_CHECK_OUT/result.json" | tr -d '`' >> "$GITHUB_STEP_SUMMARY"
           fi
       # The artifact publish.sh reads. The run succeeds only if this upload does, and an

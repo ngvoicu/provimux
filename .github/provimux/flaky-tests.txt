@@ -1,0 +1,19 @@
+# Known flaky tests of upstream (SYNC.md, "Known flaky tests"): tests seen failing by chance
+# on unchanged main, whatever the cause (a clock, a race, an order, a slow result). When one
+# fails on the candidate (first run or package rerun), check.sh retries it alone, in a fresh
+# go test process, until it passes, at most <retries> times; the verdict waives it only when
+# a retry passed. A test that fails every retry still fails the check.
+#
+# <package> <test> <date added> <retries> <failed>/<runs> <cause>
+#   <failed>/<runs>: the rate the retries are sized to: the test alone, as the retries run
+#   it, or, when it never failed alone, where it was seen failing (SYNC.md says which).
+#   <retries>: the smallest n, at least 2, with (failed/runs)^n under 1/1000 (check.sh
+#   refuses any other count). <cause>: the other rates seen, and why it fails, in a few words.
+github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy TestServiceHeartbeatFailoverDoesNotDrainBlockingScope 2026-11-26 4 3/30 alone; 2/31 in package runs; waits 1 s for a resubscription whose retry delay alone is a random 0.5-1 s
+github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor TestAntigravityManagerExecuteAndStream_ToppedUpCreditsRecoverDuringQuotaCooldown 2026-11-26 7 14/40 alone; 13/20 in loaded full runs, 1/10 in package runs; race around the background credits refresh: when the test reads, loadCodeAssist was not yet called, or the hint not yet updated
+github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor TestAIStudioExecutorClaudeMalformedFunctionCallCancelAfterErrorRecordsConductorFailure 2026-11-26 4 5/40 alone; 4/20 full, 1/10 package; the conductor result of a cancel is lost and the 3 s wait runs out
+github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost TestHomeExecutorDispatchLifecycleRejections 2026-11-26 4 4/30 in full and package runs; 0/40 alone; race: a usage record from a lifecycle rejection
+github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers/openai TestResponsesWebsocketSameSessionLaterCreate429DoesNotReplayAfterDownstreamCommit 2026-11-26 3 1/30 alone; 1/20 full, 1/10 package; race: the socket closes (1006) before the 429 frame
+github.com/router-for-me/CLIProxyAPI/v8/internal/wstunnel TestHubLimits_BinaryPayloadAndTransportBoundaries 2026-11-26 3 1/30 alone; 1/20 full; order: a server_online frame arrives before the one the test reads
+github.com/router-for-me/CLIProxyAPI/v8/internal/wstunnel TestHubBudget_ExhaustedTenantDoesNotStarveAnotherTenant 2026-11-26 3 1/30 in full and package runs; 0/30 alone; order: a server_online frame arrives before the one the test reads
+github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor TestClaudeExecutorStreamTruncationReportsError 2026-11-26 3 1/30 in full and package runs; 0/40 alone; race: the usage record is not yet marked failed when read
