@@ -124,7 +124,7 @@ cmp() {
   if [[ "$3" == - ]]; then echo '{"term":{},"build_failed":[],"failed":[],"passed":[]}' >"$d/r.json"; else sum <<<"$3" >"$d/r.json"; fi
   pk="$(tr ' ' '\n' <<<"$7" | jq -R -s 'split("\n") | map(select(length > 0))')"
   echo "$pk" >"$d/pk.json"
-  echo "${CMP_TIMING:-[]}" >"$d/tl.json"
+  echo "${CMP_KNOWN:-[]}" >"$d/tl.json"
   # CMP_RETRIES: "EXIT<TAB>raw go test -json of one retry" per retry, retries separated by a line "--".
   printf '%s\n--\n' "${CMP_RETRIES:-}" | awk -v d="$d" 'BEGIN{n=0; f=d"/rt-0"} /^--$/{n++; f=d"/rt-" n; next} {print > f}'
   local i=0 e
@@ -139,9 +139,9 @@ cmp() {
   jq -s . "$d/rt.jsonl" >"$d/rt.json"
   jq -n --slurpfile cand "$d/c.json" --slurpfile pris "$d/p.json" --slurpfile rerun "$d/r.json" \
     --slurpfile cpkgs "$d/pk.json" --slurpfile ppkgs "$d/pk.json" \
-    --slurpfile timing "$d/tl.json" --slurpfile retries "$d/rt.json" \
+    --slurpfile known "$d/tl.json" --slurpfile retries "$d/rt.json" \
     --argjson cexit "$4" --argjson pexit "$5" --argjson rexit "$6" -f "$here/testcmp.jq" >"$d/out.json"
-  jq -r '"\(.ok) new=\(.new_failures | join(",")) flaky=\(.flaky | join(",")) upstream=\(.failing_on_tag_too | join(","))" + (if (.timing | length) > 0 then " timing=\(.timing | join(","))" else "" end)' "$d/out.json"
+  jq -r '"\(.ok) new=\(.new_failures | join(",")) flaky=\(.flaky | join(",")) upstream=\(.failing_on_tag_too | join(","))" + (if (.known_flaky | length) > 0 then " known=\(.known_flaky | join(","))" else "" end)' "$d/out.json"
 }
 
 echo "# testcmp.jq"
@@ -207,39 +207,46 @@ rerun='{"Action":"build-fail","ImportPath":"x/h [x/h.test]"}
 expect "upstream-waived failure whose package rerun fails to build: fails the check" \
   "false new= flaky= upstream=x/h TestUp" "$(cmp "$cand" "$pris" "$rerun" 1 1 1 x/h)"
 
-# T: known timing tests (timing-tests.txt): retried alone, waived only by an explicit pass.
-echo "# testcmp.jq: known timing tests"
-cand="$(ev fail x/t TestTiming; ev pass x/t TestOther; ev fail x/t)"
-pris="$(ev pass x/t TestTiming; ev pass x/t TestOther; ev pass x/t)"
-rerun="$(ev fail x/t TestTiming; ev pass x/t TestOther; ev fail x/t)"
-CMP_TIMING='["x/t TestTiming"]'
-expect "listed timing test failing twice, never retried: fails the check" \
-  "false new=x/t TestTiming flaky= upstream=" "$(cmp "$cand" "$pris" "$rerun" 1 0 1 x/t)"
-CMP_RETRIES="$(printf '1\n'; ev fail x/t TestTiming; ev fail x/t; echo --; printf '0\n'; ev pass x/t TestTiming; ev pass x/t)"
-expect "listed timing test failing twice, passing on the second retry: waived" \
-  "true new= flaky= upstream= timing=x/t TestTiming" "$(CMP_RETRIES="$CMP_RETRIES" cmp "$cand" "$pris" "$rerun" 1 0 1 x/t)"
-expect "  ... result lists each retry" '["fail","pass"]' "$(jq -c '.timing_retries[0].retries' "$tmp/cmp/out.json")"
-CMP_RETRIES="$(printf '1\n'; ev fail x/t TestTiming; ev fail x/t; echo --; printf '1\n'; ev fail x/t TestTiming; ev fail x/t)"
-expect "listed timing test failing on every retry (a real failure): fails the check" \
-  "false new=x/t TestTiming flaky= upstream=" "$(CMP_RETRIES="$CMP_RETRIES" cmp "$cand" "$pris" "$rerun" 1 0 1 x/t)"
-CMP_RETRIES="$(printf '124\n'; ev pass x/t TestTiming; ev pass x/t)"
+# T: known flaky tests (flaky-tests.txt): retried alone, waived only by an explicit pass.
+echo "# testcmp.jq: known flaky tests"
+cand="$(ev fail x/t TestFlaky; ev pass x/t TestOther; ev fail x/t)"
+pris="$(ev pass x/t TestFlaky; ev pass x/t TestOther; ev pass x/t)"
+rerun="$(ev fail x/t TestFlaky; ev pass x/t TestOther; ev fail x/t)"
+CMP_KNOWN='[{"test": "x/t TestFlaky", "retries": 3}]'
+expect "listed flaky test failing twice, never retried: fails the check" \
+  "false new=x/t TestFlaky flaky= upstream=" "$(cmp "$cand" "$pris" "$rerun" 1 0 1 x/t)"
+CMP_RETRIES="$(printf '1\n'; ev fail x/t TestFlaky; ev fail x/t; echo --; printf '0\n'; ev pass x/t TestFlaky; ev pass x/t)"
+expect "listed flaky test failing twice, passing on retry 2 of 3: waived" \
+  "true new= flaky= upstream= known=x/t TestFlaky" "$(CMP_RETRIES="$CMP_RETRIES" cmp "$cand" "$pris" "$rerun" 1 0 1 x/t)"
+expect "  ... result lists each retry, the count, not the last one" '{"allowed":3,"retries":["fail","pass"],"waived":true,"last_needed":false}' \
+  "$(jq -c '.known_flaky_retries[0] | del(.test)' "$tmp/cmp/out.json")"
+CMP_RETRIES="$(printf '1\n'; ev fail x/t TestFlaky; ev fail x/t; echo --; printf '1\n'; ev fail x/t TestFlaky; ev fail x/t; echo --; printf '0\n'; ev pass x/t TestFlaky; ev pass x/t)"
+expect "passing on its last retry (3 of 3): waived" \
+  "true new= flaky= upstream= known=x/t TestFlaky" "$(CMP_RETRIES="$CMP_RETRIES" cmp "$cand" "$pris" "$rerun" 1 0 1 x/t)"
+expect "  ... marked as needing its last retry" true "$(jq -c '.known_flaky_retries[0].last_needed' "$tmp/cmp/out.json")"
+CMP_RETRIES="$(printf '1\n'; ev fail x/t TestFlaky; ev fail x/t; echo --; printf '1\n'; ev fail x/t TestFlaky; ev fail x/t; echo --; printf '1\n'; ev fail x/t TestFlaky; ev fail x/t)"
+expect "listed flaky test failing on every retry (a real failure): fails the check" \
+  "false new=x/t TestFlaky flaky= upstream=" "$(CMP_RETRIES="$CMP_RETRIES" cmp "$cand" "$pris" "$rerun" 1 0 1 x/t)"
+expect "  ... its retries recorded, not waived" '{"allowed":3,"retries":["fail","fail","fail"],"waived":false,"last_needed":false}' \
+  "$(jq -c '.known_flaky_retries[0] | del(.test)' "$tmp/cmp/out.json")"
+CMP_RETRIES="$(printf '124\n'; ev pass x/t TestFlaky; ev pass x/t)"
 expect "a retry pass without a valid exit status: fails the check" \
-  "false new=x/t TestTiming flaky= upstream=" "$(CMP_RETRIES="$CMP_RETRIES" cmp "$cand" "$pris" "$rerun" 1 0 1 x/t)"
+  "false new=x/t TestFlaky flaky= upstream=" "$(CMP_RETRIES="$CMP_RETRIES" cmp "$cand" "$pris" "$rerun" 1 0 1 x/t)"
 cand2="$(ev fail x/t TestNotListed; ev fail x/t)"
 rerun2="$(ev fail x/t TestNotListed; ev fail x/t)"
 CMP_RETRIES="$(printf '0\n'; ev pass x/t TestNotListed; ev pass x/t)"
 expect "a test not on the list, passing on a retry: fails the check" \
   "false new=x/t TestNotListed flaky= upstream=" "$(CMP_RETRIES="$CMP_RETRIES" cmp "$cand2" "$pris" "$rerun2" 1 0 1 x/t)"
-cand2="$(ev fail x/t TestTiming/sub; ev fail x/t TestTiming; ev fail x/t)"
-CMP_RETRIES="$(printf '0\n'; ev pass x/t TestTiming/sub; ev pass x/t TestTiming; ev pass x/t)"
+cand2="$(ev fail x/t TestFlaky/sub; ev fail x/t TestFlaky; ev fail x/t)"
+CMP_RETRIES="$(printf '0\n'; ev pass x/t TestFlaky/sub; ev pass x/t TestFlaky; ev pass x/t)"
 expect "a subtest of a listed test, passing on a retry: waived" \
-  "true new= flaky= upstream= timing=x/t TestTiming,x/t TestTiming/sub" "$(CMP_RETRIES="$CMP_RETRIES" cmp "$cand2" "$pris" "$cand2" 1 0 1 x/t)"
+  "true new= flaky= upstream= known=x/t TestFlaky,x/t TestFlaky/sub" "$(CMP_RETRIES="$CMP_RETRIES" cmp "$cand2" "$pris" "$cand2" 1 0 1 x/t)"
 cand2="$(ev fail x/t)"
-CMP_TIMING='["x/t [package]"]'
+CMP_KNOWN='[{"test": "x/t [package]", "retries": 2}]'
 CMP_RETRIES="$(printf '0\n'; ev pass x/t)"
-expect "a package-level failure is never a timing test: fails the check" \
+expect "a package-level failure is never a known flaky test: fails the check" \
   "false new=x/t [package] flaky= upstream=" "$(CMP_RETRIES="$CMP_RETRIES" cmp "$cand2" "$pris" "$cand2" 1 0 1 x/t)"
-CMP_TIMING='[]'
+CMP_KNOWN='[]'
 
 # --- fixture repositories ------------------------------------------------------------------------
 # up: "upstream" with v1.0.0 -> v1.1.0, and an unrelated commit (for a moved tag).
@@ -451,16 +458,21 @@ jq '.status = "pass" | .candidate = "0123456789abcdef0123456789abcdef01234567" |
                tag: {packages: 1, passed: 1, failed: 0}}' "$tmp/warn.json" >"$tmp/warn-pass.json"
 expect "pass with a test warning: ready to publish" pass "$(report "$tmp/warn-pass.json" success)"
 contains "  ... the warning shown" "$tmp/report.out" "Warnings from the candidate's tests"
-lacks "  ... no timing section without a failed timing test" "$tmp/report.out" "Known timing tests"
-jq '.tests.timing = ["x/t TestTiming"] | .tests.timing_retries = [{test: "x/t TestTiming", retries: ["fail", "pass"]}]' \
-  "$tmp/warn-pass.json" >"$tmp/timing-pass.json"
-expect "pass with a known timing test waived by a retry: ready to publish" pass "$(report "$tmp/timing-pass.json" success)"
-contains "  ... the test and each retry shown" "$tmp/report.out" "x/t TestTiming: retries fail, pass"
-contains "  ... counted in the tests row" "$tmp/report.out" "known timing tests (passed on a retry): 1"
-jq '.tests.new_failures = ["x/t TestTiming"] | .tests.timing_retries = [{test: "x/t TestTiming", retries: ["fail", "fail"]}]' \
-  "$tmp/fail.json" >"$tmp/timing-fail.json"
-expect "a known timing test that failed every retry: failed" fail "$(report "$tmp/timing-fail.json" success)"
-contains "  ... its retries shown" "$tmp/report.out" "x/t TestTiming: retries fail, fail"
+lacks "  ... no flaky section without a failed known flaky test" "$tmp/report.out" "Known flaky tests"
+jq '.tests.known_flaky = ["x/t TestFlaky"] | .tests.known_flaky_retries = [{test: "x/t TestFlaky", allowed: 4, retries: ["fail", "pass"], waived: true, last_needed: false}]' \
+  "$tmp/warn-pass.json" >"$tmp/flaky-pass.json"
+expect "pass with a known flaky test waived by a retry: ready to publish" pass "$(report "$tmp/flaky-pass.json" success)"
+contains "  ... the test, the count and each retry shown" "$tmp/report.out" "x/t TestFlaky: 2 of 4 retries used: fail, pass"
+contains "  ... counted in the tests row" "$tmp/report.out" "known flaky tests (passed on a retry): 1"
+lacks "  ... no last-retry line" "$tmp/report.out" "needed its last retry"
+jq '.tests.known_flaky_retries[0] += {allowed: 2, last_needed: true}' "$tmp/flaky-pass.json" >"$tmp/flaky-last.json"
+expect "pass on the last retry: ready to publish" pass "$(report "$tmp/flaky-last.json" success)"
+# shellcheck disable=SC2016 # backticks of the issue's markdown
+contains "  ... a line of its own" "$tmp/report.out" '**`x/t TestFlaky` needed its last retry** (2 of 2)'
+jq '.tests.new_failures = ["x/t TestFlaky"] | .tests.known_flaky_retries = [{test: "x/t TestFlaky", allowed: 2, retries: ["fail", "fail"], waived: false, last_needed: false}]' \
+  "$tmp/fail.json" >"$tmp/flaky-fail.json"
+expect "a known flaky test that failed every retry: failed" fail "$(report "$tmp/flaky-fail.json" success)"
+contains "  ... its retries shown" "$tmp/report.out" "x/t TestFlaky: 2 of 2 retries used: fail, fail (counted as a failure)"
 
 # --- provimux-publish.yml's verifier, autopublish.sh and publish.sh --ci ----------------------------
 # checkrun ID [JQ]: attempt 1 of a provimux-check run of test/provimux on main that passed (JQ edits it).
@@ -824,10 +836,10 @@ expect "  ... result.json has the warning, without markup" "TestW: 2 Devin model
   "$(jq -r '.warnings[] | "\(.test): \(.text)"' "$vdir/result.json")"
 expect "no warning: an empty list" "0 pass" "$(verdict env >/dev/null; jq -r '"\(.warnings | length) \(.status)"' "$vdir/result.json")"
 
-echo "# check.sh test candidate retry: known timing tests (the real list, a stub go)"
-# The first entry of timing-tests.txt; a stub go that fails the first $STUB_GO_FAILS
+echo "# check.sh test candidate retry: known flaky tests (the real list, a stub go)"
+# The first entry of flaky-tests.txt; a stub go that fails the first $STUB_GO_FAILS
 # runs of it (counted in $STUB_GO_COUNT), then passes, and records each call.
-tt="$(grep -v '^#' "$here/timing-tests.txt" | grep . | head -n 1 | cut -d' ' -f1-2)"; tpkg="${tt% *}"; tname="${tt#* }"
+tt="$(grep -v '^#' "$here/flaky-tests.txt" | grep . | head -n 1 | cut -d' ' -f1-4)"; read -r tpkg tname _ tcount <<<"$tt"; tcount=$((10#$tcount))
 mkdir -p "$stub/gobin"
 cat >"$stub/gobin/go" <<'EOF'
 #!/usr/bin/env bash
@@ -843,10 +855,10 @@ fi
 printf '{"Action":"pass","Package":"%s","Test":"%s"}\n{"Action":"pass","Package":"%s"}\n' "$pkg" "$name" "$pkg"
 EOF
 chmod +x "$stub/gobin/go"
-# vtiming: the candidate's first run and package rerun fail the timing test; both trees
+# vflaky: the candidate's first run and package rerun fail the flaky test; both trees
 # list its package; then check.sh test candidate retry with the stub go.
 # shellcheck disable=SC2016 # literal text for eval
-vtiming='for w in candidate tag; do echo "$tpkg" >>"$vdir/test/$w/pkgs.txt"; done
+vflaky='for w in candidate tag; do echo "$tpkg" >>"$vdir/test/$w/pkgs.txt"; done
   { ev pass "$tpkg" "$tname"; ev pass "$tpkg"; } >>"$vdir/test/tag/test.json"
   { ev fail "$tpkg" "$tname"; ev fail "$tpkg"; } >>"$vdir/test/candidate/test.json"; echo 1 >"$vdir/test/candidate/test.exit"
   { ev fail "$tpkg" "$tname"; ev fail "$tpkg"; } >"$vdir/test/candidate/rerun.json"; echo 1 >"$vdir/test/candidate/rerun.exit"
@@ -854,25 +866,31 @@ vtiming='for w in candidate tag; do echo "$tpkg" >>"$vdir/test/$w/pkgs.txt"; don
   PATH="$stub/gobin:$PATH" STUB_GO_COUNT="$tmp/gocount" PMX_CHECK_OUT="$vdir" bash "$here/check.sh" test candidate retry >"$tmp/retry.log" 2>&1; echo $? >"$tmp/retry.rc"'
 export tpkg tname
 # shellcheck disable=SC2030,SC2031 # PATH only for that subshell
-expect "timing test fails twice, then passes on retry 1: a pass" pass "$(STUB_GO_FAILS=0 VPRE="$vtiming" verdict PMX_OUTCOME_CAND_TEST=failure PMX_OUTCOME_RERUN=failure)"
+expect "listed test fails twice, then passes on retry 1: a pass" pass "$(STUB_GO_FAILS=0 VPRE="$vflaky" verdict PMX_OUTCOME_CAND_TEST=failure PMX_OUTCOME_RERUN=failure)"
 expect "  ... one retry, alone, of the listed test" "go test -run ^$tname\$ $tpkg" "$(cat "$tmp/gocount.calls")"
-contains "  ... the retry is in the log" "$tmp/retry.log" "known timing test $tpkg $tname failed; retry 1 of 2, alone in a fresh process: pass"
-expect "  ... result.json lists it as a timing test, with its retry" "$tpkg $tname: pass" "$(jq -r '.tests.timing[] as $t | .tests.timing_retries[] | select(.test == $t) | "\(.test): \(.retries | join(","))"' "$vdir/result.json")"
-expect "timing test fails on retry 1, passes on retry 2: a pass" pass "$(STUB_GO_FAILS=1 VPRE="$vtiming" verdict PMX_OUTCOME_CAND_TEST=failure PMX_OUTCOME_RERUN=failure)"
-expect "  ... both retries recorded" "fail,pass" "$(jq -r '.tests.timing_retries[0].retries | join(",")' "$vdir/result.json")"
-expect "timing test fails every time (a real failure): the check fails" fail "$(STUB_GO_FAILS=9 VPRE="$vtiming" verdict PMX_OUTCOME_CAND_TEST=failure PMX_OUTCOME_RERUN=failure PMX_OUTCOME_RETRY=failure)"
-expect "  ... after 2 retries, the retry step exits 1" "2 1" "$(cat "$tmp/gocount") $(cat "$tmp/retry.rc")"
+contains "  ... the retry is in the log" "$tmp/retry.log" "known flaky test $tpkg $tname failed; retry 1 of $tcount, alone in a fresh process: pass"
+expect "  ... result.json lists it as a known flaky test, with its retry and count" "$tpkg $tname: pass of $tcount" "$(jq -r '.tests.known_flaky[] as $t | .tests.known_flaky_retries[] | select(.test == $t) | "\(.test): \(.retries | join(",")) of \(.allowed)"' "$vdir/result.json")"
+expect "listed test fails on retry 1, passes on retry 2: a pass" pass "$(STUB_GO_FAILS=1 VPRE="$vflaky" verdict PMX_OUTCOME_CAND_TEST=failure PMX_OUTCOME_RERUN=failure)"
+expect "  ... both retries recorded" "fail,pass" "$(jq -r '.tests.known_flaky_retries[0].retries | join(",")' "$vdir/result.json")"
+expect "listed test fails every time (a real failure): the check fails" fail "$(STUB_GO_FAILS=99 VPRE="$vflaky" verdict PMX_OUTCOME_CAND_TEST=failure PMX_OUTCOME_RERUN=failure PMX_OUTCOME_RETRY=failure)"
+expect "  ... after its line's $tcount retries, the retry step exits 1" "$tcount 1" "$(cat "$tmp/gocount") $(cat "$tmp/retry.rc")"
 contains "  ... named as a new failure" "$vdir/result.json" "\"$tpkg $tname\""
-expect "PMX_TIMING_RETRIES=0: not retried, the check fails" "fail none" "$(PMX_TIMING_RETRIES=0 STUB_GO_FAILS=0 VPRE="$vtiming" verdict PMX_OUTCOME_CAND_TEST=failure PMX_OUTCOME_RERUN=failure PMX_OUTCOME_RETRY=failure) $(cat "$tmp/gocount" 2>/dev/null || echo none)"
+expect "PMX_FLAKY_RETRIES=0: not retried, the check fails" "fail none" "$(PMX_FLAKY_RETRIES=0 STUB_GO_FAILS=0 VPRE="$vflaky" verdict PMX_OUTCOME_CAND_TEST=failure PMX_OUTCOME_RERUN=failure PMX_OUTCOME_RETRY=failure) $(cat "$tmp/gocount" 2>/dev/null || echo none)"
 # shellcheck disable=SC2016 # literal text for eval
 expect "nothing failed: nothing retried, retry step exits 0" "pass 0 none" "$(VPRE='mkdir -p "$vdir/trees/candidate"; rm -f "$tmp/gocount"; PATH="$stub/gobin:$PATH" STUB_GO_COUNT="$tmp/gocount" PMX_CHECK_OUT="$vdir" bash "$here/check.sh" test candidate retry >/dev/null 2>&1; echo $? >"$tmp/retry.rc"' verdict env) $(cat "$tmp/retry.rc") $(cat "$tmp/gocount" 2>/dev/null || echo none)"
-# tlist DIR: timing_tests (check.sh's own lines) on DIR/timing-tests.txt.
-tlist() { local d="$1"; ( eval "$(sed -n '/^timing_tests()/,/^}$/p' "$here/check.sh")"; here="$d"; timing_tests ); }
-expect "the real timing-tests.txt is valid" "$tpkg $tname" "$(tlist "$here" 2>&1 | head -n 1)"
-mkdir -p "$tmp/tl"; printf '# c\n\n%s %s 2026-11-26\n' "$tpkg" "$tname" >"$tmp/tl/timing-tests.txt"
-expect "a line without a reason: refused" "timing-tests.txt line 3 is not \"<package> <test> <YYYY-MM-DD> <reason>\"" "$(tlist "$tmp/tl" 2>&1)"
-printf '%s %s 26-11-2026 a reason\n' "$tpkg" "$tname" >"$tmp/tl/timing-tests.txt"
-expect "a line without a date: refused" "exit 1" "$(tlist "$tmp/tl" >/dev/null 2>&1; echo "exit $?")"
+expect "the last retry passing: a pass, flagged" "pass true" "$(STUB_GO_FAILS=$((tcount - 1)) VPRE="$vflaky" verdict PMX_OUTCOME_CAND_TEST=failure PMX_OUTCOME_RERUN=failure) $(jq -r '.tests.known_flaky_retries[0].last_needed' "$vdir/result.json")"
+# tlist DIR: flaky_tests (check.sh's own lines) on DIR/flaky-tests.txt.
+tlist() { local d="$1"; ( eval "$(sed -n '/^flaky_tests()/,/^}$/p; /^retries_for()/,/^}$/p' "$here/check.sh")"; here="$d"; flaky_tests ); }
+expect "the real flaky-tests.txt is valid (and its counts follow the rule)" "$tpkg $tname $tcount" "$(tlist "$here" 2>&1 | head -n 1)"
+mkdir -p "$tmp/tl"
+tl() { printf '# c\n\n%s\n' "$1" >"$tmp/tl/flaky-tests.txt"; tlist "$tmp/tl" 2>&1; }
+expect "a line without a cause: refused" "flaky-tests.txt line 3 is not \"<package> <test> <YYYY-MM-DD> <retries> <failed>/<runs> <cause>\"" "$(tl "x/t TestF 2026-11-26 4 1/6")"
+expect "a line without a date: refused" "exit 1" "$(tl "x/t TestF 26-11-2026 4 1/6 race" >/dev/null; echo "exit $?")"
+expect "1/6 needs 4 retries (1/6^4 = 1/1296)" "x/t TestF 4" "$(tl "x/t TestF 2026-11-26 4 1/6 race")"
+expect "3/10 needs 6 (0.3^5 = 0.0024)" "flaky-tests.txt line 3: TestF fails 3/10, so it gets 6 retries, not 5" "$(tl "x/t TestF 2026-11-26 5 3/10 race")"
+expect "1/20 needs 3 (0.05^2 = 0.0025)" "x/t TestF 3" "$(tl "x/t TestF 2026-11-26 3 1/20 race")"
+expect "1/100 still gets 2 (the least)" "x/t TestF 2" "$(tl "x/t TestF 2026-11-26 2 1/100 race")"
+expect "a test that failed every run is not a chance failure" "flaky-tests.txt line 3: the rate 5/5 is not a chance failure (at least one failure, at least one pass)" "$(tl "x/t TestF 2026-11-26 9 5/5 race")"
 
 echo "# run_artifact: by id, run, name and digest"
 ra_zip="$tmp/ra"; rm -rf "$ra_zip"; mkdir -p "$ra_zip"; echo '{}' >"$ra_zip/state.json"

@@ -1,14 +1,15 @@
 # Compare the candidate's tests with the pristine upstream tag's (check.sh verdict).
 # jq -n --slurpfile cand C.json --slurpfile pris P.json --slurpfile rerun R.json
 #       --slurpfile cpkgs CP.json --slurpfile ppkgs PP.json
-#       --slurpfile timing T.json --slurpfile retries RT.json
+#       --slurpfile known K.json --slurpfile retries RT.json
 #       --argjson cexit N --argjson pexit N --argjson rexit N|null -f testcmp.jq
 # cand/pris/rerun: testsum.jq summaries of raw `go test -json` output (rerun = the
 # candidate's packages with a failing test, run again whole, in one go test); cpkgs/ppkgs:
 # the package lists (`go list ./...`) of each tree; cexit/pexit/rexit: go test's exit
-# status on each run (rexit null: no rerun ran; -1: no valid exit status); timing: the
-# known timing tests (timing-tests.txt), ["<package> <test>"]; retries: the retries of
-# those that failed, each alone in a fresh go test, [{name, exit, sum}] (sum: testsum.jq).
+# status on each run (rexit null: no rerun ran; -1: no valid exit status); known: the
+# known flaky tests (flaky-tests.txt), [{test: "<package> <test>", retries: N}]; retries:
+# the retries of those that failed, each alone in a fresh go test, in order,
+# [{name, exit, sum}] (sum: testsum.jq).
 #
 # The candidate's failures are those of the first run AND those of the rerun (a test
 # the first run never reached, because an earlier test stopped the package, and that
@@ -23,7 +24,7 @@
 #               has a terminal result and built, and the test passed and did not fail
 #               (for "[package]": the package passed). A test that failed on the rerun
 #               never has one;
-#   - timing:   a known timing test (named in timing-tests.txt; a subtest by its top
+#   - known flaky: a known flaky test (named in flaky-tests.txt; a subtest by its top
 #               test's name) for which one retry has an explicit pass: that retry exited
 #               with a valid status, its package has a result and built, and the test
 #               passed and did not fail in it. Never for "[package]". A test that failed
@@ -32,7 +33,7 @@
 # upstream failure never waives that), and so does a package
 # without a terminal result on either tree or an exit status that does not match.
 $cand[0] as $c | $pris[0] as $p | $rerun[0] as $r | $cpkgs[0] as $cp | $ppkgs[0] as $pp
-| $timing[0] as $tl | $retries[0] as $rt
+| $known[0] as $kl | $retries[0] as $rt
 | def pkg: split(" ")[0];
   def testname: split(" ")[1:] | join(" ");
   def missing($s; $pkgs): [$pkgs[] | select($s.term[.] == null)];
@@ -52,26 +53,26 @@ $cand[0] as $c | $pris[0] as $p | $rerun[0] as $r | $cpkgs[0] as $cp | $ppkgs[0]
       and ($r.build_failed | index($pk)) == null
       and (if ($f | testname) == "[package]" then $r.term[$pk] == "pass"
            else ($r.passed | index($f)) != null and ($r.failed | index($f)) == null end);
-  def listed($f): ($f | testname) != "[package]"
-    and ($tl | index(($f | pkg) + " " + ($f | testname | split("/")[0]))) != null;
+  def entry($f): (($f | pkg) + " " + ($f | testname | split("/")[0])) as $top | [$kl[] | select(.test == $top)][0];
+  def listed($f): ($f | testname) != "[package]" and entry($f) != null;
   def passes_in($f; $s; $e):
     ($f | pkg) as $pk
     | exitok($s; $e) and $s.term[$pk] != null and ($s.build_failed | index($pk)) == null
       and ($s.passed | index($f)) != null and ($s.failed | index($f)) == null;
   def retry_results($f): [$rt[] | select(.sum.term[$f | pkg] != null and ((.sum.passed + .sum.failed) | index($f)) != null)
                            | if passes_in($f; .sum; .exit) then "pass" else "fail" end];
-  def timing_pass($f): listed($f) and ([$rt[] | select(passes_in($f; .sum; .exit))] | length) > 0;
+  def known_pass($f): listed($f) and ([$rt[] | select(passes_in($f; .sum; .exit))] | length) > 0;
   [($c.failed + (if $rexit != null then $r.failed else [] end))[]
    | select(pkg as $pk | ($c.build_failed | index($pk)) == null)] | unique as $cf
 | [$cf[] | select(baseline(.))] as $upstream
 | [$cf[] | select((baseline(.) | not) and retry_pass(.))] as $flaky
-| [$cf[] | select((baseline(.) | not) and (retry_pass(.) | not) and timing_pass(.))] as $timed
-| [$cf[] | select((baseline(.) | not) and (retry_pass(.) | not) and (timing_pass(.) | not))] as $new
+| [$cf[] | select((baseline(.) | not) and (retry_pass(.) | not) and known_pass(.))] as $known_waived
+| [$cf[] | select((baseline(.) | not) and (retry_pass(.) | not) and (known_pass(.) | not))] as $new
 | ([$c.failed[] | select(pkg as $pk | ($c.build_failed | index($pk)) == null) | pkg] | unique) as $rerun_wanted
 | missing($c; $cp) as $mc | missing($p; $pp) as $mp
 | (exitcheck("the candidate"; $c; $cexit) + exitcheck("the tag"; $p; $pexit)
    + (if $rexit != null and ($rerun_valid | not) then ["the package rerun has no valid exit status (\($rexit)); no failure counts as flaky"] else [] end)
-   + (if ($new | length) > 0 then ["\($new | length) test(s) fail on the candidate, not on the tag (or fail at package level), and have no explicit pass on the package rerun (nor, for a known timing test, on a retry)"] else [] end)
+   + (if ($new | length) > 0 then ["\($new | length) test(s) fail on the candidate, not on the tag (or fail at package level), and have no explicit pass on the package rerun (nor, for a known flaky test, on a retry)"] else [] end)
    + (if ($c.build_failed | length) > 0 then ["\($c.build_failed | length) package(s) do not build on the candidate"] else [] end)
    + (if $rexit != null and ($r.build_failed | length) > 0 then ["\($r.build_failed | length) package(s) do not build on the package rerun"] else [] end)
    + (if ($mc | length) > 0 then ["\($mc | length) package(s) without a result on the candidate"] else [] end)
@@ -83,8 +84,10 @@ $cand[0] as $c | $pris[0] as $p | $rerun[0] as $r | $cpkgs[0] as $cp | $ppkgs[0]
     candidate_build_failures: $c.build_failed,
     failing_on_tag_too: $upstream,
     flaky: $flaky,
-    timing: $timed,
-    timing_retries: [$cf[] | select(listed(.)) | {test: ., retries: retry_results(.)}],
+    known_flaky: $known_waived,
+    known_flaky_retries: [$cf[] | select(listed(.)) | retry_results(.) as $res | entry(.).retries as $n
+                          | {test: ., allowed: $n, retries: $res, waived: known_pass(.),
+                             last_needed: (($res | length) >= $n and $n > 0 and known_pass(.))}],
     missing_results: {candidate: $mc, tag: $mp},
     candidate: {exit: $cexit, packages: ($cp | length), passed: ($c.passed | length), failed: ($c.failed | length),
                 failed_packages: nfail($c)},
