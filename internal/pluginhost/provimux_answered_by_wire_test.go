@@ -41,9 +41,9 @@ import (
 // answer. A refused key gets none. On one WebSocket, credential, plugin, credential: each
 // response.created names the credential that answered that turn, or carries no field at all.
 //
-// With models.answered-by on (answered-by.md 8.4), the account marker goes with the three: X-Provimux-Account and
-// provimux_account name the credential's account exactly where the three name the credential; a stale marker, and an
-// upstream gateway's own provimux_account, never survive; a plugin's answer carries none.
+// These are Home grants, and in Home mode no answer names an account (answered-by review): the switch is as a Home
+// node has it (off, whatever the config says; TestProvimuxAnsweredByIsOffInHomeMode), the markers' key is set all the
+// same, and no answer, stale or upstream value included, carries X-Provimux-* or provimux_*.
 
 var (
 	wireAnswered = logging.AuthStatement{Kind: "apikey", Provider: "wire-native", Host: "current.example.test"}
@@ -105,15 +105,12 @@ func TestProvimuxAnsweredByOnTheWire(t *testing.T) {
 	answeredAuth := coreauth.Auth{ID: "wire-native-key", Provider: wireAnswered.Provider, Status: coreauth.StatusActive,
 		Attributes: map[string]string{"auth_kind": "apikey", "api_key": "fixture", "base_url": "https://current.example.test/v1"}}
 	coreauth.SetProvimuxMarkerKey([]byte("provimux-wire-test-marker-key-32"))
-	wasAnsweredBy := logging.SetProvimuxAnsweredBy(true)
+	wasAnsweredBy := logging.SetProvimuxAnsweredBy(false) // a Home node's
 	t.Cleanup(func() {
 		logging.SetProvimuxAnsweredBy(wasAnsweredBy)
 		coreauth.SetProvimuxMarkerKey(nil)
 	})
-	answeredMarker := answeredAuth.ProvimuxAccountMarker()
-	if answeredMarker == "" || answeredMarker == wireStale.Provimux.Account {
-		t.Fatalf("fixture: the credential's marker is %q", answeredMarker)
-	}
+	answeredMarker := "" // Home mode: nobody is named by a marker
 	credentialReply := homeExecutorDispatchJSON(t, answeredAuth, "")
 	client := newHomeExecutorTestClient(t, func(command, argument string) []byte {
 		if command == "RPOP" { // the credential dispatch, after a credential grant or the legacy fallback
@@ -255,6 +252,11 @@ func TestProvimuxAnsweredByOnTheWire(t *testing.T) {
 				if got := resp.Header.Values(logging.ProvimuxAccountHeader); len(got) != 0 && (len(got) != 1 || got[0] != wantMarker) || len(got) == 0 && wantMarker != "" {
 					t.Errorf("%s %s: X-Provimux-Account %v, want %q", via, r.path, got, wantMarker)
 				}
+				for _, name := range logging.ProvimuxFieldNames() {
+					if values := resp.Header.Values(name.Header); name.Header != logging.ProvimuxAccountHeader && len(values) != 0 {
+						t.Errorf("%s %s: %s %v", via, r.path, name.Header, values)
+					}
+				}
 			}
 		}
 		viaCredential.Store(false)
@@ -304,8 +306,8 @@ func TestProvimuxAnsweredByOnTheWire(t *testing.T) {
 					if got != want {
 						t.Errorf("turn %d (credential %v): response.created names %+v, want %+v", turn, native, got, want)
 					}
-					if marker := ojson.GetBytes(frame, fields[3]).String(); native && marker != answeredMarker {
-						t.Errorf("turn %d: response.created names the account %q, want %q", turn, marker, answeredMarker)
+					if marker := ojson.GetBytes(frame, fields[3]); native && (marker.String() != answeredMarker || answeredMarker == "" && marker.Exists()) {
+						t.Errorf("turn %d: response.created names the account %q, want %q", turn, marker.String(), answeredMarker)
 					}
 				}
 				for _, field := range fields {

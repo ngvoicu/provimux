@@ -44,7 +44,8 @@ models:
   # X-Provimux-Account response header; on the Responses WebSocket the provimux_account field of
   # response.created), and the account lists carry the marker (account). The marker is a keyed hash: the
   # same for every answer of one account, another for every other account, and nothing can be read from it.
-  # Its key is kept in server.kv-store. false: none of it. The three X-CPA-AUTH-* headers are not affected.
+  # Its key is kept in server.kv-store; markers change if that store file is lost. Not written in Home mode.
+  # false: none of it. The three X-CPA-AUTH-* headers are not affected.
   # answered-by: false
   # Serve only my names (Provimux): the aliases of this file (key models rows, oauth-model-alias), plus the
   # names under keep (models kept under their vendor's name, or a login file's alias; exact names, compared
