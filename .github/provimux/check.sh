@@ -9,9 +9,12 @@
 #                          no repository code)
 #   check.sh tree T        T = candidate | tag: export that tree (git only), to $PMX_TREES/T
 #   check.sh test T [P]    go build (candidate), go list and go test -json ./... on tree T,
-#                          then the packages with a failing test again, whole. RUNS THE
+#                          then the packages with a failing test again, whole, then each
+#                          known timing test (timing-tests.txt) that failed, alone, in a
+#                          fresh process, until it passes ($PMX_TIMING_RETRIES times at
+#                          most, default 2). RUNS THE
 #                          TREE'S CODE. Writes only raw output to $PMX_TEST_OUT/T and
-#                          decides nothing. With P (build | test | rerun) only that part,
+#                          decides nothing. With P (build | test | rerun | retry) only that part,
 #                          and the exit status is that command's: the workflow runs each
 #                          part as its own step and hands the step's outcome (kept by
 #                          the runner, not a file) to the verdict.
@@ -49,8 +52,9 @@
 # .github/workflows/ new in the tag (publish.sh refuses them), guard.sh with the expected
 # base. Status "test".
 # verdict: go build ./... must pass on the candidate; go test ./... is compared with the
-# pristine tag by testcmp.jq (a failure counts unless the same test failed on the tag
-# or the package rerun has an explicit pass for it).
+# pristine tag by testcmp.jq (a failure counts unless the same test failed on the tag,
+# the package rerun has an explicit pass for it, or it is a known timing test and one of
+# its retries has an explicit pass).
 #
 # The status ends in $PMX_CHECK_OUT/result.json with candidate.bundle and logs/:
 #   pass | fail | error | published | in-progress | incomplete | unreleased
@@ -61,8 +65,9 @@
 # PMX_TREES (default $PMX_CHECK_OUT/trees), PMX_RUN_URL (recorded in result.json),
 # PMX_TEST_JOB (the test jobs' result, for the verdict's messages), PMX_RUN_ID and
 # PMX_RUN_ATTEMPT (the workflow's run: the verdict reads its test jobs' conclusions),
-# PMX_OUTCOME_BUILD, PMX_OUTCOME_CAND_TEST, PMX_OUTCOME_RERUN, PMX_OUTCOME_TAG_TEST (the
-# test steps' outcomes: success | failure),
+# PMX_OUTCOME_BUILD, PMX_OUTCOME_CAND_TEST, PMX_OUTCOME_RERUN, PMX_OUTCOME_RETRY,
+# PMX_OUTCOME_TAG_TEST (the test steps' outcomes: success | failure),
+# PMX_TIMING_RETRIES (retries of a failed known timing test; 0: none, so none is waived),
 # PMX_UPSTREAM_REPO / PMX_UPSTREAM_URL / PMX_REPO / PMX_REPO_URL (common.sh).
 # Runs with bash 3.2 (macOS); needs git, go, jq, gh. Run from the repository; the
 # rebase happens in a temporary worktree, so the checkout and its branch do not move.
@@ -495,6 +500,56 @@ gotest() {
   echo "$e" >"$prefix.exit"
 }
 
+# timing_tests: the known timing tests of timing-tests.txt (this script's own copy, never
+# the tree's), one "<package> <test>" per line. Fails (status 1, the line on stderr) on a
+# line that is not "<package> <test> <YYYY-MM-DD> <reason>".
+timing_tests() {
+  local line n=0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    n=$((n + 1))
+    [[ -z "${line//[[:space:]]/}" || "$line" =~ ^[[:space:]]*# ]] && continue
+    if [[ "$line" =~ ^([A-Za-z0-9._/-]+)\ (Test[A-Za-z0-9_]*)\ ([0-9]{4}-[0-9]{2}-[0-9]{2})\ [^[:space:]] ]]; then
+      echo "${BASH_REMATCH[1]} ${BASH_REMATCH[2]}"
+    else
+      echo "timing-tests.txt line $n is not \"<package> <test> <YYYY-MM-DD> <reason>\"" >&2
+      return 1
+    fi
+  done <"$here/timing-tests.txt"
+}
+
+# do_retry DIR D: each known timing test that failed in D/test.json or D/rerun.json, alone
+# (-run '^<test>$', its package), each time in a fresh go test process, until it passes,
+# $PMX_TIMING_RETRIES times at most (default 2). Raw output in D/retry-<k>-<i>.json and
+# .exit, one line per retry in the log and in D/retry.log. Exit status: 0 when every
+# retried test passed once (or nothing was retried), 1 otherwise, 2 for a bad list.
+# Decides nothing: the verdict reads the raw output (testcmp.jq). gotest turns set -e
+# back on, so every test here is an if.
+do_retry() {
+  local dir=$1 d=$2 max="${PMX_TIMING_RETRIES:-2}" failed pkg name k=0 i x e=0 got
+  [[ "$max" =~ ^[0-9]$ ]] || { echo "PMX_TIMING_RETRIES must be 0 to 9" >&2; return 2; }
+  rm -f "$d"/retry-*.json "$d"/retry-*.exit "$d"/retry-*.stderr "$d/retry.log"
+  timing_tests >"$d/timing.txt" || return 2
+  failed="$( { summary "$d/test"; summary "$d/rerun"; } | jq -r '.failed[]' | sort -u)"
+  while read -r pkg name; do
+    [[ -n "$pkg" ]] || continue
+    k=$((k + 1))
+    if ! grep -qxF -e "$pkg $name" <<<"$failed" && ! grep -qF -e "$pkg $name/" <<<"$failed"; then continue; fi
+    got=fail
+    for ((i = 1; i <= max; i++)); do
+      x="$(printf '%s/retry-%02d-%d' "$d" "$k" "$i")"
+      gotest "$dir" "$x" -run "^${name}\$" "$pkg"
+      if [[ "$(cat "$x.exit")" == 0 ]]; then got=pass; else got=fail; fi
+      log "known timing test $pkg $name failed; retry $i of $max, alone in a fresh process: $got" 2>&1 | tee -a "$d/retry.log" >&2
+      if [[ "$got" == pass ]]; then break; fi
+    done
+    if [[ "$max" == 0 ]]; then
+      log "known timing test $pkg $name failed; PMX_TIMING_RETRIES=0: not retried" 2>&1 | tee -a "$d/retry.log" >&2
+    fi
+    if [[ "$got" != pass ]]; then e=1; fi
+  done <"$d/timing.txt"
+  return "$e"
+}
+
 # sample_resources FILE: memory, load and the largest processes every 60s (Linux), until killed.
 sample_resources() {
   command -v free >/dev/null 2>&1 || return 0
@@ -515,8 +570,8 @@ do_test() {
   [[ -d "$dir" ]] || { echo "check.sh test: no tree $dir (run check.sh tree $which)" >&2; exit 1; }
   case "$part" in
     '') rm -rf "${d:?}"; mkdir -p "$d" ;;
-    build | test | rerun) mkdir -p "$d" ;;
-    *) echo "usage: $0 test candidate|tag [build|test|rerun]" >&2; exit 2 ;;
+    build | test | rerun | retry) mkdir -p "$d" ;;
+    *) echo "usage: $0 test candidate|tag [build|test|rerun|retry]" >&2; exit 2 ;;
   esac
   if [[ "$which" == candidate && ( -z "$part" || "$part" == build ) ]]; then
     log "go build ./... ($which)"
@@ -544,6 +599,11 @@ do_test() {
       e="$(cat "$d/rerun.exit")"
     fi
   fi
+  if [[ "$which" == candidate && ( -z "$part" || "$part" == retry ) ]]; then
+    if do_retry "$dir" "$d"; then e=0; else e=$?; fi
+    set -e
+    echo "$e" >"$d/retry.exit"
+  fi
   log "raw output in $d"
   [[ -z "$part" ]] || return "$e"
 }
@@ -565,7 +625,7 @@ summary() {
 }
 
 do_verdict() {
-  local c="$test_out/candidate" t="$test_out/tag" rexit=null w
+  local c="$test_out/candidate" t="$test_out/tag" rexit=null w f
   load_state || { status=error step=verdict; reason "no valid state from the prepare job (job: ${PMX_PREP_JOB:-unknown})"; return; }
   [[ "$status" == test ]] || { log "nothing to decide (status $status): result.json stays"; verdict_skip=1; return; }
   status=running
@@ -601,8 +661,19 @@ do_verdict() {
   done
   summary "$c/rerun" >"$out/logs/test-rerun.sum.json"
   [[ -f "$c/rerun.exit" ]] && rexit="$(exitval "$c/rerun.exit")"
+  # Known timing tests: the list is this script's own (the run's commit), never the test
+  # job's; the retries are the test job's raw output, read as data like the rest.
+  if timing_tests 2>>"$reasons" | jq -R -s 'split("\n") | map(select(length > 0))' >"$out/logs/timing-tests.json"; then :; else
+    echo '[]' >"$out/logs/timing-tests.json"
+  fi
+  for f in "$c"/retry-[0-9][0-9]-[0-9].json; do
+    [[ -f "$f" ]] || continue
+    summary "${f%.json}" | jq -c --argjson e "$(exitval "${f%.json}.exit")" --arg n "$(basename "${f%.json}")" '{name: $n, exit: $e, sum: .}'
+  done | jq -s . >"$out/logs/test-retries.json"
+  cp "$c/retry.log" "$out/logs/retry.log" 2>/dev/null || true
   jq -n --slurpfile cand "$out/logs/test-candidate.sum.json" --slurpfile pris "$out/logs/test-tag.sum.json" \
     --slurpfile rerun "$out/logs/test-rerun.sum.json" \
+    --slurpfile timing "$out/logs/timing-tests.json" --slurpfile retries "$out/logs/test-retries.json" \
     --slurpfile cpkgs "$out/logs/pkgs-candidate.json" --slurpfile ppkgs "$out/logs/pkgs-tag.json" \
     --argjson cexit "$(exitval "$c/test.exit")" --argjson pexit "$(exitval "$t/test.exit")" --argjson rexit "$rexit" \
     -f "$here/testcmp.jq" >"$out/tests.json"
@@ -637,7 +708,8 @@ verdict_jobs() {
   for f in "build ${PMX_OUTCOME_BUILD:-none} $test_out/candidate/build.exit" \
            "candidate-test ${PMX_OUTCOME_CAND_TEST:-none} $test_out/candidate/test.exit" \
            "tag-test ${PMX_OUTCOME_TAG_TEST:-none} $test_out/tag/test.exit" \
-           "rerun ${PMX_OUTCOME_RERUN:-none} $test_out/candidate/rerun.exit"; do
+           "rerun ${PMX_OUTCOME_RERUN:-none} $test_out/candidate/rerun.exit" \
+           "retry ${PMX_OUTCOME_RETRY:-none} $test_out/candidate/retry.exit"; do
     read -r w o e <<<"$f"
     [[ "$w" == rerun && ! -f "$e" ]] && e=/dev/null
     case "$o:$(if [[ "$e" == /dev/null ]]; then echo 0; else exitval "$e"; fi)" in
