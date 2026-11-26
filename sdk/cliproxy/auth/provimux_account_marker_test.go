@@ -50,6 +50,19 @@ func loginFile(id, provider string, metadata map[string]any) *Auth {
 	return &Auth{ID: id, FileName: id, Provider: provider, Attributes: map[string]string{AttributePath: "/fixture/auths/" + id, AttributeSource: "/fixture/auths/" + id}, Metadata: metadata}
 }
 
+// provimuxPluginStorage stands for the plugin host's storage (internal/pluginhost.pluginTokenStorage), which says
+// that a plugin made the credential.
+type provimuxPluginStorage struct{}
+
+func (provimuxPluginStorage) SaveTokenToFile(string) error { return nil }
+func (provimuxPluginStorage) ProvimuxPluginMade() bool     { return true }
+
+// pluginMade gives a the plugin host's storage, as a plugin's parser returns it.
+func pluginMade(a *Auth) *Auth {
+	a.Storage = provimuxPluginStorage{}
+	return a
+}
+
 // configKey is an API key of the configuration, at a position in its list.
 func configKey(id, provider, key, baseURL string, position int) *Auth {
 	attrs := map[string]string{AttributeSource: "config:" + provider + "[" + id + "]", AttributeConfigIndex: string(rune('0' + position))}
@@ -151,6 +164,38 @@ func provimuxMarkerRows() []provimuxMarkerRow {
 			first: loginFile("kimi-ada.json", "kimi", map[string]any{"type": "kimi", "access_token": "fixture-a", "device_id": "device-fixture-1"}),
 			twin:  loginFile("kimi-ada-copy.json", "kimi", map[string]any{"type": "kimi", "access_token": "fixture-b", "device_id": "device-fixture-2"}),
 			taken: loginFile("kimi-ada.json", "kimi", map[string]any{"type": "kimi", "access_token": "fixture-c", "device_id": "device-fixture-3"}),
+		},
+		{
+			name: "Kimi login named kimi-ai", basis: "s", sameAs: false, follow: true,
+			first: loginFile("kimi-ai-ada.json", "kimi-ai", map[string]any{"type": "kimi-ai", "access_token": "fixture-a", "device_id": "kimi-ai-device-1"}),
+			twin:  loginFile("kimi-ai-ada-copy.json", "kimi-ai", map[string]any{"type": "kimi-ai", "access_token": "fixture-b", "device_id": "kimi-ai-device-2"}),
+			taken: loginFile("kimi-ai-ada.json", "kimi-ai", map[string]any{"type": "kimi-ai", "access_token": "fixture-c", "device_id": "kimi-ai-device-3"}),
+		},
+		{
+			name: "Kimi login named kimi.ai", basis: "s", sameAs: false, follow: true,
+			first: loginFile("kimi-ai-ada.json", "kimi.ai", map[string]any{"type": "kimi.ai", "access_token": "fixture-a", "device_id": "kimi.ai-device-1"}),
+			twin:  loginFile("kimi-ai-ada-copy.json", "kimi.ai", map[string]any{"type": "kimi.ai", "access_token": "fixture-b", "device_id": "kimi.ai-device-2"}),
+			taken: loginFile("kimi-ai-ada.json", "kimi.ai", map[string]any{"type": "kimi.ai", "access_token": "fixture-c", "device_id": "kimi.ai-device-3"}),
+		},
+		{
+			name: "Kimi login named kimi.com", basis: "s", sameAs: false, follow: true,
+			first: loginFile("kimi-com-ada.json", "kimi.com", map[string]any{"type": "kimi.com", "access_token": "fixture-a", "device_id": "kimi.com-device-1"}),
+			twin:  loginFile("kimi-com-ada-copy.json", "kimi.com", map[string]any{"type": "kimi.com", "access_token": "fixture-b", "device_id": "kimi.com-device-2"}),
+			taken: loginFile("kimi-com-ada.json", "kimi.com", map[string]any{"type": "kimi.com", "access_token": "fixture-c", "device_id": "kimi.com-device-3"}),
+		},
+		{
+			// One credential a plugin's parser returned, which the plugin calls claude and gives Claude's ids: the
+			// fields are plugin code's, so the credential's own id.
+			name: "one credential a plugin made, called claude", basis: "s", sameAs: false, follow: false,
+			first: pluginMade(loginFile("plugin-claude.json", "claude", map[string]any{"type": "claude", "access_token": "fixture-a", "organization_uuid": "0f0e0d0c-0b0a-4909-8807-060504030201", "account_uuid": "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d"})),
+			twin:  pluginMade(loginFile("plugin-claude-copy.json", "claude", map[string]any{"type": "claude", "access_token": "fixture-b", "organization_uuid": "0f0e0d0c-0b0a-4909-8807-060504030201", "account_uuid": "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d"})),
+			taken: pluginMade(loginFile("plugin-claude.json", "claude", map[string]any{"type": "claude", "access_token": "fixture-c", "organization_uuid": "0f0e0d0c-0b0a-4909-8807-060504030201", "account_uuid": "2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e"})),
+		},
+		{
+			name: "one key a plugin made", basis: "s", sameAs: false, follow: false,
+			first: pluginMade(&Auth{ID: "plugin-key.json", Provider: "fixture-plugin", Attributes: map[string]string{AttributeAPIKey: "sk-fixture-plugin", "base_url": "https://plug.example.test/v1"}}),
+			twin:  pluginMade(&Auth{ID: "plugin-key-copy.json", Provider: "fixture-plugin", Attributes: map[string]string{AttributeAPIKey: "sk-fixture-plugin", "base_url": "https://plug.example.test/v1"}}),
+			taken: pluginMade(&Auth{ID: "plugin-key.json", Provider: "fixture-plugin", Attributes: map[string]string{AttributeAPIKey: "sk-fixture-other", "base_url": "https://plug.example.test/v1"}}),
 		},
 		{
 			// One key in two rows of the configuration; the row taken by another key is another account.
@@ -282,6 +327,7 @@ func TestProvimuxAccountMarkerOfKeys(t *testing.T) {
 		"another path":           configKey("k3", "claude", "sk-fixture-one", "https://gateway.example.test/v2", 0),
 		"another scheme":         configKey("k4", "claude", "sk-fixture-one", "http://gateway.example.test/v1", 0),
 		"another port":           configKey("k5", "claude", "sk-fixture-one", "https://gateway.example.test:8443/v1", 0),
+		"https with :80":         configKey("k13", "claude", "sk-fixture-one", "https://gateway.example.test:80/v1", 0),
 		"another query":          configKey("k6", "claude", "sk-fixture-one", "https://gateway.example.test/v1?account=2", 0),
 		"no base URL":            configKey("k7", "claude", "sk-fixture-one", "", 0),
 	} {
@@ -293,6 +339,7 @@ func TestProvimuxAccountMarkerOfKeys(t *testing.T) {
 		"host in upper case": configKey("k8", "claude", "sk-fixture-one", "https://GATEWAY.example.test/v1", 0),
 		"trailing slash":     configKey("k9", "claude", "sk-fixture-one", "https://gateway.example.test/v1/", 0),
 		"a fragment":         configKey("k10", "claude", "sk-fixture-one", "https://gateway.example.test/v1#x", 0),
+		"https with :443":    configKey("k12", "claude", "sk-fixture-one", "https://gateway.example.test:443/v1", 0),
 		"another family":     configKey("k11", "openai-compatible-gw", "sk-fixture-one", "https://gateway.example.test/v1", 0),
 	} {
 		if marker := markerOf(t, same); marker != base {
@@ -353,5 +400,58 @@ func TestProvimuxAccountMarkerKeyAndSecrecy(t *testing.T) {
 				t.Fatalf("%s: marker %s holds %q", row.name, marker, secret)
 			}
 		}
+	}
+}
+
+// The default port of the scheme is not part of a key's address; any other port is.
+func TestProvimuxAccountMarkerDefaultPorts(t *testing.T) {
+	withProvimuxMarkerKey(t, provimuxTestMarkerKey)
+	for _, pair := range [][2]string{
+		{"https://gateway.example.test:443/v1", "https://gateway.example.test/v1"},
+		{"http://gateway.example.test:80/v1", "http://gateway.example.test/v1"},
+		{"http://[fe80::1]:80/v1", "http://[FE80::1]/v1"},
+	} {
+		if a, b := markerOf(t, configKey("k", "claude", "sk-fixture-one", pair[0], 0)), markerOf(t, configKey("k", "claude", "sk-fixture-one", pair[1], 0)); a != b {
+			t.Errorf("%s and %s: %s and %s, want one marker", pair[0], pair[1], a, b)
+		}
+	}
+	for _, pair := range [][2]string{
+		{"http://gateway.example.test:443/v1", "http://gateway.example.test/v1"},
+		{"https://gateway.example.test:80/v1", "https://gateway.example.test/v1"},
+		{"https://gateway.example.test:443/v1", "http://gateway.example.test:443/v1"},
+	} {
+		if a, b := markerOf(t, configKey("k", "claude", "sk-fixture-one", pair[0], 0)), markerOf(t, configKey("k", "claude", "sk-fixture-one", pair[1], 0)); a == b {
+			t.Errorf("%s and %s: one marker %s, want two", pair[0], pair[1], a)
+		}
+	}
+}
+
+// The basis is inside the hash: the same identity bytes as "a" and as "s" share nothing but by chance.
+func TestProvimuxAccountMarkerBasisIsHashed(t *testing.T) {
+	identity := []byte("credential\x00claude-ada.json\x00")
+	a, s := provimuxMarkerOf(provimuxTestMarkerKey, "a", identity), provimuxMarkerOf(provimuxTestMarkerKey, "s", identity)
+	if a[2:] == s[2:] {
+		t.Fatalf("the basis is not hashed: %s and %s", a, s)
+	}
+}
+
+// A Codex workspace holds several users: the workspace alone never gives "a".
+func TestProvimuxAccountMarkerCodexNeedsAUser(t *testing.T) {
+	withProvimuxMarkerKey(t, provimuxTestMarkerKey)
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`))
+	noUser := header + "." + base64.RawURLEncoding.EncodeToString([]byte(`{"https://api.openai.com/auth":{"chatgpt_account_id":"ws-fixture-1"}}`)) + ".sig"
+	for name, metadata := range map[string]map[string]any{
+		"no id token":                 {"type": "codex", "access_token": "fixture", "account_id": "ws-fixture-1"},
+		"an id token naming no user":  {"type": "codex", "access_token": "fixture", "account_id": "ws-fixture-1", "id_token": noUser},
+		"an id token that is not one": {"type": "codex", "access_token": "fixture", "account_id": "ws-fixture-1", "id_token": "not.a.token"},
+	} {
+		one, two := markerOf(t, loginFile("codex-one.json", "codex", metadata)), markerOf(t, loginFile("codex-two.json", "codex", metadata))
+		if !strings.HasPrefix(one, "s.") || one == two {
+			t.Errorf("%s: %s and %s, want two s. markers", name, one, two)
+		}
+	}
+	withUser := map[string]any{"type": "codex", "access_token": "fixture", "account_id": "ws-fixture-1", "id_token": provimuxFixtureIDToken("sub-ada", "ws-fixture-1", "user-ada")}
+	if marker := markerOf(t, loginFile("codex-one.json", "codex", withUser)); !strings.HasPrefix(marker, "a.") {
+		t.Errorf("with a user: %s, want a.", marker)
 	}
 }

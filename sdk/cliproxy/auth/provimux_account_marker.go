@@ -65,7 +65,14 @@ func (a *Auth) ProvimuxAccountMarker() string {
 	if basis == "" {
 		return ""
 	}
-	mac := hmac.New(sha256.New, *key)
+	return provimuxMarkerOf(*key, basis, identity)
+}
+
+// provimuxMarkerOf is the rule of answered-by.md 2.2: the basis, a dot, and the first 20 base32 characters of the
+// HMAC-SHA-256 under key of the context, the basis and the identity. The basis is inside the hash too, so an "a" and
+// an "s" identity of the same bytes never share their 20 characters.
+func provimuxMarkerOf(key []byte, basis string, identity []byte) string {
+	mac := hmac.New(sha256.New, key)
 	mac.Write([]byte(provimuxMarkerContext))
 	mac.Write([]byte{0})
 	mac.Write([]byte(basis))
@@ -93,9 +100,10 @@ func provimuxAccountIdentity(a *Auth) (basis string, identity []byte) {
 }
 
 func provimuxVendorIdentity(a *Auth, credential func() (string, []byte)) (string, []byte) {
-	// A browser's connection (AI Studio), any credential held only in memory, and a credential a plugin's parser
-	// expanded from a file: the gateway's own credential, new at each connection or load.
-	if strings.EqualFold(authAttribute(a, AttributeRuntimeOnly), "true") || IsPluginVirtualAuth(a) {
+	// A browser's connection (AI Studio), any credential held only in memory, and any credential a plugin made
+	// (whatever provider it names and however many its parser returned): the gateway's own credential. Fields plugin
+	// code wrote are not the vendor's own word.
+	if strings.EqualFold(authAttribute(a, AttributeRuntimeOnly), "true") || IsPluginVirtualAuth(a) || provimuxPluginMade(a) {
 		return credential()
 	}
 	provider := strings.ToLower(strings.TrimSpace(a.Provider))
@@ -137,14 +145,14 @@ func provimuxVendorIdentity(a *Auth, credential func() (string, []byte)) (string
 		if email := authMetadataString(a, "email"); email != "" {
 			return provimuxIdentity(provimuxBasisAccount, "antigravity", email)
 		}
-	case "kimi":
+	case "kimi", "kimi-ai", "kimi.ai", "kimi.com": // every name the loader accepts for a Kimi login
 		// Its device id is made anew at each login: another login in the file gives another marker, and two
 		// logins of one account give two.
 		if device := authMetadataString(a, "device_id"); device != "" {
 			return provimuxIdentity(provimuxBasisCredential, "kimi", device)
 		}
 	default:
-		// A key that is not of the configuration (a plugin's, one added at run time) is still a key.
+		// A key that is not of the configuration (one added at run time) is still a key. A plugin's is not here.
 		if a.AuthKind() == AuthKindAPIKey && authAttribute(a, AttributeAPIKey) != "" {
 			return provimuxKeyIdentity(a, provider)
 		}
@@ -213,9 +221,9 @@ func provimuxKeyIdentity(a *Auth, provider string) (string, []byte) {
 	return provimuxIdentity(provimuxBasisAccount, "apikey", "provider", provider, key)
 }
 
-// provimuxBaseURLIdentity writes a base URL as one account's address: scheme and host in lower case, user info and
-// port kept, the path without its trailing slashes, the query kept, the fragment dropped. A base URL that does not
-// parse to a host is taken as written.
+// provimuxBaseURLIdentity writes a base URL as one account's address: scheme and host in lower case, user info kept,
+// the port kept unless it is the scheme's default (443 for https, 80 for http), the path without its trailing slashes,
+// the query kept, the fragment dropped. A base URL that does not parse to a host is taken as written.
 func provimuxBaseURLIdentity(raw string) string {
 	raw = strings.TrimSpace(raw)
 	parsed, errParse := url.Parse(raw)
@@ -229,7 +237,11 @@ func provimuxBaseURLIdentity(raw string) string {
 		out.WriteString(parsed.User.String())
 		out.WriteByte('@')
 	}
-	out.WriteString(strings.ToLower(parsed.Host))
+	host := strings.ToLower(parsed.Host)
+	if port := parsed.Port(); port == "443" && strings.EqualFold(parsed.Scheme, "https") || port == "80" && strings.EqualFold(parsed.Scheme, "http") {
+		host = strings.TrimSuffix(host, ":"+port)
+	}
+	out.WriteString(host)
 	out.WriteString(strings.TrimRight(parsed.EscapedPath(), "/"))
 	if parsed.RawQuery != "" {
 		out.WriteByte('?')
@@ -260,4 +272,11 @@ func provimuxIdentity(basis, tag string, fields ...string) (string, []byte) {
 		identity = append(identity, 0)
 	}
 	return basis, identity
+}
+
+// provimuxPluginMade reports whether a plugin made the credential: its storage is the plugin host's, which says so.
+// The storage pointer survives Clone, so the lists and the answers agree.
+func provimuxPluginMade(a *Auth) bool {
+	made, ok := a.Storage.(interface{ ProvimuxPluginMade() bool })
+	return ok && made.ProvimuxPluginMade()
 }
