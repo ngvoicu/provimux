@@ -45,6 +45,8 @@ type Config struct {
 	// Values are in seconds.
 	ShutdownTimeoutSeconds int `yaml:"shutdown-timeout" json:"shutdown-timeout"`
 
+	RestartDrainSeconds *ProvimuxRestartDrain `yaml:"restart-drain-seconds,omitempty" json:"restart-drain-seconds,omitempty"` // Provimux: ProvimuxStopDrainSeconds
+
 	// Home config is runtime-only and is populated from -home-jwt.
 	Home HomeConfig `yaml:"-" json:"-"`
 
