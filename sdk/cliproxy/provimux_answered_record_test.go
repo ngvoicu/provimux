@@ -162,6 +162,7 @@ func (h *sentHarness) wantAnswered(clientKey, model, marker string, at []time.Ti
 	}
 	var wantClient, wantManagement []string
 	for i, entry := range entries {
+		// date-safe: Go's layouts, not dates; the times are the test's clock's.
 		wantClient = append(wantClient, entry+"@"+at[i].UTC().Format("2006-01-02"))
 		wantManagement = append(wantManagement, entry+"@"+at[i].UTC().Format("2006-01-02T15:04:05.000Z07:00"))
 	}
