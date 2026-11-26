@@ -23,7 +23,8 @@ import (
 // 6 hours; the held document stays, however old. The switch is the listings' (models.published-lists, off
 // in Home mode and, unset, in a test binary): off, nothing is fetched and the disk copy is not read. Nothing
 // a client asks for waits for it, and nothing of a model list, a route or a request to a vendor depends on
-// it: GET /v8/management/provimux/figures reads what is held (provimuxFiguresStateOf).
+// it: GET /v8/management/provimux/figures reads what is held (provimuxFiguresStateOf), and so does
+// GET /v1/models?include=figures (provimuxFiguresHeld).
 
 // provimuxFiguresBase is providers.dev's entries resource; tests point it at a stand-in. In a test binary it
 // is empty, so a test that turns the switch on for the listings never reaches the real site for figures.
@@ -199,4 +200,15 @@ func provimuxFiguresStateOf() management.ProvimuxFiguresState {
 	return state
 }
 
-func init() { management.SetProvimuxFiguresSource(provimuxFiguresStateOf) }
+// provimuxFiguresHeld is the held document for GET /v1/models?include=figures (prices-and-cache.md 5; step F3).
+func provimuxFiguresHeld() *modellists.FiguresDocument {
+	st := provimuxFigures
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.doc
+}
+
+func init() {
+	management.SetProvimuxFiguresSource(provimuxFiguresStateOf)
+	modellists.SetFiguresHeld(provimuxFiguresHeld)
+}

@@ -67,7 +67,8 @@ func TestProvimuxFiguresHandler(t *testing.T) {
 	if last["category"] != "http_status" || last["http_status"] != float64(503) || last["at"] != "2026-11-26T18:00:00Z" {
 		t.Fatalf("last_failure: %v", last)
 	}
-	// Without all=true: the entries the routes' answered items name. No route names one yet (W6b).
+	// Without all=true: the entries the routes' answered items name. A handler without an auth manager has no route,
+	// so none (the join itself, on the wire: sdk/cliproxy TestProvimuxFiguresBothPathsFollowTheContract).
 	selected := provimuxFiguresServe(t, on, "")
 	if entries := selected["figures"].(map[string]any)["entries"].(map[string]any); len(entries) != 0 || selected["held_entries"] != float64(2) {
 		t.Fatalf("selected: %v", selected)

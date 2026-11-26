@@ -10,15 +10,17 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/provimux/modellists"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
-// Provimux-only: GET /v8/management/provimux/figures (prices-and-cache.md 6.3; step F2). The figures
+// Provimux-only: GET /v8/management/provimux/figures (prices-and-cache.md 6.3; steps F2 and F3). The figures
 // Provimux holds from providers.dev, how it got them, and its last failure. Read-only: it starts no fetch
 // and predicts nothing. Contract: .github/provimux/design/prices-and-cache/openapi.yaml, FiguresStatus.
 //
-// figures.entries holds every held entry with ?all=true. Without it, the design's selection is the entries
-// an answered item of a route of GET /v8/management/provimux/model-routes names; that record does not exist
-// yet (W6b builds it), so the selection is empty until it does (provimuxFiguresSelected).
+// figures.entries holds every held entry with ?all=true. Without it, the entries an `answered` item of a route of
+// GET /v8/management/provimux/model-routes names (provimuxFiguresSelected): the routes are built as model-routes
+// builds them, so under the same "serve only my names" rule. The figures object is modellists.BuildFiguresView,
+// the builder /v1/models?include=figures uses.
 
 // ProvimuxFiguresState is the held figures as sdk/cliproxy holds them.
 type ProvimuxFiguresState struct {
@@ -43,7 +45,7 @@ func SetProvimuxFiguresSource(source func() ProvimuxFiguresState) {
 type provimuxFiguresResponse struct {
 	ObservedAt  string                   `json:"observed_at"`
 	Options     provimuxFiguresOptions   `json:"options"`
-	Figures     provimuxFigures          `json:"figures"`
+	Figures     modellists.FiguresView   `json:"figures"`
 	HeldEntries int                      `json:"held_entries"`
 	FromCache   bool                     `json:"from_cache"`
 	LastFailure *provimuxLiveListFailure `json:"last_failure"`
@@ -53,16 +55,6 @@ type provimuxFiguresOptions struct {
 	PublishedLists bool `json:"published_lists"`
 }
 
-type provimuxFigures struct {
-	Contract       int                           `json:"contract"`
-	Source         string                        `json:"source"`
-	State          string                        `json:"state"`
-	DatasetVersion *string                       `json:"dataset_version"`
-	GeneratedAt    *string                       `json:"generated_at"`
-	FetchedAt      *string                       `json:"fetched_at"`
-	Entries        map[string]modellists.Figures `json:"entries"`
-}
-
 // ProvimuxFigures handles GET /v8/management/provimux/figures.
 func (h *Handler) ProvimuxFigures(c *gin.Context) {
 	on := registry.CatalogSources{}.PublishedListsOn()
@@ -70,15 +62,23 @@ func (h *Handler) ProvimuxFigures(c *gin.Context) {
 		on = cfg.Models.PublishedListsOn() && !cfg.Home.Enabled
 	}
 	all, _ := strconv.ParseBool(strings.TrimSpace(c.Query("all")))
-	c.JSON(http.StatusOK, provimuxFiguresOf(on, all, provimuxNow()))
+	now := provimuxNow()
+	selected := modellists.SelectAll
+	if !all {
+		selected = nil
+		if on { // off gives no figure: the routes are not built for nothing
+			selected = provimuxFiguresSelected(h.provimuxAuthManager(), now)
+		}
+	}
+	c.JSON(http.StatusOK, provimuxFiguresOf(on, selected, now))
 }
 
-func provimuxFiguresOf(on, all bool, now time.Time) provimuxFiguresResponse {
+// provimuxFiguresOf is the answer, with the entries selected gives (prices-and-cache.md 6.3).
+func provimuxFiguresOf(on bool, selected func(string) bool, now time.Time) provimuxFiguresResponse {
 	response := provimuxFiguresResponse{
 		ObservedAt: provimuxTime(now.UTC()),
 		Options:    provimuxFiguresOptions{PublishedLists: on},
-		Figures: provimuxFigures{Contract: modellists.FiguresContract, Source: modellists.FiguresSource, State: "off",
-			Entries: map[string]modellists.Figures{}},
+		Figures:    modellists.BuildFiguresView(false, nil, nil),
 	}
 	if !on {
 		// Off: no figure is given, whatever this process still holds from before the switch.
@@ -87,12 +87,10 @@ func provimuxFiguresOf(on, all bool, now time.Time) provimuxFiguresResponse {
 	provimuxFiguresSourceMu.RLock()
 	source := provimuxFiguresSource
 	provimuxFiguresSourceMu.RUnlock()
-	state := ProvimuxFiguresState{State: "none"}
+	state := ProvimuxFiguresState{State: modellists.FiguresStateNone}
 	if source != nil {
 		state = source()
 	}
-	response.Figures.State = "none"
-	response.FromCache = state.FromCache
 	if state.Failure != nil {
 		failure := &provimuxLiveListFailure{At: provimuxTime(state.Failure.At), Category: state.Failure.Category}
 		if state.Failure.HTTPStatus > 0 {
@@ -102,25 +100,23 @@ func provimuxFiguresOf(on, all bool, now time.Time) provimuxFiguresResponse {
 		response.LastFailure = failure
 	}
 	doc := state.Document
-	if state.State != "held" || doc == nil {
-		response.FromCache = false
-		return response
+	if state.State != modellists.FiguresStateHeld {
+		doc = nil
 	}
-	response.Figures.State = "held"
-	response.Figures.DatasetVersion = provimuxString(doc.DatasetVersion)
-	response.Figures.GeneratedAt = provimuxString(provimuxTime(doc.GeneratedAt))
-	response.Figures.FetchedAt = provimuxString(provimuxTime(doc.FetchedAt))
-	response.HeldEntries = len(doc.Entries)
-	for ref, entry := range doc.Entries {
-		if all || provimuxFiguresSelected(ref) {
-			response.Figures.Entries[ref] = entry
-		}
+	response.Figures = modellists.BuildFiguresView(true, doc, selected)
+	if doc != nil {
+		response.FromCache = state.FromCache
+		response.HeldEntries = len(doc.Entries)
 	}
 	return response
 }
 
-// provimuxFiguresSelected reports whether an entry is one an answered item of a route of model-routes names
-// (prices-and-cache.md 6.3). No route carries answered yet: W6b adds it to provimuxRoute, and this is where
-// the two join, under the same "serve only my names" rule model-routes applies (provimuxGated). Until then
-// no entry is selected, and ?all=true gives every held entry.
-func provimuxFiguresSelected(string) bool { return false }
+// provimuxFiguresSelected is the selection without ?all=true: the entries an `answered` item of a route names, the
+// routes built as GET /v8/management/provimux/model-routes builds them (every model, the same rule of "serve only
+// my names", provimuxGated). Without a manager there is no route, so nothing is selected.
+func provimuxFiguresSelected(manager *coreauth.Manager, now time.Time) func(string) bool {
+	if manager == nil {
+		return nil
+	}
+	return modellists.SelectEntries(provimuxAnsweredEntries(provimuxBuildModelRoutes(manager, nil, now.UTC())))
+}
