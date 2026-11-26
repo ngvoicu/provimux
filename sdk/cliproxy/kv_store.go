@@ -16,7 +16,7 @@ func (s *Service) applyKVStoreConfig(cfg *config.Config) {
 	}
 	s.kvStoreManaged.Store(true)
 	provimuxFlushSavings()
-	defer provimuxLoadAnsweredKey() // Provimux: the markers' key, read once the store is configured (answered-by.md 2.2)
+	defer provimuxLoadAnsweredKey(cfg) // Provimux: the markers' key, read once the store is configured (answered-by.md 2.2)
 	if cfg == nil || cfg.Home.Enabled || home.Current() != nil || cfg.KVStore.Disabled {
 		if errShutdown := kvstore.ShutdownLocal(); errShutdown != nil {
 			log.Errorf("failed to shutdown local kv store: %v", errShutdown)
