@@ -11,6 +11,7 @@
           "provider": "claude",
           "kind": "oauth",
           "priority": 5,
+          "account": "a.jvwtubr4vdp5dfnhj7jm",
           "entry": "claude-subscription/claude-opus-5-5"
         },
         {
@@ -18,6 +19,7 @@
           "kind": "apikey",
           "priority": 1,
           "host": "api.anthropic.com",
+          "account": "a.vymubsbmffkad6cmardq",
           "entry": "anthropic/claude-opus-5-5"
         }
       ]
@@ -32,6 +34,7 @@
           "provider": "codex",
           "kind": "oauth",
           "priority": 0,
+          "account": "a.tytzm54pttsi5uuwvreh",
           "entry": "openai-codex/gpt-6.2-sol"
         }
       ]
@@ -46,6 +49,7 @@
           "provider": "codex",
           "kind": "oauth",
           "priority": 0,
+          "account": "a.tytzm54pttsi5uuwvreh",
           "entry": "openai-codex/gpt-6.1-sol"
         }
       ]
@@ -60,6 +64,7 @@
           "provider": "claude",
           "kind": "oauth",
           "priority": 5,
+          "account": "a.jvwtubr4vdp5dfnhj7jm",
           "entry": "claude-subscription/claude-opus-4-8"
         }
       ]
@@ -74,7 +79,43 @@
           "provider": "openai-compatibility",
           "kind": "apikey",
           "priority": 0,
-          "host": "llm.example.com"
+          "host": "llm.example.com",
+          "account": "a.gmig2utyviw5ny2np7m7"
+        }
+      ]
+    },
+    {
+      "id": "fast-or-deep",
+      "object": "model",
+      "owned_by": "anthropic",
+      "accounts": [
+        {
+          "provider": "claude",
+          "kind": "apikey",
+          "priority": 0,
+          "account": "a.3iqabbwt6vbzvopa6iqo",
+          "entry": "anthropic/claude-opus-5-5"
+        },
+        {
+          "provider": "claude",
+          "kind": "apikey",
+          "priority": 0,
+          "account": "a.tq7keu6styccd32rgbps",
+          "entry": "anthropic/claude-haiku-5-5"
+        }
+      ]
+    },
+    {
+      "id": "gemini-3.8-flash",
+      "object": "model",
+      "owned_by": "google",
+      "accounts": [
+        {
+          "provider": "antigravity",
+          "kind": "oauth",
+          "priority": 0,
+          "account": "a.bfihsjjsabpfba5sm5gz",
+          "entry_per_request": true
         }
       ]
     }

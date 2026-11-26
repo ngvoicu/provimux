@@ -1,0 +1,183 @@
+{
+  "about": "Answers of a gateway whose model list is models-figures.json: what each says of itself. `statement` is components/schemas/AnswerStatement of ../openapi.yaml; over HTTP and SSE its values are the X-Provimux-* headers, on the Responses WebSocket fields of response.created. The markers are made with an example key and name nobody.",
+  "answers": [
+    {
+      "what": "The Claude login answered `opus`. The vendor named a dated id for the model asked: both are given, and the entry is the route's.",
+      "asked_for": "opus",
+      "transport": "http",
+      "headers": {
+        "X-CPA-AUTH-KIND": "oauth",
+        "X-CPA-AUTH-PROVIDER": "claude",
+        "X-Provimux-Account": "a.jvwtubr4vdp5dfnhj7jm",
+        "X-Provimux-Model": "claude-opus-5-5-20261101",
+        "X-Provimux-Model-Basis": "vendor",
+        "X-Provimux-Model-Sent": "claude-opus-5-5",
+        "X-Provimux-Effort": "high",
+        "X-Provimux-Entry": "claude-subscription/claude-opus-5-5"
+      },
+      "statement": {
+        "provimux_account": "a.jvwtubr4vdp5dfnhj7jm",
+        "provimux_model": "claude-opus-5-5-20261101",
+        "provimux_model_basis": "vendor",
+        "provimux_model_sent": "claude-opus-5-5",
+        "provimux_effort": "high",
+        "provimux_entry": "claude-subscription/claude-opus-5-5"
+      }
+    },
+    {
+      "what": "The login was cooling and the API key answered the same name: another account, another entry, another price.",
+      "asked_for": "opus",
+      "transport": "sse",
+      "headers": {
+        "X-CPA-AUTH-KIND": "apikey",
+        "X-CPA-AUTH-PROVIDER": "claude",
+        "X-CPA-AUTH-HOST": "api.anthropic.com",
+        "X-Provimux-Account": "a.vymubsbmffkad6cmardq",
+        "X-Provimux-Model": "claude-opus-5-5-20261101",
+        "X-Provimux-Model-Basis": "vendor",
+        "X-Provimux-Model-Sent": "claude-opus-5-5",
+        "X-Provimux-Effort": "high",
+        "X-Provimux-Entry": "anthropic/claude-opus-5-5"
+      },
+      "statement": {
+        "provimux_account": "a.vymubsbmffkad6cmardq",
+        "provimux_model": "claude-opus-5-5-20261101",
+        "provimux_model_basis": "vendor",
+        "provimux_model_sent": "claude-opus-5-5",
+        "provimux_effort": "high",
+        "provimux_entry": "anthropic/claude-opus-5-5"
+      }
+    },
+    {
+      "what": "Two Claude keys with no base URL serve `fast-or-deep`, each set on another model: the three X-CPA-AUTH headers are the same for both. The marker says which key answered and the entry says what it was. The gateway holds no figures for this entry: it is no key of figures.entries.",
+      "asked_for": "fast-or-deep",
+      "transport": "http",
+      "headers": {
+        "X-CPA-AUTH-KIND": "apikey",
+        "X-CPA-AUTH-PROVIDER": "claude",
+        "X-Provimux-Account": "a.tq7keu6styccd32rgbps",
+        "X-Provimux-Model": "claude-haiku-5-5-20261015",
+        "X-Provimux-Model-Basis": "vendor",
+        "X-Provimux-Model-Sent": "claude-haiku-5-5",
+        "X-Provimux-Entry": "anthropic/claude-haiku-5-5"
+      },
+      "statement": {
+        "provimux_account": "a.tq7keu6styccd32rgbps",
+        "provimux_model": "claude-haiku-5-5-20261015",
+        "provimux_model_basis": "vendor",
+        "provimux_model_sent": "claude-haiku-5-5",
+        "provimux_entry": "anthropic/claude-haiku-5-5"
+      }
+    },
+    {
+      "what": "The entry is decided per request: the caller asked for high effort and the gateway chose the variant before it sent.",
+      "asked_for": "gemini-3.8-flash",
+      "transport": "http",
+      "headers": {
+        "X-CPA-AUTH-KIND": "oauth",
+        "X-CPA-AUTH-PROVIDER": "antigravity",
+        "X-Provimux-Account": "a.bfihsjjsabpfba5sm5gz",
+        "X-Provimux-Model": "gemini-3.8-flash-high",
+        "X-Provimux-Model-Basis": "vendor",
+        "X-Provimux-Model-Sent": "gemini-3.8-flash-high",
+        "X-Provimux-Effort": "high",
+        "X-Provimux-Entry": "antigravity/gemini-3.8-flash-high"
+      },
+      "statement": {
+        "provimux_account": "a.bfihsjjsabpfba5sm5gz",
+        "provimux_model": "gemini-3.8-flash-high",
+        "provimux_model_basis": "vendor",
+        "provimux_model_sent": "gemini-3.8-flash-high",
+        "provimux_effort": "high",
+        "provimux_entry": "antigravity/gemini-3.8-flash-high"
+      }
+    },
+    {
+      "what": "A stream from an OpenAI-compatible key: the model the vendor names is not known when the first byte leaves, so the model is the id the gateway asked for and is not confirmed. The gateway has no entry for this host.",
+      "asked_for": "house-model",
+      "transport": "sse",
+      "headers": {
+        "X-CPA-AUTH-KIND": "apikey",
+        "X-CPA-AUTH-PROVIDER": "openai-compatibility",
+        "X-CPA-AUTH-HOST": "llm.example.com",
+        "X-Provimux-Account": "a.gmig2utyviw5ny2np7m7",
+        "X-Provimux-Model": "house-model-v3",
+        "X-Provimux-Model-Basis": "not-confirmed",
+        "X-Provimux-Model-Sent": "house-model-v3",
+        "X-Provimux-Effort": "medium"
+      },
+      "statement": {
+        "provimux_account": "a.gmig2utyviw5ny2np7m7",
+        "provimux_model": "house-model-v3",
+        "provimux_model_basis": "not-confirmed",
+        "provimux_model_sent": "house-model-v3",
+        "provimux_effort": "medium"
+      }
+    },
+    {
+      "what": "A token count: a count answer names no model.",
+      "asked_for": "opus",
+      "transport": "http",
+      "headers": {
+        "X-CPA-AUTH-KIND": "oauth",
+        "X-CPA-AUTH-PROVIDER": "claude",
+        "X-Provimux-Account": "a.jvwtubr4vdp5dfnhj7jm",
+        "X-Provimux-Model": "claude-opus-5-5",
+        "X-Provimux-Model-Basis": "not-confirmed",
+        "X-Provimux-Model-Sent": "claude-opus-5-5",
+        "X-Provimux-Entry": "claude-subscription/claude-opus-5-5"
+      },
+      "statement": {
+        "provimux_account": "a.jvwtubr4vdp5dfnhj7jm",
+        "provimux_model": "claude-opus-5-5",
+        "provimux_model_basis": "not-confirmed",
+        "provimux_model_sent": "claude-opus-5-5",
+        "provimux_entry": "claude-subscription/claude-opus-5-5"
+      }
+    },
+    {
+      "what": "A turn on the Responses WebSocket: the same six values, as fields of the turn's response.created.",
+      "asked_for": "gpt-6.2-sol",
+      "transport": "websocket",
+      "response_created": {
+        "type": "response.created",
+        "cpa_auth_kind": "oauth",
+        "cpa_auth_provider": "codex",
+        "provimux_account": "a.tytzm54pttsi5uuwvreh",
+        "provimux_model": "gpt-6.2-sol",
+        "provimux_model_basis": "vendor",
+        "provimux_model_sent": "gpt-6.2-sol",
+        "provimux_effort": "medium",
+        "provimux_entry": "openai-codex/gpt-6.2-sol"
+      },
+      "statement": {
+        "provimux_account": "a.tytzm54pttsi5uuwvreh",
+        "provimux_model": "gpt-6.2-sol",
+        "provimux_model_basis": "vendor",
+        "provimux_model_sent": "gpt-6.2-sol",
+        "provimux_effort": "medium",
+        "provimux_entry": "openai-codex/gpt-6.2-sol"
+      }
+    },
+    {
+      "what": "A route that relays a vendor's answer without an executor (a realtime call, a search): the account only.",
+      "asked_for": null,
+      "transport": "http",
+      "headers": {
+        "X-CPA-AUTH-KIND": "oauth",
+        "X-CPA-AUTH-PROVIDER": "codex",
+        "X-Provimux-Account": "a.tytzm54pttsi5uuwvreh"
+      },
+      "statement": {
+        "provimux_account": "a.tytzm54pttsi5uuwvreh"
+      }
+    },
+    {
+      "what": "Nobody is named: an error, a keep-alive that left first, an answer a plugin made. None of the six, and none of the three.",
+      "asked_for": "opus",
+      "transport": "http",
+      "headers": {},
+      "statement": null
+    }
+  ]
+}
