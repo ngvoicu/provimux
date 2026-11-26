@@ -128,17 +128,19 @@ func (a ProvimuxAnswer) Fields() []ProvimuxField {
 // sent (AuthStatement.OnTheWire): a header the statement has no value for is deleted, so a value put in the header map
 // earlier (a foreign writer, an upstream gateway's) never outlives the statement it belonged to. With models.answered-by
 // off it writes none and deletes all six; on, a response that already exposes headers to browsers on another origin
-// (Access-Control-Expose-Headers) exposes X-Provimux-Account too.
+// (Access-Control-Expose-Headers) exposes the ones it writes too.
 func SetProvimuxAnswerHeaders(header http.Header, statement AuthStatement) {
 	if header == nil {
 		return
 	}
 	values := map[string]string{}
 	if ProvimuxAnsweredBy() {
+		var written []string
 		for _, field := range statement.Provimux.Fields() {
 			values[field.Header] = field.Value
+			written = append(written, field.Header)
 		}
-		provimuxExpose(header)
+		provimuxExpose(header, written)
 	}
 	for _, name := range provimuxFieldNames {
 		if value := values[name.Header]; value != "" {
@@ -152,19 +154,28 @@ func SetProvimuxAnswerHeaders(header http.Header, statement AuthStatement) {
 // provimuxExposeHeader is the CORS response header that lets a browser on another origin read a response header.
 const provimuxExposeHeader = "Access-Control-Expose-Headers"
 
-// provimuxExpose adds X-Provimux-Account to Access-Control-Expose-Headers when the response has that header and it
-// does not name ours yet.
-func provimuxExpose(header http.Header) {
+// provimuxExpose adds the X-Provimux-* names this answer writes to Access-Control-Expose-Headers when the response
+// has that header, each that it does not name yet; with none written, X-Provimux-Account, as before any value of an
+// answer was known.
+func provimuxExpose(header http.Header, written []string) {
 	exposed := header.Get(provimuxExposeHeader)
 	if exposed == "" {
 		return
 	}
+	if len(written) == 0 {
+		written = []string{ProvimuxAccountHeader}
+	}
+	named := map[string]bool{}
 	for _, name := range strings.Split(exposed, ",") {
-		if strings.EqualFold(strings.TrimSpace(name), ProvimuxAccountHeader) {
-			return
+		named[strings.ToLower(strings.TrimSpace(name))] = true
+	}
+	for _, name := range written {
+		if !named[strings.ToLower(name)] {
+			exposed += ", " + name
+			named[strings.ToLower(name)] = true
 		}
 	}
-	header.Set(provimuxExposeHeader, exposed+", "+ProvimuxAccountHeader)
+	header.Set(provimuxExposeHeader, exposed)
 }
 
 // provimuxAnsweredBy holds models.answered-by as in force; false until a config sets it.

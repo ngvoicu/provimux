@@ -1,6 +1,7 @@
 package logging
 
 import (
+	"net/http"
 	"testing"
 )
 
@@ -91,6 +92,32 @@ func TestProvimuxAnswerSentHeaders(t *testing.T) {
 	for _, name := range ProvimuxFieldNames() {
 		if values := header.Values(name.Header); len(values) != 0 {
 			t.Fatalf("%s survives without a confirmed statement: %v", name.Header, values)
+		}
+	}
+}
+
+// On, a response that exposes headers to browsers on another origin exposes every X-Provimux-* name it writes, once;
+// never one it does not write (no effort; no entry where there is none).
+func TestProvimuxAnswerSentIsExposedToBrowsers(t *testing.T) {
+	withProvimuxAnsweredBy(t, true)
+	const exposed = "X-CPA-TRACE-ID, X-CPA-AUTH-KIND, X-CPA-AUTH-PROVIDER, X-CPA-AUTH-HOST"
+	for _, test := range []struct {
+		answer ProvimuxAnswer
+		want   string
+	}{
+		{ProvimuxAnswer{Account: provimuxTestMarker, ModelSent: "provimux-test-a", Entry: "anthropic/provimux-test-a"},
+			exposed + ", X-Provimux-Account, X-Provimux-Model, X-Provimux-Model-Basis, X-Provimux-Model-Sent, X-Provimux-Entry"},
+		{ProvimuxAnswer{Account: provimuxTestMarker, ModelSent: "provimux-test-a"},
+			exposed + ", X-Provimux-Account, X-Provimux-Model, X-Provimux-Model-Basis, X-Provimux-Model-Sent"},
+		{ProvimuxAnswer{Account: provimuxTestMarker}, exposed + ", X-Provimux-Account"},
+	} {
+		header := http.Header{}
+		header.Set("Access-Control-Expose-Headers", exposed)
+		statement := AuthStatement{Kind: "apikey", Provider: "claude", Provimux: test.answer}
+		SetProvimuxAnswerHeaders(header, statement)
+		SetProvimuxAnswerHeaders(header, statement) // a second pass adds nothing
+		if got := header.Get("Access-Control-Expose-Headers"); got != test.want {
+			t.Fatalf("%+v: %q, want %q", test.answer, got, test.want)
 		}
 	}
 }

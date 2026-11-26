@@ -198,6 +198,15 @@ func provimuxMarkerRows() []provimuxMarkerRow {
 			taken: pluginMade(&Auth{ID: "plugin-key.json", Provider: "fixture-plugin", Attributes: map[string]string{AttributeAPIKey: "sk-fixture-other", "base_url": "https://plug.example.test/v1"}}),
 		},
 		{
+			// A login a plugin changed with the models it returned (here into a Meta login), read back after a restart
+			// by the native loader: no plugin storage, only the mark the change left in its file. Still the
+			// credential's own id, as before the restart; a Meta login without the mark is named by its e-mail.
+			name: "a login a plugin changed, read back after a restart", basis: "s", sameAs: false, follow: false,
+			first: loginFile("plugin-changed.json", "meta", map[string]any{"type": "meta", "api_key": "fixture-a", "user_email": "ada@fixture.example.test", ProvimuxPluginCredentialMark: true}),
+			twin:  loginFile("plugin-changed-copy.json", "meta", map[string]any{"type": "meta", "api_key": "fixture-b", "user_email": "ada@fixture.example.test", ProvimuxPluginCredentialMark: true}),
+			taken: loginFile("plugin-changed.json", "meta", map[string]any{"type": "meta", "api_key": "fixture-c", "user_email": "bo@fixture.example.test", ProvimuxPluginCredentialMark: true}),
+		},
+		{
 			// One key in two rows of the configuration; the row taken by another key is another account.
 			name: "API key with a base URL", basis: "a", sameAs: true, follow: true,
 			first: configKey("claude-key-1", "claude", "sk-fixture-one", "https://gateway.example.test/v1", 0),

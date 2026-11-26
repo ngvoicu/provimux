@@ -18,6 +18,12 @@ import (
 // AnsweredAuthCallbackMetadataKey's callback is, and right after it.
 const ProvimuxAnswerCallbackMetadataKey = "provimux_answer_callback"
 
+// ProvimuxPluginCredentialMark is the metadata key that marks a credential a plugin changed with the models it
+// returned (the service sets it where it commits the update, before the update is stored). It is stored with the
+// credential, so it outlives the process: a login file a plugin rewrote is read at the next start by the native
+// loader, whose credential has no plugin storage. A native login that writes the file anew drops it.
+const ProvimuxPluginCredentialMark = "provimux_plugin_credential"
+
 // provimuxAnswerEntry holds the one function that gives an answer's entry: steps 3 to 5 of answered-by.md 4.3, for the
 // credential that answered and what its attempt sent. sdk/cliproxy sets it (SetProvimuxAnswerEntry); nil = no entry.
 var provimuxAnswerEntry atomic.Pointer[func(auth *Auth, sent cliproxyexecutor.ProvimuxSentRequest) string]

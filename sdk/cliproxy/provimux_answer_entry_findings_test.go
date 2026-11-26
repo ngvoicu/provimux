@@ -167,6 +167,11 @@ func TestProvimuxFinding14APluginsCredentialHasNoEntry(t *testing.T) {
 	if !pluginhost.ProvimuxPluginCredential(reloaded) {
 		t.Fatal("after a restart the plugin's change reads as a native Meta login")
 	}
+	// The account marker reads the same rule: the credential's own id before the restart and after, never the
+	// e-mail-based marker of a Meta login.
+	if before, after := changed.ProvimuxAccountMarker(), reloaded.ProvimuxAccountMarker(); !strings.HasPrefix(after, "s.") || (reloaded.ID == changed.ID && after != before) {
+		t.Fatalf("the marker after a restart is %q (before %q, ids %s and %s)", after, before, changed.ID, reloaded.ID)
+	}
 	if entry := provimuxEntryOfAnswer(reloaded, cliproxyexecutor.ProvimuxSentRequest{Scheme: "https", Host: "api.meta.ai", Model: model, Signer: "authorization", Status: 200}); entry != "" {
 		t.Fatalf("after a restart the plugin's change has the entry %s", entry)
 	}
