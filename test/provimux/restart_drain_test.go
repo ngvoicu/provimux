@@ -20,6 +20,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -31,6 +32,11 @@ const (
 	drainClientKey = "provimux-test-client-1"
 	drainModel     = "provimux-test-drain-model"
 )
+
+// drainGatewayCount numbers the gateways of this test binary: each serves its own model alias, so a test's
+// readiness check and requests can only be answered by its own process, even when two gateways of parallel tests
+// picked the same free port and one of them failed to bind.
+var drainGatewayCount atomic.Int64
 
 var (
 	drainBinaryOnce sync.Once
@@ -139,6 +145,7 @@ type drainGateway struct {
 	cmd    *exec.Cmd
 	port   int
 	base   string
+	model  string
 	logBuf *lockedBuffer
 	exited chan struct{}
 	exitAt time.Time
@@ -172,15 +179,29 @@ func freePort(t *testing.T) int {
 	return ln.Addr().(*net.TCPAddr).Port
 }
 
-// startDrainGateway starts the gateway with serverLines inserted under server: of its config, and
-// managementLines under management:.
+// startDrainGateway starts the gateway on a free port with serverLines inserted under server: of its config, and
+// managementLines under management:. When another process took the port first, it starts it again on another.
 func startDrainGateway(t *testing.T, vendorURL string, serverLines string, managementLines ...string) *drainGateway {
+	t.Helper()
+	for attempt := 0; ; attempt++ {
+		g, ready := tryDrainGateway(t, freePort(t), vendorURL, serverLines, managementLines...)
+		if ready {
+			return g
+		}
+		if attempt == 4 || !strings.Contains(g.logBuf.String(), "address already in use") {
+			t.Fatalf("gateway did not start:\n%s", g.logBuf.String())
+		}
+	}
+}
+
+// tryDrainGateway starts one gateway on port and reports whether it is ready: its own process is alive and its
+// own model alias (no other gateway serves it) is listed on port. A gateway that is not ready is stopped.
+func tryDrainGateway(t *testing.T, port int, vendorURL string, serverLines string, managementLines ...string) (*drainGateway, bool) {
 	t.Helper()
 	bin := drainBinary(t)
 	dir := t.TempDir()
-	for attempt := 0; ; attempt++ {
-		port := freePort(t)
-		cfg := fmt.Sprintf(`config-version: 8
+	model := fmt.Sprintf("%s-%d-%d", drainModel, os.Getpid(), drainGatewayCount.Add(1))
+	cfg := fmt.Sprintf(`config-version: 8
 models:
   live-lists: false
   published-lists: false
@@ -204,41 +225,38 @@ api-keys:
       models:
         - name: "provimux-test-upstream-model"
           alias: %q
-`, port, serverLines, strings.Join(managementLines, ""), drainClientKey, filepath.Join(dir, "auths"), vendorURL+"/v1", drainModel)
-		path := filepath.Join(dir, "config.yaml")
-		if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		g := &drainGateway{t: t, port: port, base: fmt.Sprintf("http://127.0.0.1:%d", port), logBuf: &lockedBuffer{}, exited: make(chan struct{})}
-		g.cmd = exec.Command(bin, "--config", path, "--local-model")
-		g.cmd.Dir = dir
-		g.cmd.Env = append(os.Environ(), "HOME="+dir, "MANAGEMENT_PASSWORD=")
-		g.cmd.Stdout, g.cmd.Stderr = g.logBuf, g.logBuf
-		if err := g.cmd.Start(); err != nil {
-			t.Fatal(err)
-		}
-		go func() {
-			_ = g.cmd.Wait()
-			g.exitAt = time.Now()
-			g.state = g.cmd.ProcessState
-			close(g.exited)
-		}()
-		t.Cleanup(func() {
-			_ = g.cmd.Process.Kill()
-			<-g.exited
-			if t.Failed() {
-				t.Logf("gateway log:\n%s", g.logBuf.String())
-			}
-		})
-		if g.waitReady(60 * time.Second) {
-			return g
-		}
+`, port, serverLines, strings.Join(managementLines, ""), drainClientKey, filepath.Join(dir, "auths"), vendorURL+"/v1", model)
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	g := &drainGateway{t: t, port: port, model: model, base: fmt.Sprintf("http://127.0.0.1:%d", port), logBuf: &lockedBuffer{}, exited: make(chan struct{})}
+	g.cmd = exec.Command(bin, "--config", path, "--local-model")
+	g.cmd.Dir = dir
+	g.cmd.Env = append(os.Environ(), "HOME="+dir, "MANAGEMENT_PASSWORD=")
+	g.cmd.Stdout, g.cmd.Stderr = g.logBuf, g.logBuf
+	if err := g.cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		_ = g.cmd.Wait()
+		g.exitAt = time.Now()
+		g.state = g.cmd.ProcessState
+		close(g.exited)
+	}()
+	t.Cleanup(func() {
 		_ = g.cmd.Process.Kill()
 		<-g.exited
-		if attempt == 2 || !strings.Contains(g.logBuf.String(), "address already in use") {
-			t.Fatalf("gateway did not start:\n%s", g.logBuf.String())
+		if t.Failed() {
+			t.Logf("gateway log:\n%s", g.logBuf.String())
 		}
+	})
+	if g.waitReady(60 * time.Second) {
+		return g, true
 	}
+	_ = g.cmd.Process.Kill()
+	<-g.exited
+	return g, false
 }
 
 func (g *drainGateway) waitReady(limit time.Duration) bool {
@@ -254,7 +272,7 @@ func (g *drainGateway) waitReady(limit time.Duration) bool {
 		if resp, err := http.DefaultClient.Do(req); err == nil {
 			body, _ := io.ReadAll(resp.Body)
 			_ = resp.Body.Close()
-			if resp.StatusCode == http.StatusOK && strings.Contains(string(body), drainModel) {
+			if resp.StatusCode == http.StatusOK && strings.Contains(string(body), `"`+g.model+`"`) {
 				return true
 			}
 		}
@@ -314,7 +332,7 @@ func (a *drainAnswer) whole() bool {
 func (g *drainGateway) ask(t *testing.T, stream bool) *drainAnswer {
 	t.Helper()
 	a := &drainAnswer{first: make(chan struct{}), done: make(chan struct{})}
-	body := fmt.Sprintf(`{"model":%q,"stream":%t,"messages":[{"role":"user","content":"what is 1+1?"}]}`, drainModel, stream)
+	body := fmt.Sprintf(`{"model":%q,"stream":%t,"messages":[{"role":"user","content":"what is 1+1?"}]}`, g.model, stream)
 	req, _ := http.NewRequest(http.MethodPost, g.base+"/v1/chat/completions", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+drainClientKey)
 	req.Header.Set("Content-Type", "application/json")
@@ -398,6 +416,10 @@ func TestRestartDrainDefaultLetsAnswerFinish(t *testing.T) {
 			}
 			if code := g.state.ExitCode(); code != 0 {
 				t.Fatalf("exit code %d", code)
+			}
+			if !strings.Contains(g.logBuf.String(), "[info ] [provimux_restart_drain.go:") ||
+				!strings.Contains(g.logBuf.String(), "stopping: waiting up to 25 seconds for the answers in flight") {
+				t.Fatal("no info line when the stop began to wait")
 			}
 			t.Logf("answer whole at %s, process exited at %s after SIGTERM", seconds(answer.endAt.Sub(sent)), seconds(took))
 		})
@@ -520,7 +542,7 @@ func (g *drainGateway) openTurn(t *testing.T) *wsTurn {
 		t.Fatalf("dial: %v", err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	turn := fmt.Sprintf(`{"type":"response.create","model":%q,"input":[{"type":"message","role":"user","content":"what is 1+1?"}]}`, drainModel)
+	turn := fmt.Sprintf(`{"type":"response.create","model":%q,"input":[{"type":"message","role":"user","content":"what is 1+1?"}]}`, g.model)
 	if err = conn.WriteMessage(websocket.TextMessage, []byte(turn)); err != nil {
 		t.Fatal(err)
 	}
@@ -640,7 +662,7 @@ func TestRestartDrainAIStudioRelayAnswerCut(t *testing.T) {
 			body, _ := io.ReadAll(resp.Body)
 			_ = resp.Body.Close()
 			for _, id := range strings.Split(string(body), `"id":"`)[1:] {
-				if name := id[:strings.Index(id, `"`)]; name != drainModel {
+				if name := id[:strings.Index(id, `"`)]; name != g.model {
 					model = name
 					break
 				}
@@ -763,8 +785,11 @@ func TestRestartDrainKeyWrittenThroughConfigPath(t *testing.T) {
 			if code, body := call(http.MethodGet, ""); code != http.StatusNotFound {
 				t.Fatalf("GET of the unset key: %d %s", code, body)
 			}
-			if code, body := call(http.MethodPut, "31"); code != http.StatusUnprocessableEntity {
+			if code, body := call(http.MethodPut, "31"); code != http.StatusBadRequest {
 				t.Fatalf("PUT 31: %d %s", code, body)
+			}
+			if code, body := call(http.MethodPut, "2.5"); code != http.StatusUnprocessableEntity {
+				t.Fatalf("PUT 2.5: %d %s", code, body)
 			}
 			if code, body := call(http.MethodPut, tc.value); code != http.StatusOK {
 				t.Fatalf("PUT %s: %d %s", tc.value, code, body)
@@ -783,5 +808,56 @@ func TestRestartDrainKeyWrittenThroughConfigPath(t *testing.T) {
 			}
 			t.Logf("written %s: answer cut at %s, process exited at %s after SIGTERM", tc.value, seconds(cut), seconds(took))
 		})
+	}
+}
+
+// A whole number out of range never keeps the gateway from starting: it is used as the nearest bound (0 or 30)
+// with one warning line. -5 is used as 0: a held answer is cut at once, and no wait is announced.
+func TestRestartDrainOutOfRangeStarts(t *testing.T) {
+	for _, tc := range []struct {
+		value string
+		used  int
+	}{{"-5", 0}, {"99", 30}} {
+		t.Run(tc.value, func(t *testing.T) {
+			t.Parallel()
+			vendor := newDrainVendor(t)
+			g := startDrainGateway(t, vendor.URL, "  restart-drain-seconds: "+tc.value+"\n")
+			warning := fmt.Sprintf("server.restart-drain-seconds is %s; using %d (it takes 0 to 30)", tc.value, tc.used)
+			if n := strings.Count(g.logBuf.String(), warning); n != 1 {
+				t.Fatalf("%d warning lines %q", n, warning)
+			}
+			if tc.used != 0 {
+				return
+			}
+			answer := g.ask(t, true)
+			sent := g.signal(syscall.SIGTERM)
+			took := g.waitExit(sent, 10*time.Second)
+			answer.wait(t, 5*time.Second)
+			if answer.whole() || took > 1500*time.Millisecond {
+				t.Fatalf("answer whole=%t, process exited at %s", answer.whole(), seconds(took))
+			}
+			if strings.Contains(g.logBuf.String(), "stopping: waiting") {
+				t.Fatal("a wait was announced with a budget of 0")
+			}
+			t.Logf("%s used as %d: answer cut at %s, process exited at %s", tc.value, tc.used, seconds(answer.endAt.Sub(sent)), seconds(took))
+		})
+	}
+}
+
+// Readiness proves the test's own process: a gateway started on a port another gateway already serves is not
+// ready, even though the port answers /v1/models, and its log says why.
+func TestRestartDrainReadinessIsOwnProcess(t *testing.T) {
+	t.Parallel()
+	vendor := newDrainVendor(t)
+	first := startDrainGateway(t, vendor.URL, "")
+	second, ready := tryDrainGateway(t, first.port, vendor.URL, "")
+	if ready {
+		t.Fatal("a gateway that could not bind was taken as ready")
+	}
+	if !strings.Contains(second.logBuf.String(), "address already in use") {
+		t.Fatalf("second gateway's log:\n%s", second.logBuf.String())
+	}
+	if !first.waitReady(time.Second) {
+		t.Fatal("the first gateway stopped serving")
 	}
 }
