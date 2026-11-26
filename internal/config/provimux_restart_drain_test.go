@@ -53,9 +53,9 @@ func TestProvimuxStopDrainSeconds(t *testing.T) {
 	}
 }
 
-// A number out of range is used as the nearest bound, with one warning per value found, when the config is
-// read (at start and at a reload); a management write of one is refused (ValidateV8Config, which only the
-// management API's writes call). Anything that is not a whole number is refused everywhere.
+// A number out of range is used as the nearest bound, with one warning per value found, wherever the config is
+// read: at start, at a reload, and in a management write (ValidateV8Config accepts it). Anything that is not a
+// whole number is refused everywhere.
 func TestProvimuxRestartDrainOutOfRangeAndWrongType(t *testing.T) {
 	hook := logtest.NewGlobal()
 	t.Cleanup(hook.Reset)
@@ -87,9 +87,8 @@ func TestProvimuxRestartDrainOutOfRangeAndWrongType(t *testing.T) {
 			if len(warnings) != 1 || warnings[0] != want {
 				t.Fatalf("warnings = %q, want one %q", warnings, want)
 			}
-			err := ValidateV8Config([]byte("config-version: 8\nserver:\n  restart-drain-seconds: " + tc.value + "\n"))
-			if err == nil || !strings.Contains(err.Error(), "restart-drain-seconds must be a whole number of seconds from 0 to 30") {
-				t.Fatalf("a management write of %s: %v", tc.value, err)
+			if err := ValidateV8Config([]byte("config-version: 8\nserver:\n  restart-drain-seconds: " + tc.value + "\n")); err != nil {
+				t.Fatalf("a management write of %s refused: %v", tc.value, err)
 			}
 		})
 	}

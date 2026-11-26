@@ -751,20 +751,21 @@ func TestRestartDrainAIStudioRelayAnswerCut(t *testing.T) {
 
 // The console's path: server.restart-drain-seconds written through the generic config path
 // (/v8/management/config/server/restart-drain-seconds) is the number the running gateway's next stop uses,
-// once the write has been reloaded. Written 0, a held answer is cut at once; written 3, at 3 s.
+// once the write has been reloaded. Written 0, a held answer is cut at once; written 3, at 3 s; written 31, which
+// is saved and read back as 31, at 30 s, and a save of another key with 31 in the file works.
 func TestRestartDrainKeyWrittenThroughConfigPath(t *testing.T) {
 	const secret = "provimux-test-management-secret"
 	for _, tc := range []struct {
 		value string
 		want  time.Duration
-	}{{"0", 0}, {"3", 3 * time.Second}} {
+	}{{"0", 0}, {"3", 3 * time.Second}, {"31", 30 * time.Second}} {
 		t.Run(tc.value, func(t *testing.T) {
 			t.Parallel()
 			vendor := newDrainVendor(t)
 			g := startDrainGateway(t, vendor.URL, "  shutdown-timeout: 0\n", fmt.Sprintf("  secret-key: %q\n", secret))
-			call := func(method, body string) (int, string) {
+			callKey := func(method, key, body string) (int, string) {
 				t.Helper()
-				req, _ := http.NewRequest(method, g.base+"/v8/management/config/server/restart-drain-seconds", strings.NewReader(body))
+				req, _ := http.NewRequest(method, g.base+"/v8/management/config/server/"+key, strings.NewReader(body))
 				req.Header.Set("Authorization", "Bearer "+secret)
 				resp, err := http.DefaultClient.Do(req)
 				if err != nil {
@@ -773,6 +774,10 @@ func TestRestartDrainKeyWrittenThroughConfigPath(t *testing.T) {
 				defer func() { _ = resp.Body.Close() }()
 				b, _ := io.ReadAll(resp.Body)
 				return resp.StatusCode, string(b)
+			}
+			call := func(method, body string) (int, string) {
+				t.Helper()
+				return callKey(method, "restart-drain-seconds", body)
 			}
 			// Upstream applies a management write through its file watcher, which starts a moment after the
 			// server answers; a write before that is applied only with the next change.
@@ -785,9 +790,6 @@ func TestRestartDrainKeyWrittenThroughConfigPath(t *testing.T) {
 			if code, body := call(http.MethodGet, ""); code != http.StatusNotFound {
 				t.Fatalf("GET of the unset key: %d %s", code, body)
 			}
-			if code, body := call(http.MethodPut, "31"); code != http.StatusBadRequest {
-				t.Fatalf("PUT 31: %d %s", code, body)
-			}
 			if code, body := call(http.MethodPut, "2.5"); code != http.StatusUnprocessableEntity {
 				t.Fatalf("PUT 2.5: %d %s", code, body)
 			}
@@ -796,6 +798,14 @@ func TestRestartDrainKeyWrittenThroughConfigPath(t *testing.T) {
 			}
 			if code, body := call(http.MethodGet, ""); code != http.StatusOK || strings.TrimSpace(body) != tc.value {
 				t.Fatalf("GET after PUT: %d %s", code, body)
+			}
+			if tc.value == "31" {
+				if code, body := callKey(http.MethodPut, "shutdown-timeout", "4"); code != http.StatusOK {
+					t.Fatalf("PUT of another key with 31 in the file: %d %s", code, body)
+				}
+				if code, body := call(http.MethodGet, ""); code != http.StatusOK || strings.TrimSpace(body) != "31" {
+					t.Fatalf("GET after another key's save: %d %s", code, body)
+				}
 			}
 			time.Sleep(time.Second) // the write is reloaded asynchronously, as every management write is
 			answer := g.ask(t, true)
