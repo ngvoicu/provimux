@@ -93,30 +93,51 @@ func namesClaudeCatalog(t *testing.T) (string, string) {
 }
 
 // namesServed is what auth registers that the gate serves: listed by both list loops and let through the
-// door. It fails the test if the lists and the door disagree.
+// door. It fails the test if the lists and the door disagree under one rule value. The lists, the door and
+// the registrations are read one after another, so a reload that commits between those reads (the test's
+// PUT returns before the watcher commits) would compare two rules: then it reads them all again, until
+// one rule value and one set of registrations cover the whole reading.
 func namesServed(t *testing.T, auth *coreauth.Auth) []string {
 	t.Helper()
-	listed := map[string]bool{}
+	for attempt := 0; ; attempt++ {
+		rule, registered := onlymynames.Current(), provimuxRegistered(auth)
+		listed, infos, doors := namesRead(registered)
+		if onlymynames.Current() != rule || !slices.Equal(provimuxRegistered(auth), registered) {
+			if attempt == 1000 {
+				t.Fatal("the rule or the registrations changed during 1000 readings in a row")
+			}
+			continue // a reload committed during the reading: read again
+		}
+		var served []string
+		for _, id := range registered {
+			if listed[id] != doors[id] || infos[id] != doors[id] {
+				t.Fatalf("%s: listed %v / %v, the door %v", id, listed[id], infos[id], doors[id])
+			}
+			if doors[id] {
+				served = append(served, id)
+			}
+		}
+		return served
+	}
+}
+
+// namesRead reads both lists, then the door for each id.
+func namesRead(ids []string) (listed, infos, doors map[string]bool) {
+	listed = map[string]bool{}
 	for _, model := range registry.GetGlobalRegistry().GetAvailableModels("openai") {
 		if id, _ := model["id"].(string); id != "" {
 			listed[id] = true
 		}
 	}
-	infos := map[string]bool{}
+	infos = map[string]bool{}
 	for _, info := range registry.GetGlobalRegistry().GetAvailableModelInfos() {
 		infos[info.ID] = true
 	}
-	var served []string
-	for _, id := range provimuxRegistered(auth) {
-		door := namesServes(id)
-		if listed[id] != door || infos[id] != door {
-			t.Fatalf("%s: listed %v / %v, the door %v", id, listed[id], infos[id], door)
-		}
-		if door {
-			served = append(served, id)
-		}
+	doors = map[string]bool{}
+	for _, id := range ids {
+		doors[id] = namesServes(id)
 	}
-	return served
+	return listed, infos, doors
 }
 
 // namesOthers is the status's others (ids that are not his), with the clients that register each, read
