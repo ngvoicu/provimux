@@ -398,7 +398,9 @@ func (h *BaseAPIHandler) applyModelRouter(ctx context.Context, handlerType, mode
 	case pluginapi.ModelRouteTargetSelf, pluginapi.ModelRouteTargetExecutor:
 		decision.ExecutorPluginID = strings.TrimSpace(resp.Target)
 		if h.AuthManager != nil && h.AuthManager.HomeEnabled() {
-			return modelRouteDecision{}
+			// Provimux: only-my-names: no route, as upstream's empty decision, but the rule value stays with the decision.
+			decision.ExecutorPluginID = ""
+			return decision
 		}
 	case pluginapi.ModelRouteTargetProvider:
 		decision.Provider = strings.ToLower(strings.TrimSpace(resp.Target))
