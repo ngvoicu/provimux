@@ -80,6 +80,7 @@ type provimuxRoute struct {
 	Limits           provimuxLimits            `json:"limits"`
 	Reasoning        *provimuxReasoning        `json:"reasoning"`
 	RecordedCooldown *provimuxRecordedCooldown `json:"recorded_cooldown"`
+	Answered         *[]provimuxRouteAnswered  `json:"answered,omitempty"` // what its answers said (answered-by.md 4.4); with account
 }
 
 // ProvimuxModelRoutes handles GET /v8/management/provimux/model-routes.
@@ -180,6 +181,7 @@ func provimuxBuildModelRoutes(manager *coreauth.Manager, only map[string]struct{
 			if view, ok := cooldowns[model.ID]; ok {
 				route.RecordedCooldown = provimuxRecordedCooldownOf(view)
 			}
+			route.Answered = provimuxAnsweredTimes(route.Account, model.ID) // Provimux: answered-by.md 4.4
 			routesByModel[model.ID] = append(routesByModel[model.ID], route)
 		}
 	}
