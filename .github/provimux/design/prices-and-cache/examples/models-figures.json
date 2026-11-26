@@ -12,7 +12,12 @@
           "kind": "oauth",
           "priority": 5,
           "account": "a.jvwtubr4vdp5dfnhj7jm",
-          "entry": "claude-subscription/claude-opus-5-5"
+          "answered": [
+            {
+              "entry": "claude-subscription/claude-opus-5-5",
+              "on": "2026-11-26"
+            }
+          ]
         },
         {
           "provider": "claude",
@@ -20,7 +25,12 @@
           "priority": 1,
           "host": "api.anthropic.com",
           "account": "a.vymubsbmffkad6cmardq",
-          "entry": "anthropic/claude-opus-5-5"
+          "answered": [
+            {
+              "entry": "anthropic/claude-opus-5-5",
+              "on": "2026-11-24"
+            }
+          ]
         }
       ]
     },
@@ -35,7 +45,12 @@
           "kind": "oauth",
           "priority": 0,
           "account": "a.tytzm54pttsi5uuwvreh",
-          "entry": "openai-codex/gpt-6.2-sol"
+          "answered": [
+            {
+              "entry": "openai-codex/gpt-6.2-sol",
+              "on": "2026-11-26"
+            }
+          ]
         }
       ]
     },
@@ -50,7 +65,16 @@
           "kind": "oauth",
           "priority": 0,
           "account": "a.tytzm54pttsi5uuwvreh",
-          "entry": "openai-codex/gpt-6.1-sol"
+          "answered": [
+            {
+              "entry": "openai-codex/gpt-6.1-sol",
+              "on": "2026-11-26"
+            },
+            {
+              "entry": null,
+              "on": "2026-11-19"
+            }
+          ]
         }
       ]
     },
@@ -65,7 +89,7 @@
           "kind": "oauth",
           "priority": 5,
           "account": "a.jvwtubr4vdp5dfnhj7jm",
-          "entry": "claude-subscription/claude-opus-4-8"
+          "answered": []
         }
       ]
     },
@@ -80,7 +104,13 @@
           "kind": "apikey",
           "priority": 0,
           "host": "llm.example.com",
-          "account": "a.gmig2utyviw5ny2np7m7"
+          "account": "a.gmig2utyviw5ny2np7m7",
+          "answered": [
+            {
+              "entry": null,
+              "on": "2026-11-26"
+            }
+          ]
         }
       ]
     },
@@ -94,14 +124,24 @@
           "kind": "apikey",
           "priority": 0,
           "account": "a.3iqabbwt6vbzvopa6iqo",
-          "entry": "anthropic/claude-opus-5-5"
+          "answered": [
+            {
+              "entry": "anthropic/claude-opus-5-5",
+              "on": "2026-11-25"
+            }
+          ]
         },
         {
           "provider": "claude",
           "kind": "apikey",
           "priority": 0,
           "account": "a.tq7keu6styccd32rgbps",
-          "entry": "anthropic/claude-haiku-5-5"
+          "answered": [
+            {
+              "entry": "anthropic/claude-haiku-5-5",
+              "on": "2026-11-26"
+            }
+          ]
         }
       ]
     },
@@ -115,7 +155,16 @@
           "kind": "oauth",
           "priority": 0,
           "account": "a.bfihsjjsabpfba5sm5gz",
-          "entry_per_request": true
+          "answered": [
+            {
+              "entry": "antigravity/gemini-3.8-flash-high",
+              "on": "2026-11-26"
+            },
+            {
+              "entry": "antigravity/gemini-3.8-flash-low",
+              "on": "2026-11-25"
+            }
+          ]
         }
       ]
     }
