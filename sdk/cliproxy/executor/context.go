@@ -71,7 +71,8 @@ func WithUpstreamAttemptTracker(ctx context.Context) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return provimuxObserveSent(context.WithValue(ctx, upstreamAttemptTrackerContextKey{}, &upstreamAttemptTracker{})) // Provimux: answered-by.md 4.2
+	ctx = provimuxObserveSent(ctx) // Provimux: what the attempt sends is noted on the tracker below (answered-by.md 4.2)
+	return context.WithValue(ctx, upstreamAttemptTrackerContextKey{}, &upstreamAttemptTracker{})
 }
 
 // MarkUpstreamAttempt records that the provider execution reached an upstream transport boundary.
