@@ -12,6 +12,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 )
 
+// date-safe: a fetch time stored and read back; the package reads no clock: every time is an argument or a stored value.
 var fetched = time.Date(2026, 11, 22, 12, 0, 3, 0, time.UTC)
 
 func writeAda(t *testing.T, store *Store) {
@@ -69,6 +70,7 @@ func TestDamagedFileIsIgnoredThenOverwritten(t *testing.T) {
 	store := NewStore(dir)
 	identity := "devin||email=office@providers.dev"
 	path := filepath.Join(dir, liveFileName(IdentityHash(identity)))
+	// date-safe: fetch times in damaged files; the package reads no clock: every time is an argument or a stored value.
 	for name, content := range map[string]string{
 		"not json":   `{"schema":1,"provider":"devin"`,
 		"old schema": `{"schema":0,"provider":"devin","identity":"` + IdentityHash(identity) + `","fetched_at":"2026-11-22T12:00:03Z","ids":["a"],"models":[]}`,

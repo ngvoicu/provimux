@@ -201,6 +201,7 @@ type testEnv struct {
 func newTestEnv(t testing.TB, store *testStore) *testEnv {
 	t.Helper()
 	env := &testEnv{
+		// date-safe: the test clock starts here.
 		clock:  &testClock{now: time.Date(2026, 11, 20, 11, 14, 7, 512_000_000, bucharest)},
 		prices: &testPrices{remote: true},
 		store:  store,

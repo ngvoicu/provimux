@@ -20,6 +20,11 @@
 #      layer trailer, has one parent, changes only the README paths, leaves README.md a
 #      100644 blob and the other README paths absent; and then, at HEAD, the only root
 #      entry whose name begins with "readme" (any case) is the 100644 blob README.md;
+#   6. no test of the layer depends on today's date (SYNC.md, "Tests and the date"): every
+#      line the layer adds to a test (*_test.go, test/provimux/) that holds a literal date
+#      (time.Date with a year, a YYYY-MM-DD string, time.Unix of a 10-digit epoch) is
+#      covered by a comment "date-safe: <why>" on that line or above it with no empty line
+#      between (a line that is only a comment is not looked at);
 #   4. for a pull request (PMX_TARGET = the target branch's commit): the PR's own
 #      commits since the merge base touch no protected path, it merges cleanly, and
 #      the merged tree differs from the target in no protected path. Patch changes reach main only as a
@@ -121,9 +126,10 @@ fi
 # --- 2 and 3. Layer order and protected paths, per commit --------------------------
 in_layer=0
 first_layer=''
+first_layer_commit=''
 for c in $(git rev-list --reverse --topo-order "$base_commit..HEAD"); do
   if git log -1 --format='%(trailers:key=Provimux-Layer,valueonly)' "$c" | sed 's/[[:space:]]*$//' | grep -qx 'branding'; then
-    if [ "$in_layer" -eq 0 ]; then in_layer=1; first_layer=$(short "$c"); fi
+    if [ "$in_layer" -eq 0 ]; then in_layer=1; first_layer=$(short "$c"); first_layer_commit=$c; fi
     # Against every parent (-m): a layer merge must not bring protected changes from either side.
     hits=$(git diff-tree -r -m --root --no-commit-id --name-only -z "$c" -- "${pathspec[@]}" | names | sort -u)
     while IFS= read -r f; do
@@ -225,6 +231,38 @@ else
     fi
   done <"$rtmp/head"
   [ "$n" -gt 0 ] || err "HEAD has no root README.md."
+fi
+
+# --- 6. Dates in the layer's tests -------------------------------------------------------
+# A test that passes today and fails on a later date stops the automatic sync for nothing
+# wrong in the code. Each line the layer adds to a test file (its commits' net diff) with a
+# literal date must be covered by a "date-safe: <why>" comment: on the line itself, or on a
+# line above it with no empty line between (one comment covers a block). The why says what
+# keeps the date away from today's: a clock the test sets, a pure function, a fixture parsed.
+# A line that is only a comment is not looked at, nor are lines the layer does not add
+# (upstream's, the patches'); a sync's
+# rebase does not change the layer's lines, so this rule cannot stop a sync by itself.
+date_re='time\.Date\([[:space:]]*[0-9]{4}|(^|[^0-9A-Za-z_.-])(19|20)[0-9]{2}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])|time\.Unix(Milli|Micro|Nano)?\([[:space:]]*[1-9][0-9]{9}'
+if [ -n "$first_layer_commit" ]; then
+  git diff --name-only -z --diff-filter=AMR "$first_layer_commit^" HEAD -- ':(glob)**/*_test.go' ':(top,literal)test/provimux/' >"$rtmp/dated" ||
+    fatal "Cannot list the layer's test files."
+  while IFS= read -r -d '' f; do
+    case "$f" in *_test.go) ;; *) continue ;; esac
+    git show "HEAD:$f" >"$rtmp/dated.file" || fatal "Cannot read $f at HEAD."
+    # The line numbers at HEAD that the layer added (hunk headers "@@ -a,b +c,d @@").
+    git diff -U0 --no-color "$first_layer_commit^" HEAD -- "$f" >"$rtmp/dated.diff" || fatal "Cannot diff $f."
+    awk '/^@@ / { split($3, a, ","); s = substr(a[1], 2) + 0; n = (2 in a) ? a[2] + 0 : 1; for (i = 0; i < n; i++) print s + i }' \
+      "$rtmp/dated.diff" >"$rtmp/dated.added"
+    # Each line's number and whether a date-safe comment covers it.
+    awk '/^[[:space:]]*$/ { m = 0 } /date-safe: *[^ ]/ { m = 1 } { print NR, m }' "$rtmp/dated.file" >"$rtmp/dated.cover"
+    # A line that is only a comment cannot reach the test.
+    grep -nE "$date_re" "$rtmp/dated.file" | grep -vE '^[0-9]+:[[:space:]]*//' | cut -d: -f1 >"$rtmp/dated.hits" || true
+    awk 'FILENAME == ARGV[1] { added[$1] = 1; next } FILENAME == ARGV[2] { cover[$1] = $2; next }
+      ($1 in added) && cover[$1] != 1 { print $1 }' "$rtmp/dated.added" "$rtmp/dated.cover" "$rtmp/dated.hits" >"$rtmp/dated.bad"
+    while IFS= read -r n; do
+      err "$(printf '%s' "${f//$'\n'/?}"):$n: a literal date in a layer test with no \"date-safe: <why>\" comment over it. A test of ours never depends on today's date: put the time on a clock the test sets, or time.Now() plus a margin the test cannot cross; if the date never meets today's (a fixed clock, a pure function), say why in the comment (SYNC.md, \"Tests and the date\"). Line: $(sed -n "${n}p" "$rtmp/dated.file" | sed 's/^[[:space:]]*//' | cut -c1-160)"
+    done <"$rtmp/dated.bad"
+  done <"$rtmp/dated"
 fi
 
 # --- 4. Pull request: what it introduces relative to its target ---------------------

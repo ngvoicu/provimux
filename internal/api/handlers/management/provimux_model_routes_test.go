@@ -17,6 +17,7 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
+// date-safe: the endpoints' clock is set to it (provimuxTestClock).
 var provimuxTestNow = time.Date(2026, 11, 19, 18, 0, 0, 0, time.UTC)
 
 // provimuxTestClock fixes the endpoints' clock.
@@ -320,6 +321,7 @@ func TestProvimuxModelRoutesCooldownOfOneModel(t *testing.T) {
 	manager := provimuxTestManager(t, provimuxTestCredential{key, []*registry.ModelInfo{{ID: "pmx-cool-a"}, {ID: "pmx-cool-b"}}})
 	body, _ := provimuxGetModelRoutes(t, &Handler{cfg: &config.Config{}, authManager: manager}, "/x")
 	cooldown := provimuxFindModel(t, body, "pmx-cool-a").Routes[0].RecordedCooldown
+	// date-safe: provimuxTestNow plus the cooldown; the endpoints' clock is provimuxTestClock's; the time comes back as written.
 	if cooldown == nil || cooldown.Scope != "model" || provimuxValue(cooldown.Model) != "pmx-cool-a" || cooldown.Reason != "quota" || cooldown.Until != "2026-11-19T18:10:00Z" {
 		t.Fatalf("cooldown of a = %+v", cooldown)
 	}
@@ -381,6 +383,7 @@ func TestProvimuxModelRoutesEmpty(t *testing.T) {
 		"no manager":     {cfg: &config.Config{}},
 	} {
 		body, raw := provimuxGetModelRoutes(t, h, "/x")
+		// date-safe: provimuxTestNow, written back.
 		if !strings.Contains(raw, `"models":[]`) || body.ObservedAt != "2026-11-19T18:00:00Z" {
 			t.Fatalf("%s: body = %s", name, raw)
 		}
@@ -448,6 +451,7 @@ func provimuxWireTime(t *testing.T, value string) time.Time {
 // A cooldown in its last second still ends after observed_at on the wire.
 func TestProvimuxModelRoutesCooldownLastSecond(t *testing.T) {
 	prevNow := provimuxNow
+	// date-safe: the endpoints' clock is set to it.
 	now := time.Date(2026, 11, 19, 17, 27, 4, 100_000_000, time.UTC)
 	provimuxNow = func() time.Time { return now }
 	t.Cleanup(func() { provimuxNow = prevNow })

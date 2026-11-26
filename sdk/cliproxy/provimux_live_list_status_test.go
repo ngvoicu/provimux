@@ -37,6 +37,16 @@ func provimuxLiveTestReset(t *testing.T) {
 	})
 }
 
+// provimuxLiveClock sets the store's clock to now for this test. The store holds a list for 7 days
+// after its fetch (liveModelListMaxAge), so a list fetched at a fixed instant is held on any date only
+// when the clock is the test's, never today's.
+func provimuxLiveClock(t *testing.T, now time.Time) {
+	t.Helper()
+	prevNow := liveModelListNow
+	liveModelListNow = func() time.Time { return now }
+	t.Cleanup(func() { liveModelListNow = prevNow })
+}
+
 func provimuxLiveLogin(id, provider string) *coreauth.Auth {
 	return &coreauth.Auth{ID: id, Provider: provider,
 		Attributes: map[string]string{"auth_kind": "oauth"},
@@ -71,7 +81,9 @@ func TestProvimuxLiveListStateCovered(t *testing.T) {
 func TestProvimuxLiveListStateAfterPut(t *testing.T) {
 	provimuxLiveTestReset(t)
 	auth := provimuxLiveLogin("pmx-put", "claude")
+	// date-safe: the store's clock is set to it.
 	now := time.Date(2026, 11, 19, 16, 10, 44, 0, time.UTC)
+	provimuxLiveClock(t, now)
 	liveModelLists.put(auth.ID, liveModelList{identity: liveModelListIdentity(auth), ids: map[string]struct{}{"a": {}, "b": {}}, fetchedAt: now})
 	state := provimuxLiveListSource{}.State(auth)
 	if !state.HasList || !state.FetchedAt.Equal(now) || state.ListedModels != 2 || state.Failure != nil || state.Fetching {
@@ -93,6 +105,7 @@ func provimuxFail(auth *coreauth.Auth, now time.Time, err error) {
 func TestProvimuxLiveListStateAfterFail(t *testing.T) {
 	provimuxLiveTestReset(t)
 	auth := provimuxLiveLogin("pmx-fail", "codex")
+	// date-safe: failure times; the store compares them with no clock.
 	now := time.Date(2026, 11, 19, 17, 58, 2, 0, time.UTC)
 	for _, tc := range []struct {
 		err      error
@@ -121,6 +134,7 @@ func TestProvimuxLiveListStateAfterFail(t *testing.T) {
 // fetcher enforces on the file, without inheriting the failure.
 func TestProvimuxLiveListStateReplacedAccount(t *testing.T) {
 	provimuxLiveTestReset(t)
+	// date-safe: failure times; the store compares them with no clock.
 	old := provimuxLiveLogin("pmx-replaced", "claude")
 	now := time.Date(2026, 11, 19, 17, 0, 0, 0, time.UTC)
 	provimuxFail(old, now, errors.New("HTTP 401 from /v1/models"))
@@ -137,6 +151,7 @@ func TestProvimuxLiveListStateReplacedAccount(t *testing.T) {
 
 func TestProvimuxLiveListStateFailureWithoutNote(t *testing.T) {
 	provimuxLiveTestReset(t)
+	// date-safe: failure times; the store compares them with no clock.
 	auth := provimuxLiveLogin("pmx-nonote", "meta")
 	now := time.Date(2026, 11, 19, 17, 0, 0, 0, time.UTC)
 	liveModelLists.fail(auth.ID, now)
@@ -149,7 +164,9 @@ func TestProvimuxLiveListStateFailureWithoutNote(t *testing.T) {
 func TestProvimuxLiveListSuccessClearsFailure(t *testing.T) {
 	provimuxLiveTestReset(t)
 	auth := provimuxLiveLogin("pmx-clear", "claude")
+	// date-safe: the store's clock is set to a minute later, when the list is fetched.
 	now := time.Date(2026, 11, 19, 17, 0, 0, 0, time.UTC)
+	provimuxLiveClock(t, now.Add(time.Minute))
 	provimuxFail(auth, now, errors.New("HTTP 500 from /v1/models"))
 	liveModelLists.put(auth.ID, liveModelList{identity: liveModelListIdentity(auth), ids: map[string]struct{}{"a": {}}, fetchedAt: now.Add(time.Minute)})
 	if state := (provimuxLiveListSource{}).State(auth); state.Failure != nil || !state.HasList {
@@ -168,6 +185,7 @@ func provimuxLiveListNoteCount() int {
 
 // Notes of removed logins go on the pruner's next tick, with no read and no new failure.
 func TestProvimuxLiveListNotePrunerWithoutPolling(t *testing.T) {
+	// date-safe: failure times; the store compares them with no clock.
 	provimuxLiveTestReset(t)
 	now := time.Date(2026, 11, 19, 17, 0, 0, 0, time.UTC)
 	for i := 0; i < 1000; i++ {
@@ -194,6 +212,7 @@ func TestProvimuxLiveListNotePrunerWithoutPolling(t *testing.T) {
 
 // Notes of removed logins also go at the next read.
 func TestProvimuxLiveListNotesOfRemovedLogins(t *testing.T) {
+	// date-safe: failure times; the store compares them with no clock.
 	provimuxLiveTestReset(t)
 	now := time.Date(2026, 11, 19, 17, 0, 0, 0, time.UTC)
 	for i := 0; i < 1000; i++ {
@@ -208,6 +227,7 @@ func TestProvimuxLiveListNotesOfRemovedLogins(t *testing.T) {
 
 // A newer failure recorded between two reads is reported whole by the second read.
 func TestProvimuxLiveListNewerFailureSurvivesReads(t *testing.T) {
+	// date-safe: failure times; the store compares them with no clock.
 	provimuxLiveTestReset(t)
 	auth := provimuxLiveLogin("pmx-newer", "claude")
 	first := time.Date(2026, 11, 19, 17, 0, 0, 0, time.UTC)
@@ -295,6 +315,7 @@ func TestProvimuxLiveListRefreshLaterThanClick(t *testing.T) {
 	for _, status := range []int{http.StatusOK, http.StatusUnauthorized} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
 			provimuxLiveTestReset(t)
+			// date-safe: the store's clock is set to it plus 250 ms.
 			click := time.Date(2026, 11, 19, 10, 0, 0, 200_000_000, time.UTC)
 			done := click.Add(250 * time.Millisecond)
 			prevNow := liveModelListNow
@@ -351,6 +372,7 @@ func TestProvimuxLiveListRefreshLaterThanClick(t *testing.T) {
 // The first failure starts the production pruner, which then drops notes of removed logins on its
 // own clock. Fails if the startup in noteLiveModelListFailure is removed.
 func TestProvimuxLiveListPrunerStartsOnFirstFailure(t *testing.T) {
+	// date-safe: failure times; the store compares them with no clock.
 	provimuxLiveTestReset(t)
 	tick := make(chan time.Time)
 	prevTick := provimuxNotePrunerTick

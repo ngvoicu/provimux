@@ -130,6 +130,7 @@ func TestProvimuxParityWithTheCatalog(t *testing.T) {
 		{"codex", "codex", `{"models":[{"slug":"{id}","visibility":"list"}]}`, codex},
 		{"meta", "meta", `{"data":[{"id":"{id}"}]}`, meta},
 		// Answers that state other values for every field they have: the catalog's stay.
+		// date-safe: a model's created_at in a provider's answer; no clock compares it.
 		{"claude", "claude", `{"data":[{"id":"{id}","display_name":"Other","created_at":"2020-01-01T00:00:00Z",
 			"max_input_tokens":1000,"max_tokens":10,"capabilities":{"image_input":{"supported":false},
 			"effort":{"low":{"supported":true}},"thinking":{"supported":true,"types":{"disabled":{"supported":false},"adaptive":{"supported":false}}}}}]}`, claude},

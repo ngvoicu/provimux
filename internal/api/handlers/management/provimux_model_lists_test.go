@@ -114,6 +114,7 @@ func TestProvimuxModelListsRows(t *testing.T) {
 		t.Fatal("live_list only with view=live")
 	}
 	live := devin["live"].(map[string]any)
+	// date-safe: the fake source's instant and held flag, written back; no clock compares them.
 	if live["fetched_at"] != "2026-11-19T16:10:44Z" || live["listed_models"].(float64) != 2 || live["held"] != true {
 		t.Fatalf("live = %v", live)
 	}
@@ -405,6 +406,7 @@ func TestProvimuxModelListsPublishedBlock(t *testing.T) {
 	body, raw = provimuxGetModelLists(t, h, "", http.StatusOK)
 	published := body["published"].(map[string]any)
 	failure, _ := published["last_failure"].(map[string]any)
+	// date-safe: the fake published state's times, written back; no clock compares them.
 	if body["options"].(map[string]any)["published_lists"] != true || published["state"] != "held" ||
 		published["dataset_version"] != "3463331602dfba12" || published["generated_at"] != "2026-11-19T16:10:44Z" ||
 		published["fetched_at"] != "2026-11-19T17:10:44Z" || published["from_cache"] != true ||

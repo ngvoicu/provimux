@@ -232,7 +232,9 @@ func TestProvimuxOnlyMyNamesAliasOnAKeyOpensALoginsName(t *testing.T) {
 	c1, _ := namesClaudeCatalog(t)
 	h := newNamesHarness(t, namesReloadConfig+"models:\n  only-my-names:\n    enabled: true\n")
 	authDir := h.service.currentConfig().AuthDir
-	login := `{"type":"claude","email":"names-b@example.com","access_token":"names-token","expired":"2099-01-01T00:00:00Z"}`
+	// The token expires a year from now: never during the test, whatever the date.
+	expires := time.Now().AddDate(1, 0, 0).UTC().Format(time.RFC3339)
+	login := `{"type":"claude","email":"names-b@example.com","access_token":"names-token","expired":"` + expires + `"}`
 	if err := os.WriteFile(filepath.Join(authDir, "claude-names-b.json"), []byte(login), 0o600); err != nil {
 		t.Fatal(err)
 	}

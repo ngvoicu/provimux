@@ -68,6 +68,7 @@ func provimuxLiveRow(t *testing.T, body provimuxLiveListsResponse, label string)
 	return provimuxLiveLogin{}
 }
 
+// date-safe: a fixed instant the fake source reports; the endpoints' clock is provimuxTestClock's; the time comes back as written.
 var provimuxFetchedAt = time.Date(2026, 11, 19, 16, 10, 44, 0, time.UTC)
 
 func TestProvimuxLiveListsLive(t *testing.T) {
@@ -82,6 +83,7 @@ func TestProvimuxLiveListsLive(t *testing.T) {
 		t.Fatalf("top level = %+v", body)
 	}
 	row := provimuxLiveRow(t, body, "ada@example.com")
+	// date-safe: the fake source's instant, written back; no clock compares it.
 	if row.Source != "live" || provimuxValue(row.FetchedAt) != "2026-11-19T16:10:44Z" || intValue(row.ListedModels) != 11 || row.LastFailure != nil {
 		t.Fatalf("live row = %+v", row)
 	}
@@ -141,6 +143,7 @@ func TestProvimuxLiveListsStale(t *testing.T) {
 	provimuxTestClock(t)
 	login := provimuxTestLogin(t, "pmx-stale", "ada@example.com")
 	manager := provimuxTestManager(t, provimuxTestCredential{login, nil})
+	// date-safe: the fake source's failure time, written back; no clock compares it.
 	failedAt := time.Date(2026, 11, 19, 17, 58, 2, 0, time.UTC)
 	provimuxUseLiveSource(t, provimuxFakeLiveSource{states: map[string]ProvimuxLiveListState{
 		login.ID: {Covered: true, HasList: true, FetchedAt: provimuxFetchedAt, ListedModels: 9,
@@ -162,6 +165,7 @@ func TestProvimuxLiveListsFailureWithoutStatus(t *testing.T) {
 		login.ID: {Covered: true, Failure: &ProvimuxLiveListFailure{At: provimuxTestNow, Category: "network"}},
 	}})
 	_, raw := provimuxGetLiveLists(t, provimuxLiveHandler(manager, true), http.StatusOK)
+	// date-safe: provimuxTestNow, the fake source's failure time, written back.
 	if !strings.Contains(raw, `"last_failure":{"at":"2026-11-19T18:00:00Z","category":"network","http_status":null}`) {
 		t.Fatalf("failure without a message: %s", raw)
 	}

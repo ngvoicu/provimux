@@ -103,6 +103,7 @@ func isDay(s string) bool {
 	if len(s) != 10 {
 		return false
 	}
+	// date-safe: Go's layout string, not a date.
 	_, err := time.Parse("2006-01-02", s)
 	return err == nil
 }
