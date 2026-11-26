@@ -1,6 +1,21 @@
 # Who answered: an account marker and the answering model on every answer
 
-Design, 2026-11-26. This is the design only: no code exists yet. The contract a build is checked against is `prices-and-cache/openapi.yaml` (amended with this document: the schemas `Account`, `AnswerStatement` and the six headers) with `prices-and-cache/examples/answers.json` beside it.
+Design, 2026-11-26, amended late that evening (the next section). The contract a build is checked against is `prices-and-cache/openapi.yaml` (amended with this document: the schemas `Account`, `Answered`, `AnswerStatement` and the six headers) with `prices-and-cache/examples/answers.json` beside it.
+
+## Amended 2026-11-26, late evening: the entry is read from the request that was sent
+
+The second review of F1 (the build step that gave each account row a predicted providers.dev entry) found five more rows whose answer was sent as something else, after the first review's six. By the staff's rule the work changes instead of going back a third time. This amendment is that change. It touches **nothing W1 to W3 build**: the marker, its key, `account` in the lists, the statement and where it is written are as they were, and as `provimux-answered-by` has them at `9b71b947f`.
+
+| What changed | Where | Why |
+|---|---|---|
+| The entry of an answer is worked out from the request the gateway sent: the host and the model are read from that request as the transport was handed it, through upstream's own seam `sdk/httptransport`. The same reading gives `X-Provimux-Model-Sent` | 3.1, 4 (rewritten), 8 | A prediction has to copy every late decision of every executor, and each review found one it had missed. The request has them all in it |
+| A list row carries no `entry` and no `entry_per_request`. It carries `answered`: what the account's answers for the name said | 4.4, 4.5, 7.1; `openapi.yaml`; `pui13/openapi.yaml` | A row cannot promise what a request decides |
+| The usage reporter is no longer where the sent model comes from. It still gives the model the vendor named, and the effort | 3.1, 3.3, 8 | It is told a model before the payload rules on four executors and never corrected on three more (4.2) |
+| W6 needs no owner patch and comes before W4 and W5. It splits in two: the entry on the answer, then `answered` in the lists. A new, optional step W6s covers the upstream WebSocket | 9 | W6 took the sent model from W5 |
+| F1 is not merged; its map and the map's tests are W6's first commit | 8.5, 9 | |
+| Three decisions more | 10 | |
+
+Read for it: `main` at `9d0786d95`; F1 at `4f14c2cff`; W1 to W3 at `9b71b947f`; both reviews of F1. Three helper agents, read-only, each returning file and line, read every executor's request path again for one question: where the bytes are final, and who is told what before that.
 
 **Why.** Three pieces of work met the same wall on 2026-11-26: a client of Provimux cannot tell firmly which account answered a request, nor which model.
 
@@ -25,12 +40,12 @@ Design, 2026-11-26. This is the design only: no code exists yet. The contract a 
 | Piece | What it is |
 |---|---|
 | The account marker | `a.` or `s.` and 20 characters: a keyed hash of the account's own identity at its vendor, under a key only this installation holds. The same on every answer of one account, another for every other account, the same after a restart or a reorder, another when another account's login takes a file. It says nothing a reader can use except "the same" and "not the same" |
-| The answering model | three facts, each said as what it is: the model id the gateway asked the vendor for, the model id the vendor's answer named, and the effort the gateway sent. Where the vendor's answer named none, the answer says `not-confirmed` |
-| The entry of the answer | the providers.dev entry of this one answer, worked out by the gateway from the account that answered and the model it asked for. This is the route from an answer to `figures.entries` |
+| The answering model | three facts, each said as what it is: the model id in the request the gateway sent, the model id the vendor's answer named, and the effort the gateway sent. Where the vendor's answer named none, the answer says `not-confirmed` |
+| The entry of the answer | the providers.dev entry of this one answer, worked out by the gateway from what it sent: the host the request went to and the model id in it. Never predicted. This is the route from an answer to `figures.entries` |
 | Where it is written | as five more values of the statement the owner's patch already makes: confirmed where the first byte of the answer is written, and nowhere else. **No new place writes it** |
 | On HTTP and SSE | six response headers, `X-Provimux-*`, beside the three `X-CPA-AUTH-*` |
 | On the Responses WebSocket | six fields `provimux_*` on each turn's `response.created`, beside `cpa_auth_*` |
-| In the lists | every account row of `GET /v1/models?include=accounts` and of `model-routes` carries the marker as `account` |
+| In the lists | every account row of `GET /v1/models?include=accounts` and of `model-routes` carries the marker as `account`, and `answered`: what that account's answers for that name said of themselves (4.4) |
 | The switch | `models.answered-by: false` turns all of it off. On unless set |
 
 Six findings shaped it.
@@ -115,7 +130,8 @@ The marker is the same for every client key (decision 3).
 | which row of the list answered each of his own requests, so how his requests spread over the accounts, and when an account stopped answering | yes. It is the purpose |
 | that two rows under different names are one account | yes. The count of accounts under each name was already in the rows |
 | that the login of an account was replaced | yes |
-| the model id behind a name, the effort sent and the vendor's own id for it | the id was already his to read as `entry` (`prices-and-cache.md`, decision 5); the effort and the vendor's id are new |
+| the model id behind a name, the effort sent and the vendor's own id for it | yes, on the answers to his own requests. The list shows it too, as what an account last answered as, for any client's requests (4.4; `prices-and-cache.md`, decision 5) |
+| that a name was used on a given day, by somebody, on a given account | yes: the day of an item of `answered`. Not the time, and not by whom (decision 13) |
 | the e-mail, key, file, organisation or vendor id of an account; how many accounts serve names he cannot see; any order | no |
 
 The operator reads the same marker beside the login's name in `GET /v8/management/provimux/model-routes`, behind the management key. No answer to a client ever pairs a marker with a name.
@@ -126,7 +142,7 @@ The operator reads the same marker beside the login's name in `GET /v8/managemen
 
 | Fact | What it is | Who knows it |
 |---|---|---|
-| **sent** | the model id the gateway wrote into its request to the vendor, after the name, the alias, the pool's turn and the executor's own mapping | the gateway. Always firm: it is its own act |
+| **sent** | the model id in the request the gateway sent to the vendor, read from that request as the transport was handed it (4.2): after the name, the alias, the pool's turn, the executor's own mapping and the operator's payload rules | the gateway. Firm where it read the request. Where it could not (an upstream WebSocket), the id is the one its executor was given, and the answer names no entry |
 | **reported** | the model id the vendor's answer named | the vendor. Present only when its answer named one before the answer's first byte left |
 | **effort** | the reasoning effort in the outgoing request, as read from its final body | the gateway, where the executor reads it |
 
@@ -152,7 +168,7 @@ The gateway judges nothing between the first two. A vendor that answers `claude-
 
 ### 3.3 What each executor knows when the first byte leaves
 
-[helper] for the lines; the reporter's own functions [read].
+[helper] for the lines; the reporter's own functions [read]. The column **Sent** says what each executor writes; the gateway reads it from the request (4.2), not from the executor's own account of it.
 
 | Executor | Sent | Reported, non-stream | Reported, at a stream's first chunk | Effort |
 |---|---|---|---|---|
@@ -178,30 +194,151 @@ So `not-confirmed` is the answer today on: a stream from an OpenAI-compatible ke
 
 ## 4. The entry of an answer
 
-`X-Provimux-Entry` is `<providers.dev provider>/<model>`, by the rules of `prices-and-cache.md` 6.1 as F1 built them, applied to **this answer**: the account that answered and the model the attempt was given (for Antigravity, the variant it chose). The same function gives the list its `entry`, so the two cannot disagree: where a row has an `entry`, every answer of that account for that name carries it.
+Rewritten 2026-11-26, late evening (the note before section 1). `X-Provimux-Entry` is `<providers.dev provider>/<model>`. **It is read from the request the gateway sent for this answer, in one place, when the answer is stated. Nothing predicts it**, so no row of a list carries one.
 
 | The answer has | Means | The tool |
 |---|---|---|
 | `X-Provimux-Entry`, and it is a key of `figures.entries` | this is what the answer cost and how long its cache lives | uses the figures |
-| `X-Provimux-Entry`, no such key | the gateway knows where the model would be; providers.dev has no entry for it, or figures are off or not fetched | has no figures. Says so. Guesses nothing from the name |
-| a statement without `X-Provimux-Entry` | the gateway has no entry for this account, this destination or this model (`prices-and-cache.md` 6.1: an unknown host, a plugin's model, a login sent elsewhere) | the same |
+| `X-Provimux-Entry`, no such key in the copy the tool holds | the account had not answered for this name when the tool read the list, or providers.dev has no entry for it, or figures are off or not fetched | reads the list once more. Still no key: it has no figures, says so, and guesses nothing from the name |
+| a statement without `X-Provimux-Entry` | the map has no row for what was sent, the gateway did not read what it sent, or it does not vouch for the credential (`prices-and-cache.md` 6.1, the three kinds) | has no figures |
 | no statement | nobody is named (section 5.3) | the same; and it does not know which account answered |
 
-**One more guard.** Where the executor recorded the id it wrote into the request and that id is another model than the entry's (a payload rule of the operator rewrote the model), the answer carries no entry. An entry for a model that was not asked for is worse than none.
+### 4.1 Why it cannot be predicted
 
-### 4.1 An entry decided per request
+F1 predicted an account's entry from the configuration and the registry. Its two reviews found eleven rows whose answer was sent as something else. Each time the cause was a decision upstream takes inside an executor, after the last thing a list can see [read: the two reviews; the lines below read by me or by a helper that returned file and line]:
 
-With the marker and the entry on each answer, a row of the list no longer has to promise one entry. Where the entry depends on the request, the row says so: `entry` is left out and `entry_per_request` is `true`. This settles the two questions left from F1's review, and a third the same review found.
+| Decided | Where | A list cannot see it because |
+|---|---|---|
+| The model in the body | the operator's payload rules. They run last, on the finished body, and no rule guards the path `model` (`helps/payload_helpers.go:274-414`). Upstream's own rule for every executor is that they are "the final semantic barrier before sending" (`AGENTS.md`) | a rule can match on a request header. The same account and name send two models (finding 15) |
+| The host | the account's base URL; a base URL in a login's file or metadata (`meta_executor.go:320-365`, `devin_executor.go:3157-3194`, `antigravity_executor_request.go:889-954`); xAI's `using_api` (`xai_executor_request.go:279-344`); the Codex second sign-in by the client's `User-Agent` (`codex_executor_auth.go:529-551`); Vertex's route by the alias asked for (`helps/vertex_openapi.go:112-173`) | half of these are per request, and one account can send to two hosts (findings 3, 13, 17) |
+| The variant | Antigravity's stored catalog at the moment of the request (`antigravity_model_enums.go:191-276`) | the catalog changes between the list and the call, and a failed read looks like "no group" (finding 16) |
+| Who owns the account | a plugin may change an account's provider in the call that publishes its models (`service_executors.go:699-779`), and nothing records that it did | finding 14 |
 
-| Case | Exact condition [read] | The row | The answer |
+A prediction must copy every one of these and is wrong where it misses one. The request that was sent has all of them in it already.
+
+### 4.2 The facts, and where each is taken
+
+| Fact | Taken from | It is the sent one because |
+|---|---|---|
+| **The host** | the URL of the `*http.Request` the executor's HTTP client hands to its transport | every choice of a destination has been made: a redirect the client follows is one more request and is seen too |
+| **The model** | the same request, as its bytes are, by where its protocol puts the model: the top-level `model` of a JSON body; the id in a URL path of the form `…/models/<id>:<method>` (Gemini and Vertex); field 21 of the Connect message (Devin, `helps/devin_wire.go`). Where a request names one in its URL and one in its body they must be the same, or nothing is read | the payload rules have run, and so has every mapping of the executor. The body is the one the vendor gets |
+| **What signed it**, where one host serves two kinds of access | the names of the request's credential headers (for Claude on `api.anthropic.com`: `x-api-key`, or `Authorization` without it). Never a value | a login's token configured as a key is sent as a login's token (`claude_executor_request.go:1231-1251`) |
+| The executor's provider, the credential's kind | the credential the conductor states (`auth.Provider`, `auth.AuthKind()`), as today | they are not on the wire. They choose a row of the map and are never enough for one |
+
+**The place is upstream's own.** `sdk/httptransport` (commit `51952a7b2`, 2026-10-13, unchanged since) is "an additive, request-scoped observation seam": a decorator on the execution context wraps the transport a client has selected, "to observe final HTTP requests". Every HTTP client an executor sends a model request with is built by a helper that applies it after the proxy, the pool and the TLS profile are chosen [helper, each executor's client read]:
+
+| Client | Built by | Decorated |
+|---|---|---|
+| Claude; Codex over HTTP; Kimi's Claude route | `helps.NewUtlsHTTPClient` (`utls_client.go:483-499`) | yes |
+| Copilot, OpenAI-compatible and OpenRouter, Kimi, xAI over HTTP, Meta, Gemini, Vertex (both routes, and its token exchange), Codex images | `helps.NewProxyAwareHTTPClient` (`proxy_helpers.go:36-37`) | yes |
+| Devin | `helps.NewDevinHTTPClient` (`proxy_helpers.go:516-517`) | yes |
+| Antigravity | `newAntigravityHTTPClient` (`antigravity_executor.go:514-550`), which decorates once itself | yes |
+| Codex and xAI over the upstream WebSocket (`websockets` on, and the client came over a WebSocket) | a `websocket.Dialer`; no `http.RoundTripper` sees the handshake or a frame (`codex_websockets_connection.go:233-293`, `xai_websockets_executor.go:1386-1409`) | **no** |
+| AI Studio | a JSON message on a socket the browser opened (`internal/wsrelay`) | **no** (and it has no row in the map) |
+
+Nothing in the gateway attaches a decorator today [ran: `git grep`; only tests do]. Provimux attaches one, in one place: where an attempt gets its tracker (`WithUpstreamAttemptTracker`, `sdk/cliproxy/executor/context.go:68`). It is stateless. For each request it is handed it finds the attempt's tracker in the request's own context and notes there, as one **observation**: the scheme, host and port of the URL, the model it read, the credential header names, and, when the response's headers arrive, the status. It delegates to the transport below it and changes nothing: the body is read through `GetBody` (a second reader over the same bytes), never consumed. A decorator an embedder of the SDK put on the context stays, inside ours.
+
+**What is not read, and why** [read, helper]:
+
+| Source | Why not |
+|---|---|
+| The model the usage reporter was told (`SetUpstreamModel`, the model it was made with) | told **before** the payload rules on Claude (`claude_executor_execute.go:45` against `:254`), Copilot (the route's id, `copilot_executor.go:297`, rules at `:263`), Kimi (`:151` against `:170`), Devin (`:256`, the id from before the rules), and never corrected on the OpenAI-compatible, xAI and Meta executors. Only Codex reads it from the final body. This is finding 15, and it is not only Copilot's |
+| The request upstream logs (`RecordAPIRequest`) | it does nothing in commercial mode; Antigravity gives it no body unless request logging is on (`antigravity_executor_request.go:228-258`); Codex gives it the plain JSON while the wire is zstd, and nothing when it manages the instructions; it has the URL before a redirect |
+| The account's base URL (`X-CPA-AUTH-HOST`) | empty for every login, and the configured host for a key even when the request went elsewhere |
+| The registry, a listing, the name asked for | F1 |
+
+### 4.3 The rule
+
+Where the conductor states who answered (`publishAnsweredAuthMetadata`, then `publishProvimuxAnswer`, which W3 built), with the attempt's context and the credential that answered:
+
+1. The attempt answered and its bytes are not a plugin's (`UpstreamAnswered`, as today). Else nobody is named.
+2. Take the attempt's observations that carried a model and whose response was a `2xx`. If they agree in where they went (scheme, host and port), in model and in signer, that is **what was sent**. If there is none, or they differ, nothing is known: no entry.
+3. The gateway vouches for the credential: it is not held in memory only, and no plugin made or changed it (its storage is not the plugin host's: `pluginAuthDataToCoreAuth`, `internal/pluginhost/auth_provider.go:1334-1396`). Else no entry.
+4. The map (`prices-and-cache.md` 6.1) has a row for the executor's provider, the credential's kind or signer, and the host that was sent. Else no entry.
+5. The entry is that row's provider and the model that was sent.
+
+`X-Provimux-Model-Sent` is the model of step 2 (section 3.1).
+
+Why step 2 is enough, case by case [helper for what each executor sends beside its model request]:
+
+| An attempt also sends | Seen as | Outcome |
+|---|---|---|
+| A token refresh, a key mint, a service account's token exchange, project discovery, a credits read, a grounding `HEAD` | no model in it. And a refresh after a `401` runs under a tracker of its own (`conductor_execution.go:1423`, `conductor_stream.go:793`), and the Claude, Codex, Meta and xAI refreshes use clients no decorator wraps | ignored |
+| A retry after such a refresh | the conductor gives it a new attempt context and states the answer with that one (`conductor_execution.go:1430-1434`, `:1503`) [read] | the retry's own request |
+| The same request again: after a `400` to a zstd body, after a `401`, a compaction that re-enters `Execute` with the same model | the failed one is not a `2xx`; the second agrees | the entry |
+| A redirect the client follows | the first response is a `3xx`; the second request names the host that answered | that host's row, or none |
+| A second model request with another model or host | two observations that differ | no entry |
+| A model request over a channel the decorator does not see | no observation | no entry |
+| A `2xx` body the executor then treats as an error | the call returns an error | nobody is named |
+
+**What the transport cannot see** is the one gap, and it fails closed: an answer that came over an upstream WebSocket has a statement and no entry. Closing it is step W6s (section 9, decision 12): one line where a message is handed to the socket, beside the `MarkUpstreamAttempt` that is already there, in four files under a protected path. It is the owner's, and nothing else waits for it.
+
+**The cost.** One more read of each outgoing body to find `model`: a scan of the bytes already in memory. A zstd body (Codex, `upstream-request-compression`, off unless set) is decoded for it. With `models.answered-by: false` the decorator is not attached and nothing is read.
+
+### 4.4 What a list row carries: `answered`
+
+A row cannot say what the next request will be sent as. It can say what this account's answers for this name were sent as. So in place of `entry` and `entry_per_request` a row carries a record:
+
+```json
+{ "provider": "codex", "kind": "oauth", "priority": 0, "account": "a.tytzm54pttsi5uuwvreh",
+  "answered": [ { "entry": "openai-codex/gpt-6.1-sol", "on": "2026-11-26" },
+                { "entry": null,                       "on": "2026-11-19" } ] }
+```
+
+| | |
+|---|---|
+| What an item is | one distinct outcome of step 5 on this account's answers for this name: an entry, or `null` for answers that named none. With the day (UTC) of the last answer that had it. In `model-routes` the same items carry the time (`at`), behind the management key |
+| Order and size | newest first; at most four. A fifth distinct outcome drops the oldest |
+| When it is written | in `publishProvimuxAnswer`, with the statement: so before the first byte of that answer leaves. A tool that reads the list after an answer finds that answer's entry on the row |
+| Under which name | the model the client asked for, where this account registers exactly that id; else that id without its thinking suffix, where the account registers that. Else it is not recorded: there is no row it could stand on. An alias, a prefix and a pooled name are the ids the account registers, so they are their own rows |
+| Whose answers | any client's. The record is per gateway, as the marker is (2.4) |
+| How long | 90 days from the last answer (providers.dev's own threshold for "old"). Kept in the gateway's key-value store beside the marker's key, under the marker and the name; written when an item is added, when its day changes and when the gateway stops, so at most once a day per item while it runs. After a crash an item's time can be hours old; its day is right. Where no store keeps the key, the record lives for the run |
+| Another account's login in the same file | has another marker, so it starts with nothing |
+| The switch | with `models.answered-by: false` no row has it and nothing is recorded |
+| What it never is | a promise. The next answer is read from its own request. The contract says so on the field, and the console and Pi say "last answered as" |
+
+**Why a day in the client list and a time behind the management key.** The record is of every client's answers. A time to the second would tell one key holder when another was at work. A day tells him that the name was used that day (decision 13).
+
+### 4.5 What each reader has before a first answer
+
+Three ways were weighed: **(a)** no entry at all on a row; **(b)** the record above; **(c)** a predicted entry kept for a closed set of cases where the prediction and the sending provably run the same code.
+
+**(c) is refused.** There is no such set. The payload rules alone reach every executor and may match on a header, so no account's model is fixed ahead of a request while any rule can write `model`; "no rule writes it" is a condition over the configuration, which is what F1 was. The set would be defined by what it excludes, and each review would find one more thing to exclude.
+
+| Reader | Needs before a first answer | With (a) | With (b), chosen |
 |---|---|---|---|
-| **A Codex login with the second sign-in bound** | the login has `use_siwc` true (`IsCodexUseSIWC`, `sdk/cliproxy/auth/types.go:996`), **and** the request is not from a Codex client: no `User-Agent` holding `codex-desktop`, `codex-rs`, `codex_cli_rs`, `codex-tui`, `codex_exec` or `codex-acp`, and not an image request (`IsCodexUseSIWCForRequest`, `types.go:1085`; `conductor_execution.go:344`). Then the request goes out with the login's second token to `api.openai.com/v1`. A Codex client on the same login goes to `chatgpt.com/backend-api/codex` with the first | `entry_per_request` | a Codex client: `openai-codex/<model>`. Any other client: **no entry**. providers.dev measures the ChatGPT backend as `openai-codex` and the paid API as `openai`; a subscription's token on `api.openai.com` is neither, and a host alone does not make the paid API's price or cache apply |
-| **Antigravity, a model with thinking levels** | the caller asked for a level (a suffix or the body; a budget counts as its level, `auto` and `none` do not), the login's stored list has the model as a group with that level, and the level is not excluded for the login (`SelectAntigravityModel`, `sdk/cliproxy/auth/antigravity_model_enums.go:191-276`, `:415-450`) [helper]. Then the request names the variant (`…-high`), chosen by the gateway before it sends | `entry_per_request` where the login has the model as such a group; else the one `entry` | the variant sent, e.g. `antigravity/gemini-3.8-flash-high`. Known before the request leaves: upstream writes it on the attempt (finding 5) |
-| **One name on several models of one account** (a pool) | several `models` rows of one key give one alias; the conductor takes them in turn, and the next when one fails or is cooling (`conductor_models.go:524-563`) [helper] | `entry_per_request` (F1 gives none today) | the model that answered |
+| pi-provimux, the model list | a price per model when it registers the models, before any message | models.dev's price for every model, as today. A name the owner set has none there | the figures of the entry the account tried first last answered as, where one is recorded. For an account nobody has used yet: models.dev, as today. It re-reads after an answer whose entry is new |
+| pi-provimux, the footer | nothing: it is about an answer | the answer's own entry | the same |
+| pi-cache-keeper, the lifetime to rely on | **nothing.** It acts on a cache only once an answer has written or read one (`index.ts:679`), and takes the lifetime of what answered (`index.ts:1016-1017`) | the answer's entry gives it | the same |
+| pi-cache-keeper, the window and output limit of a model | a value when the session starts | none from Provimux; the window Provimux registers for the model stands | the last answered entry's, where one is recorded |
+| The console, a name's card | the figures of each account, when the page opens. The console sees no answers | **nothing, ever**: F4 has no figure to show | per account: "last answered as …, 2 hours ago" and that entry's figures; "no answer yet" for an account that never answered the name |
+| `include=figures` (F3) | which entries' figures to send | none can be chosen; the contract would need another shape (every held entry, about 580, or a request per entry) | the entries the rows name; a tool that meets a new one reads again |
+| The measuring tool | nothing from a row but the marker of the login it means to measure. Each sample is proven by its own answer: the marker, the model, the entry | complete | the same, and it can see before it spends a run that the login last answered as something else |
+| Savings by account (F6) | nothing: it values requests that were answered | the attempt's entry | the same |
 
-A row with `entry_per_request` has no price before the answer. pi-provimux prices such a model as it does a model without figures and shows the answer's own entry in the footer.
+What (b) loses against F1's predicted entry: a price for a model **nobody has asked this account for yet**, and certainty about the next answer, which F1 claimed and did not have. What it cannot do is name a wrong entry for an answer: an item is a copy of what an answer said.
 
-**What this means for the measuring of a login's cache:** Pi is not a Codex client by its `User-Agent`. On a Codex login with the second sign-in bound, Pi's requests go to `api.openai.com` and the Codex CLI's to the ChatGPT backend. A pair of those two compares two backends. The answer says which: no `X-Provimux-Entry` on the one, `openai-codex/…` on the other. Whether the owner's login has the binding is in his file, which I did not open.
+**Why a third review cannot break it by one more configuration.** Whatever is configured, a row says only "an answer of this account for this name was sent as X on that day". That is true if the recording is right, and the recording does not read the configuration. A review can still find a recording fault (a wrong row, a wrong day, an item that no answer carried), and section 8.4 tells it where to look.
+
+### 4.6 The findings of the two reviews against this
+
+[read: the second review's findings 13 to 17 and note 9, each with its capture; the first review's 1 to 3.]
+
+| Finding | Before | Now | By construction? |
+|---|---|---|---|
+| 13, a Vertex account, one alias native and one over OpenAPI | both rows `google-vertex/gemini-2.5-pro` | the native answer: `google-vertex/gemini-2.5-pro`, the id in its URL. The OpenAPI answer: `google-vertex/google/gemini-2.5-pro`, the `model` of its body. A Vertex key on `openrouter.ai`: `openrouter/acme/provimux-test-base`, as sent | yes: the model is read where each route puts it |
+| 14, a plugin publishes a model and sets the account's provider to `meta` | `meta-subscription/…` | no entry: the credential is one a plugin changed (step 3) | by step 3, which reads the credential's storage. It is the one finding the wire alone does not settle: the request really went to `api.meta.ai` |
+| 15, a payload rule by header sets another `model` | both requests `github-copilot/provimux-test-native` | each answer names the model in its own body: `…-native`, and `…-alternate` for the request with the header | yes: the body is read after the rules, where the vendor reads it |
+| 16, Antigravity: a group discovered between list and call; a failed read of the stored group | the row said `…-low`, the request sent `…-high` | the answer names the variant in its body, whatever the catalog was a moment before, and whether or not its read failed | yes: no catalog is read |
+| 17, an xAI key sent to the Grok CLI proxy, or to a relay in its metadata | `xai/grok-4.3` three times | `api.x.ai`: `xai/grok-4.3`. `cli-chat-proxy.grok.com` and the relay: no entry, the map has no such host | yes: the host is the request's |
+| Note 9, the mirror's drift test stayed green under a changed alias lookup | both lists quoted the public alias | no mirror and no drift test exist. A changed lookup changes what is sent, and that is what is read | yes |
+| First review 1, Copilot's id; a Vertex resource path; Antigravity's variant | the namespaced id | the bare id in the body; the normalised path; the variant sent | yes |
+| First review 2, a plugin's model on a native account | `github-copilot/…` | the plugin's executor answered: nobody is named. A native request for that id: `github-copilot/<id>`, which is what it is | yes for the first; the second is decision 14 (`prices-and-cache.md`, decision 18) |
+| First review 3, a login whose file points elsewhere; Codex's second sign-in | the subscription's entry | the host that was sent has no row: no entry | yes |
+
+The list rows of all of these: `answered`, which holds what the answers above said.
+
+**What this means for the measuring of a login's cache** (kept from the first writing). Pi is not a Codex client by its `User-Agent`. On a Codex login with the second sign-in bound (`use_siwc`), Pi's requests go to `api.openai.com` with the login's second token and the Codex CLI's to the ChatGPT backend (`IsCodexUseSIWCForRequest`, `sdk/cliproxy/auth/types.go:1085`). A pair of those two compares two backends. The answer says which: no `X-Provimux-Entry` on the one, `openai-codex/…` on the other, each read from where the request went. Whether the owner's login has the binding is in his file, which I did not open.
 
 ## 5. Where it is written
 
@@ -242,7 +379,7 @@ A measurement that needs every answer named runs with the keep-alives off, or co
 ## 6. Who may see it, and the switch
 
 - **Every holder of a client key, on the answers to his own requests and in the list he may read.** There is no narrower audience to give it to: the gateway has no rule per client key, and a holder who can ask can also be answered.
-- **Under "serve only my names" nothing differs.** The rule decides which names are served and listed (`only-my-names.md` section 18). An answer is always for a served name, its account is in the list under that name, and the list shows only served names. The model behind his name is shown, as the list's `entry` already shows it (`prices-and-cache.md`, decision 5): the rule was never a promise to hide it. The switch below does not hide the list's `entry` either. Hiding the model behind a name from a key holder would be one setting over both, and nobody has asked for it.
+- **Under "serve only my names" nothing differs.** The rule decides which names are served and listed (`only-my-names.md` section 18). An answer is always for a served name, its account is in the list under that name, and the list shows only served names. The model behind his name is shown, on the answer and in the list's `answered` (`prices-and-cache.md`, decision 5): the rule was never a promise to hide it. The switch below hides both, since the list's record is made of the answers' statements; it is the one setting over both.
 - **Always on, not asked for per request.** Asking protects nothing: the one who asks is the one who would be refused. Vendor clients send no header of ours, and the tools that need it most (a probe, a footer) would each have to add one to every request.
 - **The switch.** `models.answered-by`, beside `live-lists` and `published-lists` (`internal/registry/catalog_config.go:16-28`):
 
@@ -267,22 +404,22 @@ models:
 |---|---|---|
 | From an answer to its figures | match `X-CPA-AUTH-KIND`, `-PROVIDER`, `-HOST` to an account row; take the row's `entry` | read `X-Provimux-Entry` on the answer; it is the key of `figures.entries` |
 | "Accounts that agree in all three have the same entry" | promised, and false (finding 8) | removed |
-| An account row | `provider`, `kind`, `priority`, `host`, `entry` | and `account` (the marker), and `entry_per_request` where it applies |
+| An account row | `provider`, `kind`, `priority`, `host`, `entry` | `entry` is gone. A row has `account` (the marker) and `answered` (4.4) |
 | From an answer to its account | not possible | `X-Provimux-Account` equals the `account` of the row |
 | No entry | "an account without `entry` has no figures" | the four cases of section 4 |
-| The promises | "an account is found from the three headers" | "an answer names its entry and its account itself; where a row has an `entry`, every answer of that account for that name carries it" |
+| The promises | "an account is found from the three headers" | "an answer names its entry and its account itself; from the moment it leaves, its row's `answered` has that entry; no row says what the next answer will be" |
 
-Finding 8's case, after it: both rows read `claude, apikey`, each with its own `account` and `entry`; the answer carries the marker of the key that answered and `anthropic/provimux-test-dear` or `…-cheap`. Nothing is matched by kind, provider or host.
+Finding 8's case, after it: both rows read `claude, apikey`, each with its own `account` and, once it has answered, its own `answered`; the answer carries the marker of the key that answered and `anthropic/provimux-test-dear` or `…-cheap`. Nothing is matched by kind, provider or host.
 
 ### 7.2 The others
 
 | Reader | Change |
 |---|---|
-| Savings by account (`prices-and-cache.md` section 7, F6) | a stored row is keyed by the marker, not by the index. That it holds across a restart and a token refresh is then by construction, and a replaced login starts new rows, which is right. The marker is taken where the row is recorded, from the account the record names |
+| Savings by account (`prices-and-cache.md` section 7, F6) | a stored row is keyed by the marker, not by the index. That it holds across a restart and a token refresh is then by construction, and a replaced login starts new rows, which is right. The marker is taken where the row is recorded, from the account the record names. The row's entry is the attempt's (4.3), never the map over the account's configured host |
 | A login in overage (`prices-and-cache.md` 4.4, `cache_now`) | the row it would sit on is found by `account` |
-| pi-provimux (F5) | the footer shows the answer's own entry and price; its `model-upstreams:answered` event gains `account`, `model`, `model_basis`, `entry`. Its two tables that guess a provider from kind, provider and host are no longer needed for a gateway that says it |
+| pi-provimux (F5) | the footer shows the answer's own entry and price; its `model-upstreams:answered` event gains `account`, `model`, `model_basis`, `entry`. Before an answer it prices a model by the row's `answered` (4.5). Its two tables that guess a provider from kind, provider and host are no longer needed for a gateway that says it |
 | The measuring (groundtruth) | per sample: the same `a.` marker on the prime and on every check, basis `vendor`, the model and effort it expected, and the entry of the route it claims. An `s.` marker, `not-confirmed` or a missing statement makes the sample not proven. `X-CPA-TRACE-ID` is no longer read |
-| The console | the marker beside each route; nothing else in this step |
+| The console | the marker beside each route, and each route's `answered` with its times: the figures on an account's line are those of the entry it last answered as (`prices-and-cache.md` section 7) |
 
 ## 8. The build
 
@@ -292,7 +429,12 @@ Finding 8's case, after it: both rows read `claude, apikey`, each with its own `
 |---|---|---|
 | `internal/logging/provimux_answer.go` | the six header names and field names, the type `ProvimuxAnswer`, how it goes on the wire, the function that sets or removes the six headers | layer |
 | `sdk/cliproxy/auth/provimux_account_marker.go` | the identity of 2.3 per kind, the rule of 2.2, the key's setter | layer |
-| `sdk/cliproxy/auth/provimux_answered.go` | builds the answer's statement at the place the conductor states who answered: the marker, the attempt's report, the entry | layer |
+| `sdk/cliproxy/auth/provimux_answered.go` | builds the answer's statement at the place the conductor states who answered: the marker (built, W3), what the attempt sent and its entry (W6a), the record of 4.4 (W6b), the attempt's report (W5) | layer |
+| `sdk/cliproxy/executor/provimux_sent.go` | what an attempt sent (4.2): the observation, the decorator on `sdk/httptransport`, the readers of a model, the rule's step 2 | layer (W6a) |
+| `internal/provimux/modellists/figures_map.go` | the map of `prices-and-cache.md` 6.1, keyed by what was sent. From F1's branch, with its matrix test (8.5) | layer (W6a) |
+| `sdk/cliproxy/provimux_answer_entry.go` | steps 3 to 5 of the rule: the credential the gateway vouches for, the map, the entry | layer (W6a) |
+| `internal/pluginhost/provimux_plugin_credential.go` | whether a plugin made or changed a credential | layer (W6a) |
+| `sdk/cliproxy/provimux_answered_record.go` | the record of 4.4: kept per marker and name, read by both lists | layer (W6b) |
 | `sdk/cliproxy/provimux_answered_key.go` | makes, keeps and reads the key; the switch's default | layer |
 | `sdk/api/handlers/handlers_provimux_answered.go` | the capture's second setter; the WebSocket turn's sink for a whole statement | layer |
 | `sdk/api/handlers/openai/openai_responses_websocket_provimux.go` | removes and sets the six fields of `response.created` | layer |
@@ -336,14 +478,72 @@ func provimuxAccountIdentity(a *Auth) (basis string, identity []byte)
 // its callback, with the same attempt context and credential; for an empty statement it hands over the empty answer.
 func publishProvimuxAnswer(attemptCtx context.Context, meta map[string]any, auth *Auth, statement logging.AuthStatement)
 
-// provimuxAnswerEntry is set by sdk/cliproxy to the one function that gives an entry (F1). nil = no entry.
-var provimuxAnswerEntry func(ctx context.Context, auth *Auth, model string) string
+// provimuxAnswerEntry is set by sdk/cliproxy to the one function that gives an entry: steps 3 to 5 of answered-by.md
+// 4.3, for the credential that answered and what its attempt sent. nil = no entry. (Amended 2026-11-26, late evening:
+// it took a model and predicted nothing even then; now it takes what was sent.)
+var provimuxAnswerEntry func(auth *Auth, sent cliproxyexecutor.ProvimuxSentRequest) string
+
+// provimuxAnsweredRecord is set by sdk/cliproxy to the record of answered-by.md 4.4. publishProvimuxAnswer calls it
+// for every statement that names an account and a model: with the credential, the model the client asked for
+// (cliproxyexecutor.RequestedModelMetadataKey) and the statement's entry, "" for none. nil = nothing is recorded.
+var provimuxAnsweredRecord func(auth *Auth, requestedModel, entry string)
+
+// sdk/cliproxy/executor (layer: a new file; one field of the tracker and one line of WithUpstreamAttemptTracker)
+
+// ProvimuxSentRequest is one request an attempt handed to its transport, as Provimux's decorator saw it.
+type ProvimuxSentRequest struct {
+	Scheme string // of the request's URL, lower case
+	Host   string // its host, lower case, in ASCII, without the port
+	Port   string // its port; "" = the scheme's default
+	Model  string // the model id read from the request (answered-by.md 4.2); "" = none was read
+	Signer string // which credential headers the request carries, by name only: "x-api-key", "authorization", "both", ""
+	Status int    // the status of its response; 0 = no response arrived
+}
+
+// ProvimuxSent returns what the attempt of ctx sent, by step 2 of answered-by.md 4.3: the one host, model and signer
+// that its observations with a model and a 2xx response agree on. ok is false when there is no such observation,
+// when they differ, and when more were made than the tracker keeps.
+func ProvimuxSent(ctx context.Context) (sent ProvimuxSentRequest, ok bool)
+
+// provimuxObserveSent returns ctx with Provimux's decorator on it, around any decorator ctx already carries. Only
+// WithUpstreamAttemptTracker calls it. The decorator notes each request of a context that has a tracker on that
+// tracker and delegates; with models.answered-by off it is not attached.
+func provimuxObserveSent(ctx context.Context) context.Context
+
+// provimuxSentModel reads the model id of an outgoing request without consuming its body (GetBody): the top-level
+// "model" of a JSON body, zstd decoded where Content-Encoding says so; the <id> of a URL path .../models/<id>:<method>;
+// field 21 of a Connect message to Devin. "" where the request has none, has two that differ, or is in a form it
+// does not know.
+func provimuxSentModel(req *http.Request) string
+
+// internal/provimux/modellists (from F1, keyed by what was sent)
+
+// EntryProvider returns the providers.dev provider of a request by the gateway's provider of the credential that sent
+// it, the credential's kind ("oauth" or "apikey"), the lower-case host the request went to and the names of its
+// credential headers, or "" where the map of prices-and-cache.md 6.1 has no row.
+func EntryProvider(provider, kind, host, signer string) string
+
+// EntryModel is the model id of an entry of provider for the id that was sent.
+func EntryModel(provider, sentModel string) string
+
+// sdk/cliproxy
+
+// provimuxEntryOfAnswer returns the entry of an answer of auth whose attempt sent sent, or "": "" for a credential
+// held in memory only or one a plugin made or changed, for a URL that is not https on its default port, and where
+// the map has no row.
+func provimuxEntryOfAnswer(auth *coreauth.Auth, sent cliproxyexecutor.ProvimuxSentRequest) string
+
+// internal/pluginhost
+
+// ProvimuxPluginCredential reports whether a plugin made or changed auth: its storage is the plugin host's.
+func ProvimuxPluginCredential(auth *coreauth.Auth) bool
 
 // sdk/cliproxy/executor (the owner patch)
 
 // AttemptReport is what the executor's usage reporter knew of one attempt when asked: the model the attempt was
-// given or chose, the id written into the outgoing request where the executor records one, the model the vendor's
-// answer named so far, and the reasoning effort read from the outgoing request.
+// given or chose, the id the executor says it wrote into the outgoing request where it records one, the model the
+// vendor's answer named so far, and the reasoning effort read from the outgoing request. The first two are not what
+// was sent (answered-by.md 4.2): they stand in X-Provimux-Model-Sent only where ProvimuxSent has nothing.
 type AttemptReport struct{ Model, UpstreamModel, ResponseModel, Effort string }
 
 // AttemptHandleFromContext returns the attempt's tracker as a handle a reporter keeps; its methods do nothing
@@ -377,17 +577,18 @@ Each body is a worker's.
 | `sdk/api/handlers/handlers_answered.go` | the owner's file | `offerAnsweredAuth` hands a turn's whole-statement sink the statement | +4 |
 | `sdk/api/handlers/openai/openai_responses_websocket.go` | beside the owner's sink (`:1069`) | the whole-statement sink, storing into the same value | +3 |
 | `sdk/api/handlers/openai/openai_responses_websocket_forward.go` | beside the owner's two calls (`:286-287`) | remove and set the six fields | +2 |
-| `sdk/api/handlers/openai/openai_models_accounts.go` | the owner's file | `account` on a row | +2 |
-| `internal/api/handlers/management/provimux_model_routes.go` | the layer's | `account` on a route | +3 |
+| `sdk/api/handlers/openai/openai_models_accounts.go` | the owner's file | `account` on a row (built); `answered` on a row, through a function variable `sdk/cliproxy` sets (W6b) | +2, +4 |
+| `internal/api/handlers/management/provimux_model_routes.go` | the layer's | `account` on a route (built); `answered` on a route (W6b) | +3, +5 |
+| `sdk/cliproxy/executor/context.go` | upstream's tracker (`:20-25`) and `WithUpstreamAttemptTracker` (`:68-73`), with the owner's `pluginBytes` beside it. Not a protected path | the tracker gains the attempt's observations (one field); `WithUpstreamAttemptTracker` returns its context through `provimuxObserveSent` (one line) (W6a) | +2 |
 | `internal/registry/catalog_config.go` | the layer's lines in upstream's struct | `AnsweredBy *bool` and its default | +5 |
 | `internal/api/server_provimux.go` | the layer's | read the key at start | +1 |
 | `config.example.yaml`, README | | the switch; a section "Who answered" | text |
 | **Owner patch:** `sdk/cliproxy/executor/context.go` | upstream's tracker (`:20-25`), with the owner's `pluginBytes` beside it | one field | +1 |
 | **Owner patch:** `internal/runtime/executor/helps/usage_helpers.go` | upstream's, **a protected path** | the reporter keeps the attempt's handle (one field, two lines where it is made) and tells it what it is told: `SetAttemptModel`, `ObserveResponseModel`, `SetResponseModel`, `SetUpstreamModel`, `SetTranslatedRequestMetadata`, one line each | +8 |
 
-In all about 35 added and 3 changed lines in files that exist, 8 of the added in a protected path. No executor file, no translator and no auth file changes, and no request to a vendor changes by a byte.
+In all about 46 added and 3 changed lines in files that exist, 8 of the added in a protected path. No executor file, no translator and no auth file changes, and no request to a vendor changes by a byte. W6a and W6b add 11 of them, none in a protected path and none in the conductor: the place that states the answer is W3's own line.
 
-**Why an owner patch, and what the other way is.** The reporter is the one place every executor already tells the three facts, and it sits under `internal/runtime/executor`, which a layer commit may not touch (`guard.sh`). The patch changes no request. Without it the layer can only know the model the conductor chose, which needs a line in each of its five attempt loops, and can never say `vendor`: it would have to read the model back out of a translated body, which finding 6 shows is not evidence. Decision 1.
+**Why an owner patch, and what the other way is.** The reporter is the one place every executor tells which model the vendor's answer named and which effort went out, and it sits under `internal/runtime/executor`, which a layer commit may not touch (`guard.sh`). The patch changes no request. Without it no answer can say `vendor`: the gateway would have to read the model back out of a translated body, which finding 6 shows is not evidence. Decision 1. (Amended 2026-11-26, late evening: the patch is no longer what the sent model and the entry rest on. Those come from the request, in a layer commit, and W6 does not wait for the patch.)
 
 ### 8.3 What it costs to carry
 
@@ -401,48 +602,105 @@ Upstream commits that touched each file, and the stack's own [ran: `git log`; v8
 | `sdk/api/handlers/handlers_stream.go` | 23 | 12 | 3 | beside the owner's line |
 | `sdk/api/handlers/openai/openai_responses_websocket_forward.go` | 20 | 13 | 6 | beside the owner's two calls |
 | `sdk/api/handlers/handlers_execution.go` | 19 | 10 | 2 | beside the owner's two lines |
-| `sdk/cliproxy/executor/context.go` | 4 | not counted | 1 | the tracker's struct |
+| `sdk/cliproxy/executor/context.go` | 4 | 3 | 1 | the tracker's struct, and the last line of `WithUpstreamAttemptTracker` |
+| `sdk/httptransport/decorator.go` (called, not changed) | 1: the commit that made it, `51952a7b2` | 0 | 0 | W6a calls its `WithDecorator` and `Decorate`. It is upstream's public package for exactly this |
 | `sdk/cliproxy/auth/classification.go` | 3 | 1 | 3 | the owner's function |
 | `internal/logging/cpa_trace.go` | 2 | 1 | 8 | the owner's lines |
 | `internal/registry/catalog_config.go` | 1 | not counted | 4 | the layer's own |
 
-Every line but the eight in `usage_helpers.go` sits beside a line the owner's patches already carry there, so it moves when that line moves and conflicts when that line conflicts, not more often. The eight are the new cost: a file upstream touches about three times a week, with our lines at the heads of functions it has not renamed in that time [infer from the commit subjects; the sync check shows the first time it is wrong].
+Every line but the eight in `usage_helpers.go` and the two in `context.go` sits beside a line the owner's patches already carry there, so it moves when that line moves and conflicts when that line conflicts, not more often. The eight are the new cost: a file upstream touches about three times a week, with our lines at the heads of functions it has not renamed in that time [infer from the commit subjects; the sync check shows the first time it is wrong].
 
 ### 8.4 What must hold
 
 | Step | Must hold afterwards |
 |---|---|
 | The marker | every row of 2.3, each from a fixture login or key and no real one. The same marker after the config's keys are reordered, after the file is renamed or moved, after a restart with the kept key; another after another account's login is written into the same file, for every `a` kind and for Kimi; the two bold rows pinned as not changing. Two keys on one host differ. One login in two files is one marker. No key: no marker anywhere. Two installations give the same account two markers. A marker is never in a log line |
-| In the lists | both lists give one account the same `account`; `/v1/models` without `include` is byte for byte `bc6f81d73`'s; with the switch off no row has `account`; `pui13/openapi.yaml` and its example grow in the same commit (not on the design branch: F1's branch changes that file and is not on `main` yet) |
+| In the lists | both lists give one account the same `account`; `/v1/models` without `include` is byte for byte `bc6f81d73`'s; with the switch off no row has `account`; `pui13/openapi.yaml` and its example grow in the same commit (W2 did so on its own branch, with `account` after `host`; the design branch has since gained `answered` after `recorded_cooldown` in the same schema and example: two places apart, and `git merge-tree` of the two branches is clean) |
 | On the answer | the layer's wire test (`internal/pluginhost/provimux_answered_by_wire_test.go`, on `main` since `9d0786d95`: a credential, a plugin, a fallback and a plugin again on one connection, and three turns on one WebSocket) grows the six values: a credential's answer has them, a plugin's has none, a stale one never survives. The owner's matrix of each path's first commit (`internal/api/server_auth_first_byte_test.go`, `sdk/api/handlers/openai/auth_first_byte_test.go`) with two accounts of **one kind and one host**: each answer carries the marker of the one that answered; after a failover the second's; a keep-alive first, an error, a plugin, an interceptor, a plugin's own call: none of the six. The six are present together or absent together on every one of the 37 places. A WebSocket turn, a second turn on another account, a retry inside a turn. An upstream's own `provimux_*` fields never pass through. With the switch off every header and every event is byte for byte `bc6f81d73`'s. The confirm-sites test passes unchanged |
 | The attempt's report (the owner patch) | per executor a stand-in vendor that answers **another** model id than the one asked: the report holds both, and for a stream it holds the reported one before the first chunk is handed on exactly on the executors section 3.3 says yes for, and not on the four it says no for. No request to any stand-in differs by a byte from the same test without the patch |
 | The model on the answer | `vendor` and `not-confirmed` per row of 3.3; a forced alias leaves the body's model the client's name and the header the vendor's; a pool answers two requests with two sent ids; Devin's sent id carries the effort |
-| The entry on the answer | for every route of F1's fixture config the answer's entry equals the row's `entry`; the three rows of 4.1, each with both outcomes; the guard of section 4; finding 8's two keys, each answer with its own entry |
+| What was sent (W6a) | **The one test that matters:** for every executor and every path it sends a model request on (answer, stream, token count where the vendor counts, compact, a retry), a stand-in vendor records the host it was called on and the body it received; the answer's `X-Provimux-Model-Sent` and `X-Provimux-Entry` are the map applied to **what the stand-in recorded**, never to what the test configured. Run once plain and once under a payload rule that sets `model` for one header only (finding 15): the two answers differ as the two bodies do. The same with a rule that deletes `model` (no entry), a zstd body, a redirect to another host (that host's row, or none), a base URL in a login's file and in its metadata (findings 3 and 17), xAI with `using_api` false, Codex with the second sign-in for a Codex client and for another, Vertex's two routes on one account (finding 13), Antigravity with the catalog stored between the list and the call and with its read failing (finding 16), a plugin that changes the account's provider (finding 14). An attempt with two answered model requests that differ: no entry. An upstream WebSocket turn: a statement, no entry. The reader of Devin's field 21 against upstream's own projection of the same bytes (`helps.FinalizeDevinPayload`). No request to any stand-in differs by a byte with the decorator on and off. With `models.answered-by` off the decorator is not attached |
+| The map (W6a) | every row of `prices-and-cache.md` 6.1 and every "none" row, as F1's matrix has them (50 cases, 19 providers), keyed by the host that was sent; a host with a port, `http`, a subdomain of a named host: none |
+| `answered` in the lists (W6b) | after an answer, the row of its account under the name asked for has the answer's entry (or `null`) as its newest item, **before the answer's first byte is written**: a test that reads the list from inside the stand-in's handler sees it only after the gateway's statement, and one that reads it after the first byte always sees it. Both lists give the same items, the client list with days. A name asked with a thinking suffix, with a prefix, through an alias, through a pool: each lands on the row whose id the account registers, and on no other. Two outcomes give two items, a fifth drops the oldest. Another account's login in the same file starts with nothing. After a restart with the kept key the record is there; without a store it is not. An item older than 90 days is gone. A name that is not served is in neither list and brings no item. With the switch off no row has `answered`. `/v1/models` without `include` is byte for byte `bc6f81d73`'s. Both contract files' examples validate, and the handlers' answers for the fixture validate against them |
+
+**What the next review should try to break first** (Review B, of W6a and W6b). In this order, because the earlier ones are where a wrong entry could still come from:
+
+1. **An answered request the decorator did not see, beside one it did.** An attempt whose answer came over a channel without an `http.RoundTripper` (an upstream WebSocket, a relay, a client an executor builds by hand) while the same attempt also sent a model request over HTTP that got a `2xx`. Step 2 would then name the HTTP one. The helpers found no such attempt [helper]; a Codex WebSocket turn that falls back to HTTP after a `426` is the nearest, and there the HTTP request is the one that answers.
+2. **An observation on the wrong attempt.** A request built with another context than the attempt's (a detached context, a shared flight, a pooled goroutine), so that its observation lands on another attempt's tracker or on none.
+3. **The credential's kind or signer lying.** A login's token configured as a key, on every executor where one host serves both (Claude is handled by the header; is there another?). A key marked as not the paid API in some field step 3 does not read. A credential a plugin changed whose storage a later native refresh replaced.
+4. **A body the reader misreads.** A `model` that is not a string; a body that is not JSON but parses; two `model` keys; a Connect message whose first frame is not the request; an encoding it does not decode.
+5. **The record on a wrong row**: a name with a suffix or a prefix, an alias that is also another account's id, a pooled alias, a forced alias, "serve only my names" on and off.
+6. **What `answered` gives away** to a holder of a client key about other clients' use.
+7. Bytes: every list and every answer with the switch off, and every request to a vendor with it on.
+
+### 8.5 What of F1's branch is kept, and what a sync no longer carries
+
+`provimux-figures-f1-rebase` at `4f14c2cff`: three commits on `ecf2cc2b4`, 2,223 added lines in 16 files. It is not merged.
+
+| F1's | Lines | Kept? |
+|---|---|---|
+| `internal/provimux/modellists/figures_map.go`: `EntryProvider`, `EntryModel`, `EntryRef`, `GoogleVertexHost`, the host tables | 181 | **Kept**, as W6a's first commit, keyed by what was sent: `host` is the host the request went to, so the "no base URL" alternatives go and `LoginBackend` becomes rows of the map; `EntryProvider` gains the signer; `EntryModel` loses the stripping of `copilot/` (the sent id is bare) |
+| `figures_map_test.go`: the matrix | 172 | **Kept**, re-keyed the same way. Both reviews found it right: 50 cases, 19 providers |
+| The three kinds of no entry | | **Kept as three, redefined** (`prices-and-cache.md` 6.1): no row; not read; not vouched for. "A plugin lists the model" and "the request decides" are gone |
+| `sdk/cliproxy/auth/provimux_upstream_model.go`: the mirror `ProvimuxUpstreamModel`, its probe manager, `ProvimuxAntigravityVariantByEffort`, two accessors | 74 | **Dropped** |
+| `provimux_upstream_model_test.go`: the drift test | 202 | **Dropped.** There is nothing left to drift from |
+| `sdk/cliproxy/provimux_entry_refs.go`: `provimuxEntryOf`, the Vertex route's prediction, `provimuxNativeModel`, `provimuxLoginOwnBackend` | 158 | **Dropped.** Steps 3 to 5 of the rule are about 40 lines in `provimux_answer_entry.go` |
+| `provimux_entry_refs_test.go`, `provimux_entry_cases_test.go`, `provimux_entry_per_request_test.go` | 996 | **Dropped as tests of rows.** Their fixtures (the provider matrix against real registration, the usage-record comparison, the stand-ins) are the start of W6a's wire test, which asserts on answers |
+| `internal/pluginhost/provimux_plugin_models.go` | 36 | **Dropped.** One predicate replaces it (`ProvimuxPluginCredential`) |
+| The two hooks in `openai_models_accounts.go` and `provimux_model_routes.go` (`entry`), and `provimux_model_routes_entry_test.go` | 112 | **Replaced** by the same hooks, and the same test, for `answered` |
+| `pui13/openapi.yaml`: `entry` on a route | 14 | **Replaced** by `answered`, on the design branch with this amendment |
+| `test/provimux/model_list_entries_test.go`, the parity test's growth | 318 | **Rewritten** for `answered`; the byte-identity test without `include` is kept as it is |
+| Its edits to `prices-and-cache.md` 6.1 | 20 | **Superseded** by this amendment. The branch's copy is not merged |
+
+**What a sync carried with F1, and carries now.** To predict, F1 called these internals of upstream, and each could change what it means without failing a build [ran: `git log v8.0.30..v8.1.7` per file]:
+
+| F1 called | Upstream changed its file, v8.0.30 to v8.1.7 | Now |
+|---|---|---|
+| `executionModelCandidatesWithAlias` on a manager copied field by field (three fields; a fourth is the hole of note 9) | `conductor_models.go`: 8 commits | not called |
+| `antigravityModelHasThinkingGroup` | `antigravity_model_enums.go`: 4 | not called |
+| `IsCodexUseSIWC`, the login's base URL fields | `types.go`: 27 | not called |
+| `helps.ShouldExecuteVertexOpenAPIForRequest`, `NormalizeVertexOpenAPIModel`, `VertexAuthBaseURL` | `vertex_openapi.go`: 7 | not called |
+| The plugin host's executor adapter and its model lists | `pluginhost/host.go`: 13 | one type check on a credential's storage |
+| `helps.IsGoogleVertexHost`, `registry.LookupDevinModel` | | still called: a host rule and a catalog lookup, on what was sent |
+
+Now the layer calls `sdk/httptransport` (upstream's public package, unchanged since it was made) and reads three wire forms: a JSON body's `model`, a `…/models/<id>:<method>` path, Devin's field 21.
+
+| When upstream | F1 as built | Now |
+|---|---|---|
+| decides a model or a host in one more late place (a new payload rule, a new metadata field, a new discovery) | a wrong row, found by a review | nothing to do: it is in the request |
+| adds an executor, or a new wire form for the model | a row from the mirror, right or wrong | **no entry** on its answers until a reader or a map row is added. W6a's wire test fails for an executor it does not cover, so a sync sees it |
+| moves an executor to a channel without an `http.RoundTripper` | a row still | no entry on that route; the same test fails |
+| changes `WithUpstreamAttemptTracker` | not touched | one line to carry |
+| renumbers Devin's protobuf field | not touched | the reader's test against upstream's own projection fails |
 
 ## 9. The steps, in order
 
-Each is small enough to review alone. W1 to W3 need nothing of F1 and unblock the measuring's first need (which account). W5 needs the owner patch. W6 needs F1 on `main`.
+Amended 2026-11-26, late evening. W1 to W3 are built (`provimux-answered-by`, `9b71b947f`) and this amendment changes nothing they hold. **F1 folds into W6**: its map and the map's tests are W6a's first commit, and the rest of its branch is dropped (8.5). **W6 now comes before W4 and W5** and needs no owner patch: what was sent is read from the request, not taken from the reporter. Each step is small enough to review alone.
 
 | Step | Kind | Holds | Depends on | What exists after it |
 |---|---|---|---|---|
-| W1 | layer, new files only | the key, kept and read; the marker of 2.2 and 2.3; no wire change | | a function and its proof |
-| W2 | layer | `account` in both lists; the switch | W1 | a tool can read the markers |
-| W3 | layer | the marker on every answer: the statement's new field, the headers, the WebSocket fields, the relays | W1 | a tool can tell which account answered, on HTTP, SSE and the WebSocket |
+| W1 | layer, new files only | the key, kept and read; the marker of 2.2 and 2.3; no wire change | | built |
+| W2 | layer | `account` in both lists; the switch | W1 | built |
+| W3 | layer | the marker on every answer: the statement's new field, the headers, the WebSocket fields, the relays | W1 | built |
 | Review A | | W1 to W3 together: what a marker gives away, the key's life, every row of 5.3, bytes with the switch off | | |
+| **W6a** | layer | what was sent (4.2, 4.3): the decorator and the attempt's observations; the map and its matrix (from F1); `X-Provimux-Entry` on the answer, and with it `X-Provimux-Model-Sent`, `X-Provimux-Model` and `X-Provimux-Model-Basis: not-confirmed`, which the contract requires beside an entry | W3 | every answer sent over HTTP names its entry, read from its own request |
+| **W6b** | layer | `answered` (4.4): the record, kept per marker and name; on both lists; `pui13/openapi.yaml` and its example as this amendment has them | W6a | a tool, the console and Pi have what each account last answered as |
+| Review B | | W6a and W6b: the list of 8.4, in its order | | |
+| F2 | layer | `prices-and-cache.md` 6.2, 6.3: the figures are fetched and held. It needs nothing of W6 and can be built beside it | | |
+| F3 | layer | `include=figures`: the entries the rows' `answered` name | W6b, F2 | contract 1 can be released |
 | W4 | **owner patch** | the attempt's report: one new file, one field, eight lines in the reporter. No wire change | the owner's yes (decision 1), and the stack re-ordered to hold it below the layer | |
-| W5 | layer | sent, reported, basis and effort on the answer | W3, W4 | a tool can tell which model answered and whether the vendor said so |
-| W6 | layer | the answer's entry; `entry_per_request` in both lists, with the three cases of 4.1 | W5; F1 on `main` | the route from an answer to its figures; F3 (`include=figures`) can be built on it |
-| Review B | | W4 to W6: no request changed, each row of 3.3 against a stand-in, the entry never wrong | | |
-| W7 | docs | the README's section, the release's note, the contract file as built | W6 | |
-| After | other repositories | pi-provimux (F5 reads the statement), groundtruth (the measuring reads it) | a release with W3, or with W6 | |
+| W5 | layer | the model the vendor named: basis `vendor` where it did; the effort. Where W6a read nothing (an upstream WebSocket), the model the executor was given, as `X-Provimux-Model-Sent` | W4, W6a | a tool can tell whether the vendor confirmed the model. The measuring needs this one |
+| W6s | **owner patch** | what was sent over an upstream WebSocket: one line where a message is handed to the socket, beside the `MarkUpstreamAttempt` there (`codex_websockets_execute.go:261`, `codex_websockets_stream.go:221`, `codex_websockets_duplex.go:626`, `xai_websockets_executor.go:817`, and their resends), noting the socket's URL and the frame's `model` as an observation that counts as answered once the turn's first event arrives. Its own short design first: which statement a later turn of one duplex stream belongs to is not verified (section 11) | W6a; the owner's yes (decision 12) | an answer over an upstream WebSocket names its entry too |
+| W7 | docs | the README's section, the release's note, the contract file as built | W6b | |
+| After | other repositories | pi-provimux (F5 reads the statement and `answered`), groundtruth (the measuring reads the statement), provimux-ui (F4 reads `answered`) | a release with W3, or with W6b | |
 
-A release can carry W1 to W3 alone.
+**Order.** W6a, W6b, then F3 once F2 is there; F2 beside them. W4 and W5 run on their own line as soon as the owner says yes to the patch, and block nothing of the figures. W6s is last and optional. A release can carry W1 to W3 alone, or W1 to W6b, or all of it.
 
 ## 10. Decisions that are the owner's
 
 | # | Decision | Recommendation | The other way costs |
 |---|---|---|---|
-| 1 | An owner patch of eight lines in the usage reporter, under a protected path, so that the answer can say which model the vendor named | **Yes.** It changes no request, and it is the one place the fact exists | Without it no answer can ever say `vendor`: the model is `not-confirmed` everywhere, and even the sent id needs five lines in the conductor's loops, the file upstream changes most |
+| 1 | An owner patch of eight lines in the usage reporter, under a protected path, so that the answer can say which model the vendor named | **Yes.** It changes no request, and it is the one place the fact exists | Without it no answer can ever say `vendor`: the model is `not-confirmed` everywhere, and no answer says its effort. The entry and the sent model no longer wait for it (amended 2026-11-26, late evening) |
 | 2 | The names: `X-Provimux-*` and `provimux_*`, beside the `X-CPA-AUTH-*` the owner's patches named | **`X-Provimux-*`**: the marker needs a key only Provimux keeps, and a name upstream may one day use for something else cannot collide | `X-CPA-AUTH-ACCOUNT` and so on reads as one family, and would be upstream's to redefine |
 | 3 | One marker per gateway, the same for every client key | **Per gateway** | Per key, two holders cannot compare notes, which tells them nothing the list does not; a tool with two keys can then prove nothing, and the operator needs a second marker |
 | 4 | Always on, with `models.answered-by: false` to turn it off | **Always on** | Asked for per request protects nothing and puts a header on every request of every tool |
@@ -451,6 +709,12 @@ A release can carry W1 to W3 alone.
 | 7 | Meta and Antigravity are told apart by the e-mail their vendor names, inside the keyed hash and never shown | **Yes** | Without it both are `s`: a replaced Meta login keeps its marker, which is the case the measuring could not see |
 | 8 | A Codex login with the second sign-in bound has no entry when a client other than Codex's own is answered by `api.openai.com` | **No entry**, until providers.dev measures that route as an entry of its own | Calling it `openai-codex` gives it the ChatGPT backend's cache lifetime; calling it `openai` gives a subscription the paid API's price |
 | 9 | The words of the README section and the release's note | the owner's | |
+| 10 | What a list row carries, now that no entry is predicted (4.5) | **`answered`: what the account's answers for the name said, newest first, with the day.** Never an `entry` | No entry information on a row at all: the console's page of accounts has no figure to show, ever, and `include=figures` cannot choose which entries to send. A predicted entry for "safe" cases: there is no such set, and it is what failed twice |
+| 11 | Whether the record outlives a restart | **Kept**, 90 days, in the store that keeps the marker's key | Lost at a restart: after each release every account line of the console is empty until that name is used again, and Pi prices from models.dev until then. Kept costs a small write per item per day, and shows an old item with its old day after the configuration changed, which is what a record is |
+| 12 | W6s: an owner patch of about six lines in four files of the WebSocket executors, so that an answer over an upstream WebSocket names its entry | **Yes if a Codex or xAI account of his has `websockets` on**, which his configuration says and I did not read. Else leave it | Without it such an answer has a statement and no entry: never a wrong one. With it, six more lines in a protected path that upstream changes often |
+| 13 | The time of an item: the day in the client list, the time behind the management key | **The day** | The time to the second in the client list tells one key holder when another was at work |
+| 14 | A model a plugin put on an account's list, sent by the account's own executor to the account's own host with a credential the gateway made | **It has the entry of what was sent.** A plugin's executor answering names nobody, and a credential a plugin made or changed has no entry: those two stay | Keeping F1's rule ("a plugin lists it: none") needs the plugin host's lists read at every answer, and withholds entries that are right (the second review's note 18) |
+| 15 | The xAI row asks for more than a key and the host: no `using_api` other than true anywhere on the account | **Yes.** `api.x.ai` also takes requests from a credential that is not the paid API (its compact and speech requests go there, `xai_executor_request.go:338-344`), and the request does not show which it is | Without it, a credential marked as not the paid API gets the paid API's figures on those requests |
 
 ## 11. What I ran and read, and what is not verified
 
@@ -465,10 +729,23 @@ A release can carry W1 to W3 alone.
 | `git log` per file for 8.3, mine, against a helper's independent count | the same numbers |
 | `prices-and-cache/openapi.yaml` through `openapi-spec-validator`; the three examples against its schemas with unknown properties forbidden; planted faults | section 7.1's files; the results are in the commit's message |
 
+| For the amendment of the late evening: three helper agents, read-only, each returning file and line, over 15 executors and the conductor: which helper builds each client and whether the decorator of `sdk/httptransport` wraps it; how each destination is chosen; where the model sits in the outgoing bytes; the order of the payload rules, the reporter's model, the request log and the send; every other request an execution makes on the same context; what a plugin's change of an account leaves on it | sections 4.1 to 4.3; tagged [helper]. I read myself: `sdk/httptransport/decorator.go`, `helps/proxy_helpers.go:20-75`, `helps/logging_helpers.go:25-135`, the reporter's model setters, `executor/context.go`, `newUpstreamAttemptContext` and `publishAnsweredAuthMetadata`, `classification.go`, the Claude executor's choice of credential header, the Codex request's compression, Devin's model id, F1's four source files, W1 to W3 as built |
+| `git log v8.0.30..v8.1.7` on the files F1 called and the two W6a touches | 8.3, 8.5 |
+| Both contract files through `openapi-spec-validator`; the four examples against their schemas with unknown properties forbidden; cross-checks and planted faults | the results are in the commit's message |
+
 **Not verified.**
 
 | Point | Who settles it |
 |---|---|
+| That every model request an executor sends is built with the attempt's context, so that its observation lands on the attempt's tracker (the helpers found every context derived by adding values; a stream's is a child of the attempt's) | W6a's wire test, per executor and path: an answer without an observation fails it |
+| That every such request has `GetBody` (the helpers found bodies made with `bytes.NewReader`; a multipart upload may not) | W6a: without it nothing is read, and there is no entry |
+| That a refresh inside an attempt runs under a tracker of its own on every path [helper, read in part] | W6a. It matters only for a refresh that carries a `model`, and none does |
+| That the credential headers of a Claude request are final when the transport is handed it (the executor fixes their casing just before) | W6a's test, with a login's token configured as a key |
+| That a credential a plugin made or changed keeps the plugin host's storage after the account's own executor refreshed it | W6a's test for finding 14, with a refresh between the change and the answer. If it does not, step 3 needs a mark set where the plugin's update is committed (`service_executors.go:715-740`), one line |
+| That Devin's sent model id is always an id of Devin's catalog, so that its variant resolves to its base model | W6a, over the catalog. Where it is not, the answer has no entry |
+| That the model the client asked for (`RequestedModelMetadataKey`) is on the call's metadata on every path that states an answer, a WebSocket turn included | W6b. Without it nothing is recorded for that answer |
+| Which statement a later turn on one duplex upstream WebSocket belongs to | W6s's own design |
+| Whether an account of the owner has `websockets` on | his configuration; decision 12 |
 | That the context an executor makes its reporter with is the attempt's, tracker included, on every executor | W4's test, per executor |
 | That a Codex stream kept open over several turns (the duplex stream) cannot name another model on a later `response.created` than the statement made at its start | W5's test. If it can, the model fields are left off every `response.created` after the first of such a stream |
 | The exact text of the effort the reporter reads (`high`, a budget) per executor | W5; the contract says only "as read from the outgoing request" |
@@ -476,5 +753,5 @@ A release can carry W1 to W3 alone.
 | That every vendor names its real variant in the answer (Antigravity's `modelVersion` for a `-high` variant) | not needed: where it does not, the basis is `not-confirmed` or the two ids differ, and both are said |
 | That a Claude login always has an organisation id once its profile was read | W1: without one it is `s`, which is safe |
 | That the key-value store is open before the first request is served, in every start mode | W1 |
-| Whether the owner's Codex login has the second sign-in bound | his file; it decides what a Pi measurement on that login measures (section 4.1) |
+| Whether the owner's Codex login has the second sign-in bound | his file; it decides what a Pi measurement on that login measures (section 4.6, the last paragraph) |
 | Nothing was built or run against a gateway | every step's tests |

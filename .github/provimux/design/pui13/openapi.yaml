@@ -357,6 +357,33 @@ components:
           description: |
             The later-ending of the credential's recorded cooldown and this model's. Null when none is recorded,
             and for an alias pooling several upstream models (their cooldowns are recorded under their own names).
+        answered:
+          type: array
+          maxItems: 4
+          description: |
+            What this credential's answers for this model said of themselves (answered-by.md 4.4): the distinct
+            providers.dev entries (`<provider>/<model>`) its answers named, newest first, each with the time of the
+            last answer that named it; null for answers that named none. The same items as the account's `answered`
+            in GET /v1/models?include=accounts, which gives the day only. It is a record of answers and predicts
+            nothing: an answer's entry is read from the request the gateway sent for it, so the next answer can
+            differ from every item. Empty when no answer of this credential for this model is recorded (kept 90 days,
+            and across restarts where the gateway keeps its marker key).
+            Optional in this contract: a gateway from before answered-by W6, and one with models.answered-by off,
+            leaves it out, and a reader treats missing and empty alike. No route carries a predicted `entry`.
+          items:
+            $ref: "#/components/schemas/RouteAnswered"
+    RouteAnswered:
+      type: object
+      required: [entry, at]
+      properties:
+        entry:
+          type: [string, "null"]
+          pattern: "^[^/]+/.+$"
+          description: The entry those answers named; null where they named none. It says where the model would be at providers.dev, not that providers.dev has such an entry.
+          example: claude-subscription/claude-opus-5-5
+        at:
+          $ref: "#/components/schemas/Timestamp"
+          description: When the last answer of this credential for this model that said so was returned.
     Model:
       type: object
       required: [id, display_name, owned_by, limits, routes]

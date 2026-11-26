@@ -1,5 +1,5 @@
 {
-  "about": "Answers of a gateway whose model list is models-figures.json: what each says of itself. `statement` is components/schemas/AnswerStatement of ../openapi.yaml; over HTTP and SSE its values are the X-Provimux-* headers, on the Responses WebSocket fields of response.created. The markers are made with an example key and name nobody.",
+  "about": "Answers of a gateway whose model list is models-figures.json: what each says of itself. `statement` is components/schemas/AnswerStatement of ../openapi.yaml; over HTTP and SSE its values are the X-Provimux-* headers, on the Responses WebSocket fields of response.created. The markers are made with an example key and name nobody. An answer's entry is read from the request the gateway sent for it; each one here is in the `answered` of its row in models-figures.json.",
   "answers": [
     {
       "what": "The Claude login answered `opus`. The vendor named a dated id for the model asked: both are given, and the entry is the route's.",
@@ -70,7 +70,7 @@
       }
     },
     {
-      "what": "The entry is decided per request: the caller asked for high effort and the gateway chose the variant before it sent.",
+      "what": "The caller asked for high effort and the gateway chose the variant before it sent. The entry is read from the request that left, so it names the variant.",
       "asked_for": "gemini-3.8-flash",
       "transport": "http",
       "headers": {
@@ -115,28 +115,29 @@
       }
     },
     {
-      "what": "A token count: a count answer names no model.",
+      "what": "A token count the vendor answered (a Claude key: a login's count is the gateway's own and names nobody). A count answer names no model; the entry is read from the count request as it was sent.",
       "asked_for": "opus",
       "transport": "http",
       "headers": {
-        "X-CPA-AUTH-KIND": "oauth",
+        "X-CPA-AUTH-KIND": "apikey",
         "X-CPA-AUTH-PROVIDER": "claude",
-        "X-Provimux-Account": "a.jvwtubr4vdp5dfnhj7jm",
+        "X-CPA-AUTH-HOST": "api.anthropic.com",
+        "X-Provimux-Account": "a.vymubsbmffkad6cmardq",
         "X-Provimux-Model": "claude-opus-5-5",
         "X-Provimux-Model-Basis": "not-confirmed",
         "X-Provimux-Model-Sent": "claude-opus-5-5",
-        "X-Provimux-Entry": "claude-subscription/claude-opus-5-5"
+        "X-Provimux-Entry": "anthropic/claude-opus-5-5"
       },
       "statement": {
-        "provimux_account": "a.jvwtubr4vdp5dfnhj7jm",
+        "provimux_account": "a.vymubsbmffkad6cmardq",
         "provimux_model": "claude-opus-5-5",
         "provimux_model_basis": "not-confirmed",
         "provimux_model_sent": "claude-opus-5-5",
-        "provimux_entry": "claude-subscription/claude-opus-5-5"
+        "provimux_entry": "anthropic/claude-opus-5-5"
       }
     },
     {
-      "what": "A turn on the Responses WebSocket: the same six values, as fields of the turn's response.created.",
+      "what": "A turn on the Responses WebSocket: the same six values, as fields of the turn's response.created. The gateway reached the vendor over HTTP, so it read what it sent and names the entry. Had it reached the vendor over an upstream WebSocket (the account's `websockets` on), the turn would have its statement and no provimux_entry.",
       "asked_for": "gpt-6.2-sol",
       "transport": "websocket",
       "response_created": {
