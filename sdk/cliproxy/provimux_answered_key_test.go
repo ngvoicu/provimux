@@ -10,6 +10,7 @@ import (
 
 	"github.com/MoeForge/moego/base64"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/kvstore"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 	logtest "github.com/sirupsen/logrus/hooks/test"
@@ -34,7 +35,11 @@ func openProvimuxKeyStore(t *testing.T, path string) *kvstore.BoltStore {
 
 func markerUnder(key []byte) string {
 	coreauth.SetProvimuxMarkerKey(key)
-	defer coreauth.SetProvimuxMarkerKey(nil)
+	wasOn := logging.SetProvimuxAnsweredBy(true)
+	defer func() {
+		coreauth.SetProvimuxMarkerKey(nil)
+		logging.SetProvimuxAnsweredBy(wasOn)
+	}()
 	return provimuxKeyFixtureLogin().ProvimuxAccountMarker()
 }
 
@@ -104,6 +109,8 @@ func TestProvimuxLoadAnsweredKey(t *testing.T) {
 	}
 	reset()
 	t.Cleanup(reset)
+	wasOn := logging.SetProvimuxAnsweredBy(true)
+	t.Cleanup(func() { logging.SetProvimuxAnsweredBy(wasOn) })
 	hook := logtest.NewGlobal()
 	t.Cleanup(func() { log.StandardLogger().ReplaceHooks(make(log.LevelHooks)) })
 

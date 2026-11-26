@@ -75,6 +75,7 @@ type provimuxRoute struct {
 	Kind             *string                   `json:"kind"`
 	Priority         int                       `json:"priority"`
 	Host             *string                   `json:"host"`
+	Account          *string                   `json:"account,omitempty"` // the marker (answered-by.md 2); none with models.answered-by off
 	Login            provimuxLogin             `json:"login"`
 	Limits           provimuxLimits            `json:"limits"`
 	Reasoning        *provimuxReasoning        `json:"reasoning"`
@@ -158,6 +159,7 @@ func provimuxBuildModelRoutes(manager *coreauth.Manager, only map[string]struct{
 			Kind:      provimuxString(auth.AuthKind()),
 			Priority:  auth.Priority(),
 			Host:      provimuxString(provimuxBaseURLHost(auth)),
+			Account:   provimuxString(auth.ProvimuxAccountMarker()),
 			Login:     provimuxLoginOf(auth),
 		}
 		for _, model := range models {

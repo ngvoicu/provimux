@@ -308,6 +308,17 @@ components:
         host:
           type: [string, "null"]
           description: Lower-case host of an API key's base URL. No port, path, query or user info. Null for logins and for keys without a base URL.
+        account:
+          type: string
+          pattern: "^[as]\\.[a-z2-7]{20}$"
+          description: |
+            The account's marker (answered-by.md 2): an opaque keyed hash, the same as X-Provimux-Account on every
+            answer this account gives and as `account` in GET /v1/models?include=accounts. "a." when the account is
+            named as its vendor names it (equal markers are one account), "s." when it is this gateway's credential
+            (equal markers are one credential). Beside the login's name it tells the operator which marker is which
+            login; no answer to a client pairs the two. Left out when models.answered-by is false, and by a gateway
+            from before answered-by W2: a reader treats it as optional.
+          example: a.jvwtubr4vdp5dfnhj7jm
         login:
           $ref: "#/components/schemas/Login"
         limits:

@@ -7,6 +7,7 @@ import (
 	"github.com/MoeForge/moego/base64"
 	"github.com/MoeForge/moego/regexp"
 	"github.com/google/uuid"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 )
 
 // Provimux: the account marker, answered-by.md 2.2 and 2.3, row by row. Every login, key, e-mail and id here is
@@ -21,7 +22,11 @@ func withProvimuxMarkerKey(t *testing.T, key []byte) {
 	t.Helper()
 	previous := provimuxMarkerKey.Load()
 	SetProvimuxMarkerKey(key)
-	t.Cleanup(func() { provimuxMarkerKey.Store(previous) })
+	wasOn := logging.SetProvimuxAnsweredBy(true)
+	t.Cleanup(func() {
+		provimuxMarkerKey.Store(previous)
+		logging.SetProvimuxAnsweredBy(wasOn)
+	})
 }
 
 func markerOf(t *testing.T, a *Auth) string {
@@ -334,6 +339,13 @@ func TestProvimuxAccountMarkerKeyAndSecrecy(t *testing.T) {
 	if marker := (*Auth)(nil).ProvimuxAccountMarker(); marker != "" {
 		t.Fatalf("nil credential: %q", marker)
 	}
+	logging.SetProvimuxAnsweredBy(false) // models.answered-by: false
+	for _, row := range rows {
+		if marker := row.first.ProvimuxAccountMarker(); marker != "" {
+			t.Fatalf("%s with the switch off: %q", row.name, marker)
+		}
+	}
+	logging.SetProvimuxAnsweredBy(true)
 	for _, row := range rows {
 		marker := mine[row.name]
 		for _, secret := range []string{string(provimuxTestMarkerKey), row.first.ID, "fixture", "example"} {
