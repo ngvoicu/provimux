@@ -22,6 +22,8 @@ type upstreamAttemptTracker struct {
 	model     atomic.Pointer[string]
 	// pluginBytes: the bytes the attempt returns came out of plugin code.
 	pluginBytes atomic.Bool
+
+	provimuxSent provimuxSentLog // Provimux: what the attempt sent (provimux_sent.go)
 }
 
 type localWebsocketTurnTracker struct {
@@ -69,7 +71,7 @@ func WithUpstreamAttemptTracker(ctx context.Context) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return context.WithValue(ctx, upstreamAttemptTrackerContextKey{}, &upstreamAttemptTracker{})
+	return provimuxObserveSent(context.WithValue(ctx, upstreamAttemptTrackerContextKey{}, &upstreamAttemptTracker{})) // Provimux: answered-by.md 4.2
 }
 
 // MarkUpstreamAttempt records that the provider execution reached an upstream transport boundary.
