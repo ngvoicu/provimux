@@ -150,23 +150,40 @@ func resolveKeyModelList(cfg *config.Config, auth *coreauth.Auth) (keyModelListI
 	return info, true
 }
 
-// keyCompatEntry finds an openai-compatibility key's entry the way its registration does: by the
-// credential's config index, else by name. A disabled entry registers nothing and counts as none.
+// keyCompatEntry finds an openai-compatibility key's endpoint, its entry, with the match upstream's
+// registration uses (registerModelsForAuthWithCache): the credential's config index only while the
+// entry there is still its endpoint (provider name and base URL, openAICompatMatchesAuth), else the
+// first entry with its name and base URL, or, for an older credential without a base URL, its name.
+// A credential keeps its old index until the watcher hands out the refreshed one, so after another
+// endpoint is inserted ahead of it the index names that other endpoint: it is never trusted alone.
+// A disabled entry registers nothing and counts as none. Registration (the hook in
+// registerModelsForAuthWithCache), the excluded-models, fixed-models, live-list eligibility and the
+// status row all read the entry through this one function.
 func keyCompatEntry(cfg *config.Config, auth *coreauth.Auth, compatName string) *config.OpenAICompatibility {
-	if entry := configEntryForAuthIndex(auth, cfg.OpenAICompatibility); entry != nil {
-		if entry.Disabled {
-			return nil
-		}
-		return entry
+	if cfg == nil || auth == nil {
+		return nil
 	}
+	var attrBase string
 	if auth.Attributes != nil {
 		if name := strings.TrimSpace(auth.Attributes["compat_name"]); name != "" {
 			compatName = name
 		}
+		attrBase = strings.TrimSpace(auth.Attributes["base_url"])
+	}
+	if entry := configEntryForAuthIndex(auth, cfg.OpenAICompatibility); entry != nil && !entry.Disabled &&
+		openAICompatMatchesAuth(entry.Name, entry.BaseURL, compatName, auth) {
+		return entry
 	}
 	for i := range cfg.OpenAICompatibility {
 		entry := &cfg.OpenAICompatibility[i]
-		if !entry.Disabled && strings.EqualFold(strings.TrimSpace(entry.Name), compatName) {
+		if entry.Disabled {
+			continue
+		}
+		if attrBase != "" {
+			if openAICompatMatchesAuth(entry.Name, entry.BaseURL, compatName, auth) {
+				return entry
+			}
+		} else if strings.EqualFold(strings.TrimSpace(entry.Name), strings.TrimSpace(compatName)) {
 			return entry
 		}
 	}
