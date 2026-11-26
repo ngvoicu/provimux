@@ -23,6 +23,7 @@ func (s *Server) registerProvimuxRoutes(v8 *gin.RouterGroup) {
 	// The wait a stop now uses: the server's own configuration, which upstream's stop reads (a refused reload left it).
 	v8.GET("/provimux/restart-drain", func(c *gin.Context) { s.mgmt.ProvimuxRestartDrainOf(c, s.getConfig()) })
 	v8.GET("/provimux/same-account-retry", s.mgmt.ProvimuxSameAccountRetry)
+	v8.GET("/provimux/figures", s.mgmt.ProvimuxFigures)
 }
 
 // ProvimuxRoutes lists the method and path of every route the server registered, for Provimux's tests

@@ -24,6 +24,7 @@ var provimuxManagementPaths = []string{
 	"/v8/management/provimux/model-lists",
 	"/v8/management/provimux/savings",
 	"/v8/management/provimux/restart-drain",
+	"/v8/management/provimux/figures",
 }
 
 // provimuxTestLiveSource stands in for sdk/cliproxy, which registers the real one and which this
@@ -95,8 +96,9 @@ func TestProvimuxManagementRoutesShareAccessControl(t *testing.T) {
 		{"home", true, true, true, http.StatusNotFound},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			s := provimuxTestServer(t, tc.enabled, tc.home)
 			for _, path := range provimuxManagementPaths {
+				// A server of its own for each path: a few requests without a key ban the caller's address.
+				s := provimuxTestServer(t, tc.enabled, tc.home)
 				if recorder := provimuxServe(s, path, tc.authorized); recorder.Code != tc.want {
 					t.Fatalf("%s: status=%d want=%d body=%s", path, recorder.Code, tc.want, recorder.Body.String())
 				}

@@ -39,6 +39,8 @@ models:
   # modalities, never thinking or web search. It never decides which models a login
   # offers. providers.dev unreachable never blocks a start or
   # empties a list; the last accepted document is kept on disk (model-lists/published.json).
+  # The same round asks providers.dev for the prices and cache lifetimes of its entries (one more request,
+  # the same for every user; model-lists/figures.json); false here turns that off too.
   # published-lists: false
   # On unless set to false. Each answer names the account that gave it by an opaque marker (the
   # X-Provimux-Account response header; on the Responses WebSocket the provimux_account field of

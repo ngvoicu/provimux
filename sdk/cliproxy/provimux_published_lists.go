@@ -32,7 +32,8 @@ import (
 // Start never waits for providers.dev: the last accepted document is read from disk with the live
 // lists, and the fetch runs in the background, at start, every 6 hours and on
 // POST /v8/management/models/refresh. A 304 changes nothing. After a failure: 10 minutes, then
-// 1 hour, then the normal 6 hours; the held document stays.
+// 1 hour, then the normal 6 hours; the held document stays. The same round also asks for the
+// entries' prices and cache lifetimes, on its own schedule (provimux_figures.go).
 
 const (
 	provimuxPublishedInterval = 6 * time.Hour
@@ -160,6 +161,7 @@ func (st *provimuxPublishedStore) request() {
 	st.mu.Lock()
 	st.next = time.Time{}
 	st.mu.Unlock()
+	provimuxFigures.request() // the round's second request (prices-and-cache.md 6.2)
 	select {
 	case st.wake <- struct{}{}:
 	default:
@@ -197,10 +199,14 @@ func (s *Service) runPublishedListRefresh(ctx context.Context) {
 			// Turned on or off: the learned models' fields change with it.
 			s.provimuxPublishedChanged(provimuxAllSections())
 		}
-		if !on || !provimuxPublished.due(liveModelListNow()) {
+		if !on {
 			continue
 		}
-		s.refreshPublishedLists(ctx, cfg)
+		if provimuxPublished.due(liveModelListNow()) {
+			s.refreshPublishedLists(ctx, cfg)
+		}
+		// The figures: the round's second request, with its own due time and back-off (prices-and-cache.md 6.2).
+		s.provimuxFiguresRound(ctx, cfg)
 	}
 }
 
