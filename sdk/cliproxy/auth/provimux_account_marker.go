@@ -274,9 +274,17 @@ func provimuxIdentity(basis, tag string, fields ...string) (string, []byte) {
 	return basis, identity
 }
 
-// provimuxPluginMade reports whether a plugin made the credential: its storage is the plugin host's, which says so.
-// The storage pointer survives Clone, so the lists and the answers agree.
+// provimuxPluginMade reports whether a plugin made or changed the credential: its storage is the plugin host's, which
+// says so, or it carries the mark of an update a plugin returned (ProvimuxPluginCredentialMark), which its file keeps
+// after a restart. The storage pointer survives Clone, so the lists and the answers agree.
 func provimuxPluginMade(a *Auth) bool {
+	if marked, _ := a.Metadata[ProvimuxPluginCredentialMark].(bool); marked {
+		return true
+	}
 	made, ok := a.Storage.(interface{ ProvimuxPluginMade() bool })
 	return ok && made.ProvimuxPluginMade()
 }
+
+// ProvimuxPluginMade reports whether a plugin made or changed a: the one rule the marker (answered-by.md 2.3) and the
+// entry of an answer (4.3, step 3) both read, so that they agree, before and after a restart.
+func ProvimuxPluginMade(a *Auth) bool { return a != nil && provimuxPluginMade(a) }
