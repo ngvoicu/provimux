@@ -286,6 +286,8 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 				if eventType == "response.created" {
 					payloads[i] = removeResponsesWebsocketAuthOrigin(payloads[i])
 					payloads[i] = setResponsesWebsocketAuthStatement(payloads[i], opts.authStatement)
+					payloads[i] = removeResponsesWebsocketProvimux(payloads[i])                  // Provimux: an upstream's own
+					payloads[i] = setResponsesWebsocketProvimux(payloads[i], opts.authStatement) // Provimux: this turn's
 					responseStarted = true
 					markDownstreamCommitted()
 					completed = false

@@ -78,6 +78,7 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 	reqMeta := requestExecutionMetadata(ctx)
 	answered := &answeredAuthCapture{}
 	reqMeta[coreexecutor.AnsweredAuthCallbackMetadataKey] = answered.set
+	reqMeta[coreauth.ProvimuxAnswerCallbackMetadataKey] = answered.setStatement // Provimux: the whole statement
 	if execOptions.Path != "" {
 		reqMeta[coreexecutor.RequestPathMetadataKey] = execOptions.Path
 	}
@@ -184,6 +185,7 @@ func (h *BaseAPIHandler) executeCountWithAuthManager(ctx context.Context, handle
 	reqMeta := requestExecutionMetadata(ctx)
 	answered := &answeredAuthCapture{}
 	reqMeta[coreexecutor.AnsweredAuthCallbackMetadataKey] = answered.set
+	reqMeta[coreauth.ProvimuxAnswerCallbackMetadataKey] = answered.setStatement // Provimux: the whole statement
 	if execOptions.Path != "" {
 		reqMeta[coreexecutor.RequestPathMetadataKey] = execOptions.Path
 	}

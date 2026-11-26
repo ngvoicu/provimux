@@ -45,6 +45,7 @@ type AuthStatement struct {
 	Kind     string
 	Provider string
 	Host     string
+	Provimux ProvimuxAnswer // Provimux: the account's marker (answered-by.md); sent only with the three
 }
 
 // OnTheWire returns the statement as every transport sends it, response headers and websocket fields alike: whole,
@@ -57,7 +58,7 @@ func (s AuthStatement) OnTheWire() AuthStatement {
 	if (s.Kind != "oauth" && s.Kind != "apikey") || s.Provider == "" || !printableASCII(s.Host) {
 		return AuthStatement{}
 	}
-	return AuthStatement{Kind: s.Kind, Provider: encodeProvider(s.Provider), Host: s.Host}
+	return AuthStatement{Kind: s.Kind, Provider: encodeProvider(s.Provider), Host: s.Host, Provimux: s.Provimux.onTheWire()}
 }
 
 // encodeProvider writes each byte <= 0x20, >= 0x7F or "%" of a provider as "%" and two upper-case hex digits.
@@ -98,7 +99,7 @@ type cpaTraceState struct {
 }
 
 func trimmedAuthStatement(statement AuthStatement) AuthStatement {
-	return AuthStatement{Kind: strings.TrimSpace(statement.Kind), Provider: strings.TrimSpace(statement.Provider), Host: strings.TrimSpace(statement.Host)}
+	return AuthStatement{Kind: strings.TrimSpace(statement.Kind), Provider: strings.TrimSpace(statement.Provider), Host: strings.TrimSpace(statement.Host), Provimux: statement.Provimux.trimmed()}
 }
 
 func (s *cpaTraceState) offer(statement AuthStatement) {
@@ -317,4 +318,5 @@ func (w *cpaTraceResponseWriter) applyTraceHeader() {
 			w.ResponseWriter.Header().Del(name)
 		}
 	}
+	SetProvimuxAnswerHeaders(w.ResponseWriter.Header(), statement) // Provimux: from the same statement (answered-by.md 5)
 }

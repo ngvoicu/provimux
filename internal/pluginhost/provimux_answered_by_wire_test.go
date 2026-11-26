@@ -40,10 +40,14 @@ import (
 // the first write commits must name the credential that answered, or nothing for a plugin's
 // answer. A refused key gets none. On one WebSocket, credential, plugin, credential: each
 // response.created names the credential that answered that turn, or carries no field at all.
+//
+// With models.answered-by on (answered-by.md 8.4), the account marker goes with the three: X-Provimux-Account and
+// provimux_account name the credential's account exactly where the three name the credential; a stale marker, and an
+// upstream gateway's own provimux_account, never survive; a plugin's answer carries none.
 
 var (
 	wireAnswered = logging.AuthStatement{Kind: "apikey", Provider: "wire-native", Host: "current.example.test"}
-	wireStale    = logging.AuthStatement{Kind: "apikey", Provider: "previous", Host: "previous.example.test"}
+	wireStale    = logging.AuthStatement{Kind: "apikey", Provider: "previous", Host: "previous.example.test", Provimux: logging.ProvimuxAnswer{Account: "a.stalestalestalestale"}}
 )
 
 // wireNativeExecutor is the credential's executor: it answers every format from the upstream.
@@ -68,7 +72,7 @@ func (wireNativeExecutor) ExecuteStream(ctx context.Context, _ *coreauth.Auth, _
 	case string(opts.SourceFormat) == "openai-response" || string(opts.ResponseFormat) == "openai-response":
 		// A foreign statement in the upstream's own event must be overwritten, never passed on.
 		frames = []string{
-			`data: {"type":"response.created","response":{"id":"resp-wire","output":[]},"cpa_auth_kind":"oauth","cpa_auth_provider":"foreign"}` + "\n\n",
+			`data: {"type":"response.created","response":{"id":"resp-wire","output":[]},"cpa_auth_kind":"oauth","cpa_auth_provider":"foreign","provimux_account":"a.foreignforeignforeig"}` + "\n\n",
 			`data: {"type":"response.completed","response":{"id":"resp-wire","status":"completed","output":[]}}` + "\n\n",
 		}
 	case string(opts.SourceFormat) == "gemini":
@@ -100,6 +104,16 @@ func TestProvimuxAnsweredByOnTheWire(t *testing.T) {
 	var viaCredential, viaLegacy atomic.Bool
 	answeredAuth := coreauth.Auth{ID: "wire-native-key", Provider: wireAnswered.Provider, Status: coreauth.StatusActive,
 		Attributes: map[string]string{"auth_kind": "apikey", "api_key": "fixture", "base_url": "https://current.example.test/v1"}}
+	coreauth.SetProvimuxMarkerKey([]byte("provimux-wire-test-marker-key-32"))
+	wasAnsweredBy := logging.SetProvimuxAnsweredBy(true)
+	t.Cleanup(func() {
+		logging.SetProvimuxAnsweredBy(wasAnsweredBy)
+		coreauth.SetProvimuxMarkerKey(nil)
+	})
+	answeredMarker := answeredAuth.ProvimuxAccountMarker()
+	if answeredMarker == "" || answeredMarker == wireStale.Provimux.Account {
+		t.Fatalf("fixture: the credential's marker is %q", answeredMarker)
+	}
 	credentialReply := homeExecutorDispatchJSON(t, answeredAuth, "")
 	client := newHomeExecutorTestClient(t, func(command, argument string) []byte {
 		if command == "RPOP" { // the credential dispatch, after a credential grant or the legacy fallback
@@ -171,6 +185,7 @@ func TestProvimuxAnsweredByOnTheWire(t *testing.T) {
 		c.Header(logging.CPAAuthKindHeader, wireStale.Kind)
 		c.Header(logging.CPAAuthProviderHeader, wireStale.Provider)
 		c.Header(logging.CPAAuthHostHeader, wireStale.Host)
+		c.Header(logging.ProvimuxAccountHeader, wireStale.Provimux.Account)
 		c.Next()
 	})
 	openAI := openai.NewOpenAIAPIHandler(handler)
@@ -221,9 +236,9 @@ func TestProvimuxAnsweredByOnTheWire(t *testing.T) {
 		for _, via := range []string{"credential", "local", "legacy", "local"} {
 			viaCredential.Store(via == "credential")
 			viaLegacy.Store(via == "legacy")
-			want := wireAnswered
+			want, wantMarker := wireAnswered, answeredMarker
 			if via == "local" {
-				want = logging.AuthStatement{}
+				want, wantMarker = logging.AuthStatement{}, ""
 			}
 			for _, r := range requests {
 				var conn string
@@ -237,14 +252,17 @@ func TestProvimuxAnsweredByOnTheWire(t *testing.T) {
 				if got := wireStatement(resp.Header); resp.StatusCode != http.StatusOK || !strings.Contains(string(body), r.contains) || got != want {
 					t.Errorf("%s %s: %d %+v %s; want 200 naming %+v", via, r.path, resp.StatusCode, got, body, want)
 				}
+				if got := resp.Header.Values(logging.ProvimuxAccountHeader); len(got) != 0 && (len(got) != 1 || got[0] != wantMarker) || len(got) == 0 && wantMarker != "" {
+					t.Errorf("%s %s: X-Provimux-Account %v, want %q", via, r.path, got, wantMarker)
+				}
 			}
 		}
 		viaCredential.Store(false)
 		viaLegacy.Store(false)
 		var conn string
 		resp, body := post("/v1/chat/completions", fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"test"}]}`, alias), "restricted-key", &conn)
-		if got := wireStatement(resp.Header); resp.StatusCode != http.StatusForbidden || got != (logging.AuthStatement{}) {
-			t.Errorf("refused key: %d %+v %s; want 403 naming nothing", resp.StatusCode, got, body)
+		if got := wireStatement(resp.Header); resp.StatusCode != http.StatusForbidden || got != (logging.AuthStatement{}) || resp.Header.Get(logging.ProvimuxAccountHeader) != "" {
+			t.Errorf("refused key: %d %+v %q %s; want 403 naming nothing", resp.StatusCode, got, resp.Header.Get(logging.ProvimuxAccountHeader), body)
 		}
 	})
 
@@ -254,10 +272,10 @@ func TestProvimuxAnsweredByOnTheWire(t *testing.T) {
 			t.Fatal(errDial)
 		}
 		t.Cleanup(func() { _ = ws.Close() })
-		if got := wireStatement(upgrade.Header); got != (logging.AuthStatement{}) {
-			t.Fatalf("the upgrade names %+v", got)
+		if got := wireStatement(upgrade.Header); got != (logging.AuthStatement{}) || upgrade.Header.Get(logging.ProvimuxAccountHeader) != "" {
+			t.Fatalf("the upgrade names %+v %q", got, upgrade.Header.Get(logging.ProvimuxAccountHeader))
 		}
-		fields := []string{"cpa_auth_kind", "cpa_auth_provider", "cpa_auth_host"}
+		fields := []string{"cpa_auth_kind", "cpa_auth_provider", "cpa_auth_host", "provimux_account"}
 		for turn, native := range []bool{true, false, true} {
 			viaCredential.Store(native)
 			_ = ws.SetReadDeadline(time.Now().Add(5 * time.Second))
@@ -285,6 +303,9 @@ func TestProvimuxAnsweredByOnTheWire(t *testing.T) {
 					}
 					if got != want {
 						t.Errorf("turn %d (credential %v): response.created names %+v, want %+v", turn, native, got, want)
+					}
+					if marker := ojson.GetBytes(frame, fields[3]).String(); native && marker != answeredMarker {
+						t.Errorf("turn %d: response.created names the account %q, want %q", turn, marker, answeredMarker)
 					}
 				}
 				for _, field := range fields {
