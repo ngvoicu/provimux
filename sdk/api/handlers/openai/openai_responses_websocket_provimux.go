@@ -7,16 +7,14 @@ import (
 
 // Provimux: who answered, on the Responses WebSocket (.github/provimux/design/answered-by.md 5.2). Each turn's
 // response.created carries the provimux_* fields beside cpa_auth_kind, cpa_auth_provider and cpa_auth_host, from the
-// one statement the turn's sink received. With models.answered-by off, response.created is left as the owner's patch
-// writes it.
+// one statement the turn's sink received. The provimux_* fields an upstream put there are removed whatever the switch;
+// with models.answered-by off none is written.
 
 // removeResponsesWebsocketProvimux removes from a response.created event every provimux_* field of the statement an
 // upstream may have put there (an upstream that is itself a Provimux names its own account): they are this gateway's
-// own, and each is absent when this gateway's statement has no value for it.
+// own, and each is absent when this gateway's statement has no value for it. Switch on or off: a marker that is not
+// ours never reaches a client.
 func removeResponsesWebsocketProvimux(payload []byte) []byte {
-	if !logging.ProvimuxAnsweredBy() {
-		return payload
-	}
 	for _, name := range logging.ProvimuxFieldNames() {
 		if !ojson.GetBytesNoCopy(payload, name.Field).Exists() {
 			continue

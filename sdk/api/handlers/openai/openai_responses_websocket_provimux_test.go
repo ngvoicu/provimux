@@ -23,8 +23,8 @@ import (
 
 // Provimux: the account marker on the Responses WebSocket (answered-by.md 5.2). Two keys of one kind and one host:
 // cpa_auth_* is the same for both, provimux_account says which answered each turn. The upstream, itself a gateway,
-// puts its own provimux_* fields on response.created: they never pass with the switch on, and pass untouched with it
-// off. Keys and hosts are invented.
+// puts its own provimux_* fields on response.created: they never pass, switch on or off, and on a turn that names
+// nobody too. Keys and hosts are invented.
 
 var provimuxWebsocketTestKey = []byte("provimux-ws-test-marker-key-32by")
 
@@ -34,15 +34,17 @@ const provimuxForeignCreated = `"cpa_auth_kind":"oauth","provimux_account":"a.zz
 // provimuxWebsocketExecutor answers a turn as its upstream gateway would, or fails the credentials named in fail.
 type provimuxWebsocketExecutor struct {
 	websocketCreatedExecutor
-	mu   sync.Mutex
-	fail map[string]bool
+	mu       sync.Mutex
+	fail     map[string]bool
+	unmarked bool // the bytes come from no upstream exchange: the turn names nobody
 }
 
 func (e *provimuxWebsocketExecutor) Identifier() string { return "claude" }
 
-func (e *provimuxWebsocketExecutor) failing(ids ...string) {
+func (e *provimuxWebsocketExecutor) failing(unmarked bool, ids ...string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	e.unmarked = unmarked
 	e.fail = map[string]bool{}
 	for _, id := range ids {
 		e.fail[id] = true
@@ -50,10 +52,12 @@ func (e *provimuxWebsocketExecutor) failing(ids ...string) {
 }
 
 func (e *provimuxWebsocketExecutor) ExecuteStream(ctx context.Context, auth *coreauth.Auth, _ coreexecutor.Request, _ coreexecutor.Options) (*coreexecutor.StreamResult, error) {
-	coreexecutor.MarkUpstreamAttempt(ctx)
 	e.mu.Lock()
-	fail := e.fail[auth.ID]
+	fail, unmarked := e.fail[auth.ID], e.unmarked
 	e.mu.Unlock()
+	if !unmarked {
+		coreexecutor.MarkUpstreamAttempt(ctx)
+	}
 	if fail {
 		return nil, &coreauth.Error{Code: "unavailable", Message: "fixture upstream unavailable", HTTPStatus: http.StatusServiceUnavailable}
 	}
@@ -114,13 +118,16 @@ func TestProvimuxWebsocketTurnsNameTheirAccount(t *testing.T) {
 		fail      []string
 		answering string
 		off       bool
+		nobody    bool
 	}{
 		{name: "the first key answers", answering: "ws-first-key"},
 		{name: "the first fails inside the turn, the second answers", fail: []string{"ws-first-key"}, answering: "ws-second-key"},
 		{name: "the next turn stays with the second", answering: "ws-second-key"},
-		{name: "the switch off: the upstream's own fields pass untouched", answering: "ws-second-key", off: true},
+		{name: "a turn that names nobody: the upstream's own fields do not pass", answering: "ws-second-key", nobody: true},
+		{name: "the switch off: the upstream's own fields do not pass, and no marker", answering: "ws-second-key", off: true},
+		{name: "the switch off, a turn that names nobody", answering: "ws-second-key", off: true, nobody: true},
 	} {
-		executor.failing(test.fail...)
+		executor.failing(test.nobody, test.fail...)
 		logging.SetProvimuxAnsweredBy(!test.off)
 		if errWrite := conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf(`{"type":"response.create","model":%q,"input":[{"type":"message","role":"user","content":"hi"}]}`, model))); errWrite != nil {
 			t.Fatal(errWrite)
@@ -139,9 +146,14 @@ func TestProvimuxWebsocketTurnsNameTheirAccount(t *testing.T) {
 				if !strings.Contains(string(frame), "resp-"+test.answering) {
 					t.Fatalf("turn %d: %s answered, want %s", turn, frame, test.answering)
 				}
-				if test.off {
-					if !strings.Contains(string(frame), `"provimux_account":"a.zzzzzzzzzzzzzzzzzzzz","provimux_model":"foreign-model"`) || strings.Contains(string(frame), markers[test.answering]) {
-						t.Fatalf("turn %d, switch off: the upstream's fields are not as it sent them: %s", turn, frame)
+				if test.off || test.nobody {
+					for _, name := range logging.ProvimuxFieldNames() {
+						if ojson.GetBytesNoCopy(frame, name.Field).Exists() {
+							t.Fatalf("turn %d (%s): %s passes: %s", turn, test.name, name.Field, frame)
+						}
+					}
+					if named := ojson.GetBytesNoCopy(frame, "cpa_auth_kind").Exists(); named == test.nobody {
+						t.Fatalf("turn %d (%s): cpa_auth_kind present %v: %s", turn, test.name, named, frame)
 					}
 					continue
 				}

@@ -141,9 +141,8 @@ func TestProvimuxAnsweredByLists(t *testing.T) {
 }
 
 // With the switch on, the fixture's answers are what the commit before answered-by writes (the golden file), but for
-// exactly this: every answer that names the credential carries X-Provimux-Account with its account's marker in place
-// of the upstream gateway's X-Provimux-* headers, an answer that names nobody (the 400) carries none of them, and the
-// turn's response.created carries provimux_account beside cpa_auth_* in place of the upstream's provimux_* fields.
+// exactly this: every answer that names the credential carries X-Provimux-Account with its account's marker, an answer
+// that names nobody (the 400) carries none, and the turn's response.created carries provimux_account beside cpa_auth_*.
 func TestProvimuxAnsweredByAnswers(t *testing.T) {
 	answeredBySwitch(t, true)
 	marker := answeredByAnswerKey().ProvimuxAccountMarker()
@@ -154,17 +153,35 @@ func TestProvimuxAnsweredByAnswers(t *testing.T) {
 	if errRead != nil {
 		t.Fatal(errRead)
 	}
-	foreignHeaders := "X-Provimux-Account: [\"a.zzzzzzzzzzzzzzzzzzzz\"]\nX-Provimux-Entry: [\"foreign/model\"]\nX-Provimux-Model: [\"foreign-model\"]\n"
-	foreignFields := `"provimux_account":"a.zzzzzzzzzzzzzzzzzzzz","provimux_model":"foreign-model","provimux_entry":"foreign/model",`
+	named := "X-Cpa-Auth-Provider: [\"answered-fixture\"]\n"
+	createdEnd := `"cpa_auth_host":"answers.example.test"}`
 	want := string(today)
-	if strings.Count(want, foreignHeaders) != 4 || strings.Count(want, foreignFields) != 1 {
-		t.Fatalf("golden: %d foreign header blocks, %d foreign field sets", strings.Count(want, foreignHeaders), strings.Count(want, foreignFields))
+	if strings.Count(want, named) != 3 || strings.Count(want, createdEnd) != 1 || strings.Contains(want, "X-Provimux-") || strings.Contains(want, "provimux_") {
+		t.Fatalf("golden: %d named answers, %d response.created, or a provimux name in it", strings.Count(want, named), strings.Count(want, createdEnd))
 	}
-	want = strings.Replace(want, "400\nContent-Type: [\"application/json\"]\n"+foreignHeaders, "400\nContent-Type: [\"application/json\"]\n", 1)
-	want = strings.ReplaceAll(want, foreignHeaders, "X-Provimux-Account: [\""+marker+"\"]\n")
-	want = strings.Replace(want, foreignFields, "", 1)
-	want = strings.Replace(want, `"cpa_auth_host":"answers.example.test"}`, `"cpa_auth_host":"answers.example.test","provimux_account":"`+marker+`"}`, 1)
-	if got := string(answeredByAnswers(t)); got != want {
+	want = strings.ReplaceAll(want, named, named+"X-Provimux-Account: [\""+marker+"\"]\n")
+	want = strings.Replace(want, createdEnd, `"cpa_auth_host":"answers.example.test","provimux_account":"`+marker+`"}`, 1)
+	if got := string(answeredByAnswers(t, false)); got != want {
 		t.Fatalf("answers with the switch on:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// An upstream gateway's own X-Provimux-* headers (on its answers, passed with passthrough-headers, and put in the
+// header map by a foreign writer) and its provimux_* fields on response.created never reach a client, switch on or
+// off: the answers are those of the same fixture without them, but for the upstream's other header, which passes.
+func TestProvimuxAnsweredByForeignNamesNeverPass(t *testing.T) {
+	for _, on := range []bool{false, true} {
+		answeredBySwitch(t, on)
+		plain := string(answeredByAnswers(t, false))
+		foreign := string(answeredByAnswers(t, true))
+		if strings.Count(foreign, "X-Upstream-Note: [\"kept\"]\n") < 3 {
+			t.Fatalf("on %v, fixture: passthrough did not pass the upstream's own other header:\n%s", on, foreign)
+		}
+		if got := strings.ReplaceAll(foreign, "X-Upstream-Note: [\"kept\"]\n", ""); got != plain {
+			t.Fatalf("on %v: with an upstream gateway's names:\n%s\nwithout:\n%s", on, got, plain)
+		}
+		if strings.Contains(foreign, "zzzz") || strings.Contains(foreign, "foreign") {
+			t.Fatalf("on %v: a foreign value reaches the client:\n%s", on, foreign)
+		}
 	}
 }

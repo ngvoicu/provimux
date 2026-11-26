@@ -47,6 +47,13 @@ var cpaReservedResponseHeaders = map[string]struct{}{
 	"X-Cpa-Auth-Kind":                  {},
 	"X-Cpa-Auth-Provider":              {},
 	"X-Cpa-Auth-Host":                  {},
+	// Provimux (answered-by.md): this gateway's own statement; another's never passes, whatever the switch.
+	"X-Provimux-Account":     {},
+	"X-Provimux-Model":       {},
+	"X-Provimux-Model-Basis": {},
+	"X-Provimux-Model-Sent":  {},
+	"X-Provimux-Effort":      {},
+	"X-Provimux-Entry":       {},
 }
 
 // IsCPAReservedResponseHeader reports whether a downstream response header is managed by CPA.

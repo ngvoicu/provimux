@@ -14,8 +14,10 @@ import (
 // captured, offered, withdrawn, confirmed and written with the statement, and never apart from it: no place writes it
 // that does not write the three X-CPA-AUTH-* headers, and an answer that names nobody carries none of it.
 //
-// The switch models.answered-by as it is in force: the service sets it from each committed config. Off, nothing here
-// is written, read or removed, and every answer is byte for byte what it is without this design.
+// The switch models.answered-by as it is in force: the service sets it from each committed config (and keeps it off
+// in Home mode). Off, nothing of this is written, and every answer is byte for byte what it is without this design,
+// but for one thing: the six names are this gateway's own and are removed from a response whatever the switch, so an
+// upstream gateway's (which no answer carried before these names existed) never reaches a client as if it were ours.
 
 // The response headers of the statement, in the contract's order (prices-and-cache/openapi.yaml, components/headers).
 // This build writes X-Provimux-Account; the five others are the contract's, written by later steps, and are removed
@@ -95,14 +97,18 @@ func (a ProvimuxAnswer) Fields() []ProvimuxField {
 // SetProvimuxAnswerHeaders sets, or deletes, every X-Provimux-* header of the statement from one statement as it is
 // sent (AuthStatement.OnTheWire): a header the statement has no value for is deleted, so a value put in the header map
 // earlier (a foreign writer, an upstream gateway's) never outlives the statement it belonged to. With models.answered-by
-// off it touches nothing.
+// off it writes none and deletes all six; on, a response that already exposes headers to browsers on another origin
+// (Access-Control-Expose-Headers) exposes X-Provimux-Account too.
 func SetProvimuxAnswerHeaders(header http.Header, statement AuthStatement) {
-	if header == nil || !ProvimuxAnsweredBy() {
+	if header == nil {
 		return
 	}
 	values := map[string]string{}
-	for _, field := range statement.Provimux.Fields() {
-		values[field.Header] = field.Value
+	if ProvimuxAnsweredBy() {
+		for _, field := range statement.Provimux.Fields() {
+			values[field.Header] = field.Value
+		}
+		provimuxExpose(header)
 	}
 	for _, name := range provimuxFieldNames {
 		if value := values[name.Header]; value != "" {
@@ -111,6 +117,24 @@ func SetProvimuxAnswerHeaders(header http.Header, statement AuthStatement) {
 			header.Del(name.Header)
 		}
 	}
+}
+
+// provimuxExposeHeader is the CORS response header that lets a browser on another origin read a response header.
+const provimuxExposeHeader = "Access-Control-Expose-Headers"
+
+// provimuxExpose adds X-Provimux-Account to Access-Control-Expose-Headers when the response has that header and it
+// does not name ours yet.
+func provimuxExpose(header http.Header) {
+	exposed := header.Get(provimuxExposeHeader)
+	if exposed == "" {
+		return
+	}
+	for _, name := range strings.Split(exposed, ",") {
+		if strings.EqualFold(strings.TrimSpace(name), ProvimuxAccountHeader) {
+			return
+		}
+	}
+	header.Set(provimuxExposeHeader, exposed+", "+ProvimuxAccountHeader)
 }
 
 // provimuxAnsweredBy holds models.answered-by as in force; false until a config sets it.
