@@ -12,6 +12,10 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/hmac"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -42,7 +46,20 @@ const (
 	affinityClient1    = "provimux-test-client-1"
 	affinityClient2    = "provimux-test-client-2"
 	affinityInterval   = "PROVIMUX_TEST_AFFINITY_SNAPSHOT_INTERVAL"
+	// affinityStall: while the file it names exists, every snapshot write of the gateway waits.
+	affinityStall = "PROVIMUX_TEST_AFFINITY_STALL"
+	// affinityLinger: while the file it names exists, the gateway process stays after its stop.
+	affinityLinger = "PROVIMUX_TEST_AFFINITY_LINGER"
 )
+
+func affinityWaitWhile(path string) {
+	for {
+		if _, err := os.Stat(path); err != nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
 
 // TestProvimuxAffinityGatewayProcess is the gateway process of TestProvimuxAffinitySurvivesRestart.
 func TestProvimuxAffinityGatewayProcess(t *testing.T) {
@@ -53,6 +70,12 @@ func TestProvimuxAffinityGatewayProcess(t *testing.T) {
 	registry.SetLocalModelCatalogs(true)
 	if interval, errParse := time.ParseDuration(os.Getenv(affinityInterval)); errParse == nil {
 		cliproxy.SetProvimuxAffinitySnapshotInterval(interval)
+	}
+	if stall := os.Getenv(affinityStall); stall != "" {
+		cliproxy.SetProvimuxAffinityBeforeWrite(func() { affinityWaitWhile(stall) })
+	}
+	if linger := os.Getenv(affinityLinger); linger != "" {
+		defer affinityWaitWhile(linger)
 	}
 	cfg, err := config.LoadConfig(path)
 	if err != nil {
@@ -91,6 +114,7 @@ func (v *affinityVendor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 type affinityOptions struct {
+	unset        bool // routing.session-affinity-persist not in the file (the default)
 	persist      bool // routing.session-affinity-persist
 	clientKeys   bool // access.api-keys set (requests carry a caller scope)
 	saveCooldown bool // routing.cooldown.save-cooldown-status
@@ -124,6 +148,10 @@ func newAffinityGateway(t *testing.T, o affinityOptions) *affinityGateway {
 	if !o.clientKeys {
 		access = ""
 	}
+	persist := fmt.Sprintf("  session-affinity-persist: %t\n", o.persist)
+	if o.unset {
+		persist = ""
+	}
 	yaml := fmt.Sprintf(`config-version: 8
 models:
   live-lists: false
@@ -134,8 +162,7 @@ server:
 %srouting:
   strategy: "round-robin"
   session-affinity: true
-  session-affinity-persist: %t
-  cooldown:
+%s  cooldown:
     save-cooldown-status: %t
 kv-store:
   disabled: %t
@@ -155,7 +182,7 @@ api-keys:
       models:
         - name: "provimux-test-upstream"
           alias: %q
-`, g.port, access, o.persist, o.saveCooldown, o.kvDisabled, authDir, upstream.URL+"/v1", affinityModel)
+`, g.port, access, persist, o.saveCooldown, o.kvDisabled, authDir, upstream.URL+"/v1", affinityModel)
 	if err := os.WriteFile(g.config, []byte(yaml), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -181,13 +208,14 @@ func (g *affinityGateway) key() string {
 func (g *affinityGateway) start() { g.startEvery("200ms") }
 
 // startEvery runs the gateway with the given snapshot interval.
-func (g *affinityGateway) startEvery(interval string) {
+func (g *affinityGateway) startEvery(interval string, env ...string) {
 	g.t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run=^TestProvimuxAffinityGatewayProcess$", "-test.v")
 	// Nothing leaves the machine: the version and console updaters a start runs find no proxy;
 	// loopback (the stand-in vendor) is never proxied.
 	cmd.Env = append(os.Environ(), affinityGatewayEnv+"="+g.config, "HOME="+g.dir, affinityInterval+"="+interval,
 		"HTTP_PROXY=http://127.0.0.1:9", "HTTPS_PROXY=http://127.0.0.1:9", "NO_PROXY=")
+	cmd.Env = append(cmd.Env, env...)
 	cmd.Dir = g.dir
 	cmd.Stdout = g
 	cmd.Stderr = g
@@ -365,6 +393,7 @@ func TestProvimuxAffinitySurvivesRestart(t *testing.T) {
 			{"SIGKILL twice, the second before any new write", affinityOptions{persist: true, clientKeys: true}, true, true, expectation{true, false}},
 			{"SIGTERM, no client keys", affinityOptions{persist: true}, false, false, expectation{true, true}},
 			{"session-affinity-persist false: today's behaviour", affinityOptions{clientKeys: true}, false, false, expectation{false, false}},
+			{"session-affinity-persist not set: off by default", affinityOptions{unset: true, clientKeys: true}, false, false, expectation{false, false}},
 			{"kv-store disabled: today's behaviour, no file", affinityOptions{persist: true, clientKeys: true, kvDisabled: true}, false, false, expectation{false, false}},
 		} {
 			tc.options.saveCooldown = saveCooldown
@@ -386,7 +415,7 @@ func TestProvimuxAffinitySurvivesRestart(t *testing.T) {
 					}
 				}
 				g.restart(tc.kill, tc.twice)
-				kept := tc.options.persist && !tc.options.kvDisabled
+				kept := tc.options.persist && !tc.options.unset && !tc.options.kvDisabled
 				if _, err := os.Stat(g.snapshot()); kept && err != nil {
 					t.Errorf("the snapshot is gone after the start (%v): it stays until the next write", err)
 				}
@@ -433,4 +462,153 @@ func TestProvimuxAffinitySurvivesRestart(t *testing.T) {
 			})
 		}
 	}
+}
+
+// Case 4 of the third review across processes: the old gateway's periodic write is stalled when
+// it is told to stop; its stop gives up at the deadline and the process lingers. The new gateway
+// starts meanwhile, restores the last file written, and writes nothing while the old one holds the
+// store. When the old write is released it never lands; when the old process ends, the new one
+// writes. A conversation only the stalled write held never comes back; one the new process made
+// does.
+func TestProvimuxAffinityStalledWriterAcrossProcesses(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("stops the gateway with SIGTERM")
+	}
+	if os.Getenv(affinityGatewayEnv) != "" {
+		t.Skip("inside the gateway process")
+	}
+	g := newAffinityGateway(t, affinityOptions{persist: true, clientKeys: true})
+	stall, linger := filepath.Join(g.dir, "stall"), filepath.Join(g.dir, "linger")
+	g.startEvery("200ms", affinityStall+"="+stall, affinityLinger+"="+linger)
+	kept := &affinityConversation{client: affinityClient1, sessionID: "provimux-test-kept"}
+	keptKey := g.turn(kept, "kept: what is 1+1?")
+	// A periodic write after that turn holds it.
+	after := time.Now()
+	for {
+		if info, err := os.Stat(g.snapshot()); err == nil && info.ModTime().After(after) {
+			break
+		}
+		if time.Since(after) > 10*time.Second {
+			t.Fatal("no periodic snapshot")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	for _, path := range []string{stall, linger} {
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stalledOnly := &affinityConversation{client: affinityClient1, sessionID: "provimux-test-stalled-only"}
+	stalledKey := g.turn(stalledOnly, "stalled only: what is 2+2?")
+	time.Sleep(500 * time.Millisecond) // the next periodic write starts and stalls
+	old := g.cmd
+	oldStopped := g.stopped
+	_ = old.Process.Signal(syscall.SIGTERM)
+	time.Sleep(2500 * time.Millisecond) // past the stop's deadline: the old process lingers
+	select {
+	case <-oldStopped:
+		t.Fatal("premise: the old process ended")
+	default:
+	}
+	before, _ := os.ReadFile(g.snapshot())
+
+	g.cmd = nil
+	g.startEvery("200ms")
+	newOnly := &affinityConversation{client: affinityClient1, sessionID: "provimux-test-new-only"}
+	newKey := g.turn(newOnly, "new only: what is 3+3?")
+	time.Sleep(600 * time.Millisecond) // periodic writes of the new process: the store is held
+	if now, _ := os.ReadFile(g.snapshot()); !bytes.Equal(now, before) {
+		t.Fatal("the new process wrote while the old one held the store")
+	}
+	// From here every version of the file is read: none may hold what only the given-up write held.
+	seen := map[[32]byte]bool{}
+	watch := func() {
+		data, err := os.ReadFile(g.snapshot())
+		if err != nil {
+			return
+		}
+		sum := sha256.Sum256(data)
+		if seen[sum] {
+			return
+		}
+		seen[sum] = true
+		plain := affinityDecrypt(t, g.key(), data)
+		if bytes.Contains(plain, []byte("provimux-test-stalled-only")) {
+			t.Fatal("the given-up write landed")
+		}
+	}
+	watchFor := func(d time.Duration, until func() bool) {
+		end := time.Now().Add(d)
+		for time.Now().Before(end) {
+			watch()
+			if until != nil && until() {
+				return
+			}
+			time.Sleep(2 * time.Millisecond)
+		}
+	}
+	_ = os.Remove(stall) // the old write resumes: it was given up, so it does not land
+	watchFor(500*time.Millisecond, nil)
+	_ = os.Remove(linger)
+	ended := func() bool {
+		select {
+		case <-oldStopped:
+			return true
+		default:
+			return false
+		}
+	}
+	watchFor(10*time.Second, ended)
+	if !ended() {
+		t.Fatal("the old process did not end")
+	}
+	// The store is free: the new process writes on its next checks.
+	watchFor(5*time.Second, func() bool {
+		now, _ := os.ReadFile(g.snapshot())
+		return !bytes.Equal(now, before) && bytes.Contains(affinityDecrypt(t, g.key(), now), []byte("provimux-test-new-only"))
+	})
+	if now, _ := os.ReadFile(g.snapshot()); !bytes.Contains(affinityDecrypt(t, g.key(), now), []byte("provimux-test-new-only")) {
+		t.Fatalf("the new process never wrote:\n%s", g.log.String())
+	}
+	g.restart(false, false)
+	probes := 0
+	for _, c := range []struct {
+		conversation *affinityConversation
+		key          string
+		back         bool
+	}{{kept, keptKey, true}, {newOnly, newKey, true}, {stalledOnly, stalledKey, false}} {
+		g.otherNext(c.key, &probes)
+		got := g.turn(c.conversation, "after: what is 4+4?")
+		if c.back && got != c.key {
+			t.Errorf("%s: bound to %s, came back on %s", c.conversation.sessionID, c.key, got)
+		}
+		if !c.back && got == c.key {
+			t.Errorf("%s: only the given-up write held it, yet it came back on %s", c.conversation.sessionID, got)
+		}
+	}
+}
+
+// affinityDecrypt opens a snapshot with the key beside it, as the format in
+// sdk/cliproxy/provimux_affinity_persist.go describes: key file "PMXAFFKEY2\n" + 32 bytes + check;
+// snapshot "PMXAFF2\n" + nonce + AES-256-GCM under HMAC-SHA256(key, "provimux affinity snapshot v2").
+func affinityDecrypt(t *testing.T, keyPath string, data []byte) []byte {
+	t.Helper()
+	keyData, err := os.ReadFile(keyPath)
+	if err != nil || len(keyData) < 11+32 {
+		t.Fatalf("key: %v", err)
+	}
+	mac := hmac.New(sha256.New, keyData[11:43])
+	mac.Write([]byte("provimux affinity snapshot v2"))
+	block, _ := aes.NewCipher(mac.Sum(nil))
+	aead, _ := cipher.NewGCM(block)
+	const magic = "PMXAFF2\n"
+	if len(data) < len(magic)+aead.NonceSize() {
+		t.Fatal("short snapshot")
+	}
+	body := data[len(magic):]
+	plain, err := aead.Open(nil, body[:aead.NonceSize()], body[aead.NonceSize():], []byte(magic))
+	if err != nil {
+		t.Fatalf("snapshot does not open: %v", err)
+	}
+	return plain
 }

@@ -10,7 +10,7 @@ import (
 // Provimux-only: GET /v8/management/provimux/session-affinity-persist. Whether session affinity's
 // bindings are kept across a restart (routing.session-affinity-persist), and if not, why: from the
 // configuration "session-affinity-off", "home-mode", "kv-store-off" or "switch-off"; from the
-// files "foreign-file", "key-not-private", "directory-not-writable" or "path-unusable". Also the
+// files "foreign-file", "key-not-private", "directory-not-writable", "path-unusable" or "in-use". Also the
 // two files' paths, when they were last written and what the start restored. The switch itself is
 // read and written at /v8/management/config/routing/session-affinity-persist. Read-only: the
 // state is a copy kept in memory, the request never waits on the disk.

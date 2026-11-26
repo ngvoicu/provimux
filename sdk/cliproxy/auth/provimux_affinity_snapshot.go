@@ -27,6 +27,7 @@ package auth
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"math"
 	"net/http"
@@ -37,7 +38,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/MoeForge/moego/json"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	cliproxysession "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/session"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
@@ -232,7 +232,9 @@ type ProvimuxAffinityPinSample struct {
 }
 
 // ProvimuxAffinityPinStep is one step of a sample. Op: "pick" (Enrich then Pick, as a request
-// does), "pick-raw" (Pick alone: the first-message hashes, used when no identity was derived), "ok" and "fail" (the result of the last pick, a 429 for fail), "age" (every entry gets
+// does), "pick-raw" (Pick alone: the first-message hashes, used when no identity was derived),
+// "show-capacity" (the cache's default limit), "age-ms" (every entry gets Value milliseconds of
+// lifetime left), "ok" and "fail" (the result of the last pick, a 429 for fail), "age" (every entry gets
 // Value × TTL of lifetime left), "capacity" (the cache holds at most Value keys).
 type ProvimuxAffinityPinStep struct {
 	Op       string            `json:"op"`
@@ -435,6 +437,24 @@ func provimuxAffinityRunSample(sample ProvimuxAffinityPinSample) string {
 			cache.maxEntries = int(step.Value)
 			cache.mu.Unlock()
 			fmt.Fprintf(&out, "capacity %d\n", int(step.Value))
+		case "show-capacity":
+			cache.mu.RLock()
+			fmt.Fprintf(&out, "default capacity %d\n", cache.maxEntries)
+			cache.mu.RUnlock()
+		case "age-ms":
+			cache.mu.Lock()
+			now := time.Now()
+			var groups []sessionEntry
+			for element := cache.evictionOrder.Front(); element != nil; element = element.Next() {
+				if group, ok := cache.groups[element.Value.(string)]; ok {
+					groups = append(groups, group)
+				}
+			}
+			for _, group := range groups {
+				cache.replaceAliasGroupsLocked(group.authID, now.Add(time.Duration(step.Value)*time.Millisecond), group.aliases, group.binding, group)
+			}
+			cache.mu.Unlock()
+			fmt.Fprintf(&out, "age %.0fms\n", step.Value)
 		default:
 			fmt.Fprintf(&out, "unknown step %q\n", step.Op)
 		}
@@ -498,7 +518,7 @@ func provimuxAffinityPinSamples() []ProvimuxAffinityPinSample {
 	s1 := pick(h("X-Session-Id", "pin-s1"), chatOne, nil)
 	s2 := pick(h("X-Session-Id", "pin-s2"), chatOne, nil)
 	s3 := pick(h("X-Session-Id", "pin-s3"), chatOne, nil)
-	return []ProvimuxAffinityPinSample{
+	samples := []ProvimuxAffinityPinSample{
 		twice("claude code header", "claude", pick(h("X-Claude-Code-Session-Id", "pin-cc"), chatOne, nil)),
 		twice("claude code subagent", "claude", pick(h("X-Claude-Code-Session-Id", "pin-cc", "X-Claude-Code-Agent-Id", "pin-agent"), chatOne, nil)),
 		twice("claude code subagent of a subagent", "claude", pick(h("X-Claude-Code-Session-Id", "pin-cc", "X-Claude-Code-Agent-Id", "pin-agent", "X-Claude-Code-Parent-Agent-Id", "pin-parent-agent"), chatOne, nil)),
@@ -542,9 +562,90 @@ func provimuxAffinityPinSamples() []ProvimuxAffinityPinSample {
 		rule("refresh: a hit and a result renew the lifetime", "mixed", s1, ProvimuxAffinityPinStep{Op: "age", Value: 0.5}, s1,
 			ProvimuxAffinityPinStep{Op: "age", Value: 0.25}, ProvimuxAffinityPinStep{Op: "ok"}),
 		rule("expiry: an entry past its lifetime is not used", "mixed", s1, s2, s3, ProvimuxAffinityPinStep{Op: "age", Value: -0.01}, s1, s1, s2),
+		rule("expiry: an entry one millisecond past its lifetime is not used", "mixed", s1, s2, s3, ProvimuxAffinityPinStep{Op: "age-ms", Value: -1}, s1, s1, s2),
+		rule("capacity: the default limit", "mixed", ProvimuxAffinityPinStep{Op: "show-capacity"}),
 		rule("failure: a 429 releases the binding", "mixed", s1, ProvimuxAffinityPinStep{Op: "fail"}, s1, s1),
 		rule("capacity: the oldest group is evicted", "mixed", ProvimuxAffinityPinStep{Op: "capacity", Value: 2}, s1, s2, s1, s3, s2),
 	}
+	// Unusual ids for every kind of key: case, surrounding space, a control character, longer than
+	// upstream accepts, just under its bound, non-ASCII, empty after trimming.
+	jsonString := func(value string) string {
+		data, _ := json.Marshal(value)
+		return string(data)
+	}
+	kinds := []struct {
+		name, provider string
+		step           func(id string) ProvimuxAffinityPinStep
+	}{
+		{"claude code header", "claude", func(id string) ProvimuxAffinityPinStep { return pick(h("X-Claude-Code-Session-Id", id), chatOne, nil) }},
+		{"claude metadata user_id", "claude", func(id string) ProvimuxAffinityPinStep {
+			userID, _ := json.Marshal(map[string]string{"device_id": "pin-device", "account_uuid": "", "session_id": id})
+			return pick(nil, `{"model":"m","metadata":{"user_id":`+jsonString(string(userID))+`},"messages":[{"role":"user","content":"pin"}]}`, nil)
+		}},
+		{"metadata user_id", "mixed", func(id string) ProvimuxAffinityPinStep {
+			return pick(nil, `{"model":"m","metadata":{"user_id":`+jsonString(id)+`},"messages":[{"role":"user","content":"pin"}]}`, nil)
+		}},
+		{"codex session", "codex", func(id string) ProvimuxAffinityPinStep { return pick(h("Session-Id", id), chatOne, nil) }},
+		{"codex fork", "codex", func(id string) ProvimuxAffinityPinStep {
+			return pick(h("Session-Id", "pin-codex-fork", "X-Codex-Turn-Metadata", `{"forked_from_thread_id":`+jsonString(id)+`}`), chatOne, nil)
+		}},
+		{"antigravity session", "mixed", func(id string) ProvimuxAffinityPinStep { return pick(h("X-Http-Session-Id", id), chatOne, nil) }},
+		{"session header", "mixed", func(id string) ProvimuxAffinityPinStep { return pick(h("X-Session-Id", id), chatOne, nil) }},
+		{"parent session header", "mixed", func(id string) ProvimuxAffinityPinStep {
+			return pick(h("X-Session-Id", "pin-child", "X-Parent-Session-Id", id), chatOne, nil)
+		}},
+		{"opencode affinity", "mixed", func(id string) ProvimuxAffinityPinStep { return pick(h("X-Session-Affinity", id), chatOne, nil) }},
+		{"slot session", "mixed", func(id string) ProvimuxAffinityPinStep { return pick(h("X-Slot-Session-Id", id), chatOne, nil) }},
+		{"task header", "mixed", func(id string) ProvimuxAffinityPinStep { return pick(h("X-Task-Id", id), chatOne, nil) }},
+		{"conversation header", "mixed", func(id string) ProvimuxAffinityPinStep { return pick(h("X-Conversation-Id", id), chatOne, nil) }},
+		{"thread header", "mixed", func(id string) ProvimuxAffinityPinStep { return pick(h("X-Thread-Id", id), chatOne, nil) }},
+		{"pi request id", "mixed", func(id string) ProvimuxAffinityPinStep { return pick(h("X-Client-Request-Id", id), chatOne, nil) }},
+		{"prompt cache key", "codex", func(id string) ProvimuxAffinityPinStep {
+			return pick(nil, `{"model":"m","prompt_cache_key":`+jsonString(id)+`,"input":"pin"}`, nil)
+		}},
+		{"conversation of a prompt cache key", "codex", func(id string) ProvimuxAffinityPinStep {
+			return pick(nil, `{"model":"m","prompt_cache_key":"pin-pck","conversation":{"id":`+jsonString(id)+`},"input":"pin"}`, nil)
+		}},
+		{"body session id", "mixed", func(id string) ProvimuxAffinityPinStep {
+			return pick(nil, `{"model":"m","session_id":`+jsonString(id)+`,"messages":[{"role":"user","content":"pin"}]}`, nil)
+		}},
+		{"body thread id", "mixed", func(id string) ProvimuxAffinityPinStep {
+			return pick(nil, `{"model":"m","thread_id":`+jsonString(id)+`,"messages":[{"role":"user","content":"pin"}]}`, nil)
+		}},
+		{"body conversation id", "mixed", func(id string) ProvimuxAffinityPinStep {
+			return pick(nil, `{"model":"m","conversation_id":`+jsonString(id)+`,"messages":[{"role":"user","content":"pin"}]}`, nil)
+		}},
+		{"body chat id", "mixed", func(id string) ProvimuxAffinityPinStep {
+			return pick(nil, `{"model":"m","chat_id":`+jsonString(id)+`,"messages":[{"role":"user","content":"pin"}]}`, nil)
+		}},
+		{"body task id", "mixed", func(id string) ProvimuxAffinityPinStep {
+			return pick(nil, `{"model":"m","task_id":`+jsonString(id)+`,"messages":[{"role":"user","content":"pin"}]}`, nil)
+		}},
+		{"gemini cached content", "mixed", func(id string) ProvimuxAffinityPinStep {
+			return ProvimuxAffinityPinStep{Op: "pick", Model: model, Format: string(sdktranslator.FormatGemini), Body: `{"cachedContent":` + jsonString(id) + `,"contents":[{"role":"user","parts":[{"text":"pin"}]}]}`}
+		}},
+		{"execution session", "mixed", func(id string) ProvimuxAffinityPinStep {
+			return pick(nil, chatOne, map[string]string{cliproxyexecutor.ExecutionSessionMetadataKey: id})
+		}},
+		{"derived identity given", "mixed", func(id string) ProvimuxAffinityPinStep {
+			return pick(nil, chatOne, map[string]string{cliproxyexecutor.DerivedSessionIDMetadataKey: id})
+		}},
+	}
+	variants := []struct{ name, id string }{
+		{"mixed case", "Pin-Mixed-CASE-Id"},
+		{"surrounding space", "  pin-Spaced-id  "},
+		{"a control character", "pin-tab\tid"},
+		{"longer than accepted", strings.Repeat("Pin-Long-", 40)},
+		{"just under the bound", strings.Repeat("Pin-Bound-", 26)[:250]},
+		{"non-ASCII", "pin-Ünïcødé-会话-ид"},
+		{"empty after trimming", " \t "},
+	}
+	for _, kind := range kinds {
+		for _, variant := range variants {
+			samples = append(samples, twice(kind.name+": "+variant.name, kind.provider, kind.step(variant.id)))
+		}
+	}
+	return samples
 }
 
 // ProvimuxAccountIdentity returns the stable vendor identity of the account behind an auth, or
