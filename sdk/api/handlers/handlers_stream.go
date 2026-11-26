@@ -391,6 +391,7 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 	reqMeta := requestExecutionMetadata(ctx)
 	answered := &answeredAuthCapture{}
 	reqMeta[coreexecutor.AnsweredAuthCallbackMetadataKey] = answered.set
+	reqMeta[coreauth.ProvimuxAnswerCallbackMetadataKey] = answered.setStatement // Provimux: the whole statement
 	if execOptions.Path != "" {
 		reqMeta[coreexecutor.RequestPathMetadataKey] = execOptions.Path
 	}

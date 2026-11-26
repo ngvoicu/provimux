@@ -1069,6 +1069,9 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			cliCtx = handlers.WithAnsweredAuthCallback(cliCtx, func(kind, provider, host string) {
 				answeredAuth.Store(logging.AuthStatement{Kind: kind, Provider: provider, Host: host})
 			})
+			cliCtx = handlers.WithAnsweredStatementCallback(cliCtx, func(statement logging.AuthStatement) { // Provimux: whole
+				answeredAuth.Store(statement)
+			})
 			cliCtx = handlers.WithSelectedAuthIDCallback(cliCtx, func(authID string) {
 				preserveNativeOutput.Store(false)
 				codexDuplexStream.Store(false)

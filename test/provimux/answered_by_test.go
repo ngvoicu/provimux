@@ -1,6 +1,8 @@
 package provimux
 
 import (
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -135,5 +137,34 @@ func TestProvimuxAnsweredByLists(t *testing.T) {
 		if strings.Contains(string(body), `"account"`) {
 			t.Fatalf("%s with the switch off carries an account: %s", name, body)
 		}
+	}
+}
+
+// With the switch on, the fixture's answers are what the commit before answered-by writes (the golden file), but for
+// exactly this: every answer that names the credential carries X-Provimux-Account with its account's marker in place
+// of the upstream gateway's X-Provimux-* headers, an answer that names nobody (the 400) carries none of them, and the
+// turn's response.created carries provimux_account beside cpa_auth_* in place of the upstream's provimux_* fields.
+func TestProvimuxAnsweredByAnswers(t *testing.T) {
+	answeredBySwitch(t, true)
+	marker := answeredByAnswerKey().ProvimuxAccountMarker()
+	if !answeredMarkerPattern.MatchString(marker) {
+		t.Fatalf("fixture: marker %q", marker)
+	}
+	today, errRead := os.ReadFile(filepath.Join("testdata", "answered-by", "answers.txt"))
+	if errRead != nil {
+		t.Fatal(errRead)
+	}
+	foreignHeaders := "X-Provimux-Account: [\"a.zzzzzzzzzzzzzzzzzzzz\"]\nX-Provimux-Entry: [\"foreign/model\"]\nX-Provimux-Model: [\"foreign-model\"]\n"
+	foreignFields := `"provimux_account":"a.zzzzzzzzzzzzzzzzzzzz","provimux_model":"foreign-model","provimux_entry":"foreign/model",`
+	want := string(today)
+	if strings.Count(want, foreignHeaders) != 4 || strings.Count(want, foreignFields) != 1 {
+		t.Fatalf("golden: %d foreign header blocks, %d foreign field sets", strings.Count(want, foreignHeaders), strings.Count(want, foreignFields))
+	}
+	want = strings.Replace(want, "400\nContent-Type: [\"application/json\"]\n"+foreignHeaders, "400\nContent-Type: [\"application/json\"]\n", 1)
+	want = strings.ReplaceAll(want, foreignHeaders, "X-Provimux-Account: [\""+marker+"\"]\n")
+	want = strings.Replace(want, foreignFields, "", 1)
+	want = strings.Replace(want, `"cpa_auth_host":"answers.example.test"}`, `"cpa_auth_host":"answers.example.test","provimux_account":"`+marker+`"}`, 1)
+	if got := string(answeredByAnswers(t)); got != want {
+		t.Fatalf("answers with the switch on:\n%s\nwant:\n%s", got, want)
 	}
 }

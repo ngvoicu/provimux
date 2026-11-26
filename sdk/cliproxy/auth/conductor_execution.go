@@ -3363,6 +3363,7 @@ func publishAnsweredAuthMetadata(attemptCtx context.Context, meta map[string]any
 		statement = auth.AuthStatement()
 	}
 	callback(statement.Kind, statement.Provider, statement.Host)
+	publishProvimuxAnswer(attemptCtx, meta, auth, statement) // Provimux: the whole statement (answered-by.md 5)
 }
 
 func syncPublishedSelectedAuthMetadata(dst, src map[string]any) {

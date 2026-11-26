@@ -120,7 +120,7 @@ func (a *Auth) AuthStatement() logging.AuthStatement {
 	if !ok {
 		return logging.AuthStatement{}
 	}
-	return logging.AuthStatement{Kind: a.AuthKind(), Provider: a.Provider, Host: host}
+	return logging.AuthStatement{Kind: a.AuthKind(), Provider: a.Provider, Host: host, Provimux: logging.ProvimuxAnswer{Account: a.ProvimuxAccountMarker()}}
 }
 
 // AuthSourceKind returns where the Auth entry came from at runtime.
