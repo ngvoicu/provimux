@@ -168,13 +168,16 @@ func TestProvimuxRouteCooldownsPooledAliasHasNone(t *testing.T) {
 	}
 }
 
-// provimuxPoolOffsets copies the manager's round-robin positions.
-func provimuxPoolOffsets(m *Manager) map[string]int {
+// provimuxPoolOffsets copies the manager's round-robin positions (per credential, then per pool).
+func provimuxPoolOffsets(m *Manager) map[string]map[string]int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	out := make(map[string]int, len(m.modelPoolOffsets))
-	for key, offset := range m.modelPoolOffsets {
-		out[key] = offset
+	out := make(map[string]map[string]int, len(m.modelPoolOffsets))
+	for authID, pools := range m.modelPoolOffsets {
+		out[authID] = make(map[string]int, len(pools))
+		for key, offset := range pools {
+			out[authID][key] = offset
+		}
 	}
 	return out
 }
