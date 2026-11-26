@@ -161,6 +161,39 @@ For logins and the configuration reference, CLIProxyAPI's
 [documentation](https://github.com/router-for-me/CLIProxyAPI#readme) applies; `config.example.yaml` in this
 repository includes the Provimux options.
 
+### Restarts and upgrades
+
+A stop or restart (`brew services restart provimux`, which an upgrade needs; `docker stop`; a systemd stop; Ctrl+C)
+waits for the answers in flight for up to 25 seconds by default, also on installs whose config says
+`shutdown-timeout: 0`. Provimux only chooses how long; the wait itself is CLIProxyAPI's (`server.shutdown-timeout`),
+and so is what it covers:
+
+- An HTTP answer in flight, streamed or not, finishes, and the process exits once the last one has.
+- A new connection during the wait is refused, because the listener closes when the stop begins; a client that
+  retries reaches the new process once it listens.
+- A Responses WebSocket turn (Pi and the Codex CLI use these on some routes) is not waited for: it is cut at once
+  when nothing else is in flight, and otherwise goes on only until the wait ends.
+- An answer relayed through the AI Studio relay is cut when the stop begins, with an error at the end of the
+  stream, because the relay stops before the wait.
+- In Home mode the stop is CLIProxyAPI's as well: Home's own shutdown runs before the wait.
+- The wait ends 30 seconds after the stop at the latest, because CLIProxyAPI gives its whole stop 30 seconds;
+  whatever is still in flight then is cut.
+- A second Ctrl+C or SIGTERM during the wait does not cut it short; SIGKILL (`kill -9`) does.
+
+The wait is Provimux's setting `server.restart-drain-seconds`, a whole number from 0 to 30. When it is set, it alone
+decides, and 0 cuts the answers in flight at once, as before. When it is not set, the wait is 25 seconds, or
+`server.shutdown-timeout` when that is larger. Any other value is refused: the console cannot save it, and the
+gateway does not start with a config file that holds it.
+
+```yaml
+server:
+  restart-drain-seconds: 0
+```
+
+From Homebrew 6.0.13, the Homebrew service gives Provimux 40 seconds to stop before it is killed. `docker stop` kills
+a container after 10 seconds by default, which cuts the wait: give it more with `docker stop -t 40`,
+`docker run --stop-timeout 40`, or `stop_grace_period: 40s` in Compose.
+
 ### Your accounts
 
 Add API keys under `api-keys` in your config: `claude`, `codex` (OpenAI), `gemini`, `vertex`, `xai`, `meta`, and

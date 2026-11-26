@@ -1,0 +1,56 @@
+package config
+
+import (
+	"fmt"
+	"testing"
+
+	"gopkg.in/yaml.v3"
+)
+
+// Provimux: the number of seconds upstream's own stop (api.Server.Stop) lets HTTP requests in flight finish
+// before it closes them, read once per stop. Upstream reads server.shutdown-timeout, whose 0 (the value every
+// install copied from the example) closes at once. Provimux only chooses the number; the stop itself is
+// upstream's.
+
+// ProvimuxRestartDrainDefaultSeconds is the budget when server.restart-drain-seconds is not set.
+const ProvimuxRestartDrainDefaultSeconds = 25
+
+// ProvimuxRestartDrainMaxSeconds is the largest value server.restart-drain-seconds accepts. Upstream bounds
+// the whole stop at 30 seconds anyway.
+const ProvimuxRestartDrainMaxSeconds = 30
+
+// provimuxRestartDrainDefault is the default in this process: 0 inside a test binary, so upstream's tests,
+// which build configs without the key, keep upstream's immediate close (as models.live-lists does).
+var provimuxRestartDrainDefault = ProvimuxRestartDrainDefaultSeconds
+
+func init() {
+	if testing.Testing() {
+		provimuxRestartDrainDefault = 0
+	}
+}
+
+// ProvimuxRestartDrain is server.restart-drain-seconds: a whole number of seconds from 0 to
+// ProvimuxRestartDrainMaxSeconds. Any other value is refused when the config is read, so a management write
+// of one fails and the file keeps its value.
+type ProvimuxRestartDrain int
+
+// UnmarshalYAML accepts only a YAML integer from 0 to ProvimuxRestartDrainMaxSeconds.
+func (d *ProvimuxRestartDrain) UnmarshalYAML(node *yaml.Node) error {
+	var seconds int
+	if node.Kind != yaml.ScalarNode || node.ShortTag() != "!!int" || node.Decode(&seconds) != nil ||
+		seconds < 0 || seconds > ProvimuxRestartDrainMaxSeconds {
+		return fmt.Errorf("server.restart-drain-seconds must be a whole number of seconds from 0 to %d, got %q",
+			ProvimuxRestartDrainMaxSeconds, node.Value)
+	}
+	*d = ProvimuxRestartDrain(seconds)
+	return nil
+}
+
+// ProvimuxStopDrainSeconds is the budget handed to upstream's stop: server.restart-drain-seconds when it is
+// set (0 included: close at once); otherwise the default, or server.shutdown-timeout when that is larger.
+func (cfg *Config) ProvimuxStopDrainSeconds() int {
+	if cfg.RestartDrainSeconds != nil {
+		return int(*cfg.RestartDrainSeconds)
+	}
+	return max(provimuxRestartDrainDefault, cfg.ShutdownTimeoutSeconds)
+}
