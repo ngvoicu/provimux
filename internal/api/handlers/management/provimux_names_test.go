@@ -288,6 +288,7 @@ func TestProvimuxNamesOthersAndServedCoverEveryOfferedName(t *testing.T) {
 // S4 at the endpoint: refused counts per name, keeps the last time, says since when, and is null
 // while the switch is off.
 func TestProvimuxNamesRefused(t *testing.T) {
+	// date-safe: the names rule's clock is set to it (onlymynames.SetClock).
 	clock := time.Date(2026, 11, 25, 10, 4, 0, 0, time.UTC)
 	t.Cleanup(onlymynames.SetClock(func() time.Time { return clock }))
 	h := namesFixture(t, namesCfg(true), namesStandardAccounts()...)

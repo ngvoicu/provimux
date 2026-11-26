@@ -14,7 +14,9 @@
 #                 upstream-waived failure; and the two waivers that must still hold (same test fails
 #                 on the tag; explicit pass on the rerun)
 #   guard.sh      base only upstream (no local tag); a reachable base tag withdrawn or
-#                 moved upstream; the expected base
+#                 moved upstream; the expected base; rule 6, dates in the layer's tests (a
+#                 literal date with and without a date-safe comment, a comment's reach, what
+#                 is not a date, a patch's test)
 #   release-meta  the base tag only upstream; a withdrawn base
 #   report.sh     a successful release run for the wrong SHA (not published), the right
 #                 SHA (published), a failed check job (not published); a failure result
@@ -288,6 +290,49 @@ expect "base tag only upstream (no local tag): passes" pass "$(guard env)"
 contains "  ... on base v1.1.0" "$tmp/guard.out" "Base: v1.1.0"
 expect "expected base v1.1.0 at its commit: passes" pass "$(guard env PMX_EXPECT_BASE=v1.1.0 PMX_EXPECT_BASE_COMMIT="$v110")"
 expect "expected base v1.0.0 (older than the base): fails" fail "$(guard env PMX_EXPECT_BASE=v1.0.0)"
+echo "# guard.sh rule 6: dates in the layer's tests"
+g6="$(git -C "$pmx" rev-parse HEAD)"
+# dated FILE CONTENT [TRAILER]: one commit on the fixture adding FILE (a layer commit unless
+# TRAILER is "patch": then below the layer), then the guard; the fixture is put back after.
+dated() {
+  (
+    cd "$pmx"
+    if [ "${3:-}" = patch ]; then
+      git checkout -q --detach "$g6~2"
+      mkdir -p "$(dirname "$1")" && printf '%s\n' "$2" >"$1" && git add -A && git commit -q -m 'owner patch test'
+      git cherry-pick "$g6~2..$g6" >/dev/null
+    else
+      mkdir -p "$(dirname "$1")" && printf '%s\n' "$2" >"$1" && git add -A && git commit -q -m 'test' -m 'Provimux-Layer: branding'
+    fi
+  )
+  guard env
+  git -C "$pmx" checkout -q --detach "$g6"
+}
+expect "a layer test with time.Date of a year and no date-safe comment: fails" fail "$(dated pkg/a_test.go 'package pkg
+var at = time.Date(2026, 11, 19, 0, 0, 0, 0, time.UTC)')"
+contains "  ... names the file and the line" "$tmp/guard.out" "pkg/a_test.go:2: a literal date in a layer test"
+expect "the same line under a date-safe comment: passes" pass "$(dated pkg/a_test.go 'package pkg
+// date-safe: the clock is set to it.
+var at = time.Date(2026, 11, 19, 0, 0, 0, 0, time.UTC)')"
+expect "a date-safe comment on the line itself: passes" pass "$(dated pkg/a_test.go 'package pkg
+var at = "2026-11-19" // date-safe: a parsed field.')"
+expect "a date-safe comment stops at an empty line: fails" fail "$(dated pkg/a_test.go 'package pkg
+// date-safe: the clock is set to it.
+var a = 1
+
+var at = "2026-11-19T16:10:44Z"')"
+expect "a date-safe comment without a reason: fails" fail "$(dated pkg/a_test.go 'package pkg
+// date-safe:
+var at = "2026-11-19"')"
+expect "time.Unix of a 10-digit epoch: fails" fail "$(dated test/provimux/b_test.go 'package provimux
+var at = time.Unix(1795710319, 0)')"
+expect "a date in a comment line, a model id with a date, time.Unix(100, 0): passes" pass "$(dated pkg/a_test.go 'package pkg
+// fetched on 2026-11-19
+var id, at = "gpt-4o-2024-08-06", time.Unix(100, 0)')"
+expect "a date in a non-test file: passes" pass "$(dated pkg/a.go 'package pkg
+var at = time.Date(2026, 11, 19, 0, 0, 0, 0, time.UTC)')"
+expect "a dated test that a patch adds (below the layer): not the layer's, passes" pass "$(dated pkg/p_test.go 'package pkg
+var at = time.Date(2026, 11, 19, 0, 0, 0, 0, time.UTC)' patch)"
 # As publish.sh runs it: a bare repository whose HEAD is the candidate, nothing checked out.
 bare="$tmp/guard-bare.git"
 git init -q --bare "$bare"

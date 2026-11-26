@@ -92,6 +92,7 @@ func putExampleDays(t *testing.T, store *testStore) {
 			t.Fatal(err)
 		}
 	}
+	// date-safe: the recorder runs on the test clock (newTestEnv); this is a stored or recorded day.
 	meta, _ := json.Marshal(metaValue{V: 1, CreatedAt: "2026-11-18T06:00:00Z", FirstDay: "2026-11-18",
 		KeySecret: base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32))})
 	if _, err := store.inner.KVSet(context.Background(), metaKey, meta, kvstore.KVSetOptions{}); err != nil {
@@ -115,6 +116,7 @@ func TestTheExamples(t *testing.T) {
 }
 
 func TestPeriods(t *testing.T) {
+	// date-safe: each row gives the day the period is computed from; parsed and compared by a pure function; no clock reads it.
 	day := func(s string) time.Time { d, _ := parseDay(s); return d }
 	for _, tc := range []struct{ today, period, from, to string }{
 		{"2026-11-20", "today", "2026-11-20", "2026-11-20"},
@@ -143,6 +145,7 @@ func TestPeriods(t *testing.T) {
 	}
 	// Through the query, on the two daylight-saving days of Bucharest.
 	env := newTestEnv(t, nil)
+	// date-safe: the test clock is set to each day.
 	env.clock.Set(time.Date(2026, 3, 29, 23, 30, 0, 0, bucharest))
 	if a := env.query(t, "period=7d"); a.Today != "2026-03-29" || a.Range.From != "2026-03-23" || a.UTCOffsetSeconds != 3*3600 {
 		t.Fatalf("spring: %+v %d", a.Range, a.UTCOffsetSeconds)
@@ -157,6 +160,7 @@ func TestPeriodAll(t *testing.T) {
 	store := openTestStore(t, "")
 	putExampleDays(t, store)
 	env := newTestEnv(t, store)
+	// date-safe: the recorder runs on the test clock (newTestEnv); this is a stored or recorded day.
 	if a := env.query(t, "period=all"); a.Range.From != "2026-11-18" || a.Totals.Requests != 2245 {
 		t.Fatalf("all starts at first_day: %+v %d", a.Range, a.Totals.Requests)
 	}
@@ -175,6 +179,7 @@ func TestPeriodAll(t *testing.T) {
 func TestEvery400(t *testing.T) {
 	for raw, parameter := range map[string]string{
 		"period=week": "period",
+		// date-safe: query parameters, parsed and compared by a pure function; no clock reads it.
 		"period=month&from=2026-11-01&to=2026-11-02": "period",
 		"from=2026-11-01":                    "from, to",
 		"to=2026-11-01":                      "from, to",
@@ -195,6 +200,7 @@ func TestEvery400(t *testing.T) {
 			t.Errorf("%s: error %v, want one naming %s", raw, err, parameter)
 		}
 	}
+	// date-safe: query parameters, parsed and compared by a pure function; no clock reads it.
 	if _, err := ParseRequest(url.Values{"from": {"2016-01-05"}, "to": {"2026-01-01"}}); err != nil {
 		t.Fatalf("3648 days is allowed: %v", err)
 	}
@@ -307,6 +313,7 @@ func TestOrder(t *testing.T) {
 			t.Fatalf("time first, then requests: %s/%d before %s/%d", *a.Day, a.Requests, *b.Day, b.Requests)
 		}
 	}
+	// date-safe: the recorder runs on the test clock (newTestEnv); this is a stored or recorded day.
 	if len(rows) != 6 || *rows[0].Day != "2026-11-18" || *rows[0].Kind != "oauth" {
 		t.Fatalf("rows %d, first %s %s", len(rows), *rows[0].Day, *rows[0].Kind)
 	}
@@ -362,6 +369,7 @@ func TestFilters(t *testing.T) {
 	if len(a.ReportedCostHosts) != 0 || len(a.Models) != 3 {
 		t.Fatalf("filters narrow the model list and the hosts: %v %d", a.ReportedCostHosts, len(a.Models))
 	}
+	// date-safe: the recorder runs on the test clock (newTestEnv); this is a stored or recorded day.
 	if a.Recording.Since == nil || *a.Recording.Since != "2026-11-18" {
 		t.Fatal("filters leave recording.since")
 	}
@@ -487,6 +495,7 @@ func TestAKeysTail(t *testing.T) {
 	env.round()
 	id := keyID(env.r.secret, key)
 	// The older day says another tail: the latest day that has the id wins.
+	// date-safe: the recorder runs on the test clock (newTestEnv); this is a stored or recorded day.
 	d := storedDay(t, store, "2026-11-17")
 	d.keys[id] = "OLD1"
 	data, _ := d.encode("2026-11-17")
@@ -572,6 +581,7 @@ func TestQuerySkipsADayThatDoesNotDecode(t *testing.T) {
 func TestAQueryBeforeTheFirstRoundShowsTheStoredIDs(t *testing.T) {
 	store := openTestStore(t, "")
 	stored := bytes.Repeat([]byte{9}, 32)
+	// date-safe: the recorder runs on the test clock (newTestEnv); this is a stored or recorded day.
 	meta, _ := json.Marshal(metaValue{V: 1, CreatedAt: "2026-11-01T00:00:00Z", FirstDay: "2026-11-01", KeySecret: base64.StdEncoding.EncodeToString(stored)})
 	_, _ = store.inner.KVSet(context.Background(), metaKey, meta, kvstore.KVSetOptions{})
 	env := newTestEnv(t, store)

@@ -162,6 +162,7 @@ func namesOffRun(t *testing.T, setting string) namesOffObservation {
 	observation := namesOffObservation{Lists: map[string][]string{}, Chats: map[string]string{}, Registered: map[string][]string{}}
 	_, body := do("GET", "/v1/models", nil, "")
 	observation.Lists["openai"] = ids(body)
+	// date-safe: Anthropic's API version, not a time.
 	_, body = do("GET", "/v1/models", http.Header{"Anthropic-Version": {"2023-06-01"}}, "")
 	observation.Lists["claude"] = ids(body)
 	_, body = do("GET", "/v1beta/models", nil, "")

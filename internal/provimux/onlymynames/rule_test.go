@@ -146,6 +146,7 @@ func TestRuleRefuses(t *testing.T) {
 func TestPutAndCount(t *testing.T) {
 	Reset()
 	t.Cleanup(Reset)
+	// date-safe: the rule's clock is set to it (SetClock).
 	clock := time.Date(2026, 11, 25, 10, 0, 0, 0, time.UTC)
 	t.Cleanup(SetClock(func() time.Time { return clock }))
 	given := rule(true, []string{"mine"}, nil)

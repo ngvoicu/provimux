@@ -657,6 +657,7 @@ func TestProvimuxKeyClaudeRequest(t *testing.T) {
 	svc.registerModelsForAuth(t.Context(), key)
 	keyRefresh(svc, false)
 	request := stand.seen()[0]
+	// date-safe: Anthropic's API version, not a time.
 	if request.URL.Path != "/v1/models" || request.URL.Query().Get("limit") != "1000" || request.Header.Get("Anthropic-Version") != "2023-06-01" ||
 		request.Header.Get("X-Gw") != "1" || (request.Header.Get("Authorization") == "" && request.Header.Get("X-Api-Key") == "") {
 		t.Fatalf("request = %s %v", request.URL, request.Header)

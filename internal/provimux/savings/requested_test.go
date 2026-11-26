@@ -22,6 +22,7 @@ func TestRequestedModels(t *testing.T) {
 	old := newDayRows("Europe/Bucharest", 7200)
 	old.mergePending(map[pendingKey]*counters{{k: "oauth", p: "claude", m: "claude-opus-5-5"}: {Req: 5, In: 10}}, nil)
 	old.asked = nil
+	// date-safe: the recorder runs on the test clock (newTestEnv); this is a stored or recorded day.
 	data, err := old.encode("2026-11-19")
 	if err != nil || bytes.Contains(data, []byte("requested")) {
 		t.Fatalf("an old day: %s %v", data, err)

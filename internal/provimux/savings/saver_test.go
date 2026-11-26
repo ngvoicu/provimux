@@ -16,6 +16,7 @@ import (
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 )
 
+// date-safe: the day of the test clock (newTestEnv).
 const today = "2026-11-20"
 
 func TestTotalsAreAbsolute(t *testing.T) {
@@ -136,6 +137,7 @@ func TestStoreOff(t *testing.T) {
 		t.Fatal("with the store off the totals stay in memory")
 	}
 	env.r.opts.maxMemoryDays = 400
+	// date-safe: the recorder runs on the test clock (newTestEnv); this is a stored or recorded day.
 	start := time.Date(2025, 1, 1, 12, 0, 0, 0, bucharest)
 	for i := 0; i < 450; i++ {
 		rec := claudeRecord("claude-opus-5-5", "", 1, 0, 0, 1)
@@ -291,6 +293,7 @@ func TestOldDaysLeaveMemory(t *testing.T) {
 	store := openTestStore(t, "")
 	env := newTestEnv(t, store)
 	old := claudeRecord("claude-opus-5-5", "", 1, 0, 0, 1)
+	// date-safe: the recorder runs on the test clock (newTestEnv); this is a stored or recorded day.
 	old.RequestedAt = time.Date(2026, 11, 15, 12, 0, 0, 0, bucharest)
 	env.record(old)
 	env.record(claudeRecord("claude-opus-5-5", "", 1, 0, 0, 1))
@@ -300,6 +303,7 @@ func TestOldDaysLeaveMemory(t *testing.T) {
 	}
 	env.record(old)
 	env.round()
+	// date-safe: the recorder runs on the test clock (newTestEnv); this is a stored or recorded day.
 	if got := sumRows(storedDay(t, store, "2026-11-15")).Req; got != 2 {
 		t.Fatalf("a late record is merged with the file: %d", got)
 	}
@@ -323,6 +327,7 @@ func TestMeta(t *testing.T) {
 	if meta.V != 1 || meta.FirstDay != today || meta.CreatedAt == "" {
 		t.Fatalf("meta %+v", meta)
 	}
+	// date-safe: the recorder runs on the test clock (newTestEnv); this is a stored or recorded day.
 	idBefore := keyID(env.r.secret, "client-key-aaaaaaaaaaaa")
 	later := claudeRecord("claude-opus-5-5", "", 1, 0, 0, 1)
 	later.RequestedAt = time.Date(2026, 11, 21, 12, 0, 0, 0, bucharest)
@@ -389,6 +394,7 @@ func TestTheKeyNeverReachesTheDisk(t *testing.T) {
 func TestIDsUseTheStoredSecret(t *testing.T) {
 	store := openTestStore(t, "")
 	stored := []byte("ssssssssssssssssssssssssssssssss")
+	// date-safe: the recorder runs on the test clock (newTestEnv); this is a stored or recorded day.
 	meta, _ := json.Marshal(metaValue{V: 1, CreatedAt: "2026-11-01T00:00:00Z", FirstDay: "2026-11-01", KeySecret: base64.StdEncoding.EncodeToString(stored)})
 	if _, err := store.inner.KVSet(context.Background(), metaKey, meta, kvstore.KVSetOptions{}); err != nil {
 		t.Fatal(err)
@@ -487,6 +493,7 @@ func TestThePriceListCopy(t *testing.T) {
 func TestTheZoneChanges(t *testing.T) {
 	store := openTestStore(t, "")
 	env := newTestEnv(t, store)
+	// date-safe: the recorder runs on the test clock (newTestEnv); this is a stored or recorded day.
 	at := time.Date(2026, 11, 20, 1, 30, 0, 0, bucharest) // 2026-11-19 23:30 UTC
 	rec := claudeRecord("claude-opus-5-5", "", 1, 0, 0, 1)
 	rec.RequestedAt = at

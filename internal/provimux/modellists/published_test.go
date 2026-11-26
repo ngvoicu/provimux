@@ -20,6 +20,7 @@ func testListing(provider string, models ...map[string]any) map[string]any {
 	if models == nil {
 		models = []map[string]any{}
 	}
+	// date-safe: a fixture field; the package reads no clock: every time is an argument or a stored value.
 	return map[string]any{"provider": provider, "basis": "listed", "listed_at": "2026-11-22", "client": "provimux",
 		"evidence": []any{}, "model_count": len(models), "models": models}
 }
@@ -62,12 +63,14 @@ func TestFetchStatusesAndShapes(t *testing.T) {
 		_, _ = w.Write(body)
 	}))
 	defer server.Close()
+	// date-safe: Fetch's time argument; the package reads no clock: every time is an argument or a stored value.
 	now := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
 	fetch := func(held string) (FetchResult, error) {
 		return Fetch(context.Background(), server.Client(), server.URL, held, "provimux/test", now)
 	}
 
 	status, etag = http.StatusOK, `"v1"`
+	// date-safe: a published page's generated_at, compared only with other documents' (never with a clock).
 	body = testPage("2026-11-22T04:20:11Z", testListing("devin", testModel("kimi-k9", 32768)), testListing("openai-codex", testModel("gpt-9", 1)))
 	result, err := fetch("")
 	if err != nil || result.NotModified || result.Document == nil {
@@ -96,6 +99,7 @@ func TestFetchStatusesAndShapes(t *testing.T) {
 	}
 
 	for name, bad := range map[string][]byte{
+		// date-safe: pages refused before their date matters; the package reads no clock: every time is an argument or a stored value.
 		"cut off":    testPage("2026-11-22T04:20:11Z", testListing("devin", testModel("a", 1)))[:40],
 		"not json":   []byte("<html>"),
 		"no meta":    []byte(`{"total":0,"data":[]}`),
@@ -135,6 +139,7 @@ func TestFetchTooLarge(t *testing.T) {
 }
 
 func TestBadListingsAreCheckedOneByOne(t *testing.T) {
+	// date-safe: a published page's generated_at, compared only with other documents' (never with a clock).
 	page := []byte(`{"meta":{"dataset_version":"x","generated_at":"2026-11-22T04:20:11Z"},"total":4,"next_offset":null,"data":[
 		{"provider":"devin","basis":"listed","models":[]},
 		{"provider":"openai-codex","basis":"providers.dev","models":"not a list"},
@@ -159,6 +164,7 @@ func TestBadListingsAreCheckedOneByOne(t *testing.T) {
 }
 
 func TestAcceptKeepsOnlyTheBadListingsHeldOne(t *testing.T) {
+	// date-safe: a published page's generated_at, compared only with other documents' (never with a clock).
 	day := func(d int) time.Time { return time.Date(2026, 11, d, 4, 0, 0, 0, time.UTC) }
 	held := &Document{GeneratedAt: day(21), Listings: map[string]Listing{
 		"devin":        {Provider: "devin", Models: []ListingModel{{ID: "kimi-k9"}}},
@@ -192,6 +198,7 @@ func TestPublishedCacheRoundTripAndDamage(t *testing.T) {
 		t.Fatalf("empty: %v", err)
 	}
 	maxOutput := 32768
+	// date-safe: times stored and read back; the package reads no clock: every time is an argument or a stored value.
 	doc := &Document{Schema: PublishedSchema, ETag: `"v1"`, DatasetVersion: "ds", GeneratedAt: time.Date(2026, 11, 22, 4, 0, 0, 0, time.UTC),
 		FetchedAt: time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC),
 		Listings:  map[string]Listing{"devin": {Provider: "devin", Models: []ListingModel{{ID: "kimi-k9", MaxOutput: &maxOutput}}}}}
@@ -210,6 +217,7 @@ func TestPublishedCacheRoundTripAndDamage(t *testing.T) {
 		"damaged": `{"schema":1,`,
 		"foreign": `{"schema":9}`,
 		"no date": `{"schema":1,"listings":{}}`,
+		// date-safe: a damaged file's times; the package reads no clock: every time is an argument or a stored value.
 		"invalid": `{"schema":1,"generated_at":"2026-11-22T04:00:00Z","fetched_at":"2026-11-22T04:00:00Z","listings":{"devin":{"provider":"xai","models":[{"id":"a"}]}}}`,
 	} {
 		if err = os.WriteFile(filepath.Join(dir, PublishedFileName), []byte(content), 0o600); err != nil {

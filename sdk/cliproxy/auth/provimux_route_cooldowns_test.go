@@ -8,6 +8,7 @@ import (
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 )
 
+// date-safe: passed as now to every call; the code under test reads no clock.
 var provimuxCooldownNow = time.Date(2026, 11, 19, 18, 0, 0, 0, time.UTC)
 
 func provimuxQuotaState(until time.Time) *ModelState {

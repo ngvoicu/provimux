@@ -23,6 +23,7 @@ import (
 func provimuxReviewLoad(t *testing.T, listings ...map[string]any) {
 	t.Helper()
 	pd := provimuxPD(t)
+	// date-safe: a published page's generated_at, compared only with other documents' (never with a clock).
 	pd.serve(http.StatusOK, `"review"`, provimuxPDPage("2026-11-24T04:20:11Z", listings...))
 	cfg := &config.Config{}
 	cfg.Models.PublishedLists = new(true)
@@ -312,6 +313,7 @@ func TestProvimuxReviewColdStartFirstLogin(t *testing.T) {
 	window, output := 4096, 1024
 	seed := modellists.NewStore(filepath.Join(dir, modellists.FolderName))
 	if err := seed.WritePublished(&modellists.Document{Schema: modellists.PublishedSchema, ETag: `"v1"`, DatasetVersion: "ds-cache",
+		// date-safe: a held document's times; no clock compares them.
 		GeneratedAt: time.Date(2026, 11, 22, 4, 0, 0, 0, time.UTC), FetchedAt: time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC),
 		Listings: map[string]modellists.Listing{"google-vertex": {Provider: "google-vertex", Models: []modellists.ListingModel{
 			{ID: raw.ID, ContextWindow: &window, MaxOutput: &output}}}}}); err != nil {

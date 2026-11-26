@@ -12,6 +12,7 @@ import (
 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 )
 
+// date-safe: the recorder's clock in these tests (sampleOf takes it as an argument).
 var testNow = time.Date(2026, 11, 20, 11, 0, 0, 0, bucharest)
 
 func sampleNow(rec coreusage.Record) sample {
@@ -124,6 +125,7 @@ func TestSampleCost(t *testing.T) {
 }
 
 func TestSampleDay(t *testing.T) {
+	// date-safe: request times against testNow; sampleOf reads no clock.
 	at := func(rt time.Time) string {
 		return sampleOf(context.Background(), coreusage.Record{RequestedAt: rt}, bucharest, testNow).day
 	}
@@ -203,6 +205,7 @@ func TestHandleUsageDoesNoIO(t *testing.T) {
 	store.mu.Unlock()
 	<-done
 	env.round()
+	// date-safe: the recorder runs on the test clock (newTestEnv); this is a stored or recorded day.
 	if got := sumRows(storedDay(t, store, "2026-11-20")).Req; got != 1001 {
 		t.Fatalf("req = %d, want 1001", got)
 	}

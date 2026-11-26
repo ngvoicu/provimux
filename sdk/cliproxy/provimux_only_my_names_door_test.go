@@ -222,6 +222,7 @@ func namesChat(model string, stream bool) string {
 
 func namesDoorRoutes() []namesRoute {
 	chat := namesChat
+	// date-safe: Anthropic's API version, not a time.
 	claudeHeader := http.Header{"Anthropic-Version": {"2023-06-01"}}
 	return []namesRoute{
 		{"POST", "/v1/chat/completions", chat("held-compat", false), nil, true},
@@ -262,6 +263,7 @@ func namesDoorRoutes() []namesRoute {
 func TestProvimuxOnlyMyNamesDoorRefusesEveryRoute(t *testing.T) {
 	d := newNamesDoor(t, true)
 	routes := namesDoorRoutes()
+	// date-safe: Anthropic's API version, not a time.
 	claudeHeader := http.Header{"Anthropic-Version": {"2023-06-01"}}
 	chat := namesChat
 	var report []string
@@ -453,6 +455,7 @@ func TestProvimuxOnlyMyNamesDoorListsOnlyHisNames(t *testing.T) {
 	}
 	// The Claude shape lists upstream's generated Claude-like id for each served name (decision I of
 	// round 2): the ids, one per served name, each resolving to the model behind one of his names.
+	// date-safe: Anthropic's API version, not a time.
 	status, body = d.do("GET", "/v1/models", http.Header{"Anthropic-Version": {"2023-06-01"}}, "")
 	noHeld("/v1/models (Claude)", body)
 	claudeIDs := ids(body, "id")

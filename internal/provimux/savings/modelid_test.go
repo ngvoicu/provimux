@@ -20,6 +20,7 @@ func bookWith(list map[string]registry.ProvimuxOpenRouterPrice, table *priceTabl
 
 func tableOf(t *testing.T, entries string) *priceTable {
 	t.Helper()
+	// date-safe: the table's date field, parsed and compared by a pure function; no clock reads it.
 	table, err := parseTable([]byte(`{"v":1,"updated":"2026-11-20","models":[` + entries + `]}`))
 	if err != nil {
 		t.Fatal(err)

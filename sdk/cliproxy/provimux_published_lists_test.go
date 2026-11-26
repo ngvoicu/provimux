@@ -107,6 +107,7 @@ func provimuxPDListing(provider string, models ...map[string]any) map[string]any
 	if models == nil {
 		models = []map[string]any{}
 	}
+	// date-safe: a fixture field no code reads as a time.
 	return map[string]any{"provider": provider, "basis": "listed", "listed_at": "2026-11-23", "client": "provimux",
 		"evidence": []any{}, "model_count": len(models), "models": models}
 }
@@ -202,6 +203,7 @@ func TestProvimuxPublishedFillsALearnedModel(t *testing.T) {
 		t.Fatal("swe-2 must be in the catalog")
 	}
 
+	// date-safe: a published page's generated_at, compared only with other documents' (never with a clock).
 	pd.serve(http.StatusOK, `"v1"`, provimuxPDPage("2026-11-23T04:20:11Z", provimuxPDListing("devin",
 		provimuxPDUnstated(32768),
 		map[string]any{"id": "provimux-test-learned", "name": "other", "context_window": 1, "max_output": 2, "input_modalities": []string{"audio"},
@@ -268,9 +270,11 @@ func TestProvimuxPublished304ChangesNothing(t *testing.T) {
 	liveModelLists.cache.Store(modellists.NewStore(dir))
 	pd := provimuxPD(t)
 	svc, auth := provimuxDevinLogin(t)
+	// date-safe: the store's clock is set to it.
 	now := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
 	liveModelListNow = func() time.Time { return now }
 
+	// date-safe: a published page's generated_at, compared only with other documents' (never with a clock).
 	pd.serve(http.StatusOK, `"v1"`, provimuxPDPage("2026-11-23T04:20:11Z", provimuxPDListing("devin", provimuxPDUnstated(32768))))
 	svc.refreshPublishedLists(t.Context(), svc.cfg)
 	file := filepath.Join(dir, modellists.PublishedFileName)
@@ -332,6 +336,7 @@ func TestProvimuxPublishedBadListingKeepsOnlyItsType(t *testing.T) {
 	pd := provimuxPD(t)
 	svc, auth := provimuxDevinLogin(t)
 	codex := map[string]any{"id": "gpt-9", "max_output": 1000, "aliases": []string{}}
+	// date-safe: a published page's generated_at, compared only with other documents' (never with a clock).
 	pd.serve(http.StatusOK, `"v1"`, provimuxPDPage("2026-11-23T04:20:11Z", provimuxPDListing("devin", provimuxPDUnstated(32768)),
 		provimuxPDListing("openai-codex", codex)))
 	svc.refreshPublishedLists(t.Context(), svc.cfg)
@@ -342,6 +347,7 @@ func TestProvimuxPublishedBadListingKeepsOnlyItsType(t *testing.T) {
 		"no id":     provimuxPDListing("devin", map[string]any{"id": "", "max_output": 1}),
 	} {
 		codex["max_output"] = codex["max_output"].(int) + 1
+		// date-safe: a published page's generated_at, compared only with other documents' (never with a clock).
 		pd.serve(http.StatusOK, `"v-`+name+`"`, provimuxPDPage("2026-11-24T04:20:11Z", devin, provimuxPDListing("openai-codex", codex)))
 		svc.refreshPublishedLists(t.Context(), svc.cfg)
 		if model := provimuxRegisteredModel(auth, "devin/provimux-test-unstated"); model == nil || model.MaxCompletionTokens != 32768 {
@@ -355,6 +361,7 @@ func TestProvimuxPublishedBadListingKeepsOnlyItsType(t *testing.T) {
 		}
 	}
 	// A missing listing too.
+	// date-safe: a published page's generated_at, compared only with other documents' (never with a clock).
 	pd.serve(http.StatusOK, `"v-missing"`, provimuxPDPage("2026-11-24T05:00:00Z", provimuxPDListing("openai-codex", codex)))
 	svc.refreshPublishedLists(t.Context(), svc.cfg)
 	if model := provimuxRegisteredModel(auth, "devin/provimux-test-unstated"); model == nil || model.MaxCompletionTokens != 32768 {
@@ -369,8 +376,10 @@ func TestProvimuxPublishedFailuresKeepTheHeldDocument(t *testing.T) {
 	provimuxPublishedReset(t)
 	pd := provimuxPD(t)
 	svc, auth := provimuxDevinLogin(t)
+	// date-safe: the store's clock is set to it.
 	now := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
 	liveModelListNow = func() time.Time { return now }
+	// date-safe: a published page's generated_at, compared only with other documents' (never with a clock).
 	pd.serve(http.StatusOK, `"v1"`, provimuxPDPage("2026-11-23T04:20:11Z", provimuxPDListing("devin", provimuxPDUnstated(32768))))
 	svc.refreshPublishedLists(t.Context(), svc.cfg)
 
@@ -383,6 +392,7 @@ func TestProvimuxPublishedFailuresKeepTheHeldDocument(t *testing.T) {
 		wait     time.Duration
 	}{
 		{"500", http.StatusInternalServerError, []byte("internal"), modellists.FailureHTTP, 500, 10 * time.Minute},
+		// date-safe: a published page's generated_at, compared only with other documents' (never with a clock).
 		{"cut-off", http.StatusOK, provimuxPDPage("2026-11-24T04:20:11Z", provimuxPDListing("devin", provimuxPDUnstated(1)))[:60],
 			modellists.FailureResponse, 0, time.Hour},
 		{"incomplete", http.StatusOK, []byte(`{"meta":{"dataset_version":"x","generated_at":"2026-11-24T04:20:11Z"},"total":11,"next_offset":40,"data":[]}`),
@@ -406,6 +416,7 @@ func TestProvimuxPublishedFailuresKeepTheHeldDocument(t *testing.T) {
 		}
 	}
 	// A success clears the failure and the backoff.
+	// date-safe: a published page's generated_at, compared only with other documents' (never with a clock).
 	pd.serve(http.StatusOK, `"v2"`, provimuxPDPage("2026-11-24T04:20:11Z", provimuxPDListing("devin", provimuxPDUnstated(40000))))
 	svc.refreshPublishedLists(t.Context(), svc.cfg)
 	if state := provimuxPublishedStateOf(); state.Failure != nil || provimuxPublished.failures != 0 {
@@ -425,6 +436,7 @@ func TestProvimuxPublishedUnreachableAtStart(t *testing.T) {
 	maxOutput := 32768
 	seed := modellists.NewStore(filepath.Join(dir, modellists.FolderName))
 	if err := seed.WritePublished(&modellists.Document{Schema: modellists.PublishedSchema, ETag: `"v1"`, DatasetVersion: "ds-cache",
+		// date-safe: a held document's times; no clock compares them.
 		GeneratedAt: time.Date(2026, 11, 22, 4, 0, 0, 0, time.UTC), FetchedAt: time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC),
 		Listings: map[string]modellists.Listing{"devin": {Provider: "devin", Models: []modellists.ListingModel{{ID: "provimux-test-unstated", MaxOutput: &maxOutput}}}}}); err != nil {
 		t.Fatal(err)
@@ -508,6 +520,7 @@ func TestProvimuxPublishedRefreshHook(t *testing.T) {
 	provimuxLiveReset(t)
 	provimuxPublishedReset(t)
 	pd := provimuxPD(t)
+	// date-safe: a published page's generated_at, compared only with other documents' (never with a clock).
 	pd.serve(http.StatusOK, `"v1"`, provimuxPDPage("2026-11-23T04:20:11Z", provimuxPDListing("devin", provimuxPDUnstated(32768))))
 	cfg := provimuxOn()
 	cfg.Models.PublishedLists = new(true)
@@ -571,6 +584,7 @@ func TestProvimuxPublishedLeavesTheCatalogWithoutALiveList(t *testing.T) {
 		Attributes: map[string]string{"auth_kind": "oauth"}, Metadata: map[string]any{"api_key": "devin-session", "email": "office@providers.dev"}})
 	svc.registerModelsForAuth(t.Context(), auth)
 	before := provimuxRegistered(auth)
+	// date-safe: a published page's generated_at, compared only with other documents' (never with a clock).
 	pd.serve(http.StatusOK, `"v1"`, provimuxPDPage("2026-11-23T04:20:11Z", provimuxPDListing("devin",
 		map[string]any{"id": "swe-2", "max_output": catalogSWE.MaxCompletionTokens / 2, "aliases": []string{}},
 		provimuxPDUnstated(32768))))
