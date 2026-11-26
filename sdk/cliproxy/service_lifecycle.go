@@ -136,6 +136,9 @@ func (s *Service) Run(ctx context.Context) error {
 		redisqueue.SetEnabled(true)
 	}
 
+	// Provimux: put back the session-affinity bindings of the last run, before anything is served.
+	s.provimuxAffinityStart(ctx)
+
 	// handlers no longer depend on legacy clients; pass nil slice initially
 	s.server = api.NewServer(cfg, s.coreManager, s.accessManager, s.configPath, s.serverOptions...)
 	s.syncPluginRuntimeConfig(ctx)
@@ -259,6 +262,9 @@ func (s *Service) Run(ctx context.Context) error {
 // Returns:
 //   - error: An error if shutdown fails
 func (s *Service) Shutdown(ctx context.Context) error {
+	// Provimux: write the session-affinity bindings first, before upstream stops the selector
+	// (at most provimuxAffinityStopDeadline on a stalled disk; a nil s does nothing).
+	s.provimuxAffinityStop()
 	if s == nil {
 		return nil
 	}

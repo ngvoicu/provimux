@@ -621,6 +621,12 @@ type RoutingConfig struct {
 	//     keep the binding and return the error (or retry the same credential) instead.
 	// Ignored when SessionAffinity is false.
 	SessionAffinityRebindOn string `yaml:"session-affinity-rebind-on,omitempty" json:"session-affinity-rebind-on,omitempty"`
+
+	// SessionAffinityPersist (Provimux) keeps session affinity's bindings across a restart: they
+	// are written beside the KV store when the process stops (and every few minutes), and put back
+	// once at the next start. Default: true. Ignored when SessionAffinity is false, in Home mode and
+	// with the KV store disabled.
+	SessionAffinityPersist *bool `yaml:"session-affinity-persist,omitempty" json:"session-affinity-persist,omitempty"`
 }
 
 // OAuthModelAlias defines a model ID alias for a specific channel.
