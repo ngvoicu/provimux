@@ -63,9 +63,24 @@ func assertProvimuxCommit(t *testing.T, r *firstCommitRecorder, credentials []pr
 		Host:     r.snapshot.Get(internallogging.CPAAuthHostHeader),
 	}
 	account := r.snapshot.Get(internallogging.ProvimuxAccountHeader)
+	// What the attempt sent (W6a): with the marker only, and then the model, its basis and the sent model together.
+	// The upstreams here are loopback over http, which the map has no row for: never an entry. No effort (W5).
+	sent := r.snapshot.Values(internallogging.ProvimuxModelSentHeader)
 	for _, name := range internallogging.ProvimuxFieldNames()[1:] {
-		if values := r.snapshot.Values(name.Header); len(values) != 0 {
-			t.Fatalf("%s is written: %v", name.Header, values)
+		values := r.snapshot.Values(name.Header)
+		switch name.Header {
+		case internallogging.ProvimuxModelHeader, internallogging.ProvimuxModelSentHeader:
+			if len(values) != len(sent) || len(values) > 1 || (account == "" && len(values) != 0) || (len(values) == 1 && values[0] != sent[0]) {
+				t.Fatalf("%s is %v beside the marker %q and the sent model %v", name.Header, values, account, sent)
+			}
+		case internallogging.ProvimuxModelBasisHeader:
+			if len(values) != len(sent) || (len(values) == 1 && values[0] != internallogging.ProvimuxModelNotConfirmed) {
+				t.Fatalf("%s is %v beside the sent model %v", name.Header, values, sent)
+			}
+		default:
+			if len(values) != 0 {
+				t.Fatalf("%s is written: %v", name.Header, values)
+			}
 		}
 	}
 	if (got == internallogging.AuthStatement{}) != (account == "") {

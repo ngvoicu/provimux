@@ -712,6 +712,7 @@ func (s *Service) tryRegisterPluginModelsForAuthWithConfigFenced(ctx context.Con
 				result.Auth.Attributes[key] = value
 			}
 		}
+		pluginhost.ProvimuxMarkPluginCredential(result.Auth) // Provimux: a plugin changed it (answered-by.md 4.3, step 3)
 		updated, committed, errUpdate := s.coreManager.UpdateIfRegistrationCurrent(ctx, a, result.Auth)
 		if errUpdate != nil {
 			// A real update failure (validation, persistence) is not a
