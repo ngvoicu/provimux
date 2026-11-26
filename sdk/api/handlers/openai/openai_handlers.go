@@ -89,6 +89,11 @@ func (h *OpenAIAPIHandler) OpenAIModels(c *gin.Context) {
 		accounts = h.modelAccounts()
 		provimuxFillAnswered(c, accounts) // Provimux: what each row's answers to this caller's key said (answered-by.md 4.4)
 	}
+	// Provimux: include=figures also gives the accounts (prices-and-cache.md 5)
+	figures := wantsFigures(c)
+	if figures && accounts == nil {
+		accounts = h.modelAccounts()
+	}
 	filteredModels := make([]map[string]any, len(allModels))
 	for i, model := range allModels {
 		filteredModel := map[string]any{
@@ -116,6 +121,12 @@ func (h *OpenAIAPIHandler) OpenAIModels(c *gin.Context) {
 		}
 
 		filteredModels[i] = filteredModel
+	}
+
+	// Provimux: the figures of the entries the listed rows' answered name (prices-and-cache.md 5)
+	if figures {
+		h.WriteModelListResponse(c, h.HandlerType(), gin.H{"object": "list", "data": filteredModels, "figures": provimuxListFigures(filteredModels)})
+		return
 	}
 
 	h.WriteModelListResponse(c, h.HandlerType(), gin.H{
