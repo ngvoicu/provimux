@@ -165,8 +165,8 @@ repository includes the Provimux options.
 
 A restart no longer cuts the answers being written. On a stop or restart (`brew services restart provimux`,
 `docker stop`, a systemd stop, Ctrl+C), Provimux lets the HTTP answers in flight finish for up to 25 seconds and
-then exits; with nothing in flight it exits at once. This holds for existing installs too, whatever their
-`shutdown-timeout` says.
+then exits; with nothing in flight it exits at once. This holds for existing installs too, with nothing to edit:
+a `shutdown-timeout` of 0 no longer means no wait, and one set above 25 still gives its longer wait.
 
 - New connections are refused during the wait; a client that retries reaches the new process.
 - Not waited for: a Responses WebSocket turn (Pi and the Codex CLI use these on some routes) and an answer
@@ -174,7 +174,7 @@ then exits; with nothing in flight it exits at once. This holds for existing ins
 - What is still running when the wait ends is cut. A second Ctrl+C does not shorten the wait.
 
 `server.restart-drain-seconds`, a whole number from 0 to 30, sets the wait, and 0 turns it off. A number above 30
-is taken as 30 and one below 0 as 0, with a warning in the log; the console does not save such a value.
+is taken as 30 and one below 0 as 0, with a warning in the log.
 
 ```yaml
 server:

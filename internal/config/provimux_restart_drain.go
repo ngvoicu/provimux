@@ -36,9 +36,9 @@ func init() {
 type ProvimuxRestartDrain int
 
 // UnmarshalYAML accepts a YAML integer. One above ProvimuxRestartDrainMaxSeconds is used as the maximum and one
-// below 0 as 0, with a warning, so that a hand-typed number never keeps the gateway from starting (upstream's
-// own keys start with any number too). Anything else (2.75, "10", true) is refused, as upstream refuses a wrong
-// type. A management write of a number out of range is refused separately (provimuxRestartDrainWriteCheck).
+// below 0 as 0, with a warning, wherever the config comes from (the file at start or at a reload, a management
+// write): a number never keeps the gateway from starting or a save from being made (upstream's own keys take any
+// number too). Anything else (2.75, "10", true) is refused, as upstream refuses a wrong type.
 func (d *ProvimuxRestartDrain) UnmarshalYAML(node *yaml.Node) error {
 	var seconds int
 	if node.Kind != yaml.ScalarNode || node.ShortTag() != "!!int" || node.Decode(&seconds) != nil {
@@ -69,25 +69,6 @@ func provimuxWarnRestartDrain(found string, used int, clamped bool) {
 	}
 	provimuxRestartDrainWarned.value = found
 	log.Warnf("server.restart-drain-seconds is %s; using %d (it takes 0 to %d)", found, used, ProvimuxRestartDrainMaxSeconds)
-}
-
-// provimuxRestartDrainWriteCheck is called by ValidateV8Config, which only the management API's config writes
-// call: a number out of range is refused there, so the console never saves one. err is the error ValidateV8Config
-// already has; it is returned first.
-func provimuxRestartDrainWriteCheck(flat *yaml.Node, err error) error {
-	if err != nil {
-		return err
-	}
-	node := yamlPath(flat, "restart-drain-seconds")
-	var seconds int
-	if node == nil || node.Kind != yaml.ScalarNode || node.ShortTag() != "!!int" || node.Decode(&seconds) != nil {
-		return nil // unset, null, or a wrong type the decode refuses
-	}
-	if seconds < 0 || seconds > ProvimuxRestartDrainMaxSeconds {
-		return fmt.Errorf("server.restart-drain-seconds must be a whole number of seconds from 0 to %d, got %q",
-			ProvimuxRestartDrainMaxSeconds, node.Value)
-	}
-	return nil
 }
 
 // ProvimuxStopDrainSeconds is the budget handed to upstream's stop: server.restart-drain-seconds when it is
