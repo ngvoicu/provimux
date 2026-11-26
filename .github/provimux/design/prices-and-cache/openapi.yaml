@@ -5,17 +5,34 @@ info:
   description: |
     What Provimux (github.com/ngvoicu/provimux) says about the accounts behind a model: which entry
     of providers.dev each account is, and that entry's price, cache lifetimes, input window and
-    output limit, each with its date and source. Design: ../prices-and-cache.md.
+    output limit, each with its date and source. Design: ../prices-and-cache.md, and for the
+    statement on each answer ../answered-by.md.
 
     Two paths carry the same records:
     - `GET /v1/models?include=figures`, for tools, with a client key. This is contract 1.
     - `GET /v8/management/provimux/figures`, for the console, with the management key.
 
-    How a tool uses it. Read the model list once. For each answer of the gateway read the headers
-    `X-CPA-AUTH-KIND`, `X-CPA-AUTH-PROVIDER` and `X-CPA-AUTH-HOST` (on a websocket the fields
-    `cpa_auth_kind`, `cpa_auth_provider` and `cpa_auth_host` of `response.created`): the account of
-    the model with the same `kind`, `provider` and `host` is the one that answered. Its `entry` is
-    a key of `figures.entries`. Accounts that agree in all three have the same entry.
+    How a tool uses it. Read the model list once, and again when an answer names an account the
+    list did not have. Each answer of the gateway to a model request says itself what it is, in six
+    response headers (components/headers; on the Responses WebSocket the same values as fields of
+    each turn's `response.created`, components/schemas/AnswerStatement):
+    - `X-Provimux-Entry` is the entry of that answer: a key of `figures.entries`. Nothing is
+      matched by kind, provider or host.
+    - `X-Provimux-Account` is the marker of the account that answered: the `account` of its row
+      in the list.
+    - `X-Provimux-Model`, `X-Provimux-Model-Basis`, `X-Provimux-Model-Sent` and
+      `X-Provimux-Effort` say which model answered and how firmly that is known.
+
+    An answer has `X-Provimux-Account` or none of the six. Where it has none, nobody is named: the
+    answer is an error, the gateway's own, a plugin's, or its headers left before it did. A tool
+    then knows neither the account nor the model, and assumes neither.
+
+    An answer without figures is one of three things, and a tool guesses in none of them:
+    - `X-Provimux-Entry` is there and is no key of `figures.entries`: providers.dev has no such
+      entry, or the gateway holds no figures (`figures.state`).
+    - A statement without `X-Provimux-Entry`: the gateway has no entry for this account, this
+      destination or this model.
+    - No statement.
 
     What contract 1 promises:
     - Every property listed as required is always present. A value that is not known is null,
@@ -26,6 +43,11 @@ info:
     - Prices are US dollars per million tokens. Lifetimes are seconds. Windows and limits are
       tokens. Dates are YYYY-MM-DD. Times are RFC 3339 in UTC.
     - `rely_on_s` is chosen by the rule written on the schema `Lifetime`.
+    - An answer names its entry and its account itself. Where an account's row has an `entry`,
+      every answer of that account for that model carries that entry.
+    - A marker is the same on every answer of one account and in every list, for as long as the
+      gateway keeps its key; another account never has it. It is compared, never parsed, except
+      for its first character.
     - A change that breaks any of this is served as contract 2 under another `include` value, and
       contract 1 is still answered for at least two Provimux releases that say so in their notes.
 
@@ -35,7 +57,12 @@ info:
     always the one that answers.
 
     Nothing here names an account: no key, token, auth ID, e-mail or file name, and of a base URL
-    only its host.
+    only its host. The marker is a keyed hash under a key only the gateway holds: it tells one
+    account from another and nothing about either.
+
+    The operator can turn the statement and the markers off (`models.answered-by: false`). Then no
+    answer has any of the six headers and no row has `account`; the lists and the figures are
+    otherwise the same.
 servers:
   - url: http://127.0.0.1:8317
 paths:
@@ -52,7 +79,7 @@ paths:
           description: |
             Comma-separated, in any order, case-insensitive; the parameter may be repeated.
             Absent: the list as stock CLIProxyAPI gives it, byte for byte.
-            `accounts`: each model gains `accounts`.
+            `accounts`: each model gains `accounts`, each with its marker.
             `figures`: each model gains `accounts`, and the answer gains `figures`.
             A value the server does not know is ignored.
           schema:
@@ -108,6 +135,32 @@ paths:
         "404":
           description: Not a Provimux with this path.
 components:
+  headers:
+    X-Provimux-Account:
+      description: The marker of the account that answered. Present on an answer that names anybody; without it none of the six is present.
+      schema:
+        $ref: "#/components/schemas/AccountMarker"
+    X-Provimux-Model:
+      description: "`provimux_model` of AnswerStatement."
+      schema:
+        type: string
+    X-Provimux-Model-Basis:
+      description: "`provimux_model_basis` of AnswerStatement: `vendor` or `not-confirmed`."
+      schema:
+        type: string
+        enum: [vendor, not-confirmed]
+    X-Provimux-Model-Sent:
+      description: "`provimux_model_sent` of AnswerStatement."
+      schema:
+        type: string
+    X-Provimux-Effort:
+      description: "`provimux_effort` of AnswerStatement."
+      schema:
+        type: string
+    X-Provimux-Entry:
+      description: "`provimux_entry` of AnswerStatement: the key of `figures.entries` for this answer."
+      schema:
+        $ref: "#/components/schemas/EntryRef"
   securitySchemes:
     clientKey:
       type: http
@@ -137,6 +190,22 @@ components:
         An entry of providers.dev as providers.dev writes a reference: `<provider>/<model>`. A
         provider id never contains a slash, so the first slash ends the provider; a model id may
         contain more.
+    AccountMarker:
+      type: string
+      pattern: "^[as]\\.[a-z2-7]{20}$"
+      description: |
+        An opaque marker of one account: the same on every answer that account gives and on its
+        rows in the lists, another for every other account, the same after a restart and after the
+        configuration is reordered, another when another account's login takes its place. It is a
+        keyed hash; nothing can be read from it but its first character:
+        - `a`: the account as its vendor names it. Equal markers are one account at the vendor,
+          unequal ones are two.
+        - `s`: this gateway's credential, where the gateway does not hold the vendor's own name for
+          the account. Equal markers are one credential; unequal ones may still be one account,
+          and for some kinds a login replaced in its file keeps the marker. A tool that must prove
+          "the same account" does not accept `s`.
+        One account held twice (one login in two files, one key in two rows) has one marker on two
+        rows.
     Price:
       type: number
       minimum: 0
@@ -191,12 +260,86 @@ components:
         host:
           type: string
           description: The host of an API key's base URL, lower case. Left out when the key has none.
+        account:
+          $ref: "#/components/schemas/AccountMarker"
+          description: |
+            The account's marker: the value of `X-Provimux-Account` on every answer this account
+            gives. Left out only when the operator turned the statement off.
         entry:
           $ref: "#/components/schemas/EntryRef"
           description: |
-            The entry of providers.dev this account's model would be. Left out where the gateway
-            does not know it (an account on a host it has no row for, a plugin's model). It says
-            where the model would be, not that providers.dev has such an entry.
+            The entry of providers.dev this account's model would be: every answer of this account
+            for this model carries it as `X-Provimux-Entry`. Left out where the gateway does not
+            know it (an account on a host it has no row for, a plugin's model), and where it is
+            decided per request (`entry_per_request`). It says where the model would be, not that
+            providers.dev has such an entry.
+        entry_per_request:
+          type: boolean
+          description: |
+            Present, and true, where this account's entry for this model depends on the request, so
+            the row can name none: one name set on several models of the account, a model whose
+            variant the gateway chooses by the caller's reasoning effort, a login whose requests go
+            to another backend for some clients. `entry` is then left out, and each answer names
+            its own in `X-Provimux-Entry`, or none.
+    AnswerStatement:
+      type: object
+      description: |
+        What an answer says of itself. On the Responses WebSocket these are fields at the top of
+        each turn's `response.created` event, beside `cpa_auth_kind`, `cpa_auth_provider` and
+        `cpa_auth_host`; over HTTP and SSE the same values are the six response headers of
+        components/headers, in the same order. An event has `provimux_account` or none of the six.
+        A value outside printable ASCII, a space or `%` is written as `%` and two hex digits, in a
+        header and in a field alike.
+
+        The statement is of the answer's first byte: what the gateway asked for, and what the
+        vendor's answer had named by then. It is written only where the answer is written, never
+        on an error, a keep-alive or an answer a plugin made.
+
+        Examples, for the model list of examples/models-figures.json: examples/answers.json.
+      required: [provimux_account]
+      dependentRequired:
+        provimux_model: [provimux_model_basis, provimux_model_sent]
+        provimux_model_basis: [provimux_model, provimux_model_sent]
+        provimux_model_sent: [provimux_model, provimux_model_basis]
+        provimux_effort: [provimux_model]
+        provimux_entry: [provimux_model]
+      properties:
+        provimux_account:
+          $ref: "#/components/schemas/AccountMarker"
+        provimux_model:
+          type: string
+          description: |
+            The model that answered, as far as it is known: the id the vendor's answer named where
+            it named one, else the id the gateway asked the vendor for. Left out, with the four
+            below, on the few routes that relay a vendor's answer without an executor (a realtime
+            call, a search).
+        provimux_model_basis:
+          type: string
+          description: |
+            `vendor`: the vendor's answer named `provimux_model`. `not-confirmed`: the vendor's
+            answer named no model before the answer's first byte left; `provimux_model` is the id
+            the gateway asked for, and whether that model answered is not confirmed. Always
+            `not-confirmed` for a token count, and today for a stream from an OpenAI-compatible
+            key, OpenRouter, Copilot or Devin.
+          enum: [vendor, not-confirmed]
+        provimux_model_sent:
+          type: string
+          description: |
+            The model id the gateway wrote into its request to the vendor: after the name's alias,
+            a pool's turn and the executor's own mapping. For Devin it is Devin's request id, which
+            carries the effort. It can differ from `provimux_model` where the vendor names a dated
+            id for an alias, or where another model answered: the gateway judges neither.
+        provimux_effort:
+          type: string
+          description: |
+            The reasoning effort in the outgoing request, as the gateway read it from the request's
+            final body. Left out where it read none.
+        provimux_entry:
+          $ref: "#/components/schemas/EntryRef"
+          description: |
+            The entry of providers.dev this answer is: a key of `figures.entries` where the gateway
+            holds figures for it. Left out where the gateway has no entry for the account, the
+            destination or the model that answered.
     Figures:
       type: object
       required: [contract, source, state, dataset_version, generated_at, fetched_at, entries]

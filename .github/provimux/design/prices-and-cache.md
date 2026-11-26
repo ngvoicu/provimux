@@ -1,6 +1,6 @@
 # Prices and cache lifetimes from providers.dev, per account: held, shown, and given to tools
 
-Design, 2026-11-25, amended 2026-11-26 (the next section says what changed). This is the design only: no code exists yet. The contract a build is checked against is `prices-and-cache/openapi.yaml`, with two example answers beside it.
+Design, 2026-11-25, amended 2026-11-26 (the next section says what changed), and amended again that evening by `answered-by.md` (the section before section 1 says what changed). This is the design only: no code exists yet. The contract a build is checked against is `prices-and-cache/openapi.yaml`, with three example files beside it.
 
 **The owner's decision (2026-11-25).** Provimux uses providers.dev's data: in the console, and advertised to clients, "to help developers develop tools, or alternatively use pi-cache-keeper". The shape:
 
@@ -31,16 +31,30 @@ Everything else of the contract and the design is as it was on 2026-11-25.
 
 | Project | Commit |
 |---|---|
-| Provimux | `main` at `aa76f801b`, on CLIProxyAPI v8.1.4. The release v8.1.4-pmx.2 is the tag at `aa2c177f6`; `main` was stacked again after it and holds three later commits, all workflow and test files |
+| Provimux | `main` at `aa76f801b`, on CLIProxyAPI v8.1.4, for everything written up to the afternoon of 2026-11-26. The evening's amendment and `answered-by.md` read `main` at `bc6f81d73`, on v8.1.7 (released as v8.1.7-pmx.1) |
 | provimux-ui | `main` at `4742d6d9` |
 | pi-provimux | `7affe86` (105.0.7) |
 | pi-cache-keeper | `c75d182` (0.10.7) |
 | providers.dev | the live API, version 1.6.3, dataset `c37885999c67cfaa` of 2026-11-26; the site's code at `e0856f6` |
 | groundtruth | `6650203` |
 
-Every `file:line` of Provimux below is in `aa76f801b`.
+Every `file:line` of Provimux below is in `aa76f801b`, and the same lines hold the same text in `bc6f81d73` (compared by a script, 2026-11-26).
 
 **Tags.** **[read]** in code. **[ran]** executed by me on 2026-11-25, and again on 2026-11-26 for every number the amendment touches: plain GETs to `https://providers.dev/api/v1`, and scripts over their answers. **[infer]** reasoned, not verified. I sent no request with a login or a key and never contacted the owner's gateway.
+
+## Amended 2026-11-26, in the evening: who answered
+
+The review of F1 (finding 8) showed that the three answered-by headers cannot tell two accounts of one kind and host apart: two Claude keys, one name, two models, two entries, one set of headers. Section 5's join by kind, provider and host was false. `answered-by.md` designs what replaces it: every answer names its account by an opaque marker, the model that answered, and its own providers.dev entry. This document follows it.
+
+| What changed | Where | Why |
+|---|---|---|
+| The branch is on today's `main`, on CLIProxyAPI v8.1.7: read at `bc6f81d73`, and moved onto `9d0786d95` when `main` gained two commits that evening | "Read from" | `main` was stacked again. Every cited line range was compared between the bases by a script: all 20 are unchanged, so the line numbers below still hold |
+| From an answer to its figures: the answer's own `X-Provimux-Entry`, not a match of three headers | 1, 3, 5, 8.1, 9.2, 10.4; `openapi.yaml`; a third example, `examples/answers.json` | Finding 8. Contract 1 is not released, so it is corrected, not replaced |
+| An account row carries a marker, `account`, and may say `entry_per_request` in place of an `entry` | 5; `openapi.yaml`, `Account`; `examples/models-figures.json`, with finding 8's two keys and a model whose entry is decided per request | So that an answer leads to exactly one account, and so that a row need not promise an entry it cannot keep. Settles the two questions F1's review left: a Codex login whose requests can go to `api.openai.com`, and Antigravity's variant by effort (`answered-by.md` 4.1) |
+| Savings by account is keyed by the marker, not by the account's index | 7, 15 | The index is made from the file's path: it survives a replaced login. The marker is stable by construction, which closes the point section 15 left open |
+| The steps W1 to W7, and F3 after W6 | 13 | F3's contract names the answer's entry |
+
+Two things `main` gained with v8.1.5 to v8.1.7 touch what this design assumes, and neither breaks it: a Home-granted local plugin executor answers `acp/…` models (v8.1.6; a plugin's model: no entry, and nobody is named), and a pool's position is kept per credential (v8.1.5; F1's fix round already reads the pool through upstream's own derivation). One thing was already there on 2026-11-25 and this design had missed it: since v8.1.3 Antigravity chooses a model variant by the caller's effort. F1's review found it; the entry of such a model is decided per request.
 
 ## 1. The design in one page
 
@@ -48,7 +62,8 @@ Every `file:line` of Provimux below is in `aa76f801b`.
 |---|---|---|
 | The entry of an account | Provimux, a constant map and the model behind a name | says which providers.dev entry (`provider/model`) an account's model is. No request |
 | The figures | Provimux, one more providers.dev request in the round that fetches the listings; a disk copy | holds, per entry, the price, the cache lifetimes, the window and the output limit, with dates and sources |
-| The contract for tools | `GET /v1/models?include=figures` | per model its accounts, per account its entry, and once per answer the figures of every entry named. Contract 1, `prices-and-cache/openapi.yaml` |
+| The contract for tools | `GET /v1/models?include=figures` | per model its accounts, per account its marker and its entry, and once per answer the figures of every entry named. Contract 1, `prices-and-cache/openapi.yaml` |
+| What an answer says of itself | every answer to a model request | the account that gave it, by a marker; the model that answered; its entry. `answered-by.md` |
 | The console | `GET /v8/management/provimux/figures`, the same records | the figures on each account's line of a name's card; Savings by account, valued at the account's own list price |
 | pi-provimux | reads the contract | prices a model by the account tried first, shows the price of the account that answered, and hands each route's figures on |
 | pi-cache-keeper | reads what pi-provimux hands on | for a model behind Provimux, Provimux's figures and nothing else; for every other model, providers.dev as today |
@@ -92,7 +107,7 @@ One source for each reader, so that no two can disagree about the same model.
 |---|---|---|
 | Provimux | entry summaries | providers.dev, `GET /api/v1/entries`, the only request (section 6) |
 | Console | the figures and each route's entry | Provimux's management API |
-| A tool | the contract of section 5 | Provimux, `GET /v1/models?include=figures`, and the three answered-by headers |
+| A tool | the contract of section 5 | Provimux, `GET /v1/models?include=figures`, and what each answer says of itself (`answered-by.md`) |
 | pi-provimux | the same contract | Provimux. models.dev stays only for a gateway without figures and for the fast-mode price |
 | pi-cache-keeper, a model behind Provimux | the figures pi-provimux hands on with each route | Provimux, through pi-provimux. It looks nothing up for such a model |
 | pi-cache-keeper, any other model | providers.dev itself | as today |
@@ -258,9 +273,10 @@ GET /v1/models?include=figures          (a client key, as for every /v1 request)
   "data": [
     { "id": "opus", "object": "model", "owned_by": "anthropic",
       "accounts": [
-        { "provider": "claude", "kind": "oauth",  "priority": 5, "entry": "claude-subscription/claude-opus-5-5" },
+        { "provider": "claude", "kind": "oauth",  "priority": 5, "account": "a.jvwtubr4vdp5dfnhj7jm",
+          "entry": "claude-subscription/claude-opus-5-5" },
         { "provider": "claude", "kind": "apikey", "priority": 1, "host": "api.anthropic.com",
-          "entry": "anthropic/claude-opus-5-5" }
+          "account": "a.vymubsbmffkad6cmardq", "entry": "anthropic/claude-opus-5-5" }
       ] }
   ],
   "figures": {
@@ -278,15 +294,18 @@ GET /v1/models?include=figures          (a client key, as for every /v1 request)
 **How a tool uses it.**
 
 1. Once, and again when it likes (the answer is cheap): read the list. Per model, `accounts` are in the order they are tried.
-2. Per answer: read `X-CPA-AUTH-KIND`, `X-CPA-AUTH-PROVIDER` and, for a key with a base URL, `X-CPA-AUTH-HOST` (`sdk/api/handlers/handlers_answered.go:52-56`; on a websocket the fields `cpa_auth_kind`, `cpa_auth_provider`, `cpa_auth_host` of `response.created`). The account of the model with the same kind, provider and host is the one that answered. Accounts that agree in all three have the same entry.
-3. `figures.entries[account.entry]` is what that account costs and how long its cache lives. An account without `entry`, or an entry not in `entries`, has no figures.
+2. Per answer: read `X-Provimux-Entry` (on the Responses WebSocket the field `provimux_entry` of the turn's `response.created`). `figures.entries[that value]` is what the answer cost and how long its cache lives. Nothing is matched by kind, provider or host (amended 2026-11-26: that match was false for two accounts of one kind, `answered-by.md`).
+3. `X-Provimux-Account` is the marker of the account that answered: the `account` of its row. `X-Provimux-Model` and `X-Provimux-Model-Basis` say which model answered and whether the vendor said so.
+4. No figures: the entry is no key of `entries`, or the answer names no entry, or it names nobody at all. A tool guesses in none of the three (`answered-by.md` section 4).
+
+A row's `entry` is what every answer of that account for that name will say, so a tool can price a model before it is used. Where the entry depends on the request, the row has no `entry` and says `entry_per_request` (`answered-by.md` 4.1).
 
 **The three includes.**
 
 | Request | The answer |
 |---|---|
 | `GET /v1/models` | upstream's, byte for byte as today |
-| `?include=accounts` | as today, and each account gains `entry` where the map has a row |
+| `?include=accounts` | as today, and each account gains its marker `account`, and `entry` where the map has a row or `entry_per_request` where the request decides |
 | `?include=figures` | accounts as above, and the `figures` object. `include=accounts,figures` is the same |
 
 **What we promise to keep, for contract 1.**
@@ -296,7 +315,8 @@ GET /v1/models?include=figures          (a client key, as for every /v1 request)
 | Keys | every key the OpenAPI lists as required is present. None is removed, and none changes its type, unit or meaning |
 | Unknown | a value not known is `null`, never 0 and never left out |
 | Units | prices in US dollars per million tokens; lifetimes in seconds; windows in tokens; dates as `YYYY-MM-DD`, times as RFC 3339 in UTC |
-| The join | an account's `entry` is the key of `figures.entries`; an account is found from the three headers by kind, provider and host |
+| The join | an answer's `X-Provimux-Entry` is the key of `figures.entries`, and its `X-Provimux-Account` is the `account` of the row that answered. Where a row has an `entry`, every answer of that account for that name carries it |
+| The marker | the same on every answer of one account and in every list while the gateway keeps its key; never another account's; compared, not parsed, except for its first character (`answered-by.md` 2.3) |
 | The rule of `rely_on_s` | section 4.2 |
 | Growth | keys and enum values may be added; a tool ignores what it does not know and treats an unknown enum value as unknown |
 | A change that breaks any of this | is served as `"contract": 2` under a new include value, with contract 1 still answered for at least two Provimux releases that say so in their notes |
@@ -392,13 +412,13 @@ Every line links to the entry's page (`https://providers.dev/entries/<provider>/
 
 | | |
 |---|---|
-| The account in a row | a row is also keyed by the account's index (`auth_index`, as `model-routes` gives it). Days recorded before have none and show as "before accounts were recorded" |
+| The account in a row | a row is also keyed by the account's marker (`answered-by.md` section 2; `model-routes` gives it beside the login's name). Not by the index: that is made from the file's path and survives a replaced login. Days recorded before have none and show as "before accounts were recorded" |
 | A grouping | `group=account`: per account its provider, kind, host, the login's name as `GET /credentials` names it today (null when the account is gone), its requests, tokens, estimate and reported charge |
 | The account's own price | a new first step in the price search (`savings/02-prices.md` section 4): the entry of the row's account, when the figures hold a `per_use` or `reference` price for it. Source `providers.dev`, price id `providers.dev:<entry>`, match `entry`. Then the steps of today. The entry is `EntryProvider(provider, kind, host)` and the recorded model, which is already the upstream id |
 | What stays | a day keeps its prices, so no past number moves. Prices above a prompt size are still not applied: a day's totals hold no request sizes, and the answer keeps saying `base` |
 | Words | "at this account's list price (providers.dev, 2026-11-24)"; a subscription's rows "would have cost at API list price"; the only real charge on the page stays the reported one |
 
-The savings contract files (`savings/openapi.yaml`, `schemas/day.schema.json`, `02-prices.md`, `03-endpoint.md`, `04-console-page.md`) are amended as the first task of that phase; this section is their brief. Not verified: that an account's index is the same after a restart and after a token refresh.
+The savings contract files (`savings/openapi.yaml`, `schemas/day.schema.json`, `02-prices.md`, `03-endpoint.md`, `04-console-page.md`) are amended as the first task of that phase; this section is their brief. The marker is the same after a restart and after a token refresh by how it is made; a login replaced by another account's starts new rows.
 
 ## 8. The two Pi extensions
 
@@ -408,7 +428,7 @@ The savings contract files (`savings/openapi.yaml`, `schemas/day.schema.json`, `
 |---|---|
 | Reads | `GET /v1/models?include=figures` in place of `?include=accounts` (`extensions/lib.ts:1112`, `extensions/upstreams.ts:233-256`). A gateway without figures answers as before, and everything is as today |
 | A model's price | the price of the account tried first, with its size tiers, where `figures` has one (`per_use` or `reference`); when several accounts share the first place and their prices differ, the highest, and the name says so. Without figures for it: models.dev, as today. Fast mode: models.dev, as today |
-| The footer | "answered: Anthropic api · $4 in / $20 out" (or "· not billed per token"), from the entry of the account that answered |
+| The footer | "answered: Anthropic api · $4 in / $20 out" (or "· not billed per token"), from the entry the answer itself names (`X-Provimux-Entry`, or `provimux_entry` on the WebSocket) |
 | What it cannot do | Pi totals a message from the model's one price, so on a pooled name a message answered by another account than the first is counted at the first's price. The footer shows the right one. Whether an extension can correct a message's recorded cost is not verified |
 | Writes no cache lifetime into Pi | Pi's own warmer never checks a warm-up; choosing the value for a pooled name is pi-cache-keeper's work |
 | Hands on | each upstream of its `model-upstreams` events gains `entry` and `figures` (the entry's record as Provimux gave it, or `null` when Provimux held figures and has none for it). The upstream's `model` is taken from the entry |
@@ -440,7 +460,7 @@ For the last row this is from what each is known to do, not from reading their c
 For Provimux's README, its page on the site and the notes of the release (the owner's word on public text first):
 
 - "Per account behind a model name, Provimux gives providers.dev's list price, cache prices, cache lifetime and window, each with its date and source: in the console, and to tools in `/v1/models?include=figures`."
-- "With the `X-CPA-AUTH-*` headers a tool knows what the account that served a request costs and how long its cache lives, without knowing any provider. pi-cache-keeper is such a tool for Pi."
+- "Every answer names the account that gave it by an opaque marker, the model that answered, and its providers.dev entry (`X-Provimux-*`). So a tool knows what the answer cost and how long its cache lives, without knowing any provider. pi-cache-keeper is such a tool for Pi."
 - "The cache lifetime is the one providers.dev measured with a real client through Provimux where it has such a measurement, and its safe value otherwise. Plain test requests never decide it. Every value says what it rests on and when it was measured."
 - A README section "Figures for tools": the three steps of section 5, the promises, and the example.
 
@@ -545,7 +565,7 @@ Section 8. pi-provimux: `sources.ts` (`entry`), `lib.ts` (the price), `upstreams
 |---|---|
 | F1 | every row of 6.1's table, each "none" row included; the usage-record test for a login, a key, an alias, a prefixed account, a Devin variant, an OpenRouter id with a routing suffix; `/v1/models` without `include` is byte-identical to `aa76f801b`, with "serve only my names" off and on; both account lists give the same `entry` for the same account (`test/provimux/model_routes_parity_test.go` grows) |
 | F2 | a test server: `200` on three pages, `304`, `500`, a cut-off body, pages of two dataset versions, an older document, an entry with no rules, a rule the reader does not know; the request carries no parameter beyond `provider`, `limit`, `offset` and no header beyond the two; nothing is fetched with the switch off or in a test binary; a start with the server down serves the disk copy; no path that answers a client waits for the fetch; 4.2's rule row by row, with the six entries of finding 2 as fixtures: a plain probe's measurement alone never gives row 1 (`openai-codex/gpt-6.2-sol` gives the Codex CLI's 150, not 0), a real client's does also above the safe value (`gpt-6.1-sol`: 1,800), the lowest of two real clients' wins, and every probe item is in the answer with `counts` false |
-| F3 | both examples validate against `prices-and-cache/openapi.yaml`, and so does the handler's answer for a fixture; every `entry` of an account whose figures are held is a key of `entries`; `include=accounts` alone carries no `figures`; with the switch off `state` is `off` and `entries` is empty |
+| F3 | all three examples validate against `prices-and-cache/openapi.yaml`, and so does the handler's answer for a fixture; for every route of the fixture the answer's `X-Provimux-Entry` is the row's `entry` (`answered-by.md` 8.4); every `entry` of an account whose figures are held is a key of `entries`; `include=accounts` alone carries no `figures`; with the switch off `state` is `off` and `entries` is empty |
 | F4, F6 | the console's own tests; `bun run verify`; the pages checked against a stand-in gateway; Savings' examples regenerated and its past days unchanged |
 | F5 | pi-provimux: a gateway with figures, without, with a malformed entry; the footer; the event. pi-cache-keeper: an upstream with figures is never looked up and its provider never fetched; `figures: null` gives no data; without the key, today's tests pass unchanged |
 
@@ -601,7 +621,8 @@ Each ships alone. S: up to a day of one worker. M: one to two days. L: three to 
 | Phase 0 | groundtruth; then Provimux | M; S | the measuring night of section 17; then, only if 16.4 says so, the Meta cache key of 16.2, and P-1 if the owner says yes | the owner's one-time logins | row 1 of 4.2 rests on new pairs for the newest models |
 | F1 | Provimux | M | 6.1: the map, the model behind a name, `entry` on both account lists | nothing: "only my names" is released | each account names its providers.dev entry; no request yet |
 | F2 | Provimux | M | 6.2, 6.3: the request, the disk copy, the switch, the rule of 4.2, `GET /provimux/figures`, the log | F1 | the gateway holds the figures |
-| F3 | Provimux | S | section 5: `include=figures`, the contract test, the README section | F2 | tools can read them; a release note names contract 1 |
+| W1 to W7 | Provimux | S to M each | `answered-by.md` section 9: the marker, in the lists and on every answer (W1 to W3); the model that answered (W4, an owner patch, and W5); the answer's entry and `entry_per_request` (W6) | W1 to W3: nothing. W6: F1 on `main` | every answer says which account and which model gave it, and names its entry |
+| F3 | Provimux | S | section 5: `include=figures`, the contract test, the README section | F2, and W6 | tools can read them; a release note names contract 1 |
 | F4 | provimux-ui | M | section 7, the name's card and the status line | F2 released | figures per account on the Models page |
 | F5 | pi-provimux, pi-cache-keeper | M each | section 8 | F3 released; built against the examples before that | Pi prices by account; pi-cache-keeper has one source behind Provimux |
 | F6 | Provimux, provimux-ui | M each | section 7, Savings by account; its contract files amended first | F2 | Savings by account, at the account's list price |
@@ -631,6 +652,7 @@ Order: F1, F2, F3; then F4 and F5 side by side; then F6; then F7. A release of P
 | 13 | What the measuring caps hold (2 dollars a run, 10 dollars a week) | **Billed dollars**, as groundtruth's ledger counts them for the API keys; the logins are held by the cap of six runs a login a night and by a Claude run stopping at the first sign of overage (17.5) | Held against list-price value, only the two Terra pairs, the Ember pair and the probe runs fit a run's 2 dollars |
 | 14 | Which gateway the Pi side of a pair goes through | **The owner's running one**, on his word, at an hour he is not using those models (17.2) | A second gateway with logins of its own keeps the night apart from his traffic and costs four more one-time logins |
 | 15 | What is dropped first if the night must be smaller | the order of 17.6 | |
+| 16 | Who answered: the marker, the model, the names of the headers, the switch, an owner patch in the usage reporter | `answered-by.md` section 10, nine decisions | |
 
 ## 15. What I ran, and what I did not verify
 
@@ -670,7 +692,7 @@ Nothing was sent to a provider, a login, the owner's gateway or port 8787.
 | Whether a payload `filter` rule can take the derived key off a Codex request; the key is set in `cacheHelperDoc`, and where the payload rules run against it was not read | the pinning test of 16.2, which also says what the switch is worth |
 | That a one-hour cache mark is honoured on a Claude login in overage | the Claude pair, if the login is in overage for its own reasons (4.4) |
 | Which reasoning levels `gemini-4-neon` has on Devin, and whether the Devin CLI reports cached tokens for it and for `gpt-6-1-terra` | the night's smoke runs (17.3) |
-| That an account's index survives a restart and a token refresh | F6's first task |
+| That an account's index survives a restart and a token refresh | no longer needed: Savings is keyed by the marker (section 7, amended 2026-11-26) |
 | Whether a Pi extension can correct a message's recorded cost | F5; without it 8.1's limit stands |
 | Which host a Kimi login of the owner uses; whether a Meta key can be told from a Muse Code subscription's key | decision 6 |
 | Every place the selector honours a binding beyond `Pick`'s cache-hit branch | the later phase's first task, as a test |
