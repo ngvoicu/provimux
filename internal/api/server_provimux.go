@@ -19,6 +19,7 @@ func (s *Server) registerProvimuxRoutes(v8 *gin.RouterGroup) {
 	v8.GET("/provimux/model-lists", s.mgmt.ProvimuxModelLists)
 	v8.GET("/provimux/savings", s.mgmt.ProvimuxSavings)
 	v8.GET("/provimux/names", s.mgmt.ProvimuxNames)
+	v8.GET("/provimux/session-affinity-persist", s.mgmt.ProvimuxAffinityPersist)
 }
 
 // ProvimuxRoutes lists the method and path of every route the server registered, for Provimux's tests
