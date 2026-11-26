@@ -27,7 +27,11 @@ import (
 // form. A test compares the answer's X-Provimux-* headers with what the stand-in recorded, never with what it
 // configured. Nothing leaves the process; every key, login and id is invented.
 
-const sentClientKey = "provimux-test-sent-client-key"
+// The client keys: the harness's requests use the first; a test of two key holders uses both.
+const (
+	sentClientKey      = "provimux-test-sent-client-key"
+	sentOtherClientKey = "provimux-test-sent-other-client-key"
+)
 
 // sentReceived is one request as the stand-in received it.
 type sentReceived struct {
@@ -224,7 +228,7 @@ type sentHarness struct {
 
 func newSentHarness(t *testing.T, configBody string) *sentHarness {
 	t.Helper()
-	names := newNamesHarness(t, "access:\n  api-keys:\n    - "+sentClientKey+"\n"+configBody)
+	names := newNamesHarness(t, "access:\n  api-keys:\n    - "+sentClientKey+"\n    - "+sentOtherClientKey+"\n"+configBody)
 	// After the service is built: it puts the config's switch in force, off in a test binary.
 	coreauth.SetProvimuxMarkerKey([]byte("provimux-test-sent-marker-key-32"))
 	was := logging.SetProvimuxAnsweredBy(true)

@@ -110,6 +110,7 @@ var namesRegistryReaders = map[string]string{
 	"sdk/cliproxy/auth/execution_auth_refresh.go withExecutionAuthRefresh GetModelsAndEpochForClient":                                                                   "after the door",
 	"sdk/cliproxy/auth/native_tool_search_capability.go nativeToolSearchServingAuths ClientSupportsModel":                                                               "after the door",
 	"sdk/cliproxy/auth/scheduler.go supportedModelSetForAuth GetModelsForClient":                                                                                        "no client name",
+	"sdk/cliproxy/provimux_answered_record.go provimuxAnsweredName ClientSupportsModel":                                                                                 "after the door",
 	"sdk/cliproxy/provimux_key_list_status.go keyModelListModels GetModelsForClient":                                                                                    "no client name",
 	"sdk/cliproxy/provimux_model_list_status.go ModelListLogin GetModelsForClient":                                                                                      "no client name",
 }

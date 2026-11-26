@@ -320,6 +320,14 @@ func TestProvimuxAnswerEntryUpstreamWebsocketHasNone(t *testing.T) {
 	if _, ok := fields[logging.ProvimuxEffortField]; ok {
 		t.Fatalf("the turn over HTTP carries an effort: %v", fields)
 	}
+	// W6b: a WebSocket turn reaches the record with the name it asked for: the upstream WebSocket's answer as one
+	// that named no entry, the HTTP one with its entry.
+	if items := coreauth.ProvimuxAnswered(overSocket.ProvimuxAccountMarker(), "provimux-test-codex-ws"); len(items) == 0 || items[0].Entry != "" {
+		t.Fatalf("the record of the turn over the upstream WebSocket: %+v", items)
+	}
+	if items := coreauth.ProvimuxAnswered(overHTTP.ProvimuxAccountMarker(), "provimux-test-codex-http"); len(items) == 0 || items[0].Entry != "openai-codex/"+answered[0].Model {
+		t.Fatalf("the record of the turn over HTTP: %+v", items)
+	}
 }
 
 // Steps 3 to 5 for one sent request, by the credential: held in memory, made or changed by a plugin, an xAI key marked
