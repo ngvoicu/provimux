@@ -20,8 +20,10 @@ import (
 // upstream gateway's (which no answer carried before these names existed) never reaches a client as if it were ours.
 
 // The response headers of the statement, in the contract's order (prices-and-cache/openapi.yaml, components/headers).
-// This build writes X-Provimux-Account; the five others are the contract's, written by later steps, and are removed
-// from a response like it, so that an answer never carries another gateway's.
+// This build writes X-Provimux-Account, and where the gateway read what the attempt sent, X-Provimux-Model,
+// X-Provimux-Model-Basis, X-Provimux-Model-Sent and X-Provimux-Entry; X-Provimux-Effort is a later step's (W5). Each
+// is removed from a response where the statement has no value for it, so that an answer never carries another
+// gateway's.
 const (
 	ProvimuxAccountHeader    = "X-Provimux-Account"
 	ProvimuxModelHeader      = "X-Provimux-Model"
@@ -66,32 +68,60 @@ func ProvimuxFieldNames() []ProvimuxField { return append([]ProvimuxField(nil), 
 var provimuxMarkerOnTheWire = regexp.MustCompile(`^[as]\.[a-z2-7]{20}$`)
 
 // ProvimuxAnswer is what Provimux adds to the statement of the credential that produced a response: the account's
-// marker. (The model the attempt knew of, and the answer's entry, are later steps: answered-by.md W5 and W6.)
+// marker, and what the attempt sent (answered-by.md 3.1 and 4, step W6a): the model id read from the request the
+// gateway sent, and the providers.dev entry worked out from that request. (The model the vendor named and the effort
+// are a later step's: W5.)
 type ProvimuxAnswer struct {
-	Account string // "a." or "s." and 20 characters; "" names nobody and sends nothing
+	Account   string // "a." or "s." and 20 characters; "" names nobody and sends nothing
+	ModelSent string // the model id read from the request the gateway sent to the vendor; "" = not read
+	Entry     string // the providers.dev entry of this answer; "" = the gateway has none
 }
 
-// trimmed returns the answer with its values trimmed, as the statement's other values are.
+// ProvimuxModelNotConfirmed is X-Provimux-Model-Basis where the vendor's answer named no model before the answer's
+// first byte left (all this build knows): X-Provimux-Model is the id the gateway asked for.
+const ProvimuxModelNotConfirmed = "not-confirmed"
+
+// trimmed returns the answer with its marker trimmed, as the statement's other values are. A model and an entry are
+// kept as they are: they are what was sent, and on the wire a space is written as %20, never dropped.
 func (a ProvimuxAnswer) trimmed() ProvimuxAnswer {
-	return ProvimuxAnswer{Account: strings.TrimSpace(a.Account)}
+	a.Account = strings.TrimSpace(a.Account)
+	return a
 }
 
-// onTheWire returns the answer as it is sent: whole, or the zero answer when the marker is not a marker.
+// onTheWire returns the answer as it is sent (AuthStatement.OnTheWire): the zero answer when the marker is not a
+// marker, and no entry without a model. It can be applied twice: the values are encoded only by Fields.
 func (a ProvimuxAnswer) onTheWire() ProvimuxAnswer {
 	if !provimuxMarkerOnTheWire.MatchString(a.Account) {
 		return ProvimuxAnswer{}
+	}
+	if a.ModelSent == "" {
+		a.Entry = ""
 	}
 	return a
 }
 
 // Fields returns the header name, the WebSocket field name and the value of each value of the answer that is sent,
-// in a fixed order: none when Account is empty.
+// in the contract's order: none when Account is empty; the model, its basis and the sent model only together, and the
+// entry only with them. A model and an entry go with each byte outside printable ASCII, a space or "%" written as "%"
+// and two hex digits, as the provider is.
 func (a ProvimuxAnswer) Fields() []ProvimuxField {
 	a = a.onTheWire()
 	if a.Account == "" {
 		return nil
 	}
-	return []ProvimuxField{{Header: ProvimuxAccountHeader, Field: ProvimuxAccountField, Value: a.Account}}
+	a.ModelSent, a.Entry = encodeProvider(a.ModelSent), encodeProvider(a.Entry)
+	fields := []ProvimuxField{{Header: ProvimuxAccountHeader, Field: ProvimuxAccountField, Value: a.Account}}
+	if a.ModelSent == "" {
+		return fields
+	}
+	fields = append(fields,
+		ProvimuxField{Header: ProvimuxModelHeader, Field: ProvimuxModelField, Value: a.ModelSent},
+		ProvimuxField{Header: ProvimuxModelBasisHeader, Field: ProvimuxModelBasisField, Value: ProvimuxModelNotConfirmed},
+		ProvimuxField{Header: ProvimuxModelSentHeader, Field: ProvimuxModelSentField, Value: a.ModelSent})
+	if a.Entry != "" {
+		fields = append(fields, ProvimuxField{Header: ProvimuxEntryHeader, Field: ProvimuxEntryField, Value: a.Entry})
+	}
+	return fields
 }
 
 // SetProvimuxAnswerHeaders sets, or deletes, every X-Provimux-* header of the statement from one statement as it is
