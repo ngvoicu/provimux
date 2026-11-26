@@ -19,6 +19,9 @@ import (
 	"github.com/MoeForge/moego/ojson"
 	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/provimux/modellists"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
@@ -433,4 +436,33 @@ func standInBytes(r *http.Request) string {
 		}
 	}
 	return b.String()
+}
+
+// Devin: every request id the executor makes for a model of Devin's catalog and an effort resolves to that model's
+// entry, or to none; never to another model's (answered-by.md 11).
+func TestProvimuxAnswerEntryDevinRequestIDsOverTheCatalog(t *testing.T) {
+	models := registry.GetDevinModels()
+	if len(models) == 0 {
+		t.Fatal("fixture: Devin's catalog is empty")
+	}
+	var unresolved []string
+	checked := 0
+	for _, model := range models {
+		id := strings.TrimPrefix(strings.ToLower(model.ID), "devin/")
+		levels := []string{"", "none", "minimal", "low", "medium", "high", "xhigh", "max", "auto"}
+		if model.Thinking != nil {
+			levels = append(levels, model.Thinking.Levels...)
+		}
+		for _, level := range levels {
+			uid := helps.ResolveDevinChatModelUID(model.ID, level, 0)
+			checked++
+			switch got := modellists.EntryModel("devin", uid); {
+			case got == "":
+				unresolved = append(unresolved, model.ID+"@"+level+"="+uid)
+			case !strings.EqualFold(got, id):
+				t.Errorf("%s at effort %q is sent as %s, whose entry is devin/%s: another model's", model.ID, level, uid, got)
+			}
+		}
+	}
+	t.Logf("%d request ids over %d models; %d have no entry: %v", checked, len(models), len(unresolved), unresolved)
 }
