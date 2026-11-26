@@ -1245,6 +1245,7 @@ func ValidateV8Config(data []byte) error {
 		}
 	}
 	encoded, err := yaml.Marshal(flat)
+	err = provimuxRestartDrainWriteCheck(flat, err) // Provimux: a write of a number out of range is refused
 	if err != nil {
 		return err
 	}

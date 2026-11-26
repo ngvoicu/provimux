@@ -484,7 +484,7 @@ func (s *Server) Stop(ctx context.Context) error {
 		drainTimeout := 0
 		if cfg := s.getConfig(); cfg != nil {
 			drainTimeout = cfg.ShutdownTimeoutSeconds
-			drainTimeout = cfg.ProvimuxStopDrainSeconds() // Provimux: server.restart-drain-seconds, 25 s by default
+			drainTimeout = cfg.ProvimuxStopDrain() // Provimux: server.restart-drain-seconds, 25 s by default
 		}
 		if drainTimeout > 0 {
 			// Bound the drain by the configured timeout even when the caller's

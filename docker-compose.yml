@@ -27,3 +27,4 @@ services:
       - ${CLI_PROXY_LOG_PATH:-./logs}:/CLIProxyAPI/logs
       - ${CLI_PROXY_PLUGIN_PATH:-./plugins}:/CLIProxyAPI/plugins
     restart: unless-stopped
+    stop_grace_period: 40s # Provimux: room for the restart wait (server.restart-drain-seconds)

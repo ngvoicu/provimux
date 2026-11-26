@@ -3,8 +3,12 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/sirupsen/logrus"
+	logtest "github.com/sirupsen/logrus/hooks/test"
 )
 
 // withProvimuxRestartDrainDefault gives the test the default a real gateway has (a test binary has 0).
@@ -49,23 +53,67 @@ func TestProvimuxStopDrainSeconds(t *testing.T) {
 	}
 }
 
-// Only a whole number from 0 to 30 is accepted, in the file and in a management write (both parse here).
-func TestProvimuxRestartDrainRefusesOtherValues(t *testing.T) {
-	for _, value := range []string{"-1", "31", "2.75", "30.0", `"10"`, "ten", "true", "[10]", "{a: 1}", "1e1"} {
-		t.Run(value, func(t *testing.T) {
-			_, err := ParseConfigBytes([]byte("config-version: 8\nserver:\n  restart-drain-seconds: " + value + "\n"))
+// A number out of range is used as the nearest bound, with one warning per value found, when the config is
+// read (at start and at a reload); a management write of one is refused (ValidateV8Config, which only the
+// management API's writes call). Anything that is not a whole number is refused everywhere.
+func TestProvimuxRestartDrainOutOfRangeAndWrongType(t *testing.T) {
+	hook := logtest.NewGlobal()
+	t.Cleanup(hook.Reset)
+	parse := func(value string) (*Config, error) {
+		return ParseConfigBytes([]byte("config-version: 8\nserver:\n  restart-drain-seconds: " + value + "\n"))
+	}
+	for _, tc := range []struct {
+		value string
+		used  int
+	}{{"31", 30}, {"99999", 30}, {"-1", 0}, {"-5", 0}} {
+		t.Run(tc.value, func(t *testing.T) {
+			hook.Reset()
+			for i := 0; i < 3; i++ {
+				cfg, err := parse(tc.value)
+				if err != nil {
+					t.Fatalf("parse refused %s: %v", tc.value, err)
+				}
+				if got := cfg.ProvimuxStopDrainSeconds(); got != tc.used {
+					t.Fatalf("budget = %d, want %d", got, tc.used)
+				}
+			}
+			want := "server.restart-drain-seconds is " + tc.value + "; using " + strconv.Itoa(tc.used) + " (it takes 0 to 30)"
+			var warnings []string
+			for _, entry := range hook.AllEntries() {
+				if entry.Level == logrus.WarnLevel && strings.Contains(entry.Message, "restart-drain-seconds") {
+					warnings = append(warnings, entry.Message)
+				}
+			}
+			if len(warnings) != 1 || warnings[0] != want {
+				t.Fatalf("warnings = %q, want one %q", warnings, want)
+			}
+			err := ValidateV8Config([]byte("config-version: 8\nserver:\n  restart-drain-seconds: " + tc.value + "\n"))
 			if err == nil || !strings.Contains(err.Error(), "restart-drain-seconds must be a whole number of seconds from 0 to 30") {
+				t.Fatalf("a management write of %s: %v", tc.value, err)
+			}
+		})
+	}
+	for _, value := range []string{"2.75", "30.0", `"10"`, "ten", "true", "[10]", "{a: 1}", "1e1"} {
+		t.Run(value, func(t *testing.T) {
+			if _, err := parse(value); err == nil || !strings.Contains(err.Error(), "restart-drain-seconds must be a whole number of seconds from 0 to 30") {
 				t.Fatalf("err = %v", err)
 			}
-			if errV8 := ValidateV8Config([]byte("config-version: 8\nserver:\n  restart-drain-seconds: " + value + "\n")); errV8 == nil {
+			if err := ValidateV8Config([]byte("config-version: 8\nserver:\n  restart-drain-seconds: " + value + "\n")); err == nil {
 				t.Fatal("ValidateV8Config accepted it")
 			}
 		})
 	}
-	for _, value := range []string{"0", "1", "25", "30", "0x1e"} {
-		if _, err := ParseConfigBytes([]byte("config-version: 8\nserver:\n  restart-drain-seconds: " + value + "\n")); err != nil {
+	for _, value := range []string{"0", "1", "25", "30", "null"} {
+		if _, err := parse(value); err != nil {
 			t.Fatalf("%s refused: %v", value, err)
 		}
+		if err := ValidateV8Config([]byte("config-version: 8\nserver:\n  restart-drain-seconds: " + value + "\n")); err != nil {
+			t.Fatalf("a management write of %s refused: %v", value, err)
+		}
+	}
+	// YAML reads a leading 0 as octal: 010 is 8. Upstream's keys read it the same way.
+	if cfg, err := parse("010"); err != nil || cfg.ProvimuxStopDrainSeconds() != 8 {
+		t.Fatalf("010: %v", err)
 	}
 }
 

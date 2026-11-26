@@ -14,8 +14,8 @@ import (
 )
 
 // Provimux: the console reads and writes server.restart-drain-seconds through the generic config path, with no
-// endpoint of Provimux's own. An unset key reads 404, a set key reads as its number, and a value other than a
-// whole number from 0 to 30 is refused with 422 and leaves the file as it was.
+// endpoint of Provimux's own. An unset key reads 404, a set key reads as its number, and a whole number out of
+// range is refused with 400, anything else with 422, and the file stays as it was.
 func TestProvimuxRestartDrainThroughGenericConfigPath(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	path := filepath.Join(t.TempDir(), "config.yaml")
@@ -60,7 +60,16 @@ func TestProvimuxRestartDrainThroughGenericConfigPath(t *testing.T) {
 	request(http.MethodPut, key, "0", http.StatusOK, `"status":"ok"`)
 	fileHas("restart-drain-seconds: 0")
 	request(http.MethodGet, key, "", http.StatusOK, "0")
-	for _, bad := range []string{"31", "-1", "2.75", `"10"`, "true"} {
+	// A whole number out of range: the read path would use the nearest bound, the write is refused (400).
+	for _, bad := range []string{"31", "-1"} {
+		request(http.MethodPut, key, bad, http.StatusBadRequest,
+			`{"error":"invalid_config","message":"server.restart-drain-seconds must be a whole number of seconds from 0 to 30, got \"`+bad+`\""}`)
+		fileHas("restart-drain-seconds: 0")
+	}
+	request(http.MethodPatch, "/v8/management/config/server", `{"restart-drain-seconds":45}`, http.StatusBadRequest, `"error":"invalid_config"`)
+	fileHas("restart-drain-seconds: 0")
+	// Not a whole number: refused as the read path refuses it (422).
+	for _, bad := range []string{"2.75", `"10"`, "true"} {
 		request(http.MethodPut, key, bad, http.StatusUnprocessableEntity,
 			`{"error":"invalid_config","message":"parse config payload: server.restart-drain-seconds must be a whole number of seconds from 0 to 30`)
 		fileHas("restart-drain-seconds: 0")

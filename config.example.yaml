@@ -100,11 +100,11 @@ server:
   # Note: hijacked connections (WebSocket sessions) are not drained; they are
   # released by their own connection managers after the drain window.
   shutdown-timeout: 0
-  # Provimux: how long a stop or restart waits is decided by restart-drain-seconds, a whole number
-  # from 0 to 30. When it is set, it alone decides: 0 closes at once, as shutdown-timeout: 0 does in
-  # CLIProxyAPI. When it is not set, the wait is 25 seconds, or shutdown-timeout when that is larger,
-  # so the 0 above still lets answers in flight finish. What the wait covers: "Restarts and upgrades"
-  # in Provimux's README.
+  # Provimux: a stop or restart lets the HTTP answers in flight finish for up to restart-drain-seconds,
+  # a whole number from 0 to 30 (above 30 is taken as 30, below 0 as 0). When it is set, it alone
+  # decides: 0 closes at once, as shutdown-timeout: 0 does in CLIProxyAPI. When it is not set, the wait
+  # is 25 seconds, or shutdown-timeout when that is larger, so the 0 above still lets answers finish.
+  # What the wait covers: "Restarts and upgrades" in Provimux's README.
   # restart-drain-seconds: 25
 
   # TLS settings for HTTPS. When enabled, the server listens with the provided certificate and key.
