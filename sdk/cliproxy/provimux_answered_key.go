@@ -7,7 +7,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/kvstore"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
@@ -91,4 +93,10 @@ func provimuxLoadAnsweredKey() {
 	if !kept {
 		log.Warnf("answered-by: the key of the account markers is not kept (%v); the markers hold until this process ends", errKey)
 	}
+}
+
+// provimuxSetAnsweredBy puts models.answered-by of cfg in force, where the service commits a config and from the
+// first config of a start, which is not committed.
+func provimuxSetAnsweredBy(cfg *config.Config) {
+	logging.SetProvimuxAnsweredBy(cfg != nil && cfg.Models.AnsweredByOn())
 }

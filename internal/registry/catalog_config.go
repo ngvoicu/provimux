@@ -22,6 +22,9 @@ type CatalogSources struct {
 	// model lists of Provimux's login types; their values fill the fields a vendor's list leaves out
 	// for a model the catalog lacks. On unless set to false (Provimux, model-lists.md step P3).
 	PublishedLists *bool `yaml:"published-lists,omitempty" json:"published-lists,omitempty"`
+	// AnsweredBy names, on each answer, the account that gave it by an opaque marker, and gives the account lists
+	// the marker. On unless set to false; off in a test binary unless a test turns it on (Provimux, answered-by.md 6).
+	AnsweredBy *bool `yaml:"answered-by,omitempty" json:"answered-by,omitempty"`
 	// OnlyMyNames serves only the names the owner set: the aliases on his keys and logins, plus the
 	// names under keep. Every other name is treated as excluded. Off when absent (Provimux,
 	// only-my-names.md).
@@ -54,6 +57,15 @@ func (m CatalogSources) PublishedListsOn() bool {
 		return provimuxPublishedListsDefault.Load()
 	}
 	return *m.PublishedLists
+}
+
+// AnsweredByOn reports whether answers and account lists name the account (models.answered-by). Unset means on,
+// except in a test binary, where every existing test of the headers and the lists reads what it read.
+func (m CatalogSources) AnsweredByOn() bool {
+	if m.AnsweredBy == nil {
+		return !testing.Testing()
+	}
+	return *m.AnsweredBy
 }
 
 // SetProvimuxLiveListsDefault sets the value of an unset models.live-lists and returns the previous

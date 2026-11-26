@@ -16,6 +16,7 @@
           "kind": "apikey",
           "priority": 0,
           "host": "openrouter.ai",
+          "account": "a.q4mfxw2zkh7tbcpv6nda",
           "login": {
             "name": null,
             "email": null,
@@ -52,6 +53,7 @@
           "kind": "oauth",
           "priority": 10,
           "host": null,
+          "account": "a.jvwtubr4vdp5dfnhj7jm",
           "login": {
             "name": "claude-ada@example.com.json",
             "email": "ada@example.com",
@@ -83,6 +85,7 @@
           "kind": "apikey",
           "priority": 0,
           "host": "api.anthropic.com",
+          "account": "a.vymubsbmffkad6cmardq",
           "login": {
             "name": null,
             "email": null,
@@ -127,6 +130,7 @@
           "kind": "oauth",
           "priority": 0,
           "host": null,
+          "account": "a.mz3rk6ydw5spe2hlqua4",
           "login": {
             "name": "devin-ada@example.com.json",
             "email": "ada@example.com",
@@ -163,6 +167,7 @@
           "kind": "oauth",
           "priority": 0,
           "host": null,
+          "account": "a.tytzm54pttsi5uuwvreh",
           "login": {
             "name": "codex-ada@example.com-plus.json",
             "email": "ada@example.com",
@@ -190,6 +195,7 @@
           "kind": "apikey",
           "priority": 0,
           "host": "llm.lab.example",
+          "account": "a.gmig2utyviw5ny2np7m7",
           "login": {
             "name": null,
             "email": null,

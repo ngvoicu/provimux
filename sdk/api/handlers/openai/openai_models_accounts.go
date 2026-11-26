@@ -17,6 +17,9 @@ type modelAccount struct {
 	// Kind is "oauth" for a subscription login and "apikey" for an API key.
 	Kind     string `json:"kind"`
 	Priority int    `json:"priority"`
+	// Account is the account's marker (Provimux, answered-by.md 2): X-Provimux-Account on every answer it gives. Left
+	// out with models.answered-by off.
+	Account string `json:"account,omitempty"`
 	// Host is the host of an API key's base URL, when it has one: an OpenAI-compatible entry's name is the operator's
 	// choice, so the host is what tells the upstream service. Only the host: no credentials, port, path or query.
 	Host string `json:"host,omitempty"`
@@ -52,6 +55,7 @@ func (h *OpenAIAPIHandler) modelAccounts() map[string][]modelAccount {
 			continue
 		}
 		account := modelAccount{Provider: auth.Provider, Kind: auth.AuthKind(), Priority: auth.Priority(), Host: auth.BaseURLHost()}
+		account.Account = auth.ProvimuxAccountMarker() // Provimux: answered-by.md 2
 		for _, model := range modelRegistry.GetModelsForClient(auth.ID) {
 			if model == nil || model.ID == "" {
 				continue

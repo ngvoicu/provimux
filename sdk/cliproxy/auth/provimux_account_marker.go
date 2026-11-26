@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/codex"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 )
 
 // Provimux: the account marker (.github/provimux/design/answered-by.md sections 2.2 and 2.3). An opaque name of the
@@ -50,9 +51,12 @@ func SetProvimuxMarkerKey(key []byte) {
 	provimuxMarkerKey.Store(&kept)
 }
 
-// ProvimuxAccountMarker returns the account's marker (answered-by.md 2.2 and 2.3), or "" without a key or for a
-// credential that has no statement.
+// ProvimuxAccountMarker returns the account's marker (answered-by.md 2.2 and 2.3), or "" with models.answered-by
+// off, without a key, or for a credential that has no statement.
 func (a *Auth) ProvimuxAccountMarker() string {
+	if !logging.ProvimuxAnsweredBy() {
+		return ""
+	}
 	key := provimuxMarkerKey.Load()
 	if key == nil || len(*key) == 0 {
 		return ""
