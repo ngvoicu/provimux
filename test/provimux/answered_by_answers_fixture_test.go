@@ -26,9 +26,11 @@ import (
 )
 
 // Provimux: the answers of the answered-by fixture (answered-by.md 8.4). Like answered_by_fixture_test.go, this file
-// uses only what the commit before answered-by has. An upstream that is itself a gateway sends its own X-Provimux-*
-// headers (put in the header map before the answer, as a foreign writer would) and provimux_* fields on its
-// response.created. Every key and host is invented.
+// uses only what the commit before answered-by has. With foreign, the upstream is itself a gateway: it sends its own
+// X-Provimux-* headers (on its answer, passed on with passthrough-headers, and put in the header map before the answer
+// by a foreign writer) and provimux_* fields on its response.created. No answer carried these names before they
+// existed, so the byte comparison with that commit is made without them (TestProvimuxAnsweredByOffIsToday), and the
+// foreign case has its own test (TestProvimuxAnsweredByForeignNamesNeverPass). Every key and host is invented.
 
 const answeredAnswerModel = "provimux-answered-model"
 
@@ -40,28 +42,48 @@ var answeredForeignHeaders = [][2]string{
 // answeredForeignFields are the upstream gateway's own fields on its response.created.
 const answeredForeignFields = `"cpa_auth_kind":"oauth","provimux_account":"a.zzzzzzzzzzzzzzzzzzzz","provimux_model":"foreign-model","provimux_entry":"foreign/model"`
 
-// answeredByExecutor is the credentials' executor: it answers every format, from an upstream exchange.
-type answeredByExecutor struct{ coreauth.ProviderExecutor }
+// answeredByExecutor is the credentials' executor: it answers every format, from an upstream exchange; with foreign,
+// as an upstream gateway would.
+type answeredByExecutor struct {
+	coreauth.ProviderExecutor
+	foreign bool
+}
+
+// foreignHeaders are the upstream gateway's response headers, or none.
+func (e answeredByExecutor) foreignHeaders() http.Header {
+	if !e.foreign {
+		return nil
+	}
+	header := http.Header{"X-Upstream-Note": {"kept"}}
+	for _, pair := range answeredForeignHeaders {
+		header.Set(pair[0], pair[1])
+	}
+	return header
+}
 
 func (answeredByExecutor) Identifier() string { return "answered-fixture" }
 
-func (answeredByExecutor) Execute(ctx context.Context, _ *coreauth.Auth, _ coreexecutor.Request, _ coreexecutor.Options) (coreexecutor.Response, error) {
+func (e answeredByExecutor) Execute(ctx context.Context, _ *coreauth.Auth, _ coreexecutor.Request, _ coreexecutor.Options) (coreexecutor.Response, error) {
 	coreexecutor.MarkUpstreamAttempt(ctx)
-	return coreexecutor.Response{Payload: []byte(`{"id":"chatcmpl-fixture","object":"chat.completion","created":1700000000,"model":"` + answeredAnswerModel + `","choices":[{"index":0,"message":{"role":"assistant","content":"fixture answer"},"finish_reason":"stop"}],"candidates":[{"content":{"role":"model","parts":[{"text":"fixture answer"}]},"finishReason":"STOP"}]}`)}, nil
+	return coreexecutor.Response{Headers: e.foreignHeaders(), Payload: []byte(`{"id":"chatcmpl-fixture","object":"chat.completion","created":1700000000,"model":"` + answeredAnswerModel + `","choices":[{"index":0,"message":{"role":"assistant","content":"fixture answer"},"finish_reason":"stop"}],"candidates":[{"content":{"role":"model","parts":[{"text":"fixture answer"}]},"finishReason":"STOP"}]}`)}, nil
 }
 
-func (answeredByExecutor) CountTokens(ctx context.Context, _ *coreauth.Auth, _ coreexecutor.Request, _ coreexecutor.Options) (coreexecutor.Response, error) {
+func (e answeredByExecutor) CountTokens(ctx context.Context, _ *coreauth.Auth, _ coreexecutor.Request, _ coreexecutor.Options) (coreexecutor.Response, error) {
 	coreexecutor.MarkUpstreamAttempt(ctx)
-	return coreexecutor.Response{Payload: []byte(`{"totalTokens":7}`)}, nil
+	return coreexecutor.Response{Headers: e.foreignHeaders(), Payload: []byte(`{"totalTokens":7}`)}, nil
 }
 
-func (answeredByExecutor) ExecuteStream(ctx context.Context, _ *coreauth.Auth, _ coreexecutor.Request, opts coreexecutor.Options) (*coreexecutor.StreamResult, error) {
+func (e answeredByExecutor) ExecuteStream(ctx context.Context, _ *coreauth.Auth, _ coreexecutor.Request, opts coreexecutor.Options) (*coreexecutor.StreamResult, error) {
 	coreexecutor.MarkUpstreamAttempt(ctx)
+	foreignFields := ""
+	if e.foreign {
+		foreignFields = "," + answeredForeignFields
+	}
 	var frames []string
 	switch {
 	case string(opts.SourceFormat) == "openai-response" || string(opts.ResponseFormat) == "openai-response":
 		frames = []string{
-			`data: {"type":"response.created","response":{"id":"resp-fixture","output":[]},` + answeredForeignFields + `}` + "\n\n",
+			`data: {"type":"response.created","response":{"id":"resp-fixture","output":[]}` + foreignFields + `}` + "\n\n",
 			`data: {"type":"response.completed","response":{"id":"resp-fixture","status":"completed","output":[]}}` + "\n\n",
 		}
 	default:
@@ -72,7 +94,7 @@ func (answeredByExecutor) ExecuteStream(ctx context.Context, _ *coreauth.Auth, _
 		chunks <- coreexecutor.StreamChunk{Payload: []byte(frame)}
 	}
 	close(chunks)
-	return &coreexecutor.StreamResult{Chunks: chunks}, nil
+	return &coreexecutor.StreamResult{Headers: e.foreignHeaders(), Chunks: chunks}, nil
 }
 
 // answeredByAnswerKey is the fixture's credential: a key with a base URL.
@@ -82,12 +104,13 @@ func answeredByAnswerKey() *coreauth.Auth {
 }
 
 // answeredByAnswers serves the fixture's requests and returns each answer written out: status, every header in name
-// order, and the body; and the frames of one Responses WebSocket turn.
-func answeredByAnswers(t *testing.T) []byte {
+// order, and the body; and the frames of one Responses WebSocket turn. With foreign, the upstream is a gateway that
+// sends its own X-Provimux-* and provimux_* values, passthrough-headers is on, and a foreign writer sets them too.
+func answeredByAnswers(t *testing.T, foreign bool) []byte {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	manager := coreauth.NewManager(nil, nil, nil)
-	manager.RegisterExecutor(answeredByExecutor{})
+	manager.RegisterExecutor(answeredByExecutor{foreign: foreign})
 	key := answeredByAnswerKey()
 	if _, errRegister := manager.Register(context.Background(), key); errRegister != nil {
 		t.Fatal(errRegister)
@@ -95,15 +118,17 @@ func answeredByAnswers(t *testing.T) []byte {
 	registry.GetGlobalRegistry().RegisterClient(key.ID, key.Provider, []*registry.ModelInfo{{ID: answeredAnswerModel, OwnedBy: "provimux-test", Created: 1700000000}})
 	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(key.ID) })
 
-	handler := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+	handler := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{PassthroughHeaders: foreign}, manager)
 	router := gin.New()
 	router.Use(logging.CPATraceIDMiddleware())
-	router.Use(func(c *gin.Context) {
-		for _, header := range answeredForeignHeaders {
-			c.Header(header[0], header[1])
-		}
-		c.Next()
-	})
+	if foreign {
+		router.Use(func(c *gin.Context) {
+			for _, header := range answeredForeignHeaders {
+				c.Header(header[0], header[1])
+			}
+			c.Next()
+		})
+	}
 	router.POST("/v1/chat/completions", openai.NewOpenAIAPIHandler(handler).ChatCompletions)
 	router.POST("/v1beta/models/*action", gemini.NewGeminiAPIHandler(handler).GeminiHandler)
 	router.GET("/v1/responses", openai.NewOpenAIResponsesAPIHandler(handler).ResponsesWebsocket)

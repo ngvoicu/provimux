@@ -8,12 +8,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
+	proxyconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
 // Provimux: the account marker on every answer (answered-by.md 5 and 8.4). The first-byte matrix of
@@ -312,4 +315,155 @@ func TestProvimuxAnswerNamesTheAccountAtItsFirstByte(t *testing.T) {
 		}
 	})
 	t.Logf("matrix: %d cells with the marker", cells)
+}
+
+// provimuxForeign is what an upstream that is itself a gateway puts on its answer, its stream and its error: its own
+// X-Provimux-* headers, and one header of its own that passthrough-headers passes on.
+func provimuxForeign() http.Header {
+	return http.Header{
+		"X-Provimux-Account":     {"a.zzzzzzzzzzzzzzzzzzzz", "s.yyyyyyyyyyyyyyyyyyyy"},
+		"X-Provimux-Model":       {"upstream-gateway-model"},
+		"X-Provimux-Model-Basis": {"vendor"},
+		"X-Provimux-Model-Sent":  {"upstream-gateway-model"},
+		"X-Provimux-Effort":      {"high"},
+		"X-Provimux-Entry":       {"upstream/entry"},
+		"X-Upstream-Note":        {"kept"},
+	}
+}
+
+type provimuxForeignError struct{ answeredUnavailableError }
+
+func (provimuxForeignError) Headers() http.Header { return provimuxForeign() }
+
+// provimuxForeignExecutor answers as answeredExecutor does, with an upstream gateway's headers on every outcome.
+type provimuxForeignExecutor struct{ *answeredExecutor }
+
+func (e *provimuxForeignExecutor) Execute(ctx context.Context, a *auth.Auth, r coreexecutor.Request, o coreexecutor.Options) (coreexecutor.Response, error) {
+	resp, err := e.answeredExecutor.Execute(ctx, a, r, o)
+	if _, unavailable := err.(answeredUnavailableError); unavailable {
+		return resp, provimuxForeignError{}
+	}
+	resp.Headers = provimuxForeign()
+	return resp, err
+}
+
+func (e *provimuxForeignExecutor) ExecuteStream(ctx context.Context, a *auth.Auth, r coreexecutor.Request, o coreexecutor.Options) (*coreexecutor.StreamResult, error) {
+	res, err := e.answeredExecutor.ExecuteStream(ctx, a, r, o)
+	if _, unavailable := err.(answeredUnavailableError); unavailable {
+		return res, provimuxForeignError{}
+	}
+	if res != nil {
+		res.Headers = provimuxForeign()
+	}
+	return res, err
+}
+
+func provimuxHeadersOf(h http.Header) map[string][]string {
+	found := map[string][]string{}
+	for key, values := range h {
+		if strings.HasPrefix(strings.ToLower(key), "x-provimux-") {
+			found[key] = values
+		}
+	}
+	return found
+}
+
+// provimuxServeForeign sends one Claude message to two keys of one host whose upstream is a gateway (provimuxForeign), with
+// the client's own X-Provimux-* request headers, and returns the response and the two keys.
+func provimuxServeForeign(t *testing.T, on, passthrough, stream bool, fail map[string]bool, origin string) (*httptest.ResponseRecorder, []*auth.Auth) {
+	t.Helper()
+	if on {
+		provimuxAnsweredOn(t)
+	}
+	cfg := &proxyconfig.Config{}
+	cfg.APIKeys = []string{"test-key"}
+	cfg.PassthroughHeaders = passthrough
+	server := newTestServerWithConfig(t, cfg)
+	server.handlers.AuthManager.SetRetryConfig(0, 0, 3)
+	attempts := []string{}
+	keys := []*auth.Auth{
+		{ID: "provimux-foreign-first", Provider: "claude", Status: auth.StatusActive, Attributes: map[string]string{auth.AttributeAPIKey: "sk-fixture-1", "base_url": "https://same.example.test/v1", "priority": "10"}},
+		{ID: "provimux-foreign-second", Provider: "claude", Status: auth.StatusActive, Attributes: map[string]string{auth.AttributeAPIKey: "sk-fixture-2", "base_url": "https://same.example.test/v1", "priority": "0"}},
+	}
+	server.handlers.AuthManager.RegisterExecutor(&provimuxForeignExecutor{&answeredExecutor{provider: "claude", upstreamFail: fail, attempts: &attempts, mu: &sync.Mutex{}}})
+	for _, key := range keys {
+		if _, err := server.handlers.AuthManager.Register(context.Background(), key); err != nil {
+			t.Fatal(err)
+		}
+		registry.GetGlobalRegistry().RegisterClient(key.ID, key.Provider, []*registry.ModelInfo{{ID: answeredTestModel, OwnedBy: "anthropic"}})
+		id := key.ID
+		t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(id) })
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(fmt.Sprintf(`{"model":%q,"max_tokens":8,"stream":%t,"messages":[{"role":"user","content":"hi"}]}`, answeredTestModel, stream)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer test-key")
+	req.Header.Set("X-Provimux-Account", "a.cccccccccccccccccccc")
+	req.Header.Set("X-Provimux-Entry", "client/forged")
+	if origin != "" {
+		req.Header.Set("Origin", origin)
+	}
+	recorder := httptest.NewRecorder()
+	server.engine.ServeHTTP(recorder, req)
+	return recorder, keys
+}
+
+// An upstream gateway's X-Provimux-* headers, on an answer, a stream and an error, and a client's own X-Provimux-*
+// request headers, never reach the client, switch on or off and passthrough-headers on or off: on, the answer carries
+// exactly this gateway's marker of the key that answered (after a failover the second's); off, none. (After the
+// review's own test of answered-by.)
+func TestProvimuxForeignNamesNeverPass(t *testing.T) {
+	for _, on := range []bool{false, true} {
+		for _, passthrough := range []bool{false, true} {
+			for _, stream := range []bool{false, true} {
+				for _, scenario := range []struct {
+					name      string
+					fail      map[string]bool
+					answering int
+				}{
+					{name: "first answers", answering: 0},
+					{name: "failover", fail: map[string]bool{"provimux-foreign-first": true}, answering: 1},
+					{name: "all fail", fail: map[string]bool{"provimux-foreign-first": true, "provimux-foreign-second": true}, answering: -1},
+				} {
+					t.Run(fmt.Sprintf("on=%t passthrough=%t stream=%t %s", on, passthrough, stream, scenario.name), func(t *testing.T) {
+						recorder, keys := provimuxServeForeign(t, on, passthrough, stream, scenario.fail, "")
+						found := provimuxHeadersOf(recorder.Header())
+						if scenario.answering < 0 {
+							if recorder.Code < 400 || len(found) != 0 {
+								t.Fatalf("all failed: %d, X-Provimux-* %v", recorder.Code, found)
+							}
+							return
+						}
+						if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "served-by-"+keys[scenario.answering].ID) {
+							t.Fatalf("fixture: %d %s", recorder.Code, recorder.Body.String())
+						}
+						if passthrough && recorder.Header().Get("X-Upstream-Note") != "kept" {
+							t.Fatalf("fixture: passthrough did not pass the upstream's own header: %v", recorder.Header())
+						}
+						want := map[string][]string{}
+						if on {
+							want["X-Provimux-Account"] = []string{keys[scenario.answering].ProvimuxAccountMarker()}
+						}
+						if fmt.Sprint(found) != fmt.Sprint(want) {
+							t.Fatalf("X-Provimux-* %v, want %v", found, want)
+						}
+					})
+				}
+			}
+		}
+	}
+}
+
+// A browser on another origin may read X-Provimux-Account when the switch is on: the CORS exposure names it. Off, the
+// exposure is today's constant.
+func TestProvimuxAnswerIsExposedToBrowsers(t *testing.T) {
+	for _, on := range []bool{false, true} {
+		recorder, _ := provimuxServeForeign(t, on, false, false, nil, "https://app.example.test")
+		exposed := recorder.Header().Get("Access-Control-Expose-Headers")
+		if on && (exposed != corsExposedResponseHeadersJoined+", X-Provimux-Account" || recorder.Header().Get("X-Provimux-Account") == "") {
+			t.Fatalf("on: exposed %q, header %q", exposed, recorder.Header().Get("X-Provimux-Account"))
+		}
+		if !on && exposed != corsExposedResponseHeadersJoined {
+			t.Fatalf("off: exposed %q, want today's %q", exposed, corsExposedResponseHeadersJoined)
+		}
+	}
 }

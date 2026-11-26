@@ -83,17 +83,45 @@ func TestProvimuxAnswerGoesOnlyWithItsStatement(t *testing.T) {
 	}
 }
 
-// With models.answered-by off the writer neither writes a marker nor removes another gateway's headers: the header
-// map is the owner's patch's.
-func TestProvimuxAnswerSwitchOffTouchesNothing(t *testing.T) {
+// With models.answered-by off the writer writes no marker, and still removes another gateway's X-Provimux-* headers:
+// they are this gateway's names, and a marker that is not ours never reaches a client. The three are the owner's.
+func TestProvimuxAnswerSwitchOffWritesNoneAndPassesNoneOfAnothers(t *testing.T) {
 	withProvimuxAnsweredBy(t, false)
 	header := serveProvimuxStatement(AuthStatement{Kind: "apikey", Provider: "claude", Host: "gateway.example.test", Provimux: ProvimuxAnswer{Account: provimuxTestMarker}}, true)
 	if header.Get(CPAAuthKindHeader) != "apikey" {
 		t.Fatalf("the three are the owner's patch's: kind %q", header.Get(CPAAuthKindHeader))
 	}
-	for name, value := range provimuxForeign {
-		if got := header.Values(name); len(got) != 1 || got[0] != value {
-			t.Fatalf("%s = %v, want the foreign %q untouched", name, got, value)
+	for _, name := range ProvimuxFieldNames() {
+		if got := header.Values(name.Header); len(got) != 0 {
+			t.Fatalf("%s = %v with the switch off", name.Header, got)
+		}
+	}
+}
+
+// On, a response that exposes headers to browsers on another origin exposes X-Provimux-Account too, once; off, the
+// value is left as it was set.
+func TestProvimuxAnswerIsExposedToBrowsersWhenOn(t *testing.T) {
+	const exposed = "X-CPA-TRACE-ID, X-CPA-AUTH-KIND, X-CPA-AUTH-PROVIDER, X-CPA-AUTH-HOST"
+	statement := AuthStatement{Kind: "apikey", Provider: "claude", Host: "gateway.example.test", Provimux: ProvimuxAnswer{Account: provimuxTestMarker}}
+	for _, test := range []struct {
+		on     bool
+		before string
+		want   string
+	}{
+		{on: true, before: exposed, want: exposed + ", X-Provimux-Account"},
+		{on: true, before: exposed + ", x-provimux-account", want: exposed + ", x-provimux-account"},
+		{on: true, before: "", want: ""},
+		{on: false, before: exposed, want: exposed},
+	} {
+		withProvimuxAnsweredBy(t, test.on)
+		header := http.Header{}
+		if test.before != "" {
+			header.Set("Access-Control-Expose-Headers", test.before)
+		}
+		SetProvimuxAnswerHeaders(header, statement)
+		SetProvimuxAnswerHeaders(header, statement) // a second pass adds nothing
+		if got := header.Get("Access-Control-Expose-Headers"); got != test.want {
+			t.Fatalf("on %v, before %q: %q, want %q", test.on, test.before, got, test.want)
 		}
 	}
 }

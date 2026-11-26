@@ -4,9 +4,6 @@ Content-Type: ["application/json"]
 X-Cpa-Auth-Host: ["answers.example.test"]
 X-Cpa-Auth-Kind: ["apikey"]
 X-Cpa-Auth-Provider: ["answered-fixture"]
-X-Provimux-Account: ["a.zzzzzzzzzzzzzzzzzzzz"]
-X-Provimux-Entry: ["foreign/model"]
-X-Provimux-Model: ["foreign-model"]
 {"id":"chatcmpl-fixture","object":"chat.completion","created":1700000000,"model":"provimux-answered-model","choices":[{"index":0,"message":{"role":"assistant","content":"fixture answer"},"finish_reason":"stop"}],"candidates":[{"content":{"role":"model","parts":[{"text":"fixture answer"}]},"finishReason":"STOP"}]}
 
 POST /v1/chat/completions {"model":"provimux-answered-model","messages":[{"role":"user","content":"hi"}],"stream":true}
@@ -18,9 +15,6 @@ Content-Type: ["text/event-stream"]
 X-Cpa-Auth-Host: ["answers.example.test"]
 X-Cpa-Auth-Kind: ["apikey"]
 X-Cpa-Auth-Provider: ["answered-fixture"]
-X-Provimux-Account: ["a.zzzzzzzzzzzzzzzzzzzz"]
-X-Provimux-Entry: ["foreign/model"]
-X-Provimux-Model: ["foreign-model"]
 data: {"id":"chatcmpl-fixture","object":"chat.completion.chunk","created":1700000000,"model":"provimux-answered-model","choices":[{"index":0,"delta":{"content":"fixture answer"},"finish_reason":"stop"}]}
 
 data: [DONE]
@@ -33,19 +27,13 @@ Content-Type: ["application/json"]
 X-Cpa-Auth-Host: ["answers.example.test"]
 X-Cpa-Auth-Kind: ["apikey"]
 X-Cpa-Auth-Provider: ["answered-fixture"]
-X-Provimux-Account: ["a.zzzzzzzzzzzzzzzzzzzz"]
-X-Provimux-Entry: ["foreign/model"]
-X-Provimux-Model: ["foreign-model"]
 {"totalTokens":7}
 
 POST /v1/chat/completions {"model":"no-such-model","messages":[{"role":"user","content":"hi"}]}
 400
 Content-Type: ["application/json"]
-X-Provimux-Account: ["a.zzzzzzzzzzzzzzzzzzzz"]
-X-Provimux-Entry: ["foreign/model"]
-X-Provimux-Model: ["foreign-model"]
 {"error":{"message":"unknown provider for model no-such-model","type":"invalid_request_error","code":"model_not_found","param":"model"}}
 
 WEBSOCKET
-{"type":"response.created","response":{"id":"resp-fixture","output":[]},"provimux_account":"a.zzzzzzzzzzzzzzzzzzzz","provimux_model":"foreign-model","provimux_entry":"foreign/model","cpa_auth_kind":"apikey","cpa_auth_provider":"answered-fixture","cpa_auth_host":"answers.example.test"}
+{"type":"response.created","response":{"id":"resp-fixture","output":[]},"cpa_auth_kind":"apikey","cpa_auth_provider":"answered-fixture","cpa_auth_host":"answers.example.test"}
 {"type":"response.completed","response":{"id":"resp-fixture","status":"completed","output":[]}}
