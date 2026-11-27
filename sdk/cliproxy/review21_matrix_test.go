@@ -50,7 +50,7 @@ payload:
 				t.Run(mode, func(t *testing.T) {
 					var wire, bodyID, host, path string
 					var reached bool
-					reviewSetVendor(h, reviewRT(func(r *http.Request) (*http.Response, error) {
+					reviewSet(h, reviewRT(func(r *http.Request) (*http.Response, error) {
 						var b []byte
 						if r.Body != nil {
 							b, _ = io.ReadAll(r.Body)

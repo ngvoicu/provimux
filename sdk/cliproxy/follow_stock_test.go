@@ -60,10 +60,8 @@ func followRealNetwork(t *testing.T, server *httptest.Server, serverName string)
 	return tr
 }
 
-// The stock paths (the reviewer's stock50 cases): each ordinary answer of a built-in executor, over a real TLS
-// receiver, names the entry of what the receiver got. Ported (the amendment of 2026-11-27 (2)): the receiver's network
-// goes through the gateway's own recognition by the test seam (reviewSetVendor, rule A.2), and the Copilot login is
-// registered as the gateway's loader makes one (sentCopilot, rule A.3).
+// The ordinary paths: each ordinary answer of a built-in executor, over a real TLS receiver, names the entry of what
+// the receiver got.
 func TestFollowNativeOrdinary(t *testing.T) {
 	h := newSentHarness(t, sentMatrixConfig)
 	useAnsweredBook(t, newSentClock())
@@ -72,7 +70,7 @@ func TestFollowNativeOrdinary(t *testing.T) {
 	s := &followVendor{}
 	server := httptest.NewTLSServer(s.handler(t))
 	defer server.Close()
-	reviewSetVendor(h, followRealNetwork(t, server, "example.com"))
+	reviewSet(h, followRealNetwork(t, server, "example.com"))
 	indexes := []int{0, 5, 6, 8, 12, 13, 15, 16, 17, 20, 21, 22}
 	for _, i := range indexes {
 		tc := sentMatrix()[i]

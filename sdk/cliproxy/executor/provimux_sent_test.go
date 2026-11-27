@@ -14,7 +14,6 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/provimux/origin"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
 	"google.golang.org/protobuf/encoding/protowire"
 )
@@ -468,48 +467,22 @@ func TestProvimuxSentDetachedRequestCancels(t *testing.T) {
 	}
 }
 
-// What leaves is wholly the gateway's own: a Host other than the URL's, a per-credential transport on the context that
-// the gateway's own provider did not build (recognised by identity, never by its Go package or a declaration), and Go's
-// default transport replaced, give nothing (the lead's amendment of 2026-11-27 (2), rule A.2). The transport on the
-// client is the one the gateway's helper chose from those parts.
+// What leaves is sent to its URL's own authority: a Host other than the URL's gives nothing.
 func TestProvimuxSentWhatLeaves(t *testing.T) {
 	provimuxSentOn(t, true)
-	type plain struct{ http.RoundTripper }
-	gatewayMade := &standIn{status: http.StatusOK}
-	origin.StandInForTests(gatewayMade)
 	for _, tc := range []struct {
-		name    string
-		req     func(*http.Request)
-		ctx     func(context.Context, *standIn) context.Context
-		replace bool
-		want    bool
+		name string
+		req  func(*http.Request)
+		want bool
 	}{
 		{name: "the URL's host", want: true},
 		{name: "the URL's host as Host, with the default port", req: func(r *http.Request) { r.Host = "API.x.ai:443" }, want: true},
 		{name: "another Host", req: func(r *http.Request) { r.Host = "routing.provimux-test.invalid" }},
 		{name: "another port in Host", req: func(r *http.Request) { r.Host = "api.x.ai:8443" }},
-		{name: "a context transport the gateway did not build", ctx: func(c context.Context, stand *standIn) context.Context {
-			return context.WithValue(c, "cliproxy.roundtripper", http.RoundTripper(plain{stand}))
-		}},
-		{name: "a Go transport the gateway did not build, as the context transport", ctx: func(c context.Context, _ *standIn) context.Context {
-			return context.WithValue(c, "cliproxy.roundtripper", http.RoundTripper(&http.Transport{}))
-		}},
-		{name: "a context transport the gateway built", ctx: func(c context.Context, _ *standIn) context.Context {
-			return context.WithValue(c, "cliproxy.roundtripper", http.RoundTripper(gatewayMade))
-		}, want: true},
-		{name: "Go's default transport replaced", replace: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.replace {
-				was := http.DefaultTransport
-				http.DefaultTransport = &http.Transport{}
-				t.Cleanup(func() { http.DefaultTransport = was })
-			}
 			ctx := WithUpstreamAttemptTracker(WithProvimuxStatementAsked(context.Background()))
 			stand := &standIn{status: http.StatusOK}
-			if tc.ctx != nil {
-				ctx = tc.ctx(ctx, stand)
-			}
 			req := jsonRequest(t, "https://api.x.ai/v1/responses", `{"model":"provimux-test-a"}`)
 			if tc.req != nil {
 				tc.req(req)

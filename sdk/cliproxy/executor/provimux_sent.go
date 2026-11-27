@@ -19,7 +19,6 @@ import (
 	"github.com/MoeForge/moego/ojson"
 	"github.com/klauspost/compress/zstd"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/provimux/origin"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
 	"google.golang.org/protobuf/encoding/protowire"
 )
@@ -32,8 +31,8 @@ import (
 // trace. The decorator notes each request a client built for the attempt hands its transport: the scheme, host and
 // port of the URL, the bytes of the body exactly as the transport reads them (a copy taken while it reads; nothing is
 // read ahead or twice), the names of its credential headers, and whether anything makes the request not wholly the
-// gateway's own (a Host other than the URL's, a per-credential transport the gateway did not build, a Go default
-// transport replaced, a decorator of another program on the context, a request on another context than the attempt's)
+// gateway's own (a Host other than the URL's, a decorator of another program on the context, a request on another
+// context than the attempt's)
 // and, when the response's headers arrive, the status. The model is read from those bytes when the answer is stated
 // (ProvimuxSent), and housekeeping is matched then, against the executor that answered. The trace counts every
 // connection the attempt's context asks for, so one the decorator did not see (an upstream WebSocket, a client no
@@ -51,7 +50,7 @@ type ProvimuxSentRequest struct {
 	// unread: the request has a body, or a model in its URL, in a form the reader does not know, two models that
 	// differ, or bytes the transport did not read whole.
 	unread bool
-	// untrusted: the request is not wholly the gateway's own (see the package comment).
+	// untrusted: the request is sent with a Host other than its URL's.
 	untrusted bool
 	// detached: the request was made on another context than the attempt's own. It is not known to be the attempt's:
 	// it never names an entry, though it can still be the answering executor's housekeeping.
@@ -223,9 +222,6 @@ type provimuxSentObserver struct {
 func (o *provimuxSentObserver) RoundTrip(req *http.Request) (*http.Response, error) {
 	own := provimuxSentLogOf(req.Context())
 	observed := provimuxObserveRequest(req)
-	if !provimuxGatewayParts(req.Context()) {
-		observed.untrusted = true
-	}
 	if own != o.log {
 		// A request on another context than the attempt's (a detached one): it is not known to be the attempt's
 		// own, and no entry is named for it.
@@ -261,16 +257,6 @@ func (o *provimuxSentObserver) CloseIdleConnections() {
 	if closer, ok := o.next.(interface{ CloseIdleConnections() }); ok {
 		closer.CloseIdleConnections()
 	}
-}
-
-// provimuxGatewayParts reports whether what the gateway's client helpers build a transport from is the gateway's own:
-// the per-credential transport on ctx is none or one the gateway's own provider built (recognised by identity), and Go's
-// default transport has not been replaced. A transport of another program, or one it replaced, gives no entry.
-func provimuxGatewayParts(ctx context.Context) bool {
-	if rt := ctx.Value("cliproxy.roundtripper"); rt != nil && !origin.GatewayTransport(rt) {
-		return false
-	}
-	return origin.DefaultTransportUnchanged()
 }
 
 // provimuxObserveRequest notes what req sends, without the body and the status.

@@ -19,7 +19,6 @@ import (
 	"github.com/MoeForge/moego/ojson"
 	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/provimux/origin"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
 	ca "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	ex "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
@@ -30,22 +29,9 @@ type reviewRT func(*http.Request) (*http.Response, error)
 
 func (f reviewRT) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
-// reviewSet puts rt on the manager as an embedding's per-credential transport (an SDK RoundTripperProvider): its
-// answers name no entry (the lead's amendment of 2026-11-27 (2), rule A.2).
+// reviewSet puts rt on the manager as every credential's transport: a test's stand-in network.
 func reviewSet(h *sentHarness, rt http.RoundTripper) {
 	h.service.coreManager.SetRoundTripperProvider(copilotAccountTransport(func(*ca.Auth) http.RoundTripper { return rt }))
-}
-
-// reviewVendor is a test's in-memory vendor as the transport below the reader.
-type reviewVendor struct{ http.RoundTripper }
-
-// reviewSetVendor puts rt on the manager as a stand-in vendor that goes through the recognition of the gateway's own
-// per-credential transports, by the seam that does nothing outside a test binary. Ported (rule A.2 of the amendment of
-// 2026-11-27 (2)): a stand-in is no longer recognised by declaring itself.
-func reviewSetVendor(h *sentHarness, rt http.RoundTripper) {
-	vendor := &reviewVendor{rt}
-	origin.StandInForTests(vendor)
-	reviewSet(h, vendor)
 }
 
 func reviewOK(req *http.Request, s, ct string) *http.Response {
@@ -127,8 +113,7 @@ func TestReview21AuthorityAndProxy(t *testing.T) {
 			tr.Proxy = http.ProxyURL(u)
 			tr.TLSClientConfig.ServerName = "example.com"
 			defer tr.CloseIdleConnections()
-			// Ported (rule A.2 of the second amendment of 2026-11-27): the stand-in network through the test seam.
-			reviewSetVendor(h, tr)
+			reviewSet(h, tr)
 			ans := h.post("/v1/chat/completions", chatBody("review-public", false, ""), nil)
 			if ans.status != 200 {
 				t.Fatalf("fixture HTTP %d %s", ans.status, ans.body)
@@ -200,7 +185,7 @@ func TestReview21MixedAndTwoRequests(t *testing.T) {
 			a := sentKeyFor(t, h, "review-public")
 			orig, _ := h.service.coreManager.Executor(a.Provider)
 			var received []string
-			rt := reviewVendor{reviewRT(func(r *http.Request) (*http.Response, error) {
+			rt := reviewRT(func(r *http.Request) (*http.Response, error) {
 				b, _ := io.ReadAll(r.Body)
 				r.Body.Close()
 				received = append(received, r.URL.Host+" "+string(b))
@@ -209,7 +194,7 @@ func TestReview21MixedAndTwoRequests(t *testing.T) {
 					res.StatusCode = 503
 				}
 				return res, nil
-			})}
+			})
 			h.service.coreManager.RegisterExecutor(reviewExec{ProviderExecutor: orig, run: func(c context.Context, a *ca.Auth, _ ex.Request, _ ex.Options) (ex.Response, error) {
 				first, err := reviewSend(c, rt, "https://openrouter.ai/v1/chat/completions", "lab/first")
 				if err != nil {
@@ -375,7 +360,7 @@ func TestReview21FrozenAndSchemaCapture(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var captured *http.Request
 			var raw []byte
-			reviewSetVendor(h, reviewRT(func(r *http.Request) (*http.Response, error) {
+			reviewSet(h, reviewRT(func(r *http.Request) (*http.Response, error) {
 				body, e := io.ReadAll(r.Body)
 				if e != nil {
 					return nil, e

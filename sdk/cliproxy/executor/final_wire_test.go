@@ -11,7 +11,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/provimux/origin"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
 )
 
@@ -50,7 +49,6 @@ func TestFinalReaderTLS(t *testing.T) {
 			tr.DialContext = func(c context.Context, _, _ string) (net.Conn, error) {
 				return (&net.Dialer{}).DialContext(c, "tcp", vendor.Listener.Addr().String())
 			}
-			origin.StandInForTests(tr)
 			// Ported (the amendment of 2026-11-27 (2), part 3): a call whose caller asked for the statement.
 			ctx := WithUpstreamAttemptTracker(WithProvimuxStatementAsked(context.WithValue(context.Background(), "cliproxy.roundtripper", http.RoundTripper(tr))))
 			client := httptransport.Decorate(ctx, &http.Client{Transport: tr})

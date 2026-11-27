@@ -66,7 +66,7 @@ func TestProvimuxServingExecutorPluginCandidate(t *testing.T) {
 			}
 			arrived, released := make(chan struct{}), make(chan struct{})
 			var once sync.Once
-			reviewSetVendor(h, reviewRT(func(r *http.Request) (*http.Response, error) {
+			reviewSet(h, reviewRT(func(r *http.Request) (*http.Response, error) {
 				once.Do(func() { close(arrived); <-released })
 				return h.stand.RoundTrip(r)
 			}))
@@ -111,7 +111,7 @@ func TestProvimuxServingExecutorTableChanges(t *testing.T) {
 				native, _ := m.Executor(a.Provider)
 				arrived, released := make(chan struct{}), make(chan struct{})
 				var once sync.Once
-				reviewSetVendor(h, reviewRT(func(r *http.Request) (*http.Response, error) {
+				reviewSet(h, reviewRT(func(r *http.Request) (*http.Response, error) {
 					once.Do(func() { close(arrived); <-released })
 					return h.stand.RoundTrip(r)
 				}))

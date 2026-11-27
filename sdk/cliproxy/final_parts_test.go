@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/provimux/origin"
 	ca "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	ex "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
@@ -25,7 +24,6 @@ func TestFinalMetricsDecorator(t *testing.T) {
 			h := newSentHarness(t, reviewRouter)
 			asEmbedding(t)
 			tr, got := followTLS(t)
-			origin.StandInForTests(tr)
 			reviewSet(h, tr)
 			var calls atomic.Int32
 			metrics := func(next http.RoundTripper) http.RoundTripper {

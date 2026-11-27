@@ -21,22 +21,17 @@ func TestProvimuxOriginCallers(t *testing.T) {
 		t.Fatalf("the module root: %v", err)
 	}
 	allowed := map[string][]string{
-		"origin.NoteGatewayTransport(":      {"sdk/cliproxy/provimux_origin.go"},
-		"provimuxGatewayTransports(":        {"sdk/cliproxy/builder.go", "sdk/cliproxy/provimux_origin.go"},
-		"provimuxRegistering(":              {"sdk/cliproxy/auth/conductor_lifecycle.go", "sdk/cliproxy/auth/provimux_answered.go"},
-		"provimuxNoteExecutor(":             {}, // the per-call record removed in part (5): in no product file
-		"provimuxExecutorSequence(":         {}, // the same
-		"StandInForTests(":                  {"internal/provimux/origin/origin.go"},
-		"coreauth.SetProvimuxAnswerEntry(":  {"sdk/cliproxy/provimux_answer_entry.go"},
-		"provimuxWithManager(":              {"sdk/cliproxy/auth/conductor_execution.go", "sdk/cliproxy/auth/provimux_answered.go"},
-		"origin.DefaultTransportUnchanged(": {"sdk/cliproxy/executor/provimux_sent.go"},
-		"origin.GatewayTransport(":          {"sdk/cliproxy/executor/provimux_sent.go"},
-		"origin.MarkShippedGateway(":        {"internal/logging/provimux_shipped.go"},
-		"logging.ProvimuxShippedGateway(":   {"cmd/server/main.go"},
-		"ShippedGatewayForTests(":           {"internal/provimux/origin/origin.go"},
-		"WithProvimuxStatementAsked(":       {"sdk/api/handlers/handlers_execution.go", "sdk/api/handlers/handlers_stream.go", "sdk/cliproxy/executor/provimux_sent.go"},
-		"ProvimuxPassesRequestsUnchanged":   {}, // the declaration the earlier build read: in no product file
-		"ProvimuxStockTransport":            {}, // the same
+		"provimuxRegistering(":             {"sdk/cliproxy/auth/conductor_lifecycle.go", "sdk/cliproxy/auth/provimux_answered.go"},
+		"provimuxNoteExecutor(":            {}, // the per-call record removed in part (5): in no product file
+		"provimuxExecutorSequence(":        {}, // the same
+		"coreauth.SetProvimuxAnswerEntry(": {"sdk/cliproxy/provimux_answer_entry.go"},
+		"provimuxWithManager(":             {"sdk/cliproxy/auth/conductor_execution.go", "sdk/cliproxy/auth/provimux_answered.go"},
+		"origin.MarkShippedGateway(":       {"internal/logging/provimux_shipped.go"},
+		"logging.ProvimuxShippedGateway(":  {"cmd/server/main.go"},
+		"ShippedGatewayForTests(":          {"internal/provimux/origin/origin.go"},
+		"WithProvimuxStatementAsked(":      {"sdk/api/handlers/handlers_execution.go", "sdk/api/handlers/handlers_stream.go", "sdk/cliproxy/executor/provimux_sent.go"},
+		"ProvimuxPassesRequestsUnchanged":  {}, // the declaration the earlier build read: in no product file
+		"ProvimuxStockTransport":           {}, // the same
 	}
 	found := map[string][]string{}
 	errWalk := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {

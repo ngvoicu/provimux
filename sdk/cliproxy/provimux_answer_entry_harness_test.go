@@ -275,9 +275,6 @@ func newSentHarness(t *testing.T, configBody string) *sentHarness {
 		coreauth.SetProvimuxMarkerKey(nil)
 	})
 	stand := &sentStandIn{t: t}
-	// The stand-in vendor goes through the recognition the gateway's own per-credential transports go through (the
-	// lead's amendment of 2026-11-27 (2), rule A.2): a seam that does nothing outside a test binary.
-	origin.StandInForTests(stand)
 	names.service.coreManager.SetRoundTripperProvider(stand)
 	// Answers are served by the gateway's own handler, on a test listener.
 	server := httptest.NewServer(names.service.server.Handler())

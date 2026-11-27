@@ -8,6 +8,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	ca "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	ex "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -26,7 +27,7 @@ func TestReview21MediaAndCompaction(t *testing.T) {
 	type seen struct{ url, path, model, content string }
 	var got []seen
 	var captures []reviewFrozenRequest
-	reviewSetVendor(h, reviewRT(func(r *http.Request) (*http.Response, error) {
+	reviewSet(h, reviewRT(func(r *http.Request) (*http.Response, error) {
 		var b []byte
 		if r.Body != nil {
 			b, _ = io.ReadAll(r.Body)
@@ -103,7 +104,7 @@ func TestReview21Failover(t *testing.T) {
 `)
 	useAnsweredBook(t, newSentClock())
 	h.service.coreManager.SetRetryConfig(0, 0, 3)
-	reviewSetVendor(h, reviewRT(func(r *http.Request) (*http.Response, error) {
+	reviewSet(h, reviewRT(func(r *http.Request) (*http.Response, error) {
 		res, e := h.stand.RoundTrip(r)
 		if e == nil && res.StatusCode == 503 {
 			res.Body.Close()
@@ -144,7 +145,7 @@ func TestReview21Refresh(t *testing.T) {
 	a := h.register(&ca.Auth{ID: "refresh-fixture", FileName: "refresh-fixture.json", Provider: "meta", Status: ca.StatusActive, Attributes: map[string]string{"auth_kind": "oauth", "path": filepath.Join(t.TempDir(), "refresh-fixture.json")}, Metadata: map[string]any{"type": "meta", "access_token": "before", "api_key": "fixture-key", "refresh_token": "fixture-refresh", "email": "refresh@fixture.invalid", "expired": sentFar()}}, "review-refresh")
 	orig, _ := h.service.coreManager.Executor(a.Provider)
 	var seen []string
-	rt := reviewVendor{reviewRT(func(r *http.Request) (*http.Response, error) {
+	rt := reviewRT(func(r *http.Request) (*http.Response, error) {
 		b, _ := io.ReadAll(r.Body)
 		r.Body.Close()
 		m := ojson.GetBytes(b, "model").String()
@@ -154,7 +155,7 @@ func TestReview21Refresh(t *testing.T) {
 			res.StatusCode = 401
 		}
 		return res, nil
-	})}
+	})
 	h.service.coreManager.RegisterExecutor(reviewExec{ProviderExecutor: orig, run: func(c context.Context, a *ca.Auth, _ ex.Request, _ ex.Options) (ex.Response, error) {
 		m := "refused"
 		if a.Metadata["access_token"] == "after" {
@@ -234,7 +235,7 @@ func TestReview21ZstdRetry(t *testing.T) {
 	useAnsweredBook(t, newSentClock())
 	h.register(&ca.Auth{ID: "retry-codex", FileName: "retry-codex.json", Provider: "codex", Status: ca.StatusActive, Attributes: map[string]string{"auth_kind": "oauth", "path": "/fixture/retry-codex.json"}, Metadata: map[string]any{"type": "codex", "access_token": "fixture-access", "account_id": "fixture-account", "expired": sentFar()}}, "review-zstd")
 	var enc, models []string
-	reviewSetVendor(h, reviewRT(func(r *http.Request) (*http.Response, error) {
+	reviewSet(h, reviewRT(func(r *http.Request) (*http.Response, error) {
 		b, _ := io.ReadAll(r.Body)
 		r.Body.Close()
 		m := standInModel(t, r, b)
@@ -281,3 +282,40 @@ func TestReview21ClaudeSigner(t *testing.T) {
 }
 
 var _ = bytes.Clone
+
+// reviewFrozenRequest is a request as an executor built it, sent once with models.answered-by off and once on.
+type reviewFrozenRequest struct {
+	request *http.Request
+	body    []byte
+}
+
+func (s reviewFrozenRequest) checkSwitch(t *testing.T) {
+	t.Helper()
+	saved := logging.ProvimuxAnsweredBy()
+	defer logging.SetProvimuxAnsweredBy(saved)
+	var encoded [2][]byte
+	for i, enable := range []bool{false, true} {
+		logging.SetProvimuxAnsweredBy(enable)
+		c := ex.WithUpstreamAttemptTracker(context.Background())
+		r := s.request.Clone(c)
+		open := func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(s.body)), nil }
+		r.Body, _ = open()
+		r.GetBody = open
+		rec := reviewRT(func(req *http.Request) (*http.Response, error) {
+			var b bytes.Buffer
+			if err := req.Write(&b); err != nil {
+				return nil, err
+			}
+			encoded[i] = b.Bytes()
+			return reviewOK(req, "{}", "application/json"), nil
+		})
+		resp, err := httptransport.Decorate(c, &http.Client{Transport: rec}).Do(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+	}
+	if len(encoded[0]) == 0 || !bytes.Equal(encoded[0], encoded[1]) {
+		t.Fatal("outgoing request differs at the receiving transport")
+	}
+}

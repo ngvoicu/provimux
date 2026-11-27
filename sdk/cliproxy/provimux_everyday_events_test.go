@@ -173,7 +173,7 @@ func TestProvimuxEverydayEventsKeepTheEntry(t *testing.T) {
 			useAnsweredBook(t, newSentClock())
 			logins := sentLogins(t, h)
 			gate := &provimuxGate{next: h.stand, arrived: make(chan struct{}), released: make(chan struct{})}
-			reviewSetVendor(h, gate)
+			reviewSet(h, gate)
 			model := "provimux-test-claude-login"
 			answer := make(chan sentAnswer, 1)
 			go func() { answer <- h.post("/v1/chat/completions", chatBody(model, true, ""), nil) }()
