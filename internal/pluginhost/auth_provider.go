@@ -1343,6 +1343,7 @@ func pluginAuthDataToCoreAuth(data pluginapi.AuthData, path, fileName string, au
 	if provider != "" {
 		metadata["type"] = provider
 	}
+	metadata[coreauth.ProvimuxPluginCredentialMark] = true // Provimux: a plugin made it, from this moment (answered-by.md 4.3)
 	attributes := cloneStringMap(data.Attributes)
 	if attributes == nil {
 		attributes = make(map[string]string)

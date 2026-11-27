@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"golang.org/x/net/context"
 )
 
@@ -37,4 +39,22 @@ func answeredStatementCallbackFromContext(ctx context.Context) func(logging.Auth
 	}
 	callback, _ := ctx.Value(answeredStatementCallbackContextKey{}).(func(logging.AuthStatement))
 	return callback
+}
+
+// provimuxStampClient puts on a statement that names an account the reference of the client key the request was
+// authenticated with (a keyed hash, never the key; "" for a caller without one): the record of what answers said is
+// kept per client key (answered-by.md 4.4 as amended on 2026-11-27).
+func provimuxStampClient(ctx context.Context, s logging.AuthStatement) logging.AuthStatement {
+	if s.Provimux.Account == "" || ctx == nil {
+		return s
+	}
+	s.Provimux.Client = ""
+	if g, ok := ctx.Value("gin").(*gin.Context); ok && g != nil {
+		if key, exists := g.Get("userApiKey"); exists {
+			if text, isText := key.(string); isText {
+				s.Provimux.Client = coreauth.ProvimuxClientRef(text)
+			}
+		}
+	}
+	return s
 }

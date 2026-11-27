@@ -20,9 +20,10 @@ type modelAccount struct {
 	// Account is the account's marker (Provimux, answered-by.md 2): X-Provimux-Account on every answer it gives. Left
 	// out with models.answered-by off.
 	Account string `json:"account,omitempty"`
-	// Answered is what this account's answers for this model said of themselves (answered-by.md 4.4), by day; present
-	// wherever Account is.
-	Answered *[]modelAnswered `json:"answered,omitempty"`
+	// Answered is what this credential's answers for this model to the caller's key said of themselves (answered-by.md
+	// 4.4 as amended on 2026-11-27), by day; present wherever Account is.
+	Answered   *[]modelAnswered `json:"answered,omitempty"`
+	credential string           // the credential's id, never sent
 	// Host is the host of an API key's base URL, when it has one: an OpenAI-compatible entry's name is the operator's
 	// choice, so the host is what tells the upstream service. Only the host: no credentials, port, path or query.
 	Host string `json:"host,omitempty"`
@@ -59,13 +60,12 @@ func (h *OpenAIAPIHandler) modelAccounts() map[string][]modelAccount {
 		}
 		account := modelAccount{Provider: auth.Provider, Kind: auth.AuthKind(), Priority: auth.Priority(), Host: auth.BaseURLHost()}
 		account.Account = auth.ProvimuxAccountMarker() // Provimux: answered-by.md 2
+		account.credential = auth.ID                   // Provimux: whose `answered` the row gives (answered-by.md 4.4)
 		for _, model := range modelRegistry.GetModelsForClient(auth.ID) {
 			if model == nil || model.ID == "" {
 				continue
 			}
-			row := account
-			row.Answered = provimuxAnsweredDays(account.Account, model.ID) // Provimux: answered-by.md 4.4
-			accounts[model.ID] = append(accounts[model.ID], row)
+			accounts[model.ID] = append(accounts[model.ID], account)
 		}
 	}
 	for _, list := range accounts {

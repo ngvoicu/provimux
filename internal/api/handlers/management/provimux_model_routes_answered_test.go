@@ -15,20 +15,20 @@ func TestProvimuxAnsweredTimes(t *testing.T) {
 	was := logging.SetProvimuxAnsweredBy(true)
 	t.Cleanup(func() { logging.SetProvimuxAnsweredBy(was); coreauth.SetProvimuxAnswered(nil, nil) })
 	at := time.Date(2030, 1, 2, 23, 59, 59, 123456789, time.FixedZone("provimux-test", 3600)) // date-safe: a fixed value of a pure function
-	coreauth.SetProvimuxAnswered(func(string, *coreauth.Auth, string, string) {}, func(marker, model string) []coreauth.ProvimuxAnsweredItem {
-		if marker == "a.aaaaaaaaaaaaaaaaaaaa" && model == "m" {
+	coreauth.SetProvimuxAnswered(func(string, string) string { return "" }, func(client string, all bool, authID, marker, model string) []coreauth.ProvimuxAnsweredItem {
+		if marker == "a.aaaaaaaaaaaaaaaaaaaa" && model == "m" && authID == "cred" && (all || client == "k.client") {
 			return []coreauth.ProvimuxAnsweredItem{{Entry: "p/one", At: at}, {Entry: "", At: at.Add(-time.Hour)}}
 		}
 		return nil
 	})
 	marker, other := "a.aaaaaaaaaaaaaaaaaaaa", "a.bbbbbbbbbbbbbbbbbbbb"
-	if got := provimuxAnsweredTimes(nil, "m"); got != nil {
+	if got := provimuxAnsweredTimes(nil, "cred", "m"); got != nil {
 		t.Fatalf("without a marker: %v", got)
 	}
-	if got := provimuxAnsweredTimes(&other, "m"); got == nil || len(*got) != 0 {
+	if got := provimuxAnsweredTimes(&other, "cred", "m"); got == nil || len(*got) != 0 {
 		t.Fatalf("nothing recorded: %v", got)
 	}
-	got := provimuxAnsweredTimes(&marker, "m")
+	got := provimuxAnsweredTimes(&marker, "cred", "m")
 	if got == nil || len(*got) != 2 || *(*got)[0].Entry != "p/one" || (*got)[0].At != "2030-01-02T22:59:59.123Z" || (*got)[1].Entry != nil { // date-safe: the fixed value above, in UTC
 		t.Fatalf("items: %+v", got)
 	}

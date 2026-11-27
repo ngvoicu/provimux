@@ -216,6 +216,7 @@ func TestProvimuxAnswerEntryUpstreamWebsocketHasNone(t *testing.T) {
 	t.Cleanup(func() { _ = os.RemoveAll(logs) })
 	t.Setenv("WRITABLE_PATH", logs)
 	h := newSentHarness(t, "")
+	useAnsweredBook(t, newSentClock()) // a record of its own: another test may have stopped the gateway's
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	var upstreamMu sync.Mutex
 	var upstreamModels []string
@@ -322,10 +323,10 @@ func TestProvimuxAnswerEntryUpstreamWebsocketHasNone(t *testing.T) {
 	}
 	// W6b: a WebSocket turn reaches the record with the name it asked for: the upstream WebSocket's answer as one
 	// that named no entry, the HTTP one with its entry.
-	if items := coreauth.ProvimuxAnswered(overSocket.ProvimuxAccountMarker(), "provimux-test-codex-ws"); len(items) == 0 || items[0].Entry != "" {
+	if items := coreauth.ProvimuxAnswered(coreauth.ProvimuxClientRef(sentClientKey), overSocket.ID, overSocket.ProvimuxAccountMarker(), "provimux-test-codex-ws"); len(items) == 0 || items[0].Entry != "" {
 		t.Fatalf("the record of the turn over the upstream WebSocket: %+v", items)
 	}
-	if items := coreauth.ProvimuxAnswered(overHTTP.ProvimuxAccountMarker(), "provimux-test-codex-http"); len(items) == 0 || items[0].Entry != "openai-codex/"+answered[0].Model {
+	if items := coreauth.ProvimuxAnswered(coreauth.ProvimuxClientRef(sentClientKey), overHTTP.ID, overHTTP.ProvimuxAccountMarker(), "provimux-test-codex-http"); len(items) == 0 || items[0].Entry != "openai-codex/"+answered[0].Model {
 		t.Fatalf("the record of the turn over HTTP: %+v", items)
 	}
 }

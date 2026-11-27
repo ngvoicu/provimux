@@ -75,6 +75,13 @@ type ProvimuxAnswer struct {
 	Account   string // "a." or "s." and 20 characters; "" names nobody and sends nothing
 	ModelSent string // the model id read from the request the gateway sent to the vendor; "" = not read
 	Entry     string // the providers.dev entry of this answer; "" = the gateway has none
+
+	// For the record of what answers said (answered-by.md 4.4 as amended on 2026-11-27), never sent: the credential
+	// that answered, the row the answer stands on (the name called, exactly, where the credential registers it), and
+	// the client's reference (a keyed hash of its key; "" for a caller without one).
+	Credential string
+	Name       string
+	Client     string
 }
 
 // ProvimuxModelNotConfirmed is X-Provimux-Model-Basis where the vendor's answer named no model before the answer's
@@ -186,3 +193,46 @@ func SetProvimuxAnsweredBy(on bool) bool { return provimuxAnsweredBy.Swap(on) }
 
 // ProvimuxAnsweredBy reports whether models.answered-by is on.
 func ProvimuxAnsweredBy() bool { return provimuxAnsweredBy.Load() }
+
+// provimuxAnsweredWritten is the record's intake (sdk/cliproxy sets it): it is handed a statement once it has been
+// written to its client.
+var provimuxAnsweredWritten atomic.Pointer[func(AuthStatement)]
+
+// SetProvimuxAnsweredWritten sets the record's intake; nil removes it.
+func SetProvimuxAnsweredWritten(intake func(AuthStatement)) {
+	if intake == nil {
+		provimuxAnsweredWritten.Store(nil)
+		return
+	}
+	provimuxAnsweredWritten.Store(&intake)
+}
+
+// ProvimuxNoteWritten hands the record a statement that has been written to its client, with the marker it was
+// written with: the response's headers, or a WebSocket turn's response.created. A statement that named nobody, and
+// one written with models.answered-by off, is not handed on.
+func ProvimuxNoteWritten(statement AuthStatement) {
+	intake := provimuxAnsweredWritten.Load()
+	if intake == nil || !ProvimuxAnsweredBy() {
+		return
+	}
+	statement = statement.OnTheWire()
+	if statement.Provimux.Account == "" || statement.Provimux.Credential == "" || statement.Provimux.Name == "" {
+		return
+	}
+	(*intake)(statement)
+}
+
+// provimuxWritten is what a response writer keeps for the record: the statement its headers were set from, and
+// whether it has been handed on.
+type provimuxWritten struct {
+	applied AuthStatement
+	noted   atomic.Bool
+}
+
+// provimuxNote hands the record the statement the headers were committed with, once, after they were.
+func (w *cpaTraceResponseWriter) provimuxNote() {
+	if w == nil || w.ResponseWriter == nil || !w.ResponseWriter.Written() || w.provimux.noted.Swap(true) {
+		return
+	}
+	ProvimuxNoteWritten(w.provimux.applied)
+}

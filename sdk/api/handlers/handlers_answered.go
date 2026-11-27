@@ -39,6 +39,7 @@ func offerAnsweredAuth(ctx context.Context, internalSource bool, s logging.AuthS
 	if internalSource { // a plugin's own model call: it answers the plugin, not the client
 		return
 	}
+	s = provimuxStampClient(ctx, s)                                     // Provimux: whose answer it is, for the record (answered-by.md 4.4)
 	if sink := answeredStatementCallbackFromContext(ctx); sink != nil { // Provimux: a websocket turn that takes it whole
 		sink(s)
 		return

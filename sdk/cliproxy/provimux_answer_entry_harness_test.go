@@ -9,9 +9,11 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/MoeForge/moego/ojson"
 	"github.com/klauspost/compress/zstd"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/copilot"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
@@ -51,6 +53,39 @@ type sentStandIn struct {
 }
 
 func (s *sentStandIn) RoundTripperFor(*coreauth.Auth) http.RoundTripper { return s }
+
+// ProvimuxPassesRequestsUnchanged: the stand-in is the vendor; what it receives is what left.
+func (s *sentStandIn) ProvimuxPassesRequestsUnchanged() bool { return true }
+
+// sentCopilot registers a Copilot login as the gateway's own login writes one (a file), with models in its catalog,
+// and publishes them.
+func sentCopilot(t *testing.T, h *sentHarness, modelIDs ...string) *coreauth.Auth {
+	t.Helper()
+	useCopilotTestModels(t)
+	models := make([]copilot.Model, 0, len(modelIDs))
+	infos := append([]*registry.ModelInfo(nil), registry.GetStaticModelDefinitionsByChannel("copilot")...)
+	for _, id := range modelIDs {
+		models = append(models, copilot.Model{ID: id, Endpoints: []string{copilot.Chat}})
+		infos = append(infos, &registry.ModelInfo{ID: id})
+	}
+	file := "provimux-test-copilot-" + strings.ReplaceAll(t.Name(), "/", "-") + ".json"
+	auth, err := h.service.coreManager.Register(t.Context(), &coreauth.Auth{
+		ID: file, FileName: file, Provider: copilot.Provider, Status: coreauth.StatusActive,
+		Attributes:     map[string]string{"path": "/provimux-test/auths/" + file},
+		CopilotCatalog: copilot.NewCatalog(models, time.Now()),
+		Metadata:       map[string]any{"access_token": "provimux-test-token", "base_url": "https://api.individual.githubcopilot.com"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
+	copilotTestPublisher(t)(infos)
+	h.service.registerExecutorForAuth(auth, false)
+	if !h.service.refreshModelRegistrationForAuth(auth) {
+		t.Fatal("fixture: Copilot's models")
+	}
+	return auth
+}
 
 func (s *sentStandIn) reset() {
 	s.mu.Lock()
