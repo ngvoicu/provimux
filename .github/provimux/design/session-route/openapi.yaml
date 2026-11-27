@@ -1,0 +1,817 @@
+openapi: 3.1.0
+info:
+  title: Provimux session routes
+  version: "1"
+  summary: Where a conversation is bound, and releasing it.
+  description: |
+    Contract 1 of `session-route.md` (beside this file). Four requests of Provimux's own. Stock
+    CLIProxyAPI has none of them: a 404 means "not this build".
+
+    With `routing.session-affinity: true` the gateway binds a conversation to the account that served
+    it. These requests show that binding and remove it. Removing it sends nothing: the conversation's
+    next request is routed as a new conversation's, to the first available route by priority.
+
+    Rules of the contract:
+
+    - It only grows. Fields are added, never removed or redefined. A reader ignores fields and enum
+      values it does not know.
+    - Unknown is `null`, never left out, except `account` on a route, which is absent where the build
+      or the configuration gives no account marker.
+    - Times are RFC 3339 in UTC. Durations are whole seconds.
+    - A session id is never in a URL: a conversation is named by headers and by the body.
+servers:
+  - url: http://localhost:8317
+    description: A local gateway. The port is the configuration's.
+tags:
+  - name: client
+    description: For any configured client key. A key sees and releases only conversations it has used.
+  - name: operator
+    description: Behind the management key. Every binding.
+
+paths:
+  /v1/provimux/session-route:
+    post:
+      tags: [client]
+      operationId: showSessionRoute
+      summary: Where this conversation is bound for a name.
+      description: |
+        The conversation is named **as a turn names it**: send the session header your client sends
+        on its turns (`Session-Id`, `X-Session-Affinity`, `X-Session-ID`, `X-Claude-Code-Session-Id`,
+        ...), or put the body fields your turns carry their session in under `identity`. The gateway
+        reads them with the function every turn goes through, so the identity is the binding's own.
+
+        A conversation another client key used and a conversation that does not exist get the same
+        answer: `conversation: "not-seen"`.
+
+        Nothing is changed by this request: no binding is made, moved or refreshed.
+      security:
+        - clientKey: []
+      parameters:
+        - $ref: "#/components/parameters/SessionHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ShowRequest"
+            examples:
+              pi-claude-format:
+                summary: Pi on a Claude-format model (header X-Session-Affinity)
+                value: { model: opus }
+              body-identity:
+                summary: A client whose turns carry prompt_cache_key
+                value:
+                  model: gpt-main
+                  identity: { prompt_cache_key: project-a }
+      responses:
+        "200":
+          description: The state of the conversation for the name.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionRoute"
+              examples:
+                fell-back-cache-cold:
+                  $ref: "#/components/examples/FellBackCacheCold"
+                on-first-route:
+                  $ref: "#/components/examples/OnFirstRoute"
+                not-seen:
+                  $ref: "#/components/examples/NotSeen"
+                affinity-off:
+                  $ref: "#/components/examples/AffinityOff"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /v1/provimux/session-route/release:
+    post:
+      tags: [client]
+      operationId: releaseSessionRoute
+      summary: Remove this conversation's binding for a name.
+      description: |
+        The conversation's next request for the name goes to the first available route by priority.
+        Nothing is sent to any account by this request. An answer in flight finishes where it started.
+
+        A turn on a Codex WebSocket that is still open stays on its login: the release takes effect
+        at the conversation's next connection (`websocket_may_hold`).
+
+        Releasing what is not bound is not an error: `released: false`.
+      security:
+        - clientKey: []
+      parameters:
+        - $ref: "#/components/parameters/SessionHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReleaseRequest"
+            examples:
+              after-show:
+                value: { model: opus, expect: "b.k3v7q2mfx4ardn5w" }
+      responses:
+        "200":
+          description: What was done.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Release"
+              examples:
+                released:
+                  $ref: "#/components/examples/Released"
+                nothing-bound:
+                  $ref: "#/components/examples/NothingBound"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: |
+            `expect` was given and the binding is no longer the one it stands for (the conversation
+            moved, or was released and bound again). Nothing was released. The body is the state now.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionRoute"
+
+  /v8/management/provimux/session-routes:
+    get:
+      tags: [operator]
+      operationId: listSessionRoutes
+      summary: The rule's setting, the value in use, and every binding.
+      description: |
+        Read-only, from memory. `setting` is what is set; `in_effect` and `reason` are what holds.
+        `conversations` lists the bindings of the session cache and the conversations the gateway
+        recognises by their content, newest answer first, at most `limit`.
+      security:
+        - managementKey: []
+      parameters:
+        - name: below_first
+          in: query
+          description: "`true`: only conversations below their first route."
+          schema: { type: boolean, default: false }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 0, maximum: 1000, default: 200 }
+      responses:
+        "200":
+          description: The state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionRoutesState"
+              examples:
+                in-effect:
+                  $ref: "#/components/examples/StateInEffect"
+                affinity-off:
+                  $ref: "#/components/examples/StateAffinityOff"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /v8/management/provimux/session-routes/release:
+    post:
+      tags: [operator]
+      operationId: releaseSessionRouteByHandle
+      summary: Remove one binding, by its handle from the list.
+      security:
+        - managementKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [id]
+              properties:
+                id:
+                  type: string
+                  description: A conversation's `id` from the list. It stands for that binding on that account.
+            examples:
+              one:
+                value: { id: "c.5tq2hb7yw3mdk4zn" }
+      responses:
+        "200":
+          description: "What was done. A handle whose binding is gone or has moved answers `released: false`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Release"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+components:
+  securitySchemes:
+    clientKey:
+      type: http
+      scheme: bearer
+      description: A configured client key, sent as on any model request.
+    managementKey:
+      type: http
+      scheme: bearer
+      description: The management key.
+
+  parameters:
+    SessionHeader:
+      name: X-Session-Affinity
+      in: header
+      required: false
+      description: |
+        Stands for whichever session header the client's turns carry; the gateway reads all of them,
+        in upstream's order: `X-Claude-Code-Session-Id` (with `X-Claude-Code-Agent-Id`), `Session-Id`,
+        `Thread-Id`, `X-Http-Session-Id`, `X-Session-ID`, `X-Session-Affinity`, `X-Slot-Session-Id`,
+        `X-Task-ID`, `X-Conversation-Id`, `X-Thread-Id`, `X-Client-Request-Id`. Send exactly what a
+        turn sends, and nothing a turn does not.
+      schema: { type: string, maxLength: 256 }
+      example: 0c9b1f0e-6a51-4c58-9b1e-2f6f3f1f7a10
+
+  responses:
+    BadRequest:
+      description: |
+        No `model`; a body that is not the schema's; or a name this gateway does not serve to this
+        key (with "serve only my names", the setting's own message, as a turn for the name gets).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: No key, or a key the gateway does not know.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          description: The gateway's error, in the shape of the route group it was sent to.
+
+    ShowRequest:
+      type: object
+      additionalProperties: false
+      required: [model]
+      properties:
+        model:
+          type: string
+          minLength: 1
+          description: The name, as the client sends it on a turn. A thinking suffix is ignored, as on a turn.
+        identity:
+          $ref: "#/components/schemas/Identity"
+
+    ReleaseRequest:
+      type: object
+      additionalProperties: false
+      required: [model]
+      properties:
+        model:
+          type: string
+          minLength: 1
+        identity:
+          $ref: "#/components/schemas/Identity"
+        expect:
+          type: string
+          description: |
+            `binding` from a show. With it, the release happens only while the binding is still that
+            one; else `409`. Without it, whatever is bound is released.
+
+    Identity:
+      type: object
+      description: |
+        Only for a client whose turns name their conversation in the body. The fields a turn carries
+        its session in, copied as they are; the gateway reads this object as it reads a turn's body.
+        Read in upstream's order: `metadata.user_id` (Claude Code's), `cachedContent`, `thread_id`,
+        `session_id`, `prompt_cache_key`, `conversation`, `conversation_id`. Anything else is ignored.
+      additionalProperties: true
+      examples:
+        - { prompt_cache_key: project-a }
+        - { metadata: { user_id: "user_abc_account__session_0c9b1f0e-6a51-4c58-9b1e-2f6f3f1f7a10" } }
+
+    Route:
+      type: object
+      description: |
+        One account that serves the name, exactly as a row of `GET /v1/models?include=accounts`
+        gives it. Nothing here identifies the account to a reader except as "the same" or "not the
+        same" (`account`).
+      required: [provider, kind, priority]
+      properties:
+        provider:
+          type: string
+          examples: [claude, codex, openai-compatibility]
+        kind:
+          type: string
+          description: "`oauth`: a subscription login. `apikey`: an API key."
+          enum: [oauth, apikey]
+        priority:
+          type: integer
+          description: Higher is tried first.
+        host:
+          type: string
+          description: The host of an API key's base URL, where it has one.
+        account:
+          type: string
+          pattern: "^[as]\\.[a-z2-7]{20}$"
+          description: |
+            The account marker (`answered-by.md`): the value of `X-Provimux-Account` on this account's
+            answers. Absent where the build has no marker or `models.answered-by` is off.
+
+    OperatorRoute:
+      description: A route as the operator sees it, with what `model-routes` already shows him.
+      allOf:
+        - $ref: "#/components/schemas/Route"
+        - type: object
+          required: [auth_index, login, recorded_cooldown]
+          properties:
+            auth_index:
+              type: [string, "null"]
+            login:
+              type: object
+              description: As `ModelRoute.login` of `pui13/openapi.yaml`.
+              required: [name, email, label]
+              properties:
+                name: { type: [string, "null"] }
+                email: { type: [string, "null"] }
+                label: { type: [string, "null"] }
+            recorded_cooldown:
+              description: As `ModelRoute.recorded_cooldown` of `pui13/openapi.yaml`; `null` when none is recorded.
+              type: [object, "null"]
+
+    Cache:
+      type: object
+      description: How long the gateway takes this conversation's cache on the bound account to live.
+      required: [lifetime_s, basis, entry, last_use_at, cold, cold_at]
+      properties:
+        lifetime_s:
+          type: integer
+          minimum: 0
+        basis:
+          type: string
+          description: |
+            `answers`: what this conversation's own answers on the bound account reported writing
+            (3,600 or 300). `figures`: the largest lifetime providers.dev's figures state for the entry
+            the account last answered this name as. `setting`: `cold-after`.
+          enum: [answers, figures, setting]
+        entry:
+          type: [string, "null"]
+          description: With `figures`, the providers.dev entry, `<provider>/<model>`. Else `null`.
+        last_use_at:
+          type: string
+          format: date-time
+          description: The conversation's last request or answer on the binding, whichever is later.
+        cold:
+          type: boolean
+          description: "`last_use_at` is further back than `lifetime_s` plus 60 seconds."
+        cold_at:
+          type: string
+          format: date-time
+          description: When it is, or was, cold by that measure.
+
+    SessionRoute:
+      type: object
+      required: [observed_at, affinity, conversation, model, binding, bound, position, first, cache, rule, websocket_may_hold, subagent]
+      properties:
+        observed_at:
+          type: string
+          format: date-time
+        affinity:
+          type: string
+          description: |
+            Session affinity as it runs. `on`. `off`: `routing.session-affinity` is false; nothing is
+            ever bound. `home`: Home mode; Home selects. `not-supported`: a plugin schedules.
+            Anything but `on`: `conversation` is `not-bound` and every other field is empty.
+          enum: ["on", "off", home, not-supported]
+        conversation:
+          type: string
+          description: |
+            `bound`. `not-bound`: this key has used the conversation and it has no binding for the
+            name now (released, expired, or never bound). `not-seen`: the gateway has seen no request
+            of this conversation from this key since it started, or cannot name a conversation from
+            what was sent.
+          enum: [bound, not-bound, not-seen]
+        model:
+          type: string
+          description: The name asked about, without a thinking suffix.
+        binding:
+          type: [string, "null"]
+          description: A token for this binding on this account, for `expect`. `null` unless `bound`.
+        bound:
+          type: [object, "null"]
+          description: "`null` unless `bound`."
+          required: [route, since, origin, fell_back_from, fell_back_at]
+          properties:
+            route:
+              $ref: "#/components/schemas/Route"
+            since:
+              type: [string, "null"]
+              format: date-time
+              description: When this account first answered the conversation in this stretch. `null` after a gateway restart, until its next answer.
+            origin:
+              type: string
+              description: |
+                `first`: the gateway has seen no other account answer this conversation.
+                `fallback`: another account answered it before this one. `not-known`: after a restart.
+              enum: [first, fallback, not-known]
+            fell_back_from:
+              description: With `fallback`, the route that answered before. Else `null`.
+              oneOf:
+                - $ref: "#/components/schemas/Route"
+                - type: "null"
+            fell_back_at:
+              type: [string, "null"]
+              format: date-time
+        position:
+          type: [object, "null"]
+          description: "`null` unless `bound`."
+          required: [below_first, higher_priority_free]
+          properties:
+            below_first:
+              type: boolean
+              description: The bound account's priority is lower than the highest priority that serves the name.
+            higher_priority_free:
+              type: boolean
+              description: |
+                An account of a higher priority than the bound one is available now. The one fact here
+                that no list shows: it is said about the name, never per account.
+        first:
+          type: array
+          description: |
+            The first routes now: the accounts of the highest available priority, where a release
+            leads. Which of several is chosen is the strategy's. Empty unless `bound`.
+          items:
+            $ref: "#/components/schemas/Route"
+        cache:
+          description: "`null` unless `bound`."
+          oneOf:
+            - $ref: "#/components/schemas/Cache"
+            - type: "null"
+        rule:
+          type: object
+          description: What the gateway does by itself with this binding.
+          required: [in_effect, will]
+          properties:
+            in_effect:
+              type: boolean
+              description: Whether `routing.session-affinity-return` runs.
+            will:
+              type: string
+              description: |
+                `return-when-cold`: below a free higher-priority route; released once `cache.cold`.
+                `return-when-free`: below its first route and cold, or soon cold; released once a
+                higher-priority account is available. `stay`: on a first route, or the rule is not
+                in effect, or nothing is bound.
+              enum: [return-when-cold, return-when-free, stay]
+        websocket_may_hold:
+          type: boolean
+          description: |
+            The conversation is named by Codex headers: a turn on a WebSocket that is still open stays
+            on its login after a release. Close the connection to be routed anew.
+        subagent:
+          type: boolean
+          description: The conversation has a parent conversation. A parent's release does not move it.
+
+    Release:
+      type: object
+      required: [observed_at, released, conversation, was, next, websocket_may_hold]
+      properties:
+        observed_at:
+          type: string
+          format: date-time
+        released:
+          type: boolean
+        conversation:
+          type: string
+          description: The state after the request. `not-bound` after a release; else as in a show.
+          enum: [not-bound, not-seen]
+        was:
+          description: The route the binding named. `null` when nothing was released.
+          oneOf:
+            - $ref: "#/components/schemas/Route"
+            - type: "null"
+        next:
+          type: array
+          description: "The first routes now: where the next request goes while they stay available."
+          items:
+            $ref: "#/components/schemas/Route"
+        websocket_may_hold:
+          type: boolean
+
+    SessionRoutesState:
+      type: object
+      required: [observed_at, setting, in_effect, reason, affinity, lifetimes, counts, conversations, truncated]
+      properties:
+        observed_at:
+          type: string
+          format: date-time
+        setting:
+          type: object
+          description: "`routing.session-affinity-return` as it applies."
+          required: [enabled, set, cold_after_s, cold_after_set]
+          properties:
+            enabled:
+              type: boolean
+              description: "The value as it applies: `true` unless the configuration says `false`."
+            set:
+              type: boolean
+              description: Whether the configuration sets `enabled`.
+            cold_after_s:
+              type: integer
+              minimum: 60
+              description: "`cold-after` as it applies: 3,600 unless set."
+            cold_after_set:
+              type: boolean
+        in_effect:
+          type: boolean
+          description: Whether the rule runs now. This, not `setting.enabled`, is the value in use.
+        reason:
+          type: [string, "null"]
+          description: Why not, when not in effect. `null` when in effect.
+          enum: [session-affinity-off, home-mode, plugin-scheduler, switch-off, null]
+        affinity:
+          type: object
+          description: Upstream's settings the rule depends on, as they run.
+          required: [enabled, ttl_s, strategy, subagents, rebind_on]
+          properties:
+            enabled: { type: boolean }
+            ttl_s: { type: integer }
+            strategy:
+              type: string
+              enum: [round-robin, fill-first, weighted-round-robin]
+            subagents: { type: boolean }
+            rebind_on:
+              type: string
+              enum: [any, quota, never]
+        lifetimes:
+          type: array
+          description: The sources of a cache lifetime this build has, in the order they are tried.
+          items:
+            type: string
+            enum: [answers, figures, setting]
+        counts:
+          type: object
+          required: [bound, below_first, released_by_rule, released_by_client, released_by_operator, last_rule_release_at, since]
+          properties:
+            bound:
+              type: integer
+              description: Bindings now.
+            below_first:
+              type: integer
+              description: Of those, below their first route now.
+            released_by_rule: { type: integer }
+            released_by_client: { type: integer }
+            released_by_operator: { type: integer }
+            last_rule_release_at:
+              type: [string, "null"]
+              format: date-time
+            since:
+              type: string
+              format: date-time
+              description: "When the counting started: the gateway's start."
+        conversations:
+          type: array
+          items:
+            $ref: "#/components/schemas/OperatorConversation"
+        truncated:
+          type: boolean
+          description: More conversations exist than `limit` allowed.
+
+    OperatorConversation:
+      type: object
+      required: [id, session, named_by, model, bound, since, origin, fell_back_from, fell_back_at, below_first, higher_priority_free, first, cache, will, subagent, callers]
+      properties:
+        id:
+          type: string
+          description: A handle for the release request. It stands for this binding on this account.
+        session:
+          type: string
+          description: The first 8 characters of the session id, after its prefix. Never the whole id.
+        named_by:
+          type: string
+          description: |
+            What names the conversation: the prefix of its identity (`claude`, `codex`, `affinity`,
+            `header`, `pck`, ...), or `content` for one the gateway recognises by its content only.
+        model:
+          type: string
+        bound:
+          $ref: "#/components/schemas/OperatorRoute"
+        since:
+          type: [string, "null"]
+          format: date-time
+        origin:
+          type: string
+          enum: [first, fallback, not-known]
+        fell_back_from:
+          oneOf:
+            - $ref: "#/components/schemas/OperatorRoute"
+            - type: "null"
+        fell_back_at:
+          type: [string, "null"]
+          format: date-time
+        below_first:
+          type: boolean
+        higher_priority_free:
+          type: boolean
+        first:
+          type: array
+          items:
+            $ref: "#/components/schemas/OperatorRoute"
+        cache:
+          $ref: "#/components/schemas/Cache"
+        will:
+          type: string
+          enum: [return-when-cold, return-when-free, stay]
+        subagent:
+          type: boolean
+        callers:
+          type: integer
+          description: How many client keys the gateway has seen use it since the start. 0 after a restart, until its next answer.
+
+  examples:
+    FellBackCacheCold:
+      summary: Fell back to a paid key 40 minutes ago, quiet for 9 minutes, the first route is free
+      value:
+        observed_at: "2026-11-27T10:15:00Z"
+        affinity: "on"
+        conversation: bound
+        model: opus
+        binding: "b.k3v7q2mfx4ardn5w"
+        bound:
+          route: { provider: claude, kind: apikey, priority: 5, host: api.anthropic.com, account: "a.f6zq3m2hx7kd4vwn5tyb" }
+          since: "2026-11-27T09:35:12Z"
+          origin: fallback
+          fell_back_from: { provider: claude, kind: oauth, priority: 10, account: "a.b2hw7ynq4rkx6mdz3tcv" }
+          fell_back_at: "2026-11-27T09:35:12Z"
+        position: { below_first: true, higher_priority_free: true }
+        first:
+          - { provider: claude, kind: oauth, priority: 10, account: "a.b2hw7ynq4rkx6mdz3tcv" }
+        cache:
+          lifetime_s: 300
+          basis: answers
+          entry: null
+          last_use_at: "2026-11-27T10:06:00Z"
+          cold: true
+          cold_at: "2026-11-27T10:12:00Z"
+        rule: { in_effect: true, will: return-when-cold }
+        websocket_may_hold: false
+        subagent: false
+    OnFirstRoute:
+      summary: On a first route; two accounts share the top priority
+      value:
+        observed_at: "2026-11-27T10:15:00Z"
+        affinity: "on"
+        conversation: bound
+        model: opus
+        binding: "b.w8n2tq5hz3xkm7vd"
+        bound:
+          route: { provider: claude, kind: oauth, priority: 10, account: "a.b2hw7ynq4rkx6mdz3tcv" }
+          since: "2026-11-27T09:02:44Z"
+          origin: first
+          fell_back_from: null
+          fell_back_at: null
+        position: { below_first: false, higher_priority_free: false }
+        first:
+          - { provider: claude, kind: oauth, priority: 10, account: "a.b2hw7ynq4rkx6mdz3tcv" }
+          - { provider: claude, kind: oauth, priority: 10, account: "a.q5tm3xw7n2hkz4vd6byc" }
+        cache:
+          lifetime_s: 3600
+          basis: answers
+          entry: null
+          last_use_at: "2026-11-27T10:14:10Z"
+          cold: false
+          cold_at: "2026-11-27T11:15:10Z"
+        rule: { in_effect: true, will: stay }
+        websocket_may_hold: false
+        subagent: false
+    NotSeen:
+      summary: Another key's conversation, one that does not exist, or the first minutes after a restart
+      value:
+        observed_at: "2026-11-27T10:15:00Z"
+        affinity: "on"
+        conversation: not-seen
+        model: opus
+        binding: null
+        bound: null
+        position: null
+        first: []
+        cache: null
+        rule: { in_effect: true, will: stay }
+        websocket_may_hold: false
+        subagent: false
+    AffinityOff:
+      summary: routing.session-affinity is false
+      value:
+        observed_at: "2026-11-27T10:15:00Z"
+        affinity: "off"
+        conversation: not-bound
+        model: opus
+        binding: null
+        bound: null
+        position: null
+        first: []
+        cache: null
+        rule: { in_effect: false, will: stay }
+        websocket_may_hold: false
+        subagent: false
+    Released:
+      value:
+        observed_at: "2026-11-27T10:15:02Z"
+        released: true
+        conversation: not-bound
+        was: { provider: claude, kind: apikey, priority: 5, host: api.anthropic.com, account: "a.f6zq3m2hx7kd4vwn5tyb" }
+        next:
+          - { provider: claude, kind: oauth, priority: 10, account: "a.b2hw7ynq4rkx6mdz3tcv" }
+        websocket_may_hold: false
+    NothingBound:
+      value:
+        observed_at: "2026-11-27T10:15:02Z"
+        released: false
+        conversation: not-bound
+        was: null
+        next: []
+        websocket_may_hold: false
+    StateInEffect:
+      summary: The rule runs; one conversation is on a later route
+      value:
+        observed_at: "2026-11-27T10:15:00Z"
+        setting: { enabled: true, set: false, cold_after_s: 3600, cold_after_set: false }
+        in_effect: true
+        reason: null
+        affinity: { enabled: true, ttl_s: 3600, strategy: round-robin, subagents: true, rebind_on: any }
+        lifetimes: [answers, setting]
+        counts:
+          bound: 4
+          below_first: 1
+          released_by_rule: 12
+          released_by_client: 1
+          released_by_operator: 0
+          last_rule_release_at: "2026-11-27T09:58:30Z"
+          since: "2026-11-27T06:00:11Z"
+        conversations:
+          - id: "c.5tq2hb7yw3mdk4zn"
+            session: "0c9b1f0e"
+            named_by: affinity
+            model: opus
+            bound:
+              provider: claude
+              kind: apikey
+              priority: 5
+              host: api.anthropic.com
+              account: "a.f6zq3m2hx7kd4vwn5tyb"
+              auth_index: "5d0c2a7e91b3f486"
+              login: { name: null, email: null, label: "claude-apikey" }
+              recorded_cooldown: null
+            since: "2026-11-27T09:35:12Z"
+            origin: fallback
+            fell_back_from:
+              provider: claude
+              kind: oauth
+              priority: 10
+              account: "a.b2hw7ynq4rkx6mdz3tcv"
+              auth_index: "9a41e6c0d27b385f"
+              login: { name: "claude-first.json", email: null, label: "first" }
+              recorded_cooldown: null
+            fell_back_at: "2026-11-27T09:35:12Z"
+            below_first: true
+            higher_priority_free: true
+            first:
+              - provider: claude
+                kind: oauth
+                priority: 10
+                account: "a.b2hw7ynq4rkx6mdz3tcv"
+                auth_index: "9a41e6c0d27b385f"
+                login: { name: "claude-first.json", email: null, label: "first" }
+                recorded_cooldown: null
+            cache:
+              lifetime_s: 300
+              basis: answers
+              entry: null
+              last_use_at: "2026-11-27T10:06:00Z"
+              cold: true
+              cold_at: "2026-11-27T10:12:00Z"
+            will: return-when-cold
+            subagent: false
+            callers: 1
+        truncated: false
+    StateAffinityOff:
+      summary: Set on, not in effect
+      value:
+        observed_at: "2026-11-27T10:15:00Z"
+        setting: { enabled: true, set: false, cold_after_s: 3600, cold_after_set: false }
+        in_effect: false
+        reason: session-affinity-off
+        affinity: { enabled: false, ttl_s: 3600, strategy: round-robin, subagents: true, rebind_on: any }
+        lifetimes: [answers, setting]
+        counts:
+          bound: 0
+          below_first: 0
+          released_by_rule: 0
+          released_by_client: 0
+          released_by_operator: 0
+          last_rule_release_at: null
+          since: "2026-11-27T06:00:11Z"
+        conversations: []
+        truncated: false
