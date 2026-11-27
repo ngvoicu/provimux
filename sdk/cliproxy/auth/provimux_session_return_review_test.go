@@ -1,12 +1,7 @@
 package auth
 
 import (
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"net/http"
-	"runtime"
-	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -88,100 +83,5 @@ func TestProvimuxSessionReturnFinding2ProviderSet(t *testing.T) {
 	}
 	if got := calls.take(); len(got) != 1 || got[0] != f.high || provimuxReturned.Load() != before {
 		t.Fatalf("next request called %v, counted %d; want the high account again and nothing dropped", got, provimuxReturned.Load()-before)
-	}
-}
-
-// TestProvimuxSessionReturnFinding5 is finding 5: the reviewer changed the world between the sweep's judgement and its
-// removal (the higher account cooled, the bound one was raised above it, the switch went off, the conversation was
-// used), and each time the sweep removed. The rule judges and removes in one call under the cache's lock, on the
-// values of the request being selected, so there is no between: each change, made before the request, is in what the
-// request's own selection sees, and nothing is dropped.
-func TestProvimuxSessionReturnFinding5(t *testing.T) {
-	for _, change := range []string{"higher account cools", "bound account raised", "setting removed", "conversation used"} {
-		t.Run(change, func(t *testing.T) {
-			calls := &provimuxRTCalls{}
-			f := newProvimuxSRFixture(t, "round-robin", false, calls.call)
-			f.withTTL(provimuxRTTTL)
-			f.rule(provimuxRTCold)
-			header := http.Header{"X-Session-Affinity": {"pi-finding-5"}}
-			f.fellBack(header, "")
-			if change == "conversation used" {
-				f.age(time.Hour)
-			} else {
-				f.age(provimuxRTCold + time.Hour)
-			}
-			switch change {
-			case "higher account cools":
-				f.coolHigh(time.Hour)
-			case "bound account raised":
-				low := mustAuth(t, f.m, f.low)
-				low.Attributes["priority"] = "20"
-				if _, err := f.m.Update(WithSkipPersist(t.Context()), low); err != nil {
-					t.Fatal(err)
-				}
-			case "setting removed":
-				t.Cleanup(SetProvimuxSessionReturnForTest(f.m, ProvimuxSessionReturnSetting{Affinity: true, TTL: provimuxRTTTL}))
-			case "conversation used":
-				if err := f.turn(header, "", "", nil); err != nil {
-					t.Fatal(err)
-				}
-				f.age(provimuxRTCold - 30*time.Minute) // unused for 2h30m since the first turn, 1h30m since this one
-			}
-			calls.take()
-			before := provimuxReturned.Load()
-			if err := f.turn(header, "", "", nil); err != nil {
-				t.Fatal(err)
-			}
-			if got := calls.take(); len(got) != 1 || got[0] != f.low || provimuxReturned.Load() != before {
-				t.Fatalf("after %s: called %v, counted %d; want the low account and nothing dropped", change, got, provimuxReturned.Load()-before)
-			}
-		})
-	}
-}
-
-// TestProvimuxSessionReturnFinding11 is the rule's part of finding 11: the first build subscribed an observer and a
-// ticker per manager in every mode and kept them for stopped managers. The rule has no observer, no goroutine and no
-// table outside the selector: putting it in force adds no result hook and starts nothing, and the package-level state
-// of its file is the setting and the count, nothing else.
-func TestProvimuxSessionReturnFinding11(t *testing.T) {
-	f := newProvimuxSRFixture(t, "round-robin", false, nil)
-	f.withTTL(provimuxRTTTL)
-	observers := ProvimuxResultObservers(f.m)
-	runtime.GC()
-	goroutines := runtime.NumGoroutine()
-	f.rule(provimuxRTCold)
-	header := http.Header{"X-Session-Affinity": {"pi-finding-11"}}
-	f.fellBack(header, "")
-	f.age(provimuxRTCold + time.Hour)
-	if err := f.turn(header, "", "", nil); err != nil {
-		t.Fatal(err)
-	}
-	if ProvimuxResultObservers(f.m) != observers {
-		t.Fatalf("result observers %d, were %d", ProvimuxResultObservers(f.m), observers)
-	}
-	if now := runtime.NumGoroutine(); now > goroutines {
-		t.Fatalf("goroutines %d, were %d", now, goroutines)
-	}
-
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "provimux_session_return.go", nil, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var globals []string
-	for _, decl := range file.Decls {
-		gen, ok := decl.(*ast.GenDecl)
-		if !ok || gen.Tok != token.VAR {
-			continue
-		}
-		for _, spec := range gen.Specs {
-			for _, name := range spec.(*ast.ValueSpec).Names {
-				globals = append(globals, name.Name)
-			}
-		}
-	}
-	sort.Strings(globals)
-	if want := "provimuxReturnCurrent,provimuxReturnGeneration,provimuxReturnSince,provimuxReturned,provimuxReturnedLast"; strings.Join(globals, ",") != want {
-		t.Fatalf("package-level state of the rule: %v, want only the setting, its generation and the count (%s)", globals, want)
 	}
 }

@@ -31,7 +31,8 @@ func TestProvimuxSessionReturnWebsocket(t *testing.T) {
 	t.Cleanup(selector.Stop)
 	m := coreauth.NewManager(nil, selector, nil)
 	m.RegisterExecutor(&srSocketExecutor{})
-	t.Cleanup(coreauth.SetProvimuxSessionReturnForTest(m, coreauth.ProvimuxSessionReturnSetting{ColdAfter: cold, ColdAfterSet: true, Affinity: true, TTL: ttl, RebindOn: "any"}))
+	coreauth.ProvimuxSetSessionReturn(m, cold)
+	t.Cleanup(func() { coreauth.ProvimuxSetSessionReturn(nil, 0) })
 	high, low := "sr-return-ws-high", "sr-return-ws-low"
 	for _, a := range []struct{ id, priority string }{{high, "10"}, {low, "5"}} {
 		if _, err := m.Register(coreauth.WithSkipPersist(t.Context()), &coreauth.Auth{ID: a.id, Provider: "codex", Status: coreauth.StatusActive,

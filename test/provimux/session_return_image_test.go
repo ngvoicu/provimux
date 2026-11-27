@@ -70,7 +70,8 @@ func TestProvimuxSessionReturnImageRoute(t *testing.T) {
 			cfg.Routing.SessionAffinity = true
 			server := api.NewServer(cfg, manager, sdkaccess.NewManager(), filepath.Join(t.TempDir(), "config.yaml"))
 			if set {
-				t.Cleanup(coreauth.SetProvimuxSessionReturnForTest(manager, coreauth.ProvimuxSessionReturnSetting{ColdAfter: cold, ColdAfterSet: true, Affinity: true, TTL: ttl, RebindOn: "any"}))
+				coreauth.ProvimuxSetSessionReturn(manager, cold)
+				t.Cleanup(func() { coreauth.ProvimuxSetSessionReturn(nil, 0) })
 			}
 			turn := func() string {
 				t.Helper()

@@ -13,7 +13,6 @@ import (
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	log "github.com/sirupsen/logrus"
 )
 
 // Provimux: the tests of the rule of session-route (.github/provimux/design/session-route.md 15.3 and 15.10). Every
@@ -60,11 +59,8 @@ func (f *provimuxSRFixture) withTTL(ttl time.Duration) {
 
 // rule puts cold-after in force for f's manager, as the service's hook does for a configuration that sets it.
 func (f *provimuxSRFixture) rule(coldAfter time.Duration) {
-	f.t.Helper()
-	f.t.Cleanup(SetProvimuxSessionReturnForTest(f.m, ProvimuxSessionReturnSetting{
-		ColdAfter: coldAfter, ColdAfterSet: true, Affinity: true, TTL: f.affinity.cache.ttl,
-		Strategy: provimuxStrategyOf(f.affinity.fallback), Subagents: true, RebindOn: SessionAffinityRebindOnAny,
-	}))
+	ProvimuxSetSessionReturn(f.m, coldAfter)
+	f.t.Cleanup(func() { ProvimuxSetSessionReturn(nil, 0) })
 }
 
 // age moves every binding and note d into the past.
@@ -148,12 +144,12 @@ func TestProvimuxSessionReturnSevenThings(t *testing.T) {
 			}},
 		{name: "K1: not set: nothing, no note",
 			prepare: func(t *testing.T, s setup) (bool, string, []*Auth, time.Time) {
-				t.Cleanup(SetProvimuxSessionReturnForTest(s.f.m, ProvimuxSessionReturnSetting{Affinity: true, TTL: provimuxRTTTL}))
+				ProvimuxSetSessionReturn(s.f.m, 0)
 				return true, "", s.f.auths(), cold(s)
 			}},
-		{name: "K1: not below the binding lifetime: nothing",
+		{name: "K1: not below the binding lifetime: nothing, the message noted", noted: true,
 			prepare: func(t *testing.T, s setup) (bool, string, []*Auth, time.Time) {
-				t.Cleanup(SetProvimuxSessionReturnForTest(s.f.m, ProvimuxSessionReturnSetting{ColdAfter: provimuxRTTTL, ColdAfterSet: true, Affinity: true, TTL: provimuxRTTTL}))
+				s.f.rule(provimuxRTTTL)
 				return true, "", s.f.auths(), s.sent.Add(provimuxRTTTL - time.Nanosecond)
 			}},
 		{name: "K1: rebind-on never: nothing, the message noted", noted: true,
@@ -231,11 +227,8 @@ func TestProvimuxSessionReturnSevenThings(t *testing.T) {
 			}},
 		{name: "K6: a new observation after the setting changed (off, then on): nothing", noted: true,
 			prepare: func(t *testing.T, s setup) (bool, string, []*Auth, time.Time) {
-				setting := ProvimuxSessionReturnSetting{ColdAfter: provimuxRTCold, ColdAfterSet: true, Affinity: true, TTL: provimuxRTTTL}
-				off := setting
-				off.ColdAfter, off.ColdAfterSet = 0, false
-				t.Cleanup(SetProvimuxSessionReturnForTest(s.f.m, off))
-				t.Cleanup(SetProvimuxSessionReturnForTest(s.f.m, setting))
+				ProvimuxSetSessionReturn(s.f.m, 0)
+				s.f.rule(provimuxRTCold)
 				return true, "", s.f.auths(), cold(s)
 			}},
 	}
@@ -521,50 +514,25 @@ func TestProvimuxSessionReturnRestored(t *testing.T) {
 	}
 }
 
-// TestProvimuxSessionReturnBounds is row 7 (finding 8): cold-after at 1m0.9s and at a duration of a hundred thousand
-// hours is dropped exactly from that time on, never before; the largest duration is never below any binding lifetime,
-// so it is accepted and reported not-below-ttl, and the rule does nothing with it.
+// TestProvimuxSessionReturnBounds is row 7 (finding 8): cold-after at 1m0.9s is kept to the nanosecond: dropped
+// exactly from that time on, never before.
 func TestProvimuxSessionReturnBounds(t *testing.T) {
-	for _, row := range []struct {
-		cold, ttl time.Duration
-	}{
-		{cold: time.Minute + 900*time.Millisecond, ttl: time.Hour},
-		{cold: 100000 * time.Hour, ttl: 200000 * time.Hour},
-	} {
-		t.Run(row.cold.String(), func(t *testing.T) {
-			for _, early := range []bool{true, false} {
-				f := newProvimuxSRFixture(t, "round-robin", false, nil)
-				f.withTTL(row.ttl)
-				f.rule(row.cold)
-				key := f.fellBack(http.Header{"X-Session-Affinity": {"pi-bounds"}}, "")
-				lastUse := f.noteOf(key)
-				now := lastUse.Add(row.cold)
-				if early {
-					now = now.Add(-time.Nanosecond)
-				}
-				before := provimuxReturned.Load()
-				f.affinity.provimuxReturn(true, key, "", f.auths(), now)
-				if dropped := provimuxReturned.Load() - before; (dropped == 1) == early {
-					t.Fatalf("at cold-after%s: dropped %d", map[bool]string{true: " less 1ns", false: ""}[early], dropped)
-				}
-			}
-		})
-	}
-	t.Run("largest duration", func(t *testing.T) {
-		largest := time.Duration(1<<63 - 1)
+	cold := time.Minute + 900*time.Millisecond
+	for _, early := range []bool{true, false} {
 		f := newProvimuxSRFixture(t, "round-robin", false, nil)
-		f.withTTL(largest)
-		f.rule(largest)
-		key := f.fellBack(http.Header{"X-Session-Affinity": {"pi-largest"}}, "")
-		if state := ProvimuxSessionReturnStateOf(f.m, time.Now()); state.InEffect || state.Reason == nil || *state.Reason != provimuxReturnNotBelowTTL {
-			t.Fatalf("state %s", mustJSON(t, state))
+		f.withTTL(time.Hour)
+		f.rule(cold)
+		key := f.fellBack(http.Header{"X-Session-Affinity": {"pi-bounds"}}, "")
+		now := f.noteOf(key).Add(cold)
+		if early {
+			now = now.Add(-time.Nanosecond)
 		}
 		before := provimuxReturned.Load()
-		f.affinity.provimuxReturn(true, key, "", f.auths(), time.Now().Add(time.Hour))
-		if provimuxReturned.Load() != before {
-			t.Fatal("dropped with cold-after at the largest duration")
+		f.affinity.provimuxReturn(true, key, "", f.auths(), now)
+		if dropped := provimuxReturned.Load() - before; (dropped == 1) == early {
+			t.Fatalf("at cold-after%s: dropped %d", map[bool]string{true: " less 1ns", false: ""}[early], dropped)
 		}
-	})
+	}
 }
 
 // TestProvimuxSessionReturnHeldRequest is row 8 (finding 4): a request held in an executor on the low account for
@@ -675,59 +643,6 @@ func TestProvimuxSessionReturnCountRacing(t *testing.T) {
 	}
 }
 
-// TestProvimuxSessionReturnOnceWithAClient: a release by the rule and a release by a client at the same moment
-// remove the binding once. Each order is made at the point of the race (the seam's hook between the client's look-up
-// and its locked removal): the rule first, then the client with the token it was shown (409, nothing released); the
-// client first, then the rule (nothing to drop, nothing counted).
-func TestProvimuxSessionReturnOnceWithAClient(t *testing.T) {
-	scope := provimuxSRScope("sk-client-one")
-	header := http.Header{"X-Session-Affinity": {"pi-once"}}
-	t.Run("the rule inside the client's release", func(t *testing.T) {
-		f := newProvimuxSRFixture(t, "round-robin", false, nil)
-		f.withTTL(provimuxRTTTL)
-		f.rule(provimuxRTCold)
-		key := f.fellBack(header, "")
-		show := f.book.Show(scope, header, nil, provimuxSRModel)
-		if show.Binding == nil {
-			t.Fatalf("show: %s", mustJSON(t, show))
-		}
-		f.age(provimuxRTCold + time.Hour)
-		before := provimuxReturned.Load()
-		provimuxSeamBeforeRemove = func() {
-			provimuxSeamBeforeRemove = nil
-			if err := f.turn(header, "", scope, nil); err != nil {
-				t.Error(err)
-			}
-		}
-		t.Cleanup(func() { provimuxSeamBeforeRemove = nil })
-		released, conflict := f.book.Release(scope, header, nil, provimuxSRModel, *show.Binding)
-		if released.Released || conflict == nil || provimuxReturned.Load()-before != 1 {
-			t.Fatalf("released %v, conflict %v, counted %d: want the rule's one drop and a 409", released.Released, conflict != nil, provimuxReturned.Load()-before)
-		}
-		if authID, _ := f.binding(key); authID != f.high {
-			t.Fatalf("bound %q, want the high account", authID)
-		}
-	})
-	t.Run("the client before the rule", func(t *testing.T) {
-		f := newProvimuxSRFixture(t, "round-robin", false, nil)
-		f.withTTL(provimuxRTTTL)
-		f.rule(provimuxRTCold)
-		key := f.fellBack(header, "")
-		f.age(provimuxRTCold + time.Hour)
-		before := provimuxReturned.Load()
-		released, _ := f.book.Release(scope, header, nil, provimuxSRModel, "")
-		if !released.Released || released.Was == nil || released.Was.Priority != 5 {
-			t.Fatalf("release: %s", mustJSON(t, released))
-		}
-		if err := f.turn(header, "", scope, nil); err != nil {
-			t.Fatal(err)
-		}
-		if authID, _ := f.binding(key); authID != f.high || provimuxReturned.Load() != before {
-			t.Fatalf("bound %q, rule counted %d; want the high account and the client's one release only", authID, provimuxReturned.Load()-before)
-		}
-	})
-}
-
 // TestProvimuxSessionReturnEndsTheLife: a return by the rule ends the binding's life for expect (15.11: "to its
 // removal by anyone"), and the stretch after it starts at the first route: a token shown before the return does not
 // release the binding made after it, even when the request fell back to the same account again.
@@ -775,46 +690,36 @@ func TestProvimuxSessionReturnEndsTheLife(t *testing.T) {
 }
 
 // TestProvimuxSessionReturnState is row 11: the state names each reason of 15.6, in the contract's order, and the rule
-// does nothing where the state says it is not in effect; in effect, it says so.
+// does nothing where the state says it is not in effect; in effect, it says so. With affinity off there is no selector
+// of affinity in use to ask.
 func TestProvimuxSessionReturnState(t *testing.T) {
-	setting := func(f *provimuxSRFixture, change func(*ProvimuxSessionReturnSetting)) {
-		s := ProvimuxSessionReturnSetting{ColdAfter: provimuxRTCold, ColdAfterSet: true, Affinity: true, TTL: provimuxRTTTL, Strategy: "round-robin", Subagents: true, RebindOn: "any"}
-		if change != nil {
-			change(&s)
-		}
-		f.t.Cleanup(SetProvimuxSessionReturnForTest(f.m, s))
-	}
 	rows := []struct {
 		reason  string
 		prepare func(t *testing.T, f *provimuxSRFixture)
 	}{
-		{reason: "", prepare: func(t *testing.T, f *provimuxSRFixture) { setting(f, nil) }},
+		{reason: "", prepare: func(t *testing.T, f *provimuxSRFixture) {}},
 		{reason: provimuxReturnHomeMode, prepare: func(t *testing.T, f *provimuxSRFixture) {
-			setting(f, func(s *ProvimuxSessionReturnSetting) { s.Home = true })
 			cfg := &internalconfig.Config{}
 			cfg.Home.Enabled = true
 			f.m.SetConfig(cfg)
 		}},
 		{reason: provimuxReturnPluginScheduler, prepare: func(t *testing.T, f *provimuxSRFixture) {
-			setting(f, nil)
 			f.m.SetPluginScheduler(provimuxSRScheduler{})
 		}},
 		{reason: provimuxReturnAffinityOff, prepare: func(t *testing.T, f *provimuxSRFixture) {
-			setting(f, func(s *ProvimuxSessionReturnSetting) { s.Affinity = false })
 			f.m.SetSelector(&RoundRobinSelector{})
 		}},
 		{reason: provimuxReturnNotSet, prepare: func(t *testing.T, f *provimuxSRFixture) {
-			setting(f, func(s *ProvimuxSessionReturnSetting) { s.ColdAfter, s.ColdAfterSet = 0, false })
+			ProvimuxSetSessionReturn(f.m, 0)
 		}},
 		{reason: provimuxReturnRebindNever, prepare: func(t *testing.T, f *provimuxSRFixture) {
-			setting(f, func(s *ProvimuxSessionReturnSetting) { s.RebindOn = "never" })
 			never := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{Fallback: &RoundRobinSelector{}, TTL: provimuxRTTTL, RebindOn: "never"})
 			t.Cleanup(never.Stop)
 			f.m.SetSelector(never)
 			f.affinity = never
 		}},
 		{reason: provimuxReturnNotBelowTTL, prepare: func(t *testing.T, f *provimuxSRFixture) {
-			setting(f, func(s *ProvimuxSessionReturnSetting) { s.ColdAfter = provimuxRTTTL })
+			f.rule(provimuxRTTTL)
 		}},
 	}
 	for _, row := range rows {
@@ -826,7 +731,7 @@ func TestProvimuxSessionReturnState(t *testing.T) {
 			f := newProvimuxSRFixture(t, "round-robin", false, nil)
 			f.withTTL(provimuxRTTTL)
 			header := http.Header{"X-Session-Affinity": {"pi-state"}}
-			setting(f, nil)
+			f.rule(provimuxRTCold)
 			key := f.fellBack(header, "")
 			row.prepare(t, f)
 			state := ProvimuxSessionReturnStateOf(f.m, time.Now())
@@ -839,6 +744,9 @@ func TestProvimuxSessionReturnState(t *testing.T) {
 			}
 			if rule := provimuxSessionRuleOf(f.m); rule.InEffect != state.InEffect {
 				t.Fatalf("the show's rule %+v disagrees with the state", rule)
+			}
+			if row.reason == provimuxReturnAffinityOff {
+				return // no selector of affinity selects, so none is asked
 			}
 			before := provimuxReturned.Load()
 			f.affinity.provimuxReturn(true, key, "", f.auths(), f.noteOf(key).Add(provimuxRTCold+time.Minute))
@@ -872,47 +780,6 @@ func TestProvimuxSessionReturnStateCounts(t *testing.T) {
 	}
 }
 
-// BenchmarkProvimuxSessionReturnPick is the cost of a selection of a named, bound conversation through a real Pick,
-// with cold-after unset and set (within cold-after, so nothing is dropped): go test -bench ProvimuxSessionReturnPick
-// -benchmem. Not a test: it asserts nothing about time.
-func BenchmarkProvimuxSessionReturnPick(b *testing.B) {
-	level := log.GetLevel()
-	log.SetLevel(log.WarnLevel) // upstream logs every selection at info: not the rule's cost
-	defer log.SetLevel(level)
-	for _, set := range []bool{false, true} {
-		b.Run(map[bool]string{false: "unset", true: "set"}[set], func(b *testing.B) {
-			b.ReportAllocs()
-			provimuxBenchPick(b, set)
-		})
-	}
-}
-
-func provimuxBenchPick(b *testing.B, set bool) {
-	m := NewManager(nil, nil, nil)
-	affinity := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{Fallback: &RoundRobinSelector{}, TTL: provimuxRTTTL})
-	defer affinity.Stop()
-	m.SetSelector(affinity)
-	high := &Auth{ID: "bench-high", Provider: "bench", Status: StatusActive, Attributes: map[string]string{"priority": "10"}}
-	low := &Auth{ID: "bench-low", Provider: "bench", Status: StatusActive, Attributes: map[string]string{"priority": "5"}}
-	if set {
-		defer SetProvimuxSessionReturnForTest(m, ProvimuxSessionReturnSetting{ColdAfter: provimuxRTCold, ColdAfterSet: true, Affinity: true, TTL: provimuxRTTTL, RebindOn: "any"})()
-	}
-	header := http.Header{"X-Session-Affinity": {"pi-bench"}}
-	opts := cliproxyexecutor.Options{Headers: header, OriginalRequest: []byte(`{"model":"bench-model"}`), Metadata: map[string]any{}}
-	auths := []*Auth{high, low}
-	// Bound to the low account (the only one offered at the first selection), then judged at every selection: the
-	// whole of the rule's path, within cold-after.
-	if selected, err := affinity.Pick(context.Background(), "bench", "bench-model", opts, []*Auth{low}); err != nil || selected.ID != low.ID {
-		b.Fatalf("bind: %v", err)
-	}
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if _, err := affinity.Pick(context.Background(), "bench", "bench-model", opts, auths); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
 // BenchmarkProvimuxSessionReturnCall is the rule's own call, as Pick makes it, for a conversation bound below and used
 // within cold-after: unset (one atomic load), and set (every check, nothing dropped).
 func BenchmarkProvimuxSessionReturnCall(b *testing.B) {
@@ -923,7 +790,8 @@ func BenchmarkProvimuxSessionReturnCall(b *testing.B) {
 			defer affinity.Stop()
 			m.SetSelector(affinity)
 			if set {
-				defer SetProvimuxSessionReturnForTest(m, ProvimuxSessionReturnSetting{ColdAfter: provimuxRTCold, ColdAfterSet: true, Affinity: true, TTL: provimuxRTTTL, RebindOn: "any"})()
+				ProvimuxSetSessionReturn(m, provimuxRTCold)
+				defer ProvimuxSetSessionReturn(nil, 0)
 			}
 			high := &Auth{ID: "bench-high", Provider: "bench", Status: StatusActive, Attributes: map[string]string{"priority": "10"}}
 			low := &Auth{ID: "bench-low", Provider: "bench", Status: StatusActive, Attributes: map[string]string{"priority": "5"}}

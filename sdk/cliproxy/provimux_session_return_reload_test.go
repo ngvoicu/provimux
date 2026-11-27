@@ -18,7 +18,7 @@ import (
 // applies it, and a write through the config API the console uses, read back from the file. Each change of the
 // routing settings makes a new selector, and the state reads it as it runs. Nothing is sent anywhere.
 func TestProvimuxSessionReturnFollowsEveryCommit(t *testing.T) {
-	t.Cleanup(func() { coreauth.ProvimuxSetSessionReturn(nil, coreauth.ProvimuxSessionReturnSetting{}) })
+	t.Cleanup(func() { coreauth.ProvimuxSetSessionReturn(nil, 0) })
 	h := newNamesHarness(t, "routing:\n  session-affinity: true\n  session-affinity-ttl: \"1h\"\n  session-affinity-return:\n    cold-after: \"6m\"\n")
 	m := h.service.coreManager
 	state := func() coreauth.ProvimuxSessionReturnState {
