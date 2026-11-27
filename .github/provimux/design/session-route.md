@@ -594,6 +594,7 @@ Each needs a timing or a setup that ordinary use does not make; none is built ar
 - **A held request's failure after a return whose retry came back to the same low login** removes that binding, as upstream does with any binding to a login that just failed; the conversation is bound afresh at its next message.
 - **A client's release without `expect` racing a return** can remove the binding the return's request just made on the first route; the next request is routed there again. With `expect` the answer is `409`.
 - **Any plugin scheduler** turns the rule off, one that declines every pick included. **After a scheduling plugin is switched off while the gateway runs,** a conversation it routed in the meantime can go back at its first message: while the plugin routed, the selector saw none of its messages, so an older note can still be there.
+- **After Home mode is switched on and off again while the gateway runs,** a conversation bound before can go back at its first message, though a message of it was routed within `cold-after`: while Home routed, the selector saw none of its messages, so an older note can still be there.
 - **Two selections of one conversation at the same instant** can write their notes out of order (about two milliseconds, seen only when forced); the note can then be that much older than the later message.
 
 ### 15.8 What could come next

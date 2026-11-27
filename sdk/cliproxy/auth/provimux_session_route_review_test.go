@@ -45,7 +45,7 @@ func (f *provimuxSRFixture) serve(models ...string) {
 // TestProvimuxSessionRouteDelimiterOwnership is finding 1: upstream joins provider, session and model into one string
 // with "::", which a session id and a configured name may hold, so two different (session, name) pairs can make one
 // string, and upstream holds one binding for both. Key A uses (x, "sr::m"); key B uses ("x::sr", "m"). The book cannot
-// tell whose that binding is, so it is "not-seen" in both directions (design section 15.11), and nothing is released.
+// tell whose that binding is, so it is "not-seen" in both directions (design section 3), and nothing is released.
 func TestProvimuxSessionRouteDelimiterOwnership(t *testing.T) {
 	f := newProvimuxSRFixture(t, "round-robin", false, nil)
 	f.serve("sr::m", "m")
