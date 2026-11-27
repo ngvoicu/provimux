@@ -15,6 +15,7 @@ import (
 	"github.com/klauspost/compress/zstd"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/copilot"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/provimux/origin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
@@ -54,9 +55,6 @@ type sentStandIn struct {
 
 func (s *sentStandIn) RoundTripperFor(*coreauth.Auth) http.RoundTripper { return s }
 
-// ProvimuxPassesRequestsUnchanged: the stand-in is the vendor; what it receives is what left.
-func (s *sentStandIn) ProvimuxPassesRequestsUnchanged() bool { return true }
-
 // sentCopilot registers a Copilot login as the gateway's own login writes one (a file), with models in its catalog,
 // and publishes them.
 func sentCopilot(t *testing.T, h *sentHarness, modelIDs ...string) *coreauth.Auth {
@@ -69,12 +67,14 @@ func sentCopilot(t *testing.T, h *sentHarness, modelIDs ...string) *coreauth.Aut
 		infos = append(infos, &registry.ModelInfo{ID: id})
 	}
 	file := "provimux-test-copilot-" + strings.ReplaceAll(t.Name(), "/", "-") + ".json"
-	auth, err := h.service.coreManager.Register(t.Context(), &coreauth.Auth{
+	login := &coreauth.Auth{
 		ID: file, FileName: file, Provider: copilot.Provider, Status: coreauth.StatusActive,
 		Attributes:     map[string]string{"path": "/provimux-test/auths/" + file},
 		CopilotCatalog: copilot.NewCatalog(models, time.Now()),
 		Metadata:       map[string]any{"access_token": "provimux-test-token", "base_url": "https://api.individual.githubcopilot.com"},
-	})
+	}
+	origin.MarkLoadedForTests(login)
+	auth, err := h.service.coreManager.Register(t.Context(), login)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -272,15 +272,24 @@ func newSentHarness(t *testing.T, configBody string) *sentHarness {
 		coreauth.SetProvimuxMarkerKey(nil)
 	})
 	stand := &sentStandIn{t: t}
+	// The stand-in vendor goes through the recognition the gateway's own per-credential transports go through (the
+	// lead's amendment of 2026-11-27 (2), rule A.2): a seam that does nothing outside a test binary.
+	origin.StandInForTests(stand)
 	names.service.coreManager.SetRoundTripperProvider(stand)
-	server := httptest.NewServer(names.handler)
+	// Answers are served by the HTTP server the gateway built (its stock output route, rule B.1), on a test listener.
+	server := httptest.NewUnstartedServer(nil)
+	server.Config = names.service.server.ProvimuxStockServerForTests()
+	server.Start()
 	t.Cleanup(server.Close)
 	return &sentHarness{namesHarness: names, stand: stand, server: server}
 }
 
-// register registers auth with the service's manager, binds its executor and puts models on it.
+// register registers auth with the service's manager as a login the gateway's own loader parsed (the loader's mark, by
+// a seam that does nothing outside a test binary: rule A.3), binds its executor and puts models on it. A test of a
+// credential the loader did not make registers it with the manager directly.
 func (h *sentHarness) register(auth *coreauth.Auth, models ...string) *coreauth.Auth {
 	h.t.Helper()
+	origin.MarkLoadedForTests(auth)
 	registered, err := h.service.coreManager.Register(h.t.Context(), auth)
 	if err != nil {
 		h.t.Fatal(err)

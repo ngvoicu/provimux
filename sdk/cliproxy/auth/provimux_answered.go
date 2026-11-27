@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -45,18 +46,55 @@ func ProvimuxLoginClearsPluginMark(ctx context.Context, auth *Auth) {
 	auth.Metadata[ProvimuxPluginCredentialMark] = false
 }
 
-// provimuxAnswerEntry holds the one function that gives an answer's entry: steps 3 to 5 of answered-by.md 4.3, for the
-// credential that answered and what its attempt sent. sdk/cliproxy sets it (SetProvimuxAnswerEntry); nil = no entry.
-var provimuxAnswerEntry atomic.Pointer[func(auth *Auth, sent cliproxyexecutor.ProvimuxSentRequest) string]
+// provimuxEntryHooks are the two functions that decide an answer's entry, set once by sdk/cliproxy while the program
+// initialises (SetProvimuxAnswerEntry): builtin names the closed-list kind of the executor that answers for a
+// credential, "" for any other (the lead's amendment of 2026-11-27 (2), rule A.1); entry gives the entry of what that
+// credential's attempt sent (answered-by.md 4.3, steps 3 to 5). Without them no answer names an entry.
+type provimuxEntryHooks struct {
+	builtin func(m *Manager, exec ProviderExecutor, revision uint64) string
+	entry   func(auth *Auth, sent cliproxyexecutor.ProvimuxSentRequest) string
+}
 
-// SetProvimuxAnswerEntry sets the function that gives an answer's entry (answered-by.md 4.3, steps 3 to 5); nil
-// removes it, and no answer names an entry.
-func SetProvimuxAnswerEntry(entry func(auth *Auth, sent cliproxyexecutor.ProvimuxSentRequest) string) {
-	if entry == nil {
-		provimuxAnswerEntry.Store(nil)
+var provimuxAnswerEntry atomic.Pointer[provimuxEntryHooks]
+
+// SetProvimuxAnswerEntry sets the two functions that decide an answer's entry. The first call holds and later calls
+// do nothing: sdk/cliproxy makes it while the program initialises, before any code that imports the gateway runs, so
+// no embedding can replace them.
+func SetProvimuxAnswerEntry(builtin func(m *Manager, exec ProviderExecutor, revision uint64) string, entry func(auth *Auth, sent cliproxyexecutor.ProvimuxSentRequest) string) {
+	if builtin == nil || entry == nil {
 		return
 	}
-	provimuxAnswerEntry.Store(&entry)
+	provimuxAnswerEntry.CompareAndSwap(nil, &provimuxEntryHooks{builtin: builtin, entry: entry})
+}
+
+type provimuxManagerKey struct{}
+
+// provimuxWithManager says, on an attempt's context, which manager runs it: the entry is decided against the executor
+// that manager publishes for the credential. Only newUpstreamAttemptContext calls it.
+func provimuxWithManager(ctx context.Context, m *Manager) context.Context {
+	if ctx == nil || m == nil || !logging.ProvimuxAnsweredBy() {
+		return ctx
+	}
+	return context.WithValue(ctx, provimuxManagerKey{}, m)
+}
+
+// provimuxAnsweringExecutor returns the executor m publishes for auth, the way the conductor picks it, with the
+// revision of its registration, read under one lock.
+func (m *Manager) provimuxAnsweringExecutor(auth *Auth) (ProviderExecutor, uint64) {
+	if m == nil || auth == nil {
+		return nil, 0
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	key := executorKeyFromAuth(auth)
+	exec, ok := m.executorLocked(key)
+	if !ok {
+		exec, ok = m.executorLocked(canonicalSchedulingProvider(key))
+	}
+	if !ok || exec == nil {
+		return nil, 0
+	}
+	return exec, m.executorRevisions[strings.ToLower(strings.TrimSpace(exec.Identifier()))]
 }
 
 // ProvimuxAnsweredItem is one item of what a credential's answers for a name said of themselves (answered-by.md 4.4
@@ -143,22 +181,22 @@ func WithProvimuxCalledName(ctx context.Context, name string) context.Context {
 // to ProvimuxAnswerCallbackMetadataKey. It is called only from publishAnsweredAuthMetadata, after its callback, with
 // the same attempt context, credential and statement; for an empty statement it hands over the empty statement.
 //
-// A statement that names an account gains what its attempt sent (answered-by.md 4.3 and the lead's rule of
-// 2026-11-27): where the attempt's one candidate request is certain (cliproxyexecutor.ProvimuxSent), its model, and
-// the entry the gateway gives it for this credential. Where it is not, neither. It also carries, for the record and
-// never on the wire, the credential and the row the answer stands on; the record is written where the statement is
-// written to the client, never here.
+// A statement that names an account gains what its attempt sent, and its entry, only where Provimux made every part
+// (the lead's amendment of 2026-11-27 (2)): the executor that answers is one of the gateway's built-in executors, which
+// its own service registered (A.1); its attempt sent exactly one request that could have produced the answer, over a
+// client the gateway built, and the model was read from the bytes handed to the transport
+// (cliproxyexecutor.ProvimuxSent: A.2, A.4, A.5, A.6); the gateway's loader made the credential (A.3, in the entry
+// function). Where any part is missing, neither. It also carries, for the record and never on the wire, the credential
+// and the row the answer stands on; the record is written where the statement is written to the client, never here.
 func publishProvimuxAnswer(attemptCtx context.Context, meta map[string]any, auth *Auth, statement logging.AuthStatement) {
 	callback, ok := meta[ProvimuxAnswerCallbackMetadataKey].(func(logging.AuthStatement))
 	if !ok || callback == nil {
 		return
 	}
 	if statement.Provimux.Account != "" && auth != nil {
-		if sent, okSent := cliproxyexecutor.ProvimuxSent(attemptCtx); okSent {
+		if sent, okSent := provimuxSentByBuiltin(attemptCtx, auth); okSent {
 			statement.Provimux.ModelSent = sent.Model
-			if entry := provimuxAnswerEntry.Load(); entry != nil && *entry != nil {
-				statement.Provimux.Entry = (*entry)(auth, sent)
-			}
+			statement.Provimux.Entry = provimuxAnswerEntry.Load().entry(auth, sent)
 		}
 		if hooks := provimuxAnsweredRecord.Load(); hooks != nil {
 			called, _ := attemptCtx.Value(provimuxCalledNameKey{}).(string)
@@ -170,4 +208,23 @@ func publishProvimuxAnswer(attemptCtx context.Context, meta map[string]any, auth
 		}
 	}
 	callback(statement)
+}
+
+// provimuxSentByBuiltin returns what the attempt sent when the executor answering for auth is one of the gateway's
+// built-in executors, registered by its own service (rule A.1), and the attempt's one candidate request is certain.
+func provimuxSentByBuiltin(attemptCtx context.Context, auth *Auth) (cliproxyexecutor.ProvimuxSentRequest, bool) {
+	hooks := provimuxAnswerEntry.Load()
+	if hooks == nil || attemptCtx == nil {
+		return cliproxyexecutor.ProvimuxSentRequest{}, false
+	}
+	m, _ := attemptCtx.Value(provimuxManagerKey{}).(*Manager)
+	exec, revision := m.provimuxAnsweringExecutor(auth)
+	if exec == nil {
+		return cliproxyexecutor.ProvimuxSentRequest{}, false
+	}
+	kind := hooks.builtin(m, exec, revision)
+	if kind == "" {
+		return cliproxyexecutor.ProvimuxSentRequest{}, false
+	}
+	return cliproxyexecutor.ProvimuxSent(attemptCtx, kind)
 }

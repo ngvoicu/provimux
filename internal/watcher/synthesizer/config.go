@@ -112,6 +112,7 @@ func (s *ConfigSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth,
 	// Vertex-compat
 	out = append(out, s.synthesizeVertexCompat(ctx)...)
 
+	provimuxMarkLoaded(out...) // Provimux: the gateway's own loader made it (answered-by.md, rule A.3)
 	return out, nil
 }
 

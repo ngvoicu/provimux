@@ -399,6 +399,7 @@ func (s *PostgresStore) List(ctx context.Context) ([]*cliproxyauth.Auth, error) 
 			auth.Disabled = true
 			auth.Status = cliproxyauth.StatusDisabled
 		}
+		provimuxMarkLoaded(auth) // Provimux: the gateway's own loader made it (answered-by.md, rule A.3)
 		auths = append(auths, auth)
 	}
 	if err = rows.Err(); err != nil {

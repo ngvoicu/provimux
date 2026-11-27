@@ -14,6 +14,7 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/provimux/origin"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
 	"google.golang.org/protobuf/encoding/protowire"
 )
@@ -45,8 +46,39 @@ func (s *standIn) RoundTrip(req *http.Request) (*http.Response, error) {
 
 func (s *standIn) CloseIdleConnections() { s.closed.Add(1) }
 
-// ProvimuxPassesRequestsUnchanged: the stand-in hands nothing on; it receives what left.
-func (s *standIn) ProvimuxPassesRequestsUnchanged() bool { return true }
+// sentPublic is what a test compares of an observation: its exported values.
+type sentPublic struct {
+	Scheme, Host, Port, Model, Signer string
+	Status                            int
+}
+
+func public(r ProvimuxSentRequest) sentPublic {
+	return sentPublic{Scheme: r.Scheme, Host: r.Host, Port: r.Port, Model: r.Model, Signer: r.Signer, Status: r.Status}
+}
+
+// provimuxReadModel observes req as the decorator does, lets a transport read its body as Go's does (to its end), and
+// reads the model from what it read.
+func provimuxReadModel(req *http.Request) (model string, unread bool) {
+	observed := provimuxObserveRequest(req)
+	sent, capture := provimuxCaptureBody(req)
+	if sent.Body != nil {
+		_, _ = io.Copy(io.Discard, sent.Body)
+		_ = sent.Body.Close()
+	}
+	observed.body = capture
+	return provimuxModelOf(observed)
+}
+
+// observedBody is an observation whose transport read body whole ("" = no body).
+func observedBody(host, method, path, mediaType, body string, status int) ProvimuxSentRequest {
+	capture := &provimuxBodyCapture{none: body == ""}
+	if body != "" {
+		stream := &provimuxBodyStream{whole: true}
+		stream.data.WriteString(body)
+		capture.streams = append(capture.streams, stream)
+	}
+	return ProvimuxSentRequest{Scheme: "https", Host: host, Signer: "authorization", Status: status, method: method, path: path, mediaType: mediaType, body: capture}
+}
 
 // send sends req with a client built as the executors' helpers build one: Decorate after the transport is chosen.
 func send(t *testing.T, ctx context.Context, transport http.RoundTripper, req *http.Request) {
@@ -156,12 +188,18 @@ func TestProvimuxSentModelPerWireForm(t *testing.T) {
 			req.Header.Set("Content-Encoding", "gzip")
 			return req
 		}, "", true},
-		{"a body without GetBody", func(t *testing.T) *http.Request {
+		{"a body without GetBody: read as the transport reads it", func(t *testing.T) *http.Request {
 			req := jsonRequest(t, "https://api.anthropic.com/v1/messages", `{"model":"provimux-test-a"}`)
 			req.Body = io.NopCloser(strings.NewReader(`{"model":"provimux-test-a"}`))
 			req.GetBody = nil
 			return req
-		}, "", true},
+		}, "provimux-test-a", false},
+		{"a body whose GetBody replays other bytes: the bytes the transport read", func(t *testing.T) *http.Request {
+			req := jsonRequest(t, "https://openrouter.ai/api/v1/chat/completions", `{"model":"lab/first"}`)
+			req.Body = io.NopCloser(strings.NewReader(`{"model":"lab/other"}`))
+			req.ContentLength = int64(len(`{"model":"lab/other"}`))
+			return req
+		}, "lab/other", false},
 		{"a multipart upload", func(t *testing.T) *http.Request {
 			buffer, contentType := multipartBody()
 			req, _ := http.NewRequest(http.MethodPost, "https://api.openai.com/v1/images/edits", buffer)
@@ -252,9 +290,6 @@ func TestProvimuxSentModelPerWireForm(t *testing.T) {
 			if model != tc.model || unread != tc.unread {
 				t.Fatalf("read %q unread=%v, want %q unread=%v", model, unread, tc.model, tc.unread)
 			}
-			if got := provimuxSentModel(req); got != tc.model {
-				t.Fatalf("provimuxSentModel %q, want %q", got, tc.model)
-			}
 		})
 	}
 }
@@ -270,9 +305,9 @@ func TestProvimuxSentDecoratorChangesNothing(t *testing.T) {
 	if len(stand.received) != 1 || string(stand.received[0]) != body {
 		t.Fatalf("the stand-in received %q, want %q", stand.received, body)
 	}
-	sent, ok := ProvimuxSent(ctx)
+	sent, ok := ProvimuxSent(ctx, "claude")
 	want := ProvimuxSentRequest{Scheme: "https", Host: "api.anthropic.com", Model: "provimux-test-a", Status: http.StatusOK}
-	if !ok || sent != want {
+	if !ok || public(sent) != public(want) {
 		t.Fatalf("sent %+v %v, want %+v", sent, ok, want)
 	}
 	// The client's call to close idle connections reaches the transport below.
@@ -291,17 +326,15 @@ func TestProvimuxSentOffAttachesNothing(t *testing.T) {
 		t.Fatal("a decorator is attached with the switch off")
 	}
 	send(t, ctx, client.Transport, jsonRequest(t, "https://api.anthropic.com/v1/messages", `{"model":"provimux-test-a"}`))
-	if _, ok := ProvimuxSent(ctx); ok {
+	if _, ok := ProvimuxSent(ctx, "claude"); ok {
 		t.Fatal("something was observed with the switch off")
 	}
 }
 
-// recordingDecorator is an embedder's decorator: it counts the requests it sees. vouches says whether it declares
-// that it hands requests on unchanged.
+// recordingDecorator is an embedder's decorator: it counts the requests it sees.
 type recordingDecorator struct {
-	next    http.RoundTripper
-	seen    *atomic.Int32
-	vouches bool
+	next http.RoundTripper
+	seen *atomic.Int32
 }
 
 func (d recordingDecorator) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -309,74 +342,77 @@ func (d recordingDecorator) RoundTrip(req *http.Request) (*http.Response, error)
 	return d.next.RoundTrip(req)
 }
 
-type vouchingDecorator struct{ recordingDecorator }
-
-func (vouchingDecorator) ProvimuxPassesRequestsUnchanged() bool { return true }
-
-// A decorator an embedder put on the context stays, inside ours, and sees each request once; it is a transport below
-// the reader that is not the gateway's own, so the attempt names nothing unless it vouches that it hands requests on
-// unchanged. An attempt inside another (a refresh) notes its requests on its own log, not on the enclosing one's.
+// A decorator another program put on the context stays, inside ours, and sees each request once; the attempt names
+// nothing, whatever the decorator says of itself (the lead's amendment of 2026-11-27 (2), rule A.2: no recognition by
+// declaration). An attempt inside another (a refresh) notes its requests on its own log, not on the enclosing one's,
+// and an enclosing attempt's decorator is not another program's.
 func TestProvimuxSentKeepsAnEmbeddersDecoratorAndNests(t *testing.T) {
 	provimuxSentOn(t, true)
-	for _, vouches := range []bool{false, true} {
+	for _, embedder := range []bool{false, true} {
 		var seen atomic.Int32
-		base := httptransport.WithDecorator(context.Background(), func(next http.RoundTripper) http.RoundTripper {
-			if vouches {
-				return vouchingDecorator{recordingDecorator{next: next, seen: &seen}}
-			}
-			return recordingDecorator{next: next, seen: &seen}
-		})
+		base := context.Background()
+		if embedder {
+			base = httptransport.WithDecorator(base, func(next http.RoundTripper) http.RoundTripper {
+				return recordingDecorator{next: next, seen: &seen}
+			})
+		}
 		first := WithUpstreamAttemptTracker(base)
 		second := WithUpstreamAttemptTracker(first)
 		stand := &standIn{status: http.StatusOK}
 		send(t, second, stand, jsonRequest(t, "https://api.anthropic.com/v1/messages", `{"model":"provimux-test-a"}`))
-		if seen.Load() != 1 {
+		if embedder && seen.Load() != 1 {
 			t.Fatalf("the embedder's decorator saw %d requests, want 1", seen.Load())
 		}
 		if log := provimuxSentLogOf(first); len(log.requests) != 0 {
 			t.Fatalf("a request of the inner attempt landed on the outer: %+v", log.requests)
 		}
 		log := provimuxSentLogOf(second)
-		sent, ok := ProvimuxSent(second)
-		if len(log.requests) != 1 || ok != vouches || (ok && sent.Model != "provimux-test-a") {
-			t.Fatalf("vouches %v: %+v %v, %d observations", vouches, sent, ok, len(log.requests))
+		sent, ok := ProvimuxSent(second, "claude")
+		if len(log.requests) != 1 || ok == embedder || (ok && sent.Model != "provimux-test-a") {
+			t.Fatalf("embedder %v: %+v %v, %d observations", embedder, sent, ok, len(log.requests))
 		}
 	}
 }
 
 // The rule (the lead's of 2026-11-27): exactly one request that could have produced the answer, read whole, nothing
-// making what was read differ from what left. Housekeeping and refusals do not count; everything else does.
+// making it not wholly the gateway's own. The answering executor's housekeeping and refusals do not count; everything
+// else does.
 func TestProvimuxSentTheRule(t *testing.T) {
-	answered := ProvimuxSentRequest{Scheme: "https", Host: "api.x.ai", Model: "provimux-test-a", Signer: "authorization", Status: 200}
+	answered := observedBody("api.x.ai", http.MethodPost, "/v1/responses", "application/json", `{"model":"provimux-test-a"}`, 200)
 	with := func(change func(*ProvimuxSentRequest)) ProvimuxSentRequest {
 		r := answered
 		change(&r)
 		return r
 	}
+	token := observedBody("oauth2.googleapis.com", http.MethodPost, "/token", "application/x-www-form-urlencoded", "grant_type=provimux-test", 200)
 	for _, tc := range []struct {
 		name     string
+		executor string
 		requests []ProvimuxSentRequest
 		overflow bool
 		foreign  bool
 		want     bool
 	}{
-		{"none", nil, false, false, false},
-		{"one answered model request", []ProvimuxSentRequest{answered}, false, false, true},
-		{"a refusal, then the same again answered", []ProvimuxSentRequest{with(func(r *ProvimuxSentRequest) { r.Status = 400 }), answered}, false, false, true},
-		{"a redirect, then the host that answered", []ProvimuxSentRequest{with(func(r *ProvimuxSentRequest) { r.Status = 307; r.Host = "provimux-test.example" }), answered}, false, false, true},
-		{"a transport error, then the same answered", []ProvimuxSentRequest{with(func(r *ProvimuxSentRequest) { r.Status = 0 }), answered}, false, false, true},
-		{"a housekeeping request beside it", []ProvimuxSentRequest{with(func(r *ProvimuxSentRequest) { r.Model = ""; r.Host = "oauth2.googleapis.com"; r.housekeeping = true }), answered}, false, false, true},
-		{"an answered request without a model, not housekeeping", []ProvimuxSentRequest{with(func(r *ProvimuxSentRequest) { r.Model = ""; r.Host = "auth.example.test" }), answered}, false, false, false},
-		{"the same answered twice", []ProvimuxSentRequest{answered, answered}, false, false, false},
-		{"two answered requests, two models", []ProvimuxSentRequest{answered, with(func(r *ProvimuxSentRequest) { r.Model = "provimux-test-b" })}, false, false, false},
-		{"an answered request it could not read", []ProvimuxSentRequest{answered, with(func(r *ProvimuxSentRequest) { r.Model = ""; r.unread = true })}, false, false, false},
-		{"the one request unread", []ProvimuxSentRequest{with(func(r *ProvimuxSentRequest) { r.unread = true })}, false, false, false},
-		{"the one request untrusted", []ProvimuxSentRequest{with(func(r *ProvimuxSentRequest) { r.untrusted = true })}, false, false, false},
-		{"the one request without a model", []ProvimuxSentRequest{with(func(r *ProvimuxSentRequest) { r.Model = "" })}, false, false, false},
-		{"a refused request it could not read", []ProvimuxSentRequest{with(func(r *ProvimuxSentRequest) { r.Model = ""; r.unread = true; r.Status = 400 }), answered}, false, false, true},
-		{"only refusals", []ProvimuxSentRequest{with(func(r *ProvimuxSentRequest) { r.Status = 500 })}, false, false, false},
-		{"more than the log keeps", []ProvimuxSentRequest{answered}, true, false, false},
-		{"a connection the decorator did not see", []ProvimuxSentRequest{answered}, false, true, false},
+		{"none", "xai", nil, false, false, false},
+		{"one answered model request", "xai", []ProvimuxSentRequest{answered}, false, false, true},
+		{"a refusal, then the same again answered", "xai", []ProvimuxSentRequest{with(func(r *ProvimuxSentRequest) { r.Status = 400 }), answered}, false, false, true},
+		{"a redirect, then the host that answered", "xai", []ProvimuxSentRequest{with(func(r *ProvimuxSentRequest) { r.Status = 307; r.Host = "provimux-test.example" }), answered}, false, false, true},
+		{"a transport error, then the same answered", "xai", []ProvimuxSentRequest{with(func(r *ProvimuxSentRequest) { r.Status = 0 }), answered}, false, false, true},
+		{"the answering executor's housekeeping beside it", "vertex", []ProvimuxSentRequest{token, answered}, false, false, true},
+		{"another executor's housekeeping beside it", "xai", []ProvimuxSentRequest{token, answered}, false, false, false},
+		{"an answered request without a model, not housekeeping", "xai", []ProvimuxSentRequest{observedBody("auth.example.test", http.MethodPost, "/token", "application/x-www-form-urlencoded", "a=b", 200), answered}, false, false, false},
+		{"the same answered twice", "xai", []ProvimuxSentRequest{answered, answered}, false, false, false},
+		{"two answered requests, two models", "xai", []ProvimuxSentRequest{answered, observedBody("api.x.ai", http.MethodPost, "/v1/responses", "application/json", `{"model":"provimux-test-b"}`, 200)}, false, false, false},
+		{"an answered request it could not read", "xai", []ProvimuxSentRequest{answered, with(func(r *ProvimuxSentRequest) { r.unread = true })}, false, false, false},
+		{"the one request unread", "xai", []ProvimuxSentRequest{with(func(r *ProvimuxSentRequest) { r.unread = true })}, false, false, false},
+		{"the one request's body not read whole", "xai", []ProvimuxSentRequest{with(func(r *ProvimuxSentRequest) { r.body = &provimuxBodyCapture{streams: []*provimuxBodyStream{{}}} })}, false, false, false},
+		{"the one request untrusted", "xai", []ProvimuxSentRequest{with(func(r *ProvimuxSentRequest) { r.untrusted = true })}, false, false, false},
+		{"the one request without a model", "xai", []ProvimuxSentRequest{observedBody("api.x.ai", http.MethodPost, "/v1/responses", "application/json", `{"input":[]}`, 200)}, false, false, false},
+		{"a refused request it could not read", "xai", []ProvimuxSentRequest{with(func(r *ProvimuxSentRequest) { r.unread = true; r.Status = 400 }), answered}, false, false, true},
+		{"only refusals", "xai", []ProvimuxSentRequest{with(func(r *ProvimuxSentRequest) { r.Status = 500 })}, false, false, false},
+		{"more than the log keeps", "xai", []ProvimuxSentRequest{answered}, true, false, false},
+		{"a connection the decorator did not see", "xai", []ProvimuxSentRequest{answered}, false, true, false},
+		{"no executor kind", "", []ProvimuxSentRequest{answered}, false, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			log := &provimuxSentLog{}
@@ -388,13 +424,15 @@ func TestProvimuxSentTheRule(t *testing.T) {
 			if tc.foreign {
 				log.conns.Add(1)
 			}
-			sent, ok := ProvimuxSent(ctx)
-			if ok != tc.want || (ok && sent != answered) {
+			sent, ok := ProvimuxSent(ctx, tc.executor)
+			want := public(answered)
+			want.Model = "provimux-test-a"
+			if ok != tc.want || (ok && public(sent) != want) {
 				t.Fatalf("ProvimuxSent = %+v %v, want %v", sent, ok, tc.want)
 			}
 		})
 	}
-	if _, ok := ProvimuxSent(context.Background()); ok {
+	if _, ok := ProvimuxSent(context.Background(), "xai"); ok {
 		t.Fatal("a context without a log names a model")
 	}
 }
@@ -413,42 +451,52 @@ func TestProvimuxSentDetachedRequestCancels(t *testing.T) {
 			t.Fatal(err)
 		}
 		_ = resp.Body.Close()
-		_, ok := ProvimuxSent(ctx)
+		_, ok := ProvimuxSent(ctx, "xai")
 		if want := requestCtx == ctx; ok != want {
 			t.Fatalf("after a request on the attempt's context %v: named %v", requestCtx == ctx, ok)
 		}
 	}
 }
 
-// What leaves is what was read: a Host other than the URL's, and a transport below the reader that is not the
-// gateway's own (on the client or as the context's per-credential transport), give nothing.
+// What leaves is wholly the gateway's own: a Host other than the URL's, a per-credential transport on the context that
+// the gateway's own provider did not build (recognised by identity, never by its Go package or a declaration), and Go's
+// default transport replaced, give nothing (the lead's amendment of 2026-11-27 (2), rule A.2). The transport on the
+// client is the one the gateway's helper chose from those parts.
 func TestProvimuxSentWhatLeaves(t *testing.T) {
 	provimuxSentOn(t, true)
 	type plain struct{ http.RoundTripper }
+	gatewayMade := &standIn{status: http.StatusOK}
+	origin.StandInForTests(gatewayMade)
 	for _, tc := range []struct {
-		name string
-		req  func(*http.Request)
-		rt   func(stand *standIn) http.RoundTripper
-		ctx  func(context.Context, *standIn) context.Context
-		want bool
+		name    string
+		req     func(*http.Request)
+		ctx     func(context.Context, *standIn) context.Context
+		replace bool
+		want    bool
 	}{
 		{name: "the URL's host", want: true},
 		{name: "the URL's host as Host, with the default port", req: func(r *http.Request) { r.Host = "API.x.ai:443" }, want: true},
 		{name: "another Host", req: func(r *http.Request) { r.Host = "routing.provimux-test.invalid" }},
 		{name: "another port in Host", req: func(r *http.Request) { r.Host = "api.x.ai:8443" }},
-		{name: "a transport that does not vouch", rt: func(stand *standIn) http.RoundTripper { return plain{stand} }},
-		{name: "Go's transport", rt: func(*standIn) http.RoundTripper { return &http.Transport{} }, want: true},
-		{name: "a context transport that does not vouch", ctx: func(c context.Context, stand *standIn) context.Context {
+		{name: "a context transport the gateway did not build", ctx: func(c context.Context, stand *standIn) context.Context {
 			return context.WithValue(c, "cliproxy.roundtripper", http.RoundTripper(plain{stand}))
 		}},
+		{name: "a Go transport the gateway did not build, as the context transport", ctx: func(c context.Context, _ *standIn) context.Context {
+			return context.WithValue(c, "cliproxy.roundtripper", http.RoundTripper(&http.Transport{}))
+		}},
+		{name: "a context transport the gateway built", ctx: func(c context.Context, _ *standIn) context.Context {
+			return context.WithValue(c, "cliproxy.roundtripper", http.RoundTripper(gatewayMade))
+		}, want: true},
+		{name: "Go's default transport replaced", replace: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.replace {
+				was := http.DefaultTransport
+				http.DefaultTransport = &http.Transport{}
+				t.Cleanup(func() { http.DefaultTransport = was })
+			}
 			ctx := WithUpstreamAttemptTracker(context.Background())
 			stand := &standIn{status: http.StatusOK}
-			var rt http.RoundTripper = stand
-			if tc.rt != nil {
-				rt = tc.rt(stand)
-			}
 			if tc.ctx != nil {
 				ctx = tc.ctx(ctx, stand)
 			}
@@ -457,7 +505,7 @@ func TestProvimuxSentWhatLeaves(t *testing.T) {
 				tc.req(req)
 			}
 			log := provimuxSentLogOf(ctx)
-			observer := &provimuxSentObserver{next: rt, log: log}
+			observer := &provimuxSentObserver{next: stand, log: log}
 			resp, err := observer.RoundTrip(req.WithContext(ctx))
 			if err == nil {
 				_ = resp.Body.Close()
@@ -465,15 +513,7 @@ func TestProvimuxSentWhatLeaves(t *testing.T) {
 			if len(log.requests) != 1 {
 				t.Fatalf("%d observations", len(log.requests))
 			}
-			// Go's own transport has nothing to dial here: its error is a refusal, not an answer. Its verdict on the
-			// transport is what is asked.
-			if tc.name == "Go's transport" {
-				if log.requests[0].untrusted {
-					t.Fatal("Go's transport is not one of the gateway's own")
-				}
-				return
-			}
-			if _, ok := ProvimuxSent(ctx); ok != tc.want {
+			if _, ok := ProvimuxSent(ctx, "xai"); ok != tc.want {
 				t.Fatalf("named %v, want %v (%+v)", ok, tc.want, log.requests)
 			}
 		})
@@ -506,14 +546,16 @@ func TestProvimuxSentUnseenConnectionCancels(t *testing.T) {
 			_ = resp.Body.Close()
 		}
 		log := provimuxSentLogOf(ctx)
-		if _, ok := ProvimuxSent(ctx); ok == unseen || log.conns.Load() == 0 {
+		if _, ok := ProvimuxSent(ctx, "openai-compatibility"); ok == unseen || log.conns.Load() == 0 {
 			t.Fatalf("unseen %v: named %v (connections %d, seen %d)", unseen, ok, log.conns.Load(), log.observed.Load())
 		}
 	}
 }
 
-// The closed housekeeping list, by destination and shape: a token form to Google's endpoint, Copilot's token and
-// catalog; the same destinations in another shape, or with a model, are candidates.
+// The closed housekeeping list, by the executor that answered, exact authority, exact path and shape (the lead's
+// amendment of 2026-11-27 (2), rule A.5): a token form to Google's endpoint for the Google executors, Antigravity's
+// discovery as JSON, Copilot's token and catalog. The same request for another executor, at a lookalike path, to a
+// host given by suffix, with a Host of its own, in another shape or with a model, is a candidate.
 func TestProvimuxSentHousekeeping(t *testing.T) {
 	form := func(method, url, body string) *http.Request {
 		req, _ := http.NewRequest(method, url, strings.NewReader(body))
@@ -522,25 +564,40 @@ func TestProvimuxSentHousekeeping(t *testing.T) {
 		}
 		return req
 	}
+	hosted := func(req *http.Request, host string) *http.Request { req.Host = host; return req }
 	for _, tc := range []struct {
-		req  *http.Request
-		want bool
+		executor string
+		req      *http.Request
+		want     bool
 	}{
-		{form(http.MethodPost, "https://oauth2.googleapis.com/token", "grant_type=provimux-test"), true},
-		{form(http.MethodGet, "https://api.github.com/copilot_internal/v2/token", ""), true},
-		{form(http.MethodGet, "https://api.individual.githubcopilot.com/models", ""), true},
-		{form(http.MethodGet, "https://api.githubcopilot.com/models", ""), true},
-		{jsonRequest(t, "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist", `{"metadata":{}}`), true},
-		{jsonRequest(t, "https://daily-cloudcode-pa.googleapis.com/v1internal:onboardUser", `{"tierId":"x"}`), true},
-		{jsonRequest(t, "https://cloudcode-pa.googleapis.com/v1internal:generateContent", `{"request":{}}`), false},
-		{jsonRequest(t, "https://oauth2.googleapis.com/token", `{"grant_type":"x"}`), false},
-		{form(http.MethodPost, "https://oauth2.googleapis.com/token", "model=provimux-test-a"), false},
-		{form(http.MethodGet, "https://api.githubcopilot.com/models/provimux-test-a", ""), false},
-		{form(http.MethodPost, "https://openrouter.ai/api/v1/chat/completions", "a=b"), false},
-		{form(http.MethodGet, "http://api.github.com/copilot_internal/v2/token", ""), false},
+		{"vertex", form(http.MethodPost, "https://oauth2.googleapis.com/token", "grant_type=provimux-test"), true},
+		{"antigravity", form(http.MethodPost, "https://oauth2.googleapis.com/token", "grant_type=provimux-test"), true},
+		{"openai-compatibility", form(http.MethodPost, "https://oauth2.googleapis.com/token", "grant_type=provimux-test"), false},
+		{"vertex", hosted(form(http.MethodPost, "https://oauth2.googleapis.com/token", "content=answer"), "routing.provimux-test.invalid"), false},
+		{"copilot", form(http.MethodGet, "https://api.github.com/copilot_internal/v2/token", ""), true},
+		{"copilot", form(http.MethodGet, "https://api.individual.githubcopilot.com/models", ""), true},
+		{"copilot", form(http.MethodGet, "https://api.githubcopilot.com/models", ""), true},
+		{"openai-compatibility", form(http.MethodGet, "https://api.githubcopilot.com/models", ""), false},
+		{"copilot", form(http.MethodGet, "https://lookalike.githubcopilot.com/models", ""), false},
+		{"antigravity", jsonRequest(t, "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist", `{"metadata":{}}`), true},
+		{"antigravity", jsonRequest(t, "https://daily-cloudcode-pa.googleapis.com/v1internal:onboardUser", `{"tierId":"x"}`), true},
+		{"antigravity", form(http.MethodPost, "https://cloudcode-pa.googleapis.com/tenant/v1internal:loadCodeAssist", "content=answer"), false},
+		{"antigravity", form(http.MethodPost, "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist", "content=answer"), false},
+		{"antigravity", jsonRequest(t, "https://cloudcode-pa.googleapis.com/v1internal:generateContent", `{"request":{}}`), false},
+		{"vertex", jsonRequest(t, "https://oauth2.googleapis.com/token", `{"grant_type":"x"}`), false},
+		{"vertex", form(http.MethodPost, "https://oauth2.googleapis.com/token", "model=provimux-test-a"), false},
+		{"copilot", form(http.MethodGet, "https://api.githubcopilot.com/models/provimux-test-a", ""), false},
+		{"copilot", form(http.MethodGet, "http://api.github.com/copilot_internal/v2/token", ""), false},
 	} {
-		if got := provimuxObserveRequest(tc.req).housekeeping; got != tc.want {
-			t.Errorf("%s %s: housekeeping %v, want %v", tc.req.Method, tc.req.URL, got, tc.want)
+		observed := provimuxObserveRequest(tc.req)
+		sent, capture := provimuxCaptureBody(tc.req)
+		if sent.Body != nil {
+			_, _ = io.Copy(io.Discard, sent.Body)
+		}
+		observed.body = capture
+		observed.Model, observed.unread = provimuxModelOf(observed)
+		if got := provimuxHousekeeping(tc.executor, observed); got != tc.want {
+			t.Errorf("%s: %s %s (Host %q): housekeeping %v, want %v", tc.executor, tc.req.Method, tc.req.URL, tc.req.Host, got, tc.want)
 		}
 	}
 }
@@ -560,7 +617,7 @@ func TestProvimuxSentObservation(t *testing.T) {
 	} {
 		req, _ := http.NewRequest(http.MethodGet, tc.url, nil)
 		req.Header = tc.header
-		if got := provimuxObserveRequest(req); got != tc.want {
+		if got := public(provimuxObserveRequest(req)); got != public(tc.want) {
 			t.Errorf("%s %v: %+v, want %+v", tc.url, tc.header, got, tc.want)
 		}
 	}
