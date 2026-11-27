@@ -43,7 +43,9 @@ paths:
         A conversation another client key used and a conversation that does not exist get the same
         answer: `conversation: "not-seen"`.
 
-        Nothing is changed by this request: no binding is made, moved or refreshed.
+        Nothing is changed by this request: no binding is made, moved or refreshed. Every call answers
+        from the gateway's state at that moment, so calling it again is the way to check whether a
+        higher-priority route has become free. It sends nothing to any account and ends no cooldown.
       security:
         - clientKey: []
       parameters:
@@ -73,6 +75,8 @@ paths:
               examples:
                 fell-back-cache-cold:
                   $ref: "#/components/examples/FellBackCacheCold"
+                fell-back-first-route-cooling:
+                  $ref: "#/components/examples/FellBackFirstRouteCooling"
                 on-first-route:
                   $ref: "#/components/examples/OnFirstRoute"
                 not-seen:
@@ -93,8 +97,10 @@ paths:
         The conversation's next request for the name goes to the first available route by priority.
         Nothing is sent to any account by this request. An answer in flight finishes where it started.
 
-        A turn on a Codex WebSocket that is still open stays on its login: the release takes effect
-        at the conversation's next connection (`websocket_may_hold`).
+        A Codex WebSocket that is still open undoes the release (decided by the lead on 2026-11-27):
+        its next turn is pinned to the login that served the connection, and upstream binds the
+        conversation to that login again. A release holds only once that connection is closed; then
+        the next connection's first turn goes to the first route (`websocket_may_hold`).
 
         Releasing what is not bound is not an error: `released: false`.
       security:
@@ -122,6 +128,10 @@ paths:
                   $ref: "#/components/examples/Released"
                 nothing-bound:
                   $ref: "#/components/examples/NothingBound"
+                not-seen:
+                  $ref: "#/components/examples/ReleaseNotSeen"
+                affinity-off:
+                  $ref: "#/components/examples/ReleaseAffinityOff"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -305,8 +315,10 @@ components:
           examples: [claude, codex, openai-compatibility]
         kind:
           type: string
-          description: "`oauth`: a subscription login. `apikey`: an API key."
-          enum: [oauth, apikey]
+          description: |
+            `oauth`: a subscription login. `apikey`: an API key. Empty where the gateway cannot tell (a
+            credential with neither a key nor a login's tokens), exactly as the list gives it (added in G1).
+          enum: [oauth, apikey, ""]
         priority:
           type: integer
           description: Higher is tried first.
@@ -427,7 +439,7 @@ components:
         position:
           type: [object, "null"]
           description: "`null` unless `bound`."
-          required: [below_first, higher_priority_free]
+          required: [below_first, higher_priority_free, higher_priority_free_at]
           properties:
             below_first:
               type: boolean
@@ -437,6 +449,15 @@ components:
               description: |
                 An account of a higher priority than the bound one is available now. The one fact here
                 that no list shows: it is said about the name, never per account.
+            higher_priority_free_at:
+              type: [string, "null"]
+              format: date-time
+              description: |
+                Added by the lead on 2026-11-27. When a higher-priority route is expected free: the end of
+                the recorded cooldown that ends first among the accounts of a higher priority than the
+                bound one. One time for the name, never per account. `null` when one is free now
+                (`higher_priority_free`), when none of them has a recorded cooldown end (disabled, an
+                expired token, no higher account), or when nothing is bound.
         first:
           type: array
           description: |
@@ -468,19 +489,26 @@ components:
         websocket_may_hold:
           type: boolean
           description: |
-            The conversation is named by Codex headers: a turn on a WebSocket that is still open stays
-            on its login after a release. Close the connection to be routed anew.
+            The conversation is named by Codex headers. A turn on a WebSocket that is still open is
+            pinned to its login, and upstream binds the conversation to that login again: a release
+            holds only once the connection is closed (decided by the lead on 2026-11-27).
         subagent:
           type: boolean
           description: The conversation has a parent conversation. A parent's release does not move it.
 
     Release:
       type: object
-      required: [observed_at, released, conversation, was, next, websocket_may_hold]
+      required: [observed_at, affinity, released, conversation, was, next, websocket_may_hold]
       properties:
         observed_at:
           type: string
           format: date-time
+        affinity:
+          type: string
+          description: |
+            Session affinity as it runs, as in a show. Anything but `on`: nothing is bound, nothing is
+            released, and this says why. Added in G1, so that the release says why as the show does.
+          enum: ["on", "off", home, not-supported]
         released:
           type: boolean
         conversation:
@@ -645,7 +673,7 @@ components:
           origin: fallback
           fell_back_from: { provider: claude, kind: oauth, priority: 10, account: "a.b2hw7ynq4rkx6mdz3tcv" }
           fell_back_at: "2026-11-27T09:35:12Z"
-        position: { below_first: true, higher_priority_free: true }
+        position: { below_first: true, higher_priority_free: true, higher_priority_free_at: null }
         first:
           - { provider: claude, kind: oauth, priority: 10, account: "a.b2hw7ynq4rkx6mdz3tcv" }
         cache:
@@ -656,6 +684,33 @@ components:
           cold: true
           cold_at: "2026-11-27T10:12:00Z"
         rule: { in_effect: true, will: return-when-cold }
+        websocket_may_hold: false
+        subagent: false
+    FellBackFirstRouteCooling:
+      summary: Fell back to a paid key; the first route is still cooling and is expected free at 10:40
+      value:
+        observed_at: "2026-11-27T10:15:00Z"
+        affinity: "on"
+        conversation: bound
+        model: opus
+        binding: "b.k3v7q2mfx4ardn5w"
+        bound:
+          route: { provider: claude, kind: apikey, priority: 5, host: api.anthropic.com, account: "a.f6zq3m2hx7kd4vwn5tyb" }
+          since: "2026-11-27T09:35:12Z"
+          origin: fallback
+          fell_back_from: { provider: claude, kind: oauth, priority: 10, account: "a.b2hw7ynq4rkx6mdz3tcv" }
+          fell_back_at: "2026-11-27T09:35:12Z"
+        position: { below_first: true, higher_priority_free: false, higher_priority_free_at: "2026-11-27T10:40:00Z" }
+        first:
+          - { provider: claude, kind: apikey, priority: 5, host: api.anthropic.com, account: "a.f6zq3m2hx7kd4vwn5tyb" }
+        cache:
+          lifetime_s: 3600
+          basis: setting
+          entry: null
+          last_use_at: "2026-11-27T10:14:30Z"
+          cold: false
+          cold_at: "2026-11-27T11:15:30Z"
+        rule: { in_effect: false, will: stay }
         websocket_may_hold: false
         subagent: false
     OnFirstRoute:
@@ -672,7 +727,7 @@ components:
           origin: first
           fell_back_from: null
           fell_back_at: null
-        position: { below_first: false, higher_priority_free: false }
+        position: { below_first: false, higher_priority_free: false, higher_priority_free_at: null }
         first:
           - { provider: claude, kind: oauth, priority: 10, account: "a.b2hw7ynq4rkx6mdz3tcv" }
           - { provider: claude, kind: oauth, priority: 10, account: "a.q5tm3xw7n2hkz4vd6byc" }
@@ -719,6 +774,7 @@ components:
     Released:
       value:
         observed_at: "2026-11-27T10:15:02Z"
+        affinity: "on"
         released: true
         conversation: not-bound
         was: { provider: claude, kind: apikey, priority: 5, host: api.anthropic.com, account: "a.f6zq3m2hx7kd4vwn5tyb" }
@@ -728,6 +784,27 @@ components:
     NothingBound:
       value:
         observed_at: "2026-11-27T10:15:02Z"
+        affinity: "on"
+        released: false
+        conversation: not-bound
+        was: null
+        next: []
+        websocket_may_hold: false
+    ReleaseNotSeen:
+      summary: Another key's conversation, one that does not exist, or the first minutes after a restart
+      value:
+        observed_at: "2026-11-27T10:15:02Z"
+        affinity: "on"
+        released: false
+        conversation: not-seen
+        was: null
+        next: []
+        websocket_may_hold: false
+    ReleaseAffinityOff:
+      summary: routing.session-affinity is false; nothing is ever bound
+      value:
+        observed_at: "2026-11-27T10:15:02Z"
+        affinity: "off"
         released: false
         conversation: not-bound
         was: null
