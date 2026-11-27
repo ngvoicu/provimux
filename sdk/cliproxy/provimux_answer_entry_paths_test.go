@@ -38,7 +38,7 @@ var sentExecutorCoverage = map[string]string{
 	"NewClaudeExecutor":             "claude",
 	"NewCodexExecutor":              "codex",
 	"NewCodexAutoExecutor":          "codex",
-	"NewCodexWebsocketsExecutor":    "none: the upstream WebSocket, a websocket.Dialer no decorator sees (W6s); TestProvimuxAnswerEntryUpstreamWebsocketHasNone",
+	"NewCodexWebsocketsExecutor":    "none: the upstream WebSocket, a websocket.Dialer no decorator sees; TestProvimuxAnswerEntryOnTheResponsesWebsocket",
 	"NewCopilotExecutor":            "copilot",
 	"NewDevinExecutor":              "devin",
 	"NewGeminiExecutor":             "gemini",
@@ -204,10 +204,11 @@ func TestProvimuxAnswerEntryTheRequestDecides(t *testing.T) {
 	}
 }
 
-// An answer over an upstream WebSocket (a Codex login with websockets on, a client on the Responses WebSocket) names
-// its account and no entry: no transport sees what was sent there. The same turn over HTTP names its entry, as fields
-// of response.created.
-func TestProvimuxAnswerEntryUpstreamWebsocketHasNone(t *testing.T) {
+// A client on the Responses WebSocket, with two Codex logins. One without websockets (the default): the gateway sends
+// the turn to the vendor over HTTP, and response.created carries the account, the model and the entry. One with
+// websockets: true: the gateway sends the turn upstream over a WebSocket, which no transport sees, and response.created
+// carries the account and no entry.
+func TestProvimuxAnswerEntryOnTheResponsesWebsocket(t *testing.T) {
 	// The gateway's logs away from the harness's directory: a WebSocket session being torn down after the test may
 	// still capture a request body there, which would race the directory's removal. Removed last, whatever is left.
 	logs, errLogs := os.MkdirTemp("", "provimux-test-ws-logs-")
@@ -322,8 +323,8 @@ func TestProvimuxAnswerEntryUpstreamWebsocketHasNone(t *testing.T) {
 	if _, ok := fields[logging.ProvimuxEffortField]; ok {
 		t.Fatalf("the turn over HTTP carries an effort: %v", fields)
 	}
-	// W6b: a WebSocket turn reaches the record with the name it asked for: the upstream WebSocket's answer as one
-	// that named no entry, the HTTP one with its entry.
+	// A WebSocket turn reaches the record with the name it asked for: the upstream WebSocket's answer as one that
+	// named no entry, the HTTP one with its entry.
 	// The record is written after the frame is: wait for the note, never for a fixed time.
 	overSocketItems := func() []coreauth.ProvimuxAnsweredItem {
 		return coreauth.ProvimuxAnswered(coreauth.ProvimuxClientRef(sentClientKey), overSocket.ID, overSocket.ProvimuxAccountMarker(), "provimux-test-codex-ws")

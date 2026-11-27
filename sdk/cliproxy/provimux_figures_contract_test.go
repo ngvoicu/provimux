@@ -14,6 +14,7 @@ import (
 
 	moejson "github.com/MoeForge/moego/json"
 	"github.com/MoeForge/moego/regexp"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/provimux/modellists/pdentries"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
@@ -301,7 +302,13 @@ type figuresGateway struct {
 
 func newFiguresGateway(t *testing.T) *figuresGateway {
 	t.Helper()
-	h := newSentHarness(t, figuresContractConfig)
+	return newFiguresGatewayWith(t, figuresContractConfig)
+}
+
+// newFiguresGatewayWith is newFiguresGateway on a config of the test's own.
+func newFiguresGatewayWith(t *testing.T, configBody string) *figuresGateway {
+	t.Helper()
+	h := newSentHarness(t, configBody)
 	clock := newSentClock()
 	useAnsweredBook(t, clock)
 	provimuxFiguresReset(t)
@@ -787,5 +794,64 @@ func TestProvimuxFiguresPerCaller(t *testing.T) {
 	status := g.status("", "")
 	if got := strings.Join(figuresKeys(status.Figures.Entries), ","); got != "anthropic/provimux-test-claude-other,anthropic/provimux-test-claude-sent" {
 		t.Fatalf("the operator's path: %s, want both callers' entries", got)
+	}
+}
+
+// One name served by two Claude keys under different upstream models. The first request is refused (429) and the
+// answer comes from the second: its entry reaches the caller's row of the account that answered, under the name
+// called, and so the list's figures.
+func TestProvimuxFiguresAfterAFailoverUnderOneName(t *testing.T) {
+	g := newFiguresGatewayWith(t, `api-keys:
+  claude:
+    - name: provimux-test-claude-first
+      models:
+        - name: provimux-test-claude-sent
+          alias: provimux-test-shared
+      keys:
+        - api-key: sk-provimux-test-claude-first
+    - name: provimux-test-claude-second
+      models:
+        - name: provimux-test-claude-other
+          alias: provimux-test-shared
+      keys:
+        - api-key: sk-provimux-test-claude-second
+models:
+  answered-by: true
+  published-lists: true
+`)
+	g.hold()
+	g.stand.mu.Lock()
+	g.stand.refusal = `{"type":"error","error":{"type":"rate_limit_error","message":"provimux-test rate limit"}}`
+	g.stand.status = func(_ *http.Request, n int) (int, http.Header) {
+		if n == 0 {
+			return http.StatusTooManyRequests, nil
+		}
+		return 0, nil
+	}
+	g.stand.mu.Unlock()
+	answer := g.post("/v1/chat/completions", chatBody("provimux-test-shared", false, ""), nil)
+	received := g.stand.all()
+	if answer.status != http.StatusOK || len(received) != 2 || received[0].Model == received[1].Model {
+		t.Fatalf("fixture: the gateway answered %d; the stand-in received %+v", answer.status, received)
+	}
+	entry := "anthropic/" + received[1].Model
+	if got := answer.get(logging.ProvimuxEntryHeader); got != entry {
+		t.Fatalf("X-Provimux-Entry %q, want %q", got, entry)
+	}
+	marker := answer.get(logging.ProvimuxAccountHeader)
+	waitAnswered(t, func() bool {
+		var listed figuresListed
+		_ = moejson.Unmarshal(g.get("/v1/models?include=figures", sentClientKey), &listed)
+		return len(figuresItems(listed.row("provimux-test-shared", marker))) > 0
+	})
+	var listed figuresListed
+	if err := moejson.Unmarshal(g.get("/v1/models?include=figures", sentClientKey), &listed); err != nil {
+		t.Fatal(err)
+	}
+	if got := figuresItems(listed.row("provimux-test-shared", marker)); strings.Join(got, ",") != entry {
+		t.Fatalf("the answering account's row %v, want [%s]", got, entry)
+	}
+	if listed.Figures == nil || strings.Join(figuresKeys(listed.Figures.Entries), ",") != entry {
+		t.Fatalf("figures %+v, want [%s]", listed.Figures, entry)
 	}
 }
