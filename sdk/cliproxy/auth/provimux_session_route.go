@@ -8,7 +8,6 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"net/http"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -33,19 +32,6 @@ const provimuxSessionBookLimit = 4096
 
 // provimuxSessionScopeLimit is the number of client keys (caller scopes) kept per conversation.
 const provimuxSessionScopeLimit = 4
-
-// provimuxColdMargin is the margin past a cache's lifetime after which it is taken as cold (session-route.md 5 b).
-const provimuxColdMargin = 60 * time.Second
-
-// provimuxSessionLifetime is the cache lifetime the show gives: the setting's default hour. The lifetime evidence of
-// the design's section 6.2 is not in this release.
-const provimuxSessionLifetime = 3600
-
-// provimuxBindingToken is the form of a binding token: "b." and 16 lower-case base32 characters.
-var provimuxBindingToken = regexp.MustCompile(`^b\.[a-z2-7]{16}$`)
-
-// ProvimuxValidBindingToken reports whether token has the form of a binding token.
-func ProvimuxValidBindingToken(token string) bool { return provimuxBindingToken.MatchString(token) }
 
 // provimuxSessionRouteClock is the clock of session-route: the book's times, the show's "now" and the availability it
 // judges. Tests set it (SetProvimuxSessionRouteClockForTest); nothing here sleeps or waits for it.
@@ -176,20 +162,11 @@ type ProvimuxSessionPosition struct {
 	HigherPriorityFreeAt *string `json:"higher_priority_free_at"`
 }
 
-// ProvimuxSessionCache is SessionRoute.cache.
-type ProvimuxSessionCache struct {
-	LifetimeS int64   `json:"lifetime_s"`
-	Basis     string  `json:"basis"`
-	Entry     *string `json:"entry"`
-	LastUseAt string  `json:"last_use_at"`
-	Cold      bool    `json:"cold"`
-	ColdAt    string  `json:"cold_at"`
-}
-
-// ProvimuxSessionRule is SessionRoute.rule. The rule is not in this release: never in effect, every binding stays.
+// ProvimuxSessionRule is SessionRoute.rule (design section 15): whether the rule runs, and the operator's time. The
+// rule is not in this release: never in effect, no time.
 type ProvimuxSessionRule struct {
-	InEffect bool   `json:"in_effect"`
-	Will     string `json:"will"`
+	InEffect   bool     `json:"in_effect"`
+	ColdAfterS *float64 `json:"cold_after_s"`
 }
 
 // ProvimuxSessionRoute is the answer of POST /v1/provimux/session-route (SessionRoute in session-route/openapi.yaml).
@@ -203,7 +180,6 @@ type ProvimuxSessionRoute struct {
 	Bound            *ProvimuxSessionBound    `json:"bound"`
 	Position         *ProvimuxSessionPosition `json:"position"`
 	First            []ProvimuxRoute          `json:"first"`
-	Cache            *ProvimuxSessionCache    `json:"cache"`
 	Rule             ProvimuxSessionRule      `json:"rule"`
 	WebsocketMayHold bool                     `json:"websocket_may_hold"`
 	Subagent         bool                     `json:"subagent"`
@@ -248,6 +224,11 @@ type ProvimuxSessionBookEntry struct {
 	LastTouched time.Time // the last answer of any account for it
 	TTL         time.Duration
 	PruneAt     time.Time // from then on the entry leaves once upstream holds no binding for it
+	// Life numbers the binding the book holds now (design section 15.11): made at the answer after which the book
+	// first holds it, dropped at its removal by anyone the book can see (a release, a failure upstream removes it
+	// for, a new account or cache instance, the account registered again). 0: the book holds no binding of it.
+	Life      uint64
+	lifeCache weak.Pointer[SessionCache]
 }
 
 func (e *ProvimuxSessionBookEntry) owner() provimuxConversation {
@@ -277,8 +258,16 @@ func (e *ProvimuxSessionBookEntry) addScope(scope string) {
 	e.Scopes = append(e.Scopes, scope)
 }
 
+// clearBinding forgets the binding and its stretch: after a release, the next binding is a new conversation's.
 func (e *ProvimuxSessionBookEntry) clearBinding() {
 	e.Current, e.Since, e.Previous, e.PreviousAt, e.LastSuccess = "", time.Time{}, "", time.Time{}, time.Time{}
+	e.endLife()
+}
+
+// endLife ends the binding's life only: which account answered, and since when, stays history (a fallback that
+// follows is still shown as one).
+func (e *ProvimuxSessionBookEntry) endLife() {
+	e.Life, e.lifeCache = 0, weak.Pointer[SessionCache]{}
 }
 
 // ProvimuxSessionBook is the book of one manager. It observes the manager's results through AddHook while
@@ -294,10 +283,7 @@ type ProvimuxSessionBook struct {
 	salt        [32]byte
 	unsubscribe func()
 	subscribed  atomic.Bool
-
-	cacheMu    sync.Mutex
-	cacheSeen  weak.Pointer[SessionCache]
-	cacheCount uint64
+	lives       uint64 // the last life number given; under mu
 
 	releasedByClient atomic.Int64
 }
@@ -363,11 +349,12 @@ func (b *ProvimuxSessionBook) ReleasedByClient() int64 {
 	return b.releasedByClient.Load()
 }
 
-// OnResult notes a successful answer: the caller scope that used the conversation, and, when upstream's cache holds
-// the result's key bound to the account that answered, that account (session-route.md 3). A result whose key the
-// cache does not hold for its account (an answer in flight at a release, a transient failover that kept the binding,
-// a stale result) notes the caller only, never a binding. Where session affinity does not run, the book stops
-// observing and forgets what it held: nothing is kept there.
+// OnResult notes an answer (session-route.md 3). A successful one: the caller scope that used the conversation, and,
+// when upstream's cache holds the result's key bound to the account that answered, for that session, that account;
+// a binding the book did not hold before starts a life. A result whose key the cache does not hold for its account
+// (an answer in flight at a release, a transient failover that kept the binding, a stale result) notes the caller
+// only, never a binding. A failed one for which upstream removes the binding right after the hooks ends that
+// binding's life. Where session affinity does not run, the book stops observing and forgets what it held.
 func (b *ProvimuxSessionBook) OnResult(_ context.Context, res Result) {
 	if b == nil {
 		return
@@ -377,15 +364,26 @@ func (b *ProvimuxSessionBook) OnResult(_ context.Context, res Result) {
 		b.Unsubscribe()
 		return
 	}
-	if !res.Success || res.AuthID == "" {
+	if res.AuthID == "" {
 		return
 	}
 	key, ok := provimuxSeamResultKey(res)
 	if !ok {
 		return
 	}
+	owner := provimuxConversation{Provider: key.Provider, Session: key.Session, ModelKey: key.ModelKey}
 	binding, bound := provimuxSeamLookup(affinity, key.Key)
 	holds := bound && binding.AuthID == res.AuthID && binding.Session == key.Session
+	if !res.Success {
+		if holds && provimuxSeamFailureRemoves(affinity, res) {
+			b.mu.Lock()
+			if entry := b.entries[owner]; entry != nil && entry.Current == res.AuthID {
+				entry.endLife()
+			}
+			b.mu.Unlock()
+		}
+		return
+	}
 	scope := ""
 	if res.Options.Metadata != nil {
 		scope, _ = res.Options.Metadata[cliproxyexecutor.CallerScopeMetadataKey].(string)
@@ -400,7 +398,6 @@ func (b *ProvimuxSessionBook) OnResult(_ context.Context, res Result) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.pruneLocked(affinity, now)
-	owner := provimuxConversation{Provider: key.Provider, Session: key.Session, ModelKey: key.ModelKey}
 	entry := b.entries[owner]
 	if entry == nil {
 		b.evictLocked()
@@ -429,14 +426,44 @@ func (b *ProvimuxSessionBook) OnResult(_ context.Context, res Result) {
 	switch {
 	case entry.Current == "":
 		entry.Current, entry.Since, entry.Previous, entry.PreviousAt = res.AuthID, now, "", time.Time{}
-	case !entry.LastSuccess.IsZero() && !now.Before(entry.LastSuccess.Add(ttl)):
-		// The binding expired between the two answers: a new stretch, whatever account it is now.
-		entry.Current, entry.Since, entry.Previous, entry.PreviousAt = res.AuthID, now, "", time.Time{}
+		b.newLifeLocked(entry, binding.Cache)
 	case entry.Current != res.AuthID:
 		entry.Previous, entry.PreviousAt = entry.Current, now
 		entry.Current, entry.Since = res.AuthID, now
+		b.newLifeLocked(entry, binding.Cache)
+	case entry.Life == 0 || entry.lifeCache.Value() != binding.Cache:
+		// Removed (by upstream, or by a new cache when the routing settings changed) and made again on the same
+		// account: another life.
+		entry.Since, entry.Previous, entry.PreviousAt = now, "", time.Time{}
+		b.newLifeLocked(entry, binding.Cache)
+	case !entry.LastSuccess.IsZero() && !now.Before(entry.LastSuccess.Add(ttl)):
+		// The binding ended by its own lifetime and was made again on the same account: a new stretch for since,
+		// the same life for expect (design section 15.11).
+		entry.Since, entry.Previous, entry.PreviousAt = now, "", time.Time{}
 	}
 	entry.LastSuccess = now
+}
+
+// newLifeLocked gives entry a new life number, in cache.
+func (b *ProvimuxSessionBook) newLifeLocked(entry *ProvimuxSessionBookEntry, cache *SessionCache) {
+	b.lives++
+	entry.Life = b.lives
+	entry.lifeCache = weak.Make(cache)
+}
+
+// OnAuthRegistered ends the life of every binding the book holds on an account registered again: upstream drops the
+// bindings of a removed account (Manager.Remove, InvalidateAuth), and one made after the account came back is another.
+func (b *ProvimuxSessionBook) OnAuthRegistered(_ context.Context, auth *Auth) {
+	if b == nil || auth == nil || auth.ID == "" {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, entry := range b.entries {
+		if entry.Current == auth.ID {
+			entry.endLife()
+		}
+	}
 }
 
 // pruneLocked drops the entries whose binding expired: once their time is past (their last answer plus the cache's
@@ -575,35 +602,29 @@ func (b *ProvimuxSessionBook) resolve(scope string, headers http.Header, body []
 	return r
 }
 
-// cacheEpoch numbers the cache instances the book has met: a new selector (the routing settings changed) has a new
-// cache whose selection order starts again, so a token names the instance too.
-func (b *ProvimuxSessionBook) cacheEpoch(cache *SessionCache) uint64 {
-	b.cacheMu.Lock()
-	defer b.cacheMu.Unlock()
-	if b.cacheSeen.Value() != cache {
-		b.cacheSeen = weak.Make(cache)
-		b.cacheCount++
-	}
-	return b.cacheCount
-}
-
-// bindingToken is the token for expect: it stands for exactly this binding of this conversation, as the selection
-// that made or last chose it left it (upstream's sequence: a new one at every selection, at a release and a new
-// binding alike), on this account, in this cache instance.
-func (b *ProvimuxSessionBook) bindingToken(owner provimuxConversation, binding provimuxSeamBinding) string {
+// lifeToken is the token for expect: it names one life of one conversation's binding (design section 15.11), and
+// nothing else: not the account, not upstream's sequence.
+func (b *ProvimuxSessionBook) lifeToken(owner provimuxConversation, life uint64) string {
 	h := sha256.New()
 	h.Write(b.salt[:])
 	var number [8]byte
-	binary.BigEndian.PutUint64(number[:], b.cacheEpoch(binding.Cache))
+	binary.BigEndian.PutUint64(number[:], life)
 	h.Write(number[:])
-	binary.BigEndian.PutUint64(number[:], binding.Sequence)
-	h.Write(number[:])
-	for _, part := range []string{owner.Provider, owner.Session, owner.ModelKey, binding.AuthID} {
+	for _, part := range []string{owner.Provider, owner.Session, owner.ModelKey} {
 		binary.BigEndian.PutUint64(number[:], uint64(len(part)))
 		h.Write(number[:])
 		h.Write([]byte(part))
 	}
 	return "b." + strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(h.Sum(nil)))[:16]
+}
+
+// heldLife is the life the book holds for the binding found, or 0 where the book does not hold it (no answer seen on
+// it yet).
+func heldLife(entry ProvimuxSessionBookEntry, binding provimuxSeamBinding) uint64 {
+	if entry.Life == 0 || entry.Current != binding.AuthID || entry.lifeCache.Value() != binding.Cache {
+		return 0
+	}
+	return entry.Life
 }
 
 // ProvimuxSessionModelName is the name as the answers give it: the name, without a thinking suffix.
@@ -658,7 +679,7 @@ func (b *ProvimuxSessionBook) show(r provimuxResolved, asked, routed string, now
 		Model:        ProvimuxSessionModelName(asked),
 		RoutedModel:  provimuxRoutedName(asked, routed),
 		First:        []ProvimuxRoute{},
-		Rule:         ProvimuxSessionRule{InEffect: false, Will: "stay"},
+		Rule:         ProvimuxSessionRule{InEffect: false, ColdAfterS: nil},
 	}
 	if r.mode != provimuxAffinityOn {
 		out.Conversation = "not-bound"
@@ -676,8 +697,10 @@ func (b *ProvimuxSessionBook) show(r provimuxResolved, asked, routed string, now
 	m := b.Manager()
 	name := ProvimuxSessionModelName(r.entry.RouteModel)
 	out.Conversation = "bound"
-	token := b.bindingToken(r.entry.owner(), r.binding)
-	out.Binding = &token
+	if life := heldLife(r.entry, r.binding); life != 0 {
+		token := b.lifeToken(r.entry.owner(), life)
+		out.Binding = &token
+	}
 
 	route := provimuxRouteOf(r.auth, name)
 	bound := &ProvimuxSessionBound{Route: route, Origin: "not-known"}
@@ -700,14 +723,6 @@ func (b *ProvimuxSessionBook) show(r provimuxResolved, asked, routed string, now
 		position := b.position(r, name, now)
 		out.Position = &position
 	}
-
-	lastUse := r.binding.ExpiresAt.Add(-r.binding.TTL)
-	if r.entry.Current == r.binding.AuthID && r.entry.LastSuccess.After(lastUse) {
-		lastUse = r.entry.LastSuccess
-	}
-	coldAt := lastUse.Add(provimuxSessionLifetime*time.Second + provimuxColdMargin)
-	out.Cache = &ProvimuxSessionCache{LifetimeS: provimuxSessionLifetime, Basis: "setting", Entry: nil,
-		LastUseAt: provimuxTime(lastUse), Cold: now.After(coldAt), ColdAt: provimuxTime(coldAt)}
 	return out
 }
 
@@ -753,63 +768,79 @@ func (b *ProvimuxSessionBook) Release(scope string, headers http.Header, body []
 	return b.ReleaseRouted(scope, headers, body, model, model, expect)
 }
 
-// ReleaseRouted answers POST /v1/provimux/session-route/release for a client key's caller scope. With expect (a
-// well-formed token: the handler refuses any other), it releases only the exact binding the token stands for: the
-// token is computed again from the binding as it is under the cache's write lock and compared there, so a binding
-// released and made again, even on the same account, is not removed by an older token; the answer is then the state
-// now (conflict, 409). It removes the binding and every alias of it from upstream's cache, and nothing else.
+// ReleaseRouted answers POST /v1/provimux/session-route/release for a client key's caller scope. Without expect it
+// removes whatever is bound for the conversation. With expect (any non-empty string: the handler refuses an empty
+// one), it removes the binding only while the life the token names lasts (design section 15.11): the life is checked
+// and the binding removed under the book's lock, in that order, so no answer can start a new life between them;
+// otherwise nothing is removed and conflict is the state now (409). A binding that is gone answers released: false.
+// It removes the binding and every alias of it from upstream's cache, and nothing else.
 func (b *ProvimuxSessionBook) ReleaseRouted(scope string, headers http.Header, body []byte, asked, routed, expect string) (ProvimuxSessionRelease, *ProvimuxSessionRoute) {
-	expect = strings.TrimSpace(expect)
-	for attempt := 0; ; attempt++ {
-		r := b.resolve(scope, headers, body, routed)
-		now := provimuxSessionRouteNow()
-		out := ProvimuxSessionRelease{ObservedAt: provimuxTime(now), Affinity: r.mode, Conversation: "not-bound",
-			Model: ProvimuxSessionModelName(asked), RoutedModel: provimuxRoutedName(asked, routed), Next: []ProvimuxRoute{}}
-		if r.mode != provimuxAffinityOn {
-			return out, nil
-		}
-		if !r.seen {
-			out.Conversation = "not-seen"
-			return out, nil
-		}
-		out.WebsocketMayHold = r.entry.Socket || r.clientType == "codex"
-		if !r.bound {
-			return out, nil
-		}
-		owner := r.entry.owner()
-		judged := r.binding
-		still := func(now provimuxSeamBinding) bool {
-			if now.Session != owner.Session {
-				return false
-			}
-			if expect != "" {
-				return b.bindingToken(owner, now) == expect
-			}
-			return now.AuthID == judged.AuthID
-		}
-		if !provimuxSeamRelease(r.affinity, r.entry.Key, still) {
-			if expect != "" {
-				again := b.resolve(scope, headers, body, routed)
-				state := b.show(again, asked, routed, provimuxSessionRouteNow())
-				return ProvimuxSessionRelease{}, &state
-			}
-			if attempt >= 2 {
-				return out, nil
-			}
-			continue
-		}
-		b.mu.Lock()
-		if entry := b.entries[owner]; entry != nil {
-			entry.clearBinding()
-		}
-		b.mu.Unlock()
-		b.releasedByClient.Add(1)
-		name := ProvimuxSessionModelName(r.entry.RouteModel)
-		was := provimuxRouteOf(r.auth, name)
-		_, available := provimuxSeamRoutes(b.Manager(), r.entry.Provider, r.entry.RouteModel, now)
-		out.Released = true
-		out.Was = &was
-		out.Next = provimuxRoutesOf(provimuxSeamHighest(available), name)
+	r := b.resolve(scope, headers, body, routed)
+	now := provimuxSessionRouteNow()
+	out := ProvimuxSessionRelease{ObservedAt: provimuxTime(now), Affinity: r.mode, Conversation: "not-bound",
+		Model: ProvimuxSessionModelName(asked), RoutedModel: provimuxRoutedName(asked, routed), Next: []ProvimuxRoute{}}
+	if r.mode != provimuxAffinityOn {
 		return out, nil
 	}
+	if !r.seen {
+		out.Conversation = "not-seen"
+		return out, nil
+	}
+	out.WebsocketMayHold = r.entry.Socket || r.clientType == "codex"
+	if !r.bound {
+		return out, nil
+	}
+	if hook := provimuxSeamBeforeRemove; hook != nil {
+		hook()
+	}
+	owner := r.entry.owner()
+	var removedAuth string
+	conflict := false
+	b.mu.Lock()
+	entry := b.entries[owner]
+	if expect != "" {
+		if entry == nil || entry.Life == 0 || b.lifeToken(owner, entry.Life) != expect {
+			conflict = true
+		}
+	}
+	if !conflict && entry != nil {
+		held, heldCache := entry.Current, entry.lifeCache.Value()
+		still := func(binding provimuxSeamBinding) bool {
+			if binding.Session != owner.Session {
+				return false
+			}
+			if expect != "" && (binding.AuthID != held || binding.Cache != heldCache) {
+				return false
+			}
+			removedAuth = binding.AuthID
+			return true
+		}
+		if provimuxSeamRelease(r.affinity, entry.Key, still) {
+			entry.clearBinding()
+		} else if expect != "" {
+			if _, present := provimuxSeamLookup(r.affinity, entry.Key); present {
+				conflict = true // bound now, but not in the life the token names
+			}
+		}
+	}
+	b.mu.Unlock()
+	if conflict {
+		state := b.show(b.resolve(scope, headers, body, routed), asked, routed, provimuxSessionRouteNow())
+		return ProvimuxSessionRelease{}, &state
+	}
+	if removedAuth == "" {
+		return out, nil
+	}
+	b.releasedByClient.Add(1)
+	m := b.Manager()
+	name := ProvimuxSessionModelName(r.entry.RouteModel)
+	was := ProvimuxRoute{Unlisted: true}
+	if auth, ok := m.GetByID(removedAuth); ok {
+		was = provimuxRouteOf(auth, name)
+	}
+	_, available := provimuxSeamRoutes(m, r.entry.Provider, r.entry.RouteModel, now)
+	out.Released = true
+	out.Was = &was
+	out.Next = provimuxRoutesOf(provimuxSeamHighest(available), name)
+	return out, nil
 }

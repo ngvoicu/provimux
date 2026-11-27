@@ -525,8 +525,8 @@ func TestProvimuxSessionRouteHigherPriorityFreeAt(t *testing.T) {
 }
 
 // TestProvimuxSessionRouteShowsFallback: a conversation that fell over from the higher account to the lower one is
-// shown as such, with the route it fell from and when, on the clock the test sets; the cache's last use and coldness
-// follow the binding's own expiry, read from the entry upstream made.
+// shown as such, with the route it fell from and when, on the clock the test sets. The show gives no cache (the object
+// is withdrawn, design section 15) and the rule as not in effect, with no time.
 func TestProvimuxSessionRouteShowsFallback(t *testing.T) {
 	fail := make(chan struct{}, 1)
 	call := func(_ context.Context, auth *Auth, _ cliproxyexecutor.Request) error {
@@ -557,28 +557,15 @@ func TestProvimuxSessionRouteShowsFallback(t *testing.T) {
 	if authID, _ := f.binding(key); authID != f.low {
 		t.Fatalf("after the failover the binding is %q, want %q", authID, f.low)
 	}
-	binding, _ := provimuxSeamLookup(f.affinity, key)
-	lastUse := binding.ExpiresAt.Add(-binding.TTL)
-	if want := base.Add(10 * time.Minute); want.After(lastUse) {
-		lastUse = want
-	}
-	coldAt := lastUse.Add(time.Hour + time.Minute)
-
-	SetProvimuxSessionRouteClockForTest(func() time.Time { return coldAt.Add(-time.Second) })
+	SetProvimuxSessionRouteClockForTest(func() time.Time { return base.Add(20 * time.Minute) })
 	show := f.book.Show(scope, header, nil, provimuxSRModel)
 	if show.Bound == nil || show.Bound.Origin != "fallback" || show.Bound.FellBackFrom == nil || show.Bound.FellBackFrom.Priority != 10 ||
 		show.Bound.Since == nil || *show.Bound.Since != provimuxTime(base.Add(10*time.Minute)) || show.Bound.FellBackAt == nil || *show.Bound.FellBackAt != *show.Bound.Since {
 		t.Fatalf("fell back: %s", mustJSON(t, show))
 	}
-	if show.Cache == nil || show.Cache.Cold || show.Cache.Basis != "setting" || show.Cache.LifetimeS != 3600 || show.Cache.ColdAt != provimuxTime(coldAt) || show.Cache.LastUseAt != provimuxTime(lastUse) {
-		t.Fatalf("cache one second before cold: %s (last use %s)", mustJSON(t, show.Cache), provimuxTime(lastUse))
-	}
-	SetProvimuxSessionRouteClockForTest(func() time.Time { return coldAt.Add(time.Second) })
-	if show = f.book.Show(scope, header, nil, provimuxSRModel); show.Cache == nil || !show.Cache.Cold {
-		t.Fatalf("cache one second after cold: %s", mustJSON(t, show.Cache))
-	}
-	if show.Rule.InEffect || show.Rule.Will != "stay" {
-		t.Fatalf("the rule is G2's; until then: %s", mustJSON(t, show.Rule))
+	raw := mustJSON(t, show)
+	if strings.Contains(raw, `"cache"`) || !strings.Contains(raw, `"rule":{"in_effect":false,"cold_after_s":null}`) {
+		t.Fatalf("cache or rule: %s", raw)
 	}
 }
 
@@ -627,10 +614,9 @@ func TestProvimuxSessionRouteStrict(t *testing.T) {
 	}
 }
 
-// TestProvimuxSessionRouteExpect: the token stands for exactly this binding: the selection that made or last chose it,
-// on this account. A show twice with nothing in between gives one token; a turn is a new selection, so it gives
-// another, and the older token is refused (409) and releases nothing; so is a token of a binding released and made
-// again. The current token releases.
+// TestProvimuxSessionRouteExpect: the token names one life of the binding (design section 15.11): the same through
+// shows and turns on that binding; released and made again, even on the same account, another, and the older token is
+// refused (409) and releases nothing. The current token releases.
 func TestProvimuxSessionRouteExpect(t *testing.T) {
 	f := newProvimuxSRFixture(t, "round-robin", false, nil)
 	clock := time.Now()
@@ -642,21 +628,14 @@ func TestProvimuxSessionRouteExpect(t *testing.T) {
 		t.Fatal(err)
 	}
 	first := *f.book.Show(scope, header, nil, provimuxSRModel).Binding
-	if again := *f.book.Show(scope, header, nil, provimuxSRModel).Binding; again != first {
-		t.Fatalf("two shows with nothing in between gave two tokens: %s, %s", first, again)
-	}
 	clock = clock.Add(time.Minute)
 	SetProvimuxSessionRouteClockForTest(func() time.Time { return clock })
 	if err := f.turn(header, "", scope, nil); err != nil {
 		t.Fatal(err)
 	}
 	key := f.book.Entries()[0].Key
-	afterTurn := *f.book.Show(scope, header, nil, provimuxSRModel).Binding
-	if afterTurn == first {
-		t.Fatal("a turn (a new selection) kept the token")
-	}
-	if released, conflict := f.book.Release(scope, header, nil, provimuxSRModel, first); conflict == nil || released.Released {
-		t.Fatalf("token from before the turn: release %s conflict %s", mustJSON(t, released), mustJSON(t, conflict))
+	if again := *f.book.Show(scope, header, nil, provimuxSRModel).Binding; again != first {
+		t.Fatalf("a turn on the same binding changed its token: %s -> %s", first, again)
 	}
 	if released, _ := f.book.Release(scope, header, nil, provimuxSRModel, ""); !released.Released {
 		t.Fatal("release")
@@ -666,15 +645,94 @@ func TestProvimuxSessionRouteExpect(t *testing.T) {
 	if err := f.turn(header, "", scope, nil); err != nil {
 		t.Fatal(err)
 	}
-	released, conflict := f.book.Release(scope, header, nil, provimuxSRModel, afterTurn)
+	released, conflict := f.book.Release(scope, header, nil, provimuxSRModel, first)
 	if conflict == nil || conflict.Conversation != "bound" || released.Released {
 		t.Fatalf("stale token: release %s conflict %s", mustJSON(t, released), mustJSON(t, conflict))
 	}
 	if _, ok := f.binding(key); !ok {
 		t.Fatal("a refused release removed the binding")
 	}
+	for _, other := range []string{" ", "b.x", "not a token"} {
+		if released, conflict := f.book.Release(scope, header, nil, provimuxSRModel, other); conflict == nil || released.Released {
+			t.Fatalf("expect %q: release %s conflict %s", other, mustJSON(t, released), mustJSON(t, conflict))
+		}
+	}
 	if released, conflict = f.book.Release(scope, header, nil, provimuxSRModel, *conflict.Binding); conflict != nil || !released.Released {
 		t.Fatalf("release with the current token: %s %s", mustJSON(t, released), mustJSON(t, conflict))
+	}
+}
+
+// TestProvimuxSessionRouteExpectAcrossExpiry is decision E5 (design section 15.11): a binding that ended by its own
+// lifetime and was made again on the same account is the same life, so the older token still releases it.
+func TestProvimuxSessionRouteExpectAcrossExpiry(t *testing.T) {
+	f := newProvimuxSRFixture(t, "round-robin", false, nil)
+	scope := provimuxSRScope("sk-client-one")
+	header := http.Header{"X-Session-Affinity": {"expiry-0001"}}
+	if err := f.turn(header, "", scope, nil); err != nil {
+		t.Fatal(err)
+	}
+	key := f.book.Entries()[0].Key
+	token := *f.book.Show(scope, header, nil, provimuxSRModel).Binding
+	// The binding's own lifetime ends: upstream's entry is past its expiry (as after its TTL).
+	f.affinity.cache.mu.Lock()
+	entry := f.affinity.cache.entries[key]
+	for _, alias := range entry.aliases {
+		expired := f.affinity.cache.entries[alias]
+		expired.expiresAt = time.Now().Add(-time.Second)
+		f.affinity.cache.entries[alias] = expired
+	}
+	f.affinity.cache.mu.Unlock()
+	if _, ok := f.binding(key); ok {
+		t.Fatal("the binding did not end")
+	}
+	if err := f.turn(header, "", scope, nil); err != nil {
+		t.Fatal(err)
+	}
+	if authID, _ := f.binding(key); authID != f.high {
+		t.Fatalf("made again on %q, want the same account %q", authID, f.high)
+	}
+	if released, conflict := f.book.Release(scope, header, nil, provimuxSRModel, token); conflict != nil || !released.Released {
+		t.Fatalf("the older token across an expiry: release %s conflict %s", mustJSON(t, released), mustJSON(t, conflict))
+	}
+}
+
+// TestProvimuxSessionRouteExpectAfterUpstreamRemoval: a binding upstream removed (a failure of its account) and made
+// again on the same account is another life: the older token is refused.
+func TestProvimuxSessionRouteExpectAfterUpstreamRemoval(t *testing.T) {
+	fail := make(chan struct{}, 1)
+	call := func(_ context.Context, auth *Auth, _ cliproxyexecutor.Request) error {
+		if strings.Contains(auth.ID, "low") {
+			select {
+			case <-fail:
+				return &Error{HTTPStatus: http.StatusTooManyRequests, Message: "quota"}
+			default:
+			}
+		}
+		return nil
+	}
+	f := newProvimuxSRFixture(t, "round-robin", false, call)
+	scope := provimuxSRScope("sk-client-one")
+	header := http.Header{"X-Session-Affinity": {"removed-0001"}}
+	f.coolHigh(30 * time.Minute)
+	if err := f.turn(header, "", scope, nil); err != nil {
+		t.Fatal(err)
+	}
+	key := f.book.Entries()[0].Key
+	token := *f.book.Show(scope, header, nil, provimuxSRModel).Binding
+	fail <- struct{}{}
+	_ = f.turn(header, "", scope, nil) // low fails; upstream removes the binding; nothing else may answer
+	if _, ok := f.binding(key); ok {
+		t.Fatal("upstream kept the binding of the failed login")
+	}
+	expireSessionAffinityPriorityModelCooldown(t, f.m, f.low, provimuxSRModel)
+	if err := f.turn(header, "", scope, nil); err != nil {
+		t.Fatal(err)
+	}
+	if authID, _ := f.binding(key); authID != f.low {
+		t.Fatalf("made again on %q, want %q", authID, f.low)
+	}
+	if released, conflict := f.book.Release(scope, header, nil, provimuxSRModel, token); conflict == nil || released.Released {
+		t.Fatalf("the older token after upstream's removal: release %s conflict %s", mustJSON(t, released), mustJSON(t, conflict))
 	}
 }
 
@@ -739,7 +797,7 @@ func TestProvimuxSessionRouteNotRunning(t *testing.T) {
 				t.Fatalf("book noted %+v", entries)
 			}
 			show := f.book.Show(scope, header, nil, provimuxSRModel)
-			if show.Affinity != mode || show.Conversation != "not-bound" || show.Binding != nil || show.Bound != nil || show.Position != nil || show.Cache != nil || len(show.First) != 0 || show.Rule.InEffect {
+			if show.Affinity != mode || show.Conversation != "not-bound" || show.Binding != nil || show.Bound != nil || show.Position != nil || len(show.First) != 0 || show.Rule.InEffect {
 				t.Fatalf("show: %s", mustJSON(t, show))
 			}
 			released, conflict := f.book.Release(scope, header, nil, provimuxSRModel, "b.aaaaaaaaaaaaaaaa")
