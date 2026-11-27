@@ -1411,7 +1411,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			executionSeq := m.nextExecutionSeq()
 			startExec := time.Now()
 			var preRefreshExecErr error
-			resp, errExec := executor.Execute(execCtx, auth, execReq, execOpts)
+			resp, errExec := provimuxSameAccountOnce(m, execCtx, auth, execOpts, syncActiveAuth, func() (cliproxyexecutor.Response, error) { return executor.Execute(execCtx, auth, execReq, execOpts) }, nil) // Provimux: once more after a passing fault
 			syncActiveAuth()
 			errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 			durationExec := time.Since(startExec)
