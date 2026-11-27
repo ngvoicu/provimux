@@ -229,7 +229,7 @@ func NewProvimuxSessionBook(m *Manager) *ProvimuxSessionBook {
 	b := &ProvimuxSessionBook{manager: m, entries: make(map[string]*ProvimuxSessionBookEntry)}
 	if _, errRand := rand.Read(b.salt[:]); errRand != nil {
 		// A binding token only needs to differ per binding; without randomness it still does.
-		copy(b.salt[:], strconv.FormatInt(time.Now().UnixNano(), 10))
+		b.salt = sha256.Sum256([]byte(strconv.FormatInt(time.Now().UnixNano(), 10)))
 	}
 	return b
 }
