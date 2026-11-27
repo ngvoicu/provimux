@@ -19,8 +19,8 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
-// Provimux: what each credential's answers said to each client key, on both lists (answered-by.md 4.4 and 8.4, step
-// W6b, as amended by the lead on 2026-11-27). Every key, login and id is invented; every time is on a clock the test
+// Provimux: what each credential's answers said to each client key, on both lists (answered-by.md 4.4 and 8.4).
+// Every key, login and id is invented; every time is on a clock the test
 // sets.
 
 // sentClock is a clock a test moves.
@@ -281,7 +281,7 @@ func TestProvimuxAnsweredEveryPathOfTheMatrix(t *testing.T) {
 	}
 }
 
-// 1. Finding 15's rule by header: one credential and one name, two models sent, two items, newest first; the first
+// 1. A payload rule by header: one credential and one name, two models sent, two items, newest first; the first
 // again moves first.
 func TestProvimuxAnsweredTwoEntriesNewestFirst(t *testing.T) {
 	const native, alternate = "provimux-test-native", "provimux-test-alternate"
@@ -433,7 +433,7 @@ func TestProvimuxAnsweredAnotherMarkerStartsEmpty(t *testing.T) {
 	h.wantAnswered(sentClientKey, "provimux-test-claude-file", taken.ProvimuxAccountMarker(), nil)
 }
 
-// Per client key (finding 30, the lead's decision of 2026-11-27): one key's answer is on that key's list and on the
+// Per client key: one key's answer is on that key's list and on the
 // management list, never on another key's; under "serve only my names" too. Callers without a key share a record of
 // their own.
 func TestProvimuxAnsweredPerClientKey(t *testing.T) {
@@ -456,8 +456,8 @@ func TestProvimuxAnsweredPerClientKey(t *testing.T) {
 	}
 }
 
-// 2. Off and in Home mode nothing is noted or read: the lists carry neither account nor answered (W2's goldens, in
-// test/provimux, hold them byte for byte), and what was noted while on stays out of them.
+// 2. Off and in Home mode nothing is noted or read: the lists carry neither account nor answered (the goldens in
+// test/provimux hold them byte for byte), and what was noted while on stays out of them.
 func TestProvimuxAnsweredOffAndHomeMode(t *testing.T) {
 	h := newSentHarness(t, answeredClaudeConfig)
 	clock := newSentClock()

@@ -126,9 +126,8 @@ func (followTeamAccess) Authenticate(_ context.Context, r *http.Request) (*acces
 	return nil, access.NewInvalidCredentialError()
 }
 
-// Finding 39, decided as intended (rule B.2 of the amendment of 2026-11-27 (2)): the record is per caller as the
+// The record is per caller as the
 // gateway authenticates it; an access provider of an embedding that maps two keys to one subject makes them one caller.
-// Ported: the test pins that decided behaviour; the reviewer asked for two records.
 func TestFollowTwoKeysSamePrincipal(t *testing.T) {
 	h := newSentHarness(t, reviewRouter)
 	useAnsweredBook(t, newSentClock())

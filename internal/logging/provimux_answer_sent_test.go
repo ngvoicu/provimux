@@ -10,10 +10,11 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// Provimux: what the attempt sent, on the wire (answered-by.md 3.2, step W6a): with a model read from the sent
-// request, the statement carries X-Provimux-Model, X-Provimux-Model-Basis (not-confirmed: the vendor's word is W5's)
-// and X-Provimux-Model-Sent, and the entry only with them; never without the marker; a value outside printable ASCII,
-// a space or "%" goes as "%" and two hex digits; X-Provimux-Effort is never written by this build. Ids are invented.
+// Provimux: what the attempt sent, on the wire (answered-by.md 3.2): with a model read from the sent request, the
+// statement carries X-Provimux-Model, X-Provimux-Model-Basis (not-confirmed: this build does not read the vendor's
+// word) and X-Provimux-Model-Sent, and the entry only with them; never without the marker; a value outside printable
+// ASCII, a space or "%" goes as "%" and two hex digits; X-Provimux-Effort is never written by this build. Ids are
+// invented.
 
 func TestProvimuxAnswerSentFields(t *testing.T) {
 	for _, tc := range []struct {

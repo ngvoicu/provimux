@@ -12,7 +12,7 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
-// Provimux: the standing rule (answered-by.md, part (5)). An executor that is not one of the gateway's own marks its
+// Provimux: the standing rule (answered-by.md). An executor that is not one of the gateway's own marks its
 // provider at the registration itself, before it is in place; the gateway's own, registered however often, never does;
 // the mark is never cleared; the log says so once per provider.
 

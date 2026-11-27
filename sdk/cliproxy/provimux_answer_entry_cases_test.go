@@ -20,14 +20,13 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
-// Provimux: the second review of F1 (FIG-02, findings 13 to 17), each on the wire against the stand-in
-// (answered-by.md 4.6). Each found an account row whose predicted entry named something other than what was sent.
-// Now each answer names the entry of what the stand-in received, or none; never the configuration's. Every key, login
-// and id is invented.
+// Provimux: five cases, each on the wire against the stand-in (answered-by.md 4.6), where an entry predicted from the
+// configuration would name something other than what was sent. Each answer names the entry of what the stand-in
+// received, or none; never the configuration's. Every key, login and id is invented.
 
-// Finding 13: one Vertex service account, one alias on the native route and one over OpenAPI; and a Vertex key on
+// One Vertex service account, one alias on the native route and one over OpenAPI; and a Vertex key on
 // openrouter.ai over OpenAPI. Each answer names the model where its route put it.
-func TestProvimuxFinding13VertexRoutesNameWhatWasSent(t *testing.T) {
+func TestProvimuxEntryVertexRoutesNameWhatWasSent(t *testing.T) {
 	h := newSentHarness(t, `api-keys:
   vertex:
     - name: provimux-test-vertex-router
@@ -87,12 +86,12 @@ func TestProvimuxFinding13VertexRoutesNameWhatWasSent(t *testing.T) {
 	}
 }
 
-// Finding 14: a plugin publishes a model for a Copilot account and sets the account's provider to meta in the same
+// A plugin publishes a model for a Copilot account and sets the account's provider to meta in the same
 // call. The native Meta executor sends it to api.meta.ai; the stand-in answers. The answer names its account and what
-// was sent, and no entry: the credential is one a plugin changed (step 3), and stays one after the account's own
+// was sent, and no entry: the credential is one a plugin changed, and stays one after the account's own
 // executor refreshed it, and after a restart reads its file back. A Meta login no plugin touched names
 // meta-subscription (the control).
-func TestProvimuxFinding14APluginsCredentialHasNoEntry(t *testing.T) {
+func TestProvimuxEntryNoneForAPluginChangedCredential(t *testing.T) {
 	h := newSentHarness(t, "")
 	const model = "provimux-test-custom-registered"
 	manager := h.service.coreManager
@@ -123,8 +122,8 @@ func TestProvimuxFinding14APluginsCredentialHasNoEntry(t *testing.T) {
 	}
 
 	h.stand.reset()
-	// Ported (the amendment of 2026-11-27 (2), A: the sent model goes with the entry, and a credential a plugin made
-	// or changed is not vouched for): the answer names the account and none of the model headers.
+	// The sent model goes with the entry, and a credential a plugin made or changed is not vouched for: the answer
+	// names the account and none of the model headers.
 	h.checkNoModel(h.post("/v1/chat/completions", chatBody(model, false, ""), nil), changed)
 	if sent := h.stand.answered(); len(sent) != 1 || sent[0].Host != "api.meta.ai" || sent[0].Model != model {
 		t.Fatalf("fixture: the Meta executor sent %+v", sent)
@@ -186,10 +185,10 @@ func TestProvimuxFinding14APluginsCredentialHasNoEntry(t *testing.T) {
 	h.checkSent(h.post("/v1/chat/completions", chatBody("provimux-test-meta-native", false, ""), nil), native, "api.meta.ai", "meta-subscription/provimux-test-meta-native")
 }
 
-// Finding 15: a payload rule sets another model for requests with one header. The same account and name send two
+// A payload rule sets another model for requests with one header. The same account and name send two
 // models; each answer names its own. A rule that deletes the model leaves nothing to read: the answer names its
 // account and no model.
-func TestProvimuxFinding15APayloadRuleByHeader(t *testing.T) {
+func TestProvimuxEntryPayloadRuleByHeader(t *testing.T) {
 	const native, alternate, bare = "provimux-test-native", "provimux-test-alternate", "provimux-test-bare"
 	h := newSentHarness(t, `payload:
   override:
@@ -221,9 +220,9 @@ func TestProvimuxFinding15APayloadRuleByHeader(t *testing.T) {
 	}
 }
 
-// Finding 16: Antigravity chooses the variant it sends from its stored catalog at the moment of the request. Before
+// Antigravity chooses the variant it sends from its stored catalog at the moment of the request. Before
 // the catalog is stored, after, and while its read fails, the answer names the variant the stand-in received.
-func TestProvimuxFinding16AntigravityNamesTheVariantSent(t *testing.T) {
+func TestProvimuxEntryAntigravityNamesTheVariantSent(t *testing.T) {
 	h := newSentHarness(t, "")
 	path := filepath.Join(t.TempDir(), "provimux-test-catalog.db")
 	if errKV := kvstore.ConfigureLocal(true, path); errKV != nil {
@@ -256,8 +255,8 @@ func TestProvimuxFinding16AntigravityNamesTheVariantSent(t *testing.T) {
 	if held.Model != group+"-high" {
 		t.Fatalf("fixture: with the catalog the high effort sent %s", held.Model)
 	}
-	// The store the catalog is read from fails, then is opened again without the catalog written anew (the review's
-	// closed-store case): the answer names the variant that was sent, as it did before.
+	// The store the catalog is read from fails, then is opened again without the catalog written anew: the answer names
+	// the variant that was sent, as it did before.
 	kv, _, errKV := kvstore.CurrentKVClient()
 	bolt, isBolt := kv.(*kvstore.BoltStore)
 	if errKV != nil || !isBolt {
@@ -280,9 +279,9 @@ func TestProvimuxFinding16AntigravityNamesTheVariantSent(t *testing.T) {
 	}
 }
 
-// Finding 17: an xAI key sent to api.x.ai, the same key marked as not the paid API (sent to the Grok CLI proxy), and a
+// An xAI key sent to api.x.ai, the same key marked as not the paid API (sent to the Grok CLI proxy), and a
 // key whose metadata names a relay. Only the first is xai.
-func TestProvimuxFinding17XAIDestinations(t *testing.T) {
+func TestProvimuxEntryXAIDestinations(t *testing.T) {
 	h := newSentHarness(t, "")
 	for _, tc := range []struct {
 		name, attributeBase, storedBase string

@@ -338,7 +338,7 @@ components:
             named as its vendor names it (equal markers are one account), "s." when it is this gateway's credential
             (equal markers are one credential). Beside the login's name it tells the operator which marker is which
             login; no answer to a client pairs the two. Left out when models.answered-by is false, and by a gateway
-            from before answered-by W2: a reader treats it as optional.
+            from before the account marker: a reader treats it as optional.
           example: a.jvwtubr4vdp5dfnhj7jm
         login:
           $ref: "#/components/schemas/Login"
@@ -361,9 +361,9 @@ components:
           type: array
           maxItems: 4
           description: |
-            What this credential's answers for this model said of themselves (answered-by.md 4.4, amended
-            2026-11-27 by the lead): the distinct providers.dev entries (`<provider>/<model>`) its answers to every
-            client key together named, newest first, each with the time of the last answer that named it; null for
+            What this credential's answers for this model said of themselves (answered-by.md 4.4): the distinct
+            providers.dev entries (`<provider>/<model>`) its answers to every client key together named, newest first,
+            each with the time of the last answer that named it; null for
             answers that named none. Per credential and per exact model name. GET /v1/models?include=accounts gives
             each client key only its own answers' items, with the day only. It is a record of answers and predicts
             nothing: an answer's entry is read from the request the gateway sent for it, so the next answer can
@@ -375,8 +375,9 @@ components:
             started; elsewhere a route has no `answered`. Once a plugin's executor (any executor that is not one of
             the gateway's own) was put in place for a provider, that provider's answers name no entry until the
             gateway restarts, and are recorded as null.
-            Optional in this contract: a gateway from before answered-by W6, and one with models.answered-by off,
-            leaves it out, and a reader treats missing and empty alike. No route carries a predicted `entry`.
+            Optional in this contract: a gateway from before answers named their entry, and one with
+            models.answered-by off, leaves it out, and a reader treats missing and empty alike. No route carries a
+            predicted `entry`.
           items:
             $ref: "#/components/schemas/RouteAnswered"
     RouteAnswered:

@@ -335,7 +335,7 @@ func TestProvimuxSentNestedAttempt(t *testing.T) {
 	}
 }
 
-// The rule (the lead's of 2026-11-27): exactly one request that could have produced the answer, read whole, nothing
+// The rule: exactly one request that could have produced the answer, read whole, nothing
 // making it not wholly the gateway's own. The answering executor's housekeeping and refusals do not count; everything
 // else does.
 func TestProvimuxSentTheRule(t *testing.T) {
@@ -486,10 +486,10 @@ func TestProvimuxSentUnseenConnectionCancels(t *testing.T) {
 	}
 }
 
-// The closed housekeeping list, by the executor that answered, exact authority, exact path and shape (the lead's
-// amendment of 2026-11-27 (2), rule A.5): a token form to Google's endpoint for the Google executors, Antigravity's
-// discovery as JSON, Copilot's token and catalog. The same request for another executor, at a lookalike path, to a
-// host given by suffix, with a Host of its own, in another shape or with a model, is a candidate.
+// The closed housekeeping list, by the executor that answered, exact authority, exact path and shape: a token form to
+// Google's endpoint for the Google executors, Antigravity's discovery as JSON, Copilot's token and catalog. The same
+// request for another executor, at a lookalike path, to a host given by suffix, with a Host of its own, in another
+// shape or with a model, is a candidate.
 func TestProvimuxSentHousekeeping(t *testing.T) {
 	form := func(method, url, body string) *http.Request {
 		req, _ := http.NewRequest(method, url, strings.NewReader(body))

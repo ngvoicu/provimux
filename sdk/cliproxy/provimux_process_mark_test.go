@@ -9,7 +9,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 )
 
-// The process mark (the lead's amendment of 2026-11-27 (2), part 3): the entry and the record exist only in a process
+// The process mark: the entry and the record exist only in a process
 // Provimux's own main started. A program that embeds the SDK (here the same gateway, without the mark) answers with
 // the account marker and none of the entry headers, records nothing, neither reads nor writes the record's file, and
 // its lists carry no `answered`.

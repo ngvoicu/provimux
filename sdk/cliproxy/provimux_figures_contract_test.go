@@ -21,7 +21,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Step F3 (prices-and-cache.md 5 and 6.3): GET /v1/models?include=figures and GET /v8/management/provimux/figures,
+// prices-and-cache.md 5 and 6.3: GET /v1/models?include=figures and GET /v8/management/provimux/figures,
 // on the wire, through the real server: real answers from the stand-in vendor make the rows' `answered`, providers.dev's
 // stand-in (pdentries, loopback) gives the held figures, and every answer of both paths is checked against
 // .github/provimux/design/prices-and-cache/openapi.yaml with unknown properties forbidden. Nothing leaves the process

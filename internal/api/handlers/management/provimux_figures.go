@@ -13,7 +13,7 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
-// Provimux-only: GET /v8/management/provimux/figures (prices-and-cache.md 6.3; steps F2 and F3). The figures
+// Provimux-only: GET /v8/management/provimux/figures (prices-and-cache.md 6.3). The figures
 // Provimux holds from providers.dev, how it got them, and its last failure. Read-only: it starts no fetch
 // and predicts nothing. Contract: .github/provimux/design/prices-and-cache/openapi.yaml, FiguresStatus.
 //

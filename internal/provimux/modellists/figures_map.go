@@ -1,6 +1,6 @@
 package modellists
 
-// Which providers.dev entry an answer is (prices-and-cache.md 6.1; answered-by.md 4.2 and 4.3, step W6a).
+// Which providers.dev entry an answer is (prices-and-cache.md 6.1; answered-by.md 4.2 and 4.3).
 //
 // An entry is <providers.dev provider>/<model id>. It is worked out from the request the gateway sent for an answer:
 // the host the request went to, the names of its credential headers and the model id in it, read from the request as
@@ -10,7 +10,7 @@ package modellists
 // this is a map, the same with providers.dev off or unreachable. An entry says where the model would be, not that
 // providers.dev has it.
 //
-// From F1 (provimux-figures-f1, 4f14c2cff), re-keyed by the host that was sent: the "no base URL" alternatives are gone
+// Keyed by the host that was sent: the "no base URL" alternatives are gone
 // (a request always has a host), a login's own backends are rows of the map, and the signer joins the key.
 
 import (

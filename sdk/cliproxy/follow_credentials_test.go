@@ -11,14 +11,13 @@ import (
 )
 
 // followLegacyPluginLogin is a Meta login as a plugin's conversion and the file token store wrote it before the plugin
-// mark existed (the reviewer generated it with the earlier code; the e-mail field is left out here): nothing in it says
+// mark existed (as the earlier code wrote it; the e-mail field is left out here): nothing in it says
 // a plugin made it.
 const followLegacyPluginLogin = `{"access_token":"fixture-access","api_key":"fixture-key","auth_kind":"oauth","disabled":false,"keep_setting":"fixture","type":"meta"}`
 
-// Finding 36, a written limit (the amendment of 2026-11-27 (2)): such a file cannot be told from a native login by its
+// A written limit: such a file cannot be told from a native login by its
 // content, so the gateway's loader loads it as a native login and its answer names the entry of what the built-in
-// executor sent to the vendor's own host. Ported: the test pins that decided behaviour; it failed on the earlier head
-// because it asked for none.
+// executor sent to the vendor's own host.
 func TestFollowLegacyCredential(t *testing.T) {
 	h := newSentHarness(t, "")
 	useAnsweredBook(t, newSentClock())
@@ -45,7 +44,7 @@ func TestFollowLegacyCredential(t *testing.T) {
 	}
 }
 
-// Finding 40, unchanged: closed by rule B.3 (a sequence of the record's own).
+// Two notes on an equal clock: the record orders them by a sequence of its own.
 func TestFollowEqualClock(t *testing.T) {
 	c := newSentClock()
 	b := newProvimuxAnsweredBook(c.Now)

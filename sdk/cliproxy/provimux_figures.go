@@ -16,7 +16,7 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// Provimux: providers.dev's prices and cache lifetimes of the entries (prices-and-cache.md 6.2; step F2).
+// Provimux: providers.dev's prices and cache lifetimes of the entries (prices-and-cache.md 6.2).
 //
 // The second request of the listings' round (runPublishedListRefresh): at start in the background, every
 // 6 hours, on POST /v8/management/models/refresh; after a failure 10 minutes, then 1 hour, then the normal
@@ -207,7 +207,7 @@ func provimuxFiguresStateOf() management.ProvimuxFiguresState {
 	return state
 }
 
-// provimuxFiguresHeld is the held document for GET /v1/models?include=figures (prices-and-cache.md 5; step F3).
+// provimuxFiguresHeld is the held document for GET /v1/models?include=figures (prices-and-cache.md 5).
 func provimuxFiguresHeld() *modellists.FiguresDocument {
 	st := provimuxFigures
 	st.mu.Lock()

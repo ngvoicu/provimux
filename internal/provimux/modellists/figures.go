@@ -1,7 +1,7 @@
 package modellists
 
-// Figures: providers.dev's prices and cache lifetimes of the entries (prices-and-cache.md 4 and 6.2;
-// step F2). The contract of the kept record is .github/provimux/design/prices-and-cache/openapi.yaml,
+// Figures: providers.dev's prices and cache lifetimes of the entries (prices-and-cache.md 4 and 6.2).
+// The contract of the kept record is .github/provimux/design/prices-and-cache/openapi.yaml,
 // components/schemas/Entry.
 //
 // One request, the same for every user: GET /api/v1/entries?provider=<the fixed set>&limit=200&offset=<0,
@@ -48,7 +48,7 @@ const (
 	// maxFiguresPageBytes bounds one page and the disk copy, as the listings are bounded.
 	maxFiguresPageBytes = 8 << 20
 	// FiguresMaxAhead is how far a document's generated_at may be ahead of the gateway's clock; a later one is
-	// refused, from the network and from the disk copy (decided by the lead on 2026-11-27).
+	// refused, from the network and from the disk copy.
 	FiguresMaxAhead = 24 * time.Hour
 	// maxFiguresTokens is the largest token count kept: the largest integer a JSON number carries exactly. A
 	// larger window, limit or tier is left out, never clamped.
@@ -57,8 +57,8 @@ const (
 	maxFiguresRedirects = 10
 )
 
-// Why a fetched or stored document is refused, beside the codes of FetchError (decided by the lead on
-// 2026-11-27). Each is wrapped in a FetchError of category invalid_response.
+// Why a fetched or stored document is refused, beside the codes of FetchError. Each is wrapped in a FetchError of
+// category invalid_response.
 var (
 	// ErrNoEntries: no entry of the document can be read (every one unreadable, or total 0).
 	ErrNoEntries = errors.New("no entry Provimux can read")
@@ -770,7 +770,7 @@ func FetchFigures(ctx context.Context, client *http.Client, base string, held *F
 		return FiguresResult{}, failure(FailureResponse, fmt.Errorf("incomplete answer: %d of %d entries", count, doc.Total))
 	}
 	if len(doc.Entries) == 0 {
-		// Never replaces a held document, and is no document to hold (decided by the lead on 2026-11-27).
+		// Never replaces a held document, and is no document to hold.
 		return FiguresResult{}, failure(FailureResponse, ErrNoEntries)
 	}
 	if allNotModified && held != nil {

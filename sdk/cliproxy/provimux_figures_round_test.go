@@ -19,8 +19,7 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// The figures in providers.dev's round, as the lead decided on 2026-11-27 after the review of F2 and F3
-// (prices-and-cache.md, the note of that day). Every request goes to a stand-in on loopback.
+// The figures in providers.dev's round (prices-and-cache.md). Every request goes to a stand-in on loopback.
 
 // providers.dev accepts both of the round's connections and never answers them (the listings' and the figures'),
 // and the last run left a disk copy: the copy is held before any request of the round, so both paths give the

@@ -78,8 +78,7 @@ info:
       for what was sent, it names the model and no entry.
     - Once a plugin's executor (any executor that is not one of the gateway's own) was put in
       place for a provider, no answer of that provider names an entry or the model it sent until
-      the gateway restarts; its answers carry `X-Provimux-Account` and are recorded as null
-      (amended 2026-11-27 (2), part 5, decided by the lead with the owner's word).
+      the gateway restarts; its answers carry `X-Provimux-Account` and are recorded as null.
     - A marker is the same on every answer of one account and in every list, for as long as the
       gateway keeps its key; another account never has it. It is compared, never parsed, except
       for its first character.
@@ -120,7 +119,7 @@ paths:
             `figures`: each model gains `accounts`, and the answer gains `figures`.
             A value the server does not know is ignored.
             Only this list carries `figures`: `GET /v1/models/{id}` with `include=figures` answers the
-            model with `accounts` and without `figures` (decided by the lead on 2026-11-27).
+            model with `accounts` and without `figures`.
           schema:
             type: string
           examples:
@@ -436,8 +435,7 @@ components:
             - type: "null"
           description: |
             When providers.dev built that dataset. A dataset generated more than 24 hours ahead of the
-            gateway's clock is never held, fetched or from the disk copy (decided by the lead on
-            2026-11-27).
+            gateway's clock is never held, fetched or from the disk copy.
         fetched_at:
           oneOf:
             - $ref: "#/components/schemas/Timestamp"
@@ -490,8 +488,7 @@ components:
             not billed per token (a subscription); the prices are the API list prices of the entry
             in `reference`, for comparison. `unknown`: no price applies or none is known; every
             price is null. Also `unknown` where providers.dev names the API entry of a `reference`
-            in a form that is not an EntryRef: the entry's price is left out (decided by the lead on
-            2026-11-27).
+            in a form that is not an EntryRef: the entry's price is left out.
           enum: [per_use, reference, unknown]
         reference:
           oneOf:
@@ -517,7 +514,7 @@ components:
           description: |
             The prices of writing to the cache, shortest lifetime first; an item whose lifetime is
             not stated comes first. Empty where the source states none. A negative price the source
-            states is left out (decided by the lead on 2026-11-27).
+            states is left out.
           items:
             $ref: "#/components/schemas/CacheWritePrice"
         tiers:
@@ -558,7 +555,7 @@ components:
           type: integer
           description: |
             The tier holds for a request whose input is above this many tokens. A tier whose size is
-            above 2^53 - 1 is left out (decided by the lead on 2026-11-27).
+            above 2^53 - 1 is left out.
         input:
           oneOf:
             - $ref: "#/components/schemas/Price"
@@ -698,8 +695,7 @@ components:
           minimum: 0
           description: |
             The oldest tested age through which every check hit; 0 = no such age. A measurement
-            providers.dev lists without a lifetime is no measurement and is not listed (decided by
-            the lead on 2026-11-27).
+            providers.dev lists without a lifetime is no measurement and is not listed.
         date:
           oneOf:
             - $ref: "#/components/schemas/Day"
@@ -736,7 +732,7 @@ components:
           maximum: 9007199254740991
           description: |
             Null where unknown, and where providers.dev states a count above 2^53 - 1: left out,
-            never clamped (decided by the lead on 2026-11-27).
+            never clamped.
         at_least:
           type: boolean
           description: True where the value is only the largest an evaluation saw accepted; the real limit may be higher.

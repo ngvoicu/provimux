@@ -57,7 +57,7 @@ func followClaudeCert() {
 	followCert = tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key, Leaf: cert}
 }
 
-// The cold Claude login (restored from the reviewer's last check): the first answer fetches the account's profile and
+// The cold Claude login: the first answer fetches the account's profile and
 // then names the subscription entry of the model received; the warm one names it too.
 func TestFollowColdClaude(t *testing.T) {
 	followRootOnce.Do(followClaudeCert)

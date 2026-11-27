@@ -67,7 +67,7 @@ func reviewGet(t *testing.T, h *sentHarness, path, key string) []byte {
 }
 
 // Real TLS vendor sees Go's serialized authority; the relay tunnels byte for byte.
-func TestReview21AuthorityAndProxy(t *testing.T) {
+func TestProvimuxEntryAuthorityAndProxy(t *testing.T) {
 	for _, override := range []string{"", "routing.fixture.invalid"} {
 		t.Run("host-"+override, func(t *testing.T) {
 			cfg := reviewRouter
@@ -161,7 +161,7 @@ func reviewSend(c context.Context, rt http.RoundTripper, dest, model string) (*h
 	r.Header.Set("Content-Type", "application/json")
 	return httptransport.Decorate(c, &http.Client{Transport: rt}).Do(r)
 }
-func TestReview21MixedAndTwoRequests(t *testing.T) {
+func TestProvimuxEntryMixedAndTwoRequests(t *testing.T) {
 	for _, kind := range []string{"socket", "detached-http", "different-http", "same-http", "no-model", "wrong-publisher", "unread", "other-devin-method", "status-fail"} {
 		t.Run(kind, func(t *testing.T) {
 			h := newSentHarness(t, reviewRouter)
@@ -261,11 +261,10 @@ func TestReview21MixedAndTwoRequests(t *testing.T) {
 				t.Fatalf("fixture %v", received)
 			}
 			got := ans.get(logging.ProvimuxEntryHeader)
-			// Ported (rule 1 of the lead's 2026-11-27 amendment: exactly one request that could have produced the
-			// answer): two answered requests for the same model are two, and name nothing; a refused second is none.
-			// Ported again (rule A.1 of the amendment of 2026-11-27 (2)): this executor is registered through the SDK,
+			// Exactly one request that could have produced the answer: two answered requests for the same model are two,
+			// and name nothing; a refused second is none. This executor is registered through the SDK,
 			// not by the gateway's service, so no case names an entry; a refused request beside the answering one is
-			// pinned on the stock path (TestReview21Failover, TestReview21ZstdRetry) and in TestProvimuxSentTheRule.
+			// pinned on the stock path (TestProvimuxEntryFailover, TestProvimuxEntryZstdRetry) and in TestProvimuxSentTheRule.
 			want := ""
 			t.Logf("%s: accepted requests %v; entry=%q", kind, received, got)
 			if got != want {
@@ -274,7 +273,7 @@ func TestReview21MixedAndTwoRequests(t *testing.T) {
 		})
 	}
 }
-func TestReview21FirstCommit(t *testing.T) {
+func TestProvimuxEntryFirstCommit(t *testing.T) {
 	h := newSentHarness(t, reviewRouter+"requests:\n  streaming:\n    keepalive-seconds: 1\n    send-keepalive-before-ft: true\n")
 	useAnsweredBook(t, newSentClock())
 	a := sentKeyFor(t, h, "review-public")
@@ -334,7 +333,7 @@ func TestReview21FirstCommit(t *testing.T) {
 		t.Error("a response with no committed marker or entry created history")
 	}
 }
-func TestReview21FrozenAndSchemaCapture(t *testing.T) {
+func TestProvimuxEntryFrozenAndSchemaCapture(t *testing.T) {
 	cfg := sentMatrixConfig + `  interactions:
     - name: provimux-test-interactions
       models:

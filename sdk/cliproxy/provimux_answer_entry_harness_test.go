@@ -22,7 +22,7 @@ import (
 	"google.golang.org/protobuf/encoding/protowire"
 )
 
-// Provimux: the harness of the wire tests of an answer's entry (answered-by.md 8.4, "What was sent (W6a)"). The real
+// Provimux: the harness of the wire tests of an answer's entry (answered-by.md 8.4). The real
 // server (api.NewServer over a Service built from a config, as namesHarness builds it) answers a client over HTTP;
 // every credential's requests go to one in-memory stand-in vendor (the manager's per-credential transport, which every
 // executor's client uses where no proxy is set), whatever host they name. The stand-in records the host it was called
@@ -273,7 +273,7 @@ func newSentHarness(t *testing.T, configBody string) *sentHarness {
 	coreauth.SetProvimuxMarkerKey([]byte("provimux-test-sent-marker-key-32"))
 	was := logging.SetProvimuxAnsweredBy(true)
 	// The harness stands for the gateway as shipped: the process mark, by a seam that does nothing outside a test
-	// binary (the amendment of 2026-11-27 (2), part 3). A test that stands for an embedding calls asEmbedding.
+	// binary. A test that stands for an embedding calls asEmbedding.
 	restoreShipped := origin.ShippedGatewayForTests(true)
 	t.Cleanup(func() {
 		restoreShipped()
@@ -399,7 +399,7 @@ func (h *sentHarness) checkNoModel(answer sentAnswer, account *coreauth.Auth) {
 }
 
 // asEmbedding makes the rest of the test a program that embeds the SDK: Provimux's own main did not start it, so no
-// answer names an entry and nothing is recorded (the amendment of 2026-11-27 (2), part 3).
+// answer names an entry and nothing is recorded.
 func asEmbedding(t *testing.T) {
 	t.Helper()
 	t.Cleanup(origin.ShippedGatewayForTests(false))

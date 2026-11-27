@@ -45,8 +45,8 @@ func followDrained(c chan followReceived) []followReceived {
 	return v
 }
 
-// Findings 32, 34 and 35, unchanged: an executor registered through the SDK answers (rule A.1), so no mode names an
-// entry; body-readback would accept the entry of the bytes the transport read (rule A.4).
+// An executor registered through the SDK answers, so no mode names an entry; body-readback would accept the entry of
+// the bytes the transport read.
 func TestFollowAnsweringChannel(t *testing.T) {
 	for _, mode := range []string{"socket-only", "preopened-socket", "separate-untraced", "other-executors-catalog", "lookalike-discovery", "overridden-housekeeping-authority", "body-readback"} {
 		t.Run(mode, func(t *testing.T) {

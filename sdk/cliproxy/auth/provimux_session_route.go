@@ -22,8 +22,8 @@ import (
 
 // Provimux: session-route (.github/provimux/design/session-route.md 3 and 4). The book is a note about upstream's
 // session bindings, never their source: every reader asks upstream's cache first (through the seam). A client key sees
-// and releases only a conversation the book has seen that key use since the gateway started (decided by the lead on
-// 2026-11-27). Releasing removes the binding from upstream's cache and nothing else: nothing is sent, no account's
+// and releases only a conversation the book has seen that key use since the gateway started. Releasing removes the
+// binding from upstream's cache and nothing else: nothing is sent, no account's
 // state changes. The automatic return (the rule, design section 15) is provimux_session_return.go's: the book only
 // reads its state for the show, and takes a return by the rule as the end of a binding's life. This file calls the
 // seam and exported names only.
@@ -155,8 +155,8 @@ type ProvimuxSessionBound struct {
 	FellBackAt   *string        `json:"fell_back_at"`
 }
 
-// ProvimuxSessionPosition is SessionRoute.position. HigherPriorityFreeAt was added by the lead on 2026-11-27: when a
-// higher-priority route is expected free, one time for the name, never per account.
+// ProvimuxSessionPosition is SessionRoute.position. HigherPriorityFreeAt: when a higher-priority
+// route is expected free, one time for the name, never per account.
 type ProvimuxSessionPosition struct {
 	BelowFirst           bool    `json:"below_first"`
 	HigherPriorityFree   bool    `json:"higher_priority_free"`
@@ -200,7 +200,7 @@ type ProvimuxSessionRelease struct {
 }
 
 // provimuxConversation is what owns a book entry: the binding key's parts as received, kept apart. Upstream joins
-// them into one string with a delimiter a session may hold; the book never does (session-route G1, finding 1).
+// them into one string with a delimiter a session may hold; the book never does.
 type provimuxConversation struct {
 	Provider string
 	Session  string

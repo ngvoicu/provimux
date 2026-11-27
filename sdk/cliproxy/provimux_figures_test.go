@@ -24,7 +24,7 @@ import (
 	logtest "github.com/sirupsen/logrus/hooks/test"
 )
 
-// Step F2: the figures in the listings' round, held, on disk and shown on GET /v8/management/provimux/figures.
+// The figures in the listings' round, held, on disk and shown on GET /v8/management/provimux/figures.
 // Every fetch goes to pdentries, a stand-in of providers.dev's API on loopback; none reaches the real site.
 
 // provimuxFiguresReset gives the test an empty figures store, a clock it sets, and puts everything back.

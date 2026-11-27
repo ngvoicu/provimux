@@ -16,10 +16,10 @@ import (
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
 
-// Provimux: the tests of session-route G1 (.github/provimux/design/session-route.md 12, rows 2, 3, 4 and 13, and the
-// points I1 and I3 of section 14). Every account, key and session here is invented, and every executor is a stand-in
-// in this process: nothing is sent anywhere. No test sleeps: an ordering is made by channels at the point of the race,
-// and every time is taken from the clock the test sets or from the entry upstream made.
+// Provimux: the tests of a client's show and release (.github/provimux/design/session-route.md 12, rows 2, 3, 4 and 13,
+// and the points I1 and I3 of section 14). Every account, key and session here is invented, and every executor is a
+// stand-in in this process: nothing is sent anywhere. No test sleeps: an ordering is made by channels at the point of
+// the race, and every time is taken from the clock the test sets or from the entry upstream made.
 
 const provimuxSRModel = "provimux-sr-model"
 
@@ -426,8 +426,8 @@ func TestProvimuxSessionRouteInFlight(t *testing.T) {
 	}
 }
 
-// TestProvimuxSessionRoutePinnedFollowUpRebinds pins I3 as upstream does it today (decided by the lead on 2026-11-27,
-// option A): a follow-up turn pinned to its login, as on an open Codex WebSocket, still asks the selector, and after a
+// TestProvimuxSessionRoutePinnedFollowUpRebinds pins I3 as upstream does it today: a follow-up turn pinned to its
+// login, as on an open Codex WebSocket, still asks the selector, and after a
 // release it binds the conversation to the pinned login again. So a release holds only once that connection is closed.
 // Row 13 as decided: after a release and a closed socket, the next connection's first turn binds at the first route.
 // If this test fails at a sync, upstream changed how pinned turns bind: correct the contract's websocket_may_hold.
@@ -469,7 +469,7 @@ func TestProvimuxSessionRoutePinnedFollowUpRebinds(t *testing.T) {
 	}
 }
 
-// TestProvimuxSessionRouteHigherPriorityFreeAt is the lead's addition of 2026-11-27: every show answers from the state
+// TestProvimuxSessionRouteHigherPriorityFreeAt: every show answers from the state
 // at that moment, on the clock the test sets. Before the recorded cooldown of the higher account ends, no higher route
 // is free and higher_priority_free_at is that end (the earliest of two); after it, one is free and the time is null.
 // The show changes nothing: the binding's expiry and the book are the same after it.
@@ -569,8 +569,8 @@ func TestProvimuxSessionRouteShowsFallback(t *testing.T) {
 	}
 }
 
-// TestProvimuxSessionRouteStrict: a key sees and releases only conversations it was seen using since the start
-// (decided by the lead on 2026-11-27). Another key's conversation and one that does not exist get the same answer,
+// TestProvimuxSessionRouteStrict: a key sees and releases only conversations it was seen using since the start.
+// Another key's conversation and one that does not exist get the same answer,
 // and a release by another key removes nothing.
 func TestProvimuxSessionRouteStrict(t *testing.T) {
 	f := newProvimuxSRFixture(t, "round-robin", false, nil)

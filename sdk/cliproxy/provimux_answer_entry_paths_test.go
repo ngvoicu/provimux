@@ -27,7 +27,7 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
-// Provimux: the other paths of answered-by.md 8.4 ("What was sent (W6a)") on the wire, and the guard that a new
+// Provimux: the other paths of answered-by.md 8.4 on the wire, and the guard that a new
 // executor upstream fails a test instead of naming an entry nobody read. Every key, login and id is invented.
 
 // sentExecutorCoverage names every executor constructor of internal/runtime/executor: the executor key of
@@ -49,7 +49,7 @@ var sentExecutorCoverage = map[string]string{
 	"NewOpenAICompatExecutor":       "openai-compatibility",
 	"NewXAIExecutor":                "xai",
 	"NewXAIAutoExecutor":            "xai",
-	"NewXAIWebsocketsExecutor":      "none: the upstream WebSocket, a websocket.Dialer no decorator sees (W6s)",
+	"NewXAIWebsocketsExecutor":      "none: the upstream WebSocket, a websocket.Dialer no decorator sees",
 }
 
 // Every executor upstream has is on the wire in the matrix or named as one whose answers have no entry. An executor
@@ -122,8 +122,8 @@ func TestProvimuxAnswerEntryGeminiInteractions(t *testing.T) {
 	}
 }
 
-// Paths whose host or credential the request decides: a base URL in a login's file and in its metadata (findings 3 and
-// 17), Codex's second sign-in for a Codex client and for another, a redirect to another host, a zstd body.
+// Paths whose host or credential the request decides: a base URL in a login's file and in its metadata, Codex's second
+// sign-in for a Codex client and for another, a redirect to another host, a zstd body.
 func TestProvimuxAnswerEntryTheRequestDecides(t *testing.T) {
 	h := newSentHarness(t, `upstream:
   codex:
