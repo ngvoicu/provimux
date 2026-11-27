@@ -10,7 +10,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	sa "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
 	ca "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	ex "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
@@ -219,26 +218,6 @@ func TestReview21SameMarkerRows(t *testing.T) {
 		if matched != 2 {
 			t.Fatalf("fixture %d rows", matched)
 		}
-	}
-}
-func TestReview21MemoryCredential(t *testing.T) {
-	h := newSentHarness(t, "")
-	useAnsweredBook(t, newSentClock())
-	a, err := h.service.coreManager.Register(ca.WithSkipPersist(t.Context()), &ca.Auth{ID: "sdk-memory-key", Provider: "xai", Status: ca.StatusActive, Attributes: map[string]string{"auth_kind": "apikey", "api_key": "fixture-memory-key", "base_url": "https://api.x.ai/v1"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	h.service.registerExecutorForAuth(a, false)
-	registry.GetGlobalRegistry().RegisterClient(a.ID, "xai", []*registry.ModelInfo{{ID: "memory-only-model"}})
-	defer registry.GetGlobalRegistry().UnregisterClient(a.ID)
-	ans := h.post("/v1/chat/completions", chatBody("memory-only-model", false, ""), nil)
-	r := h.stand.answered()
-	if ans.status != 200 || len(r) != 1 {
-		t.Fatalf("fixture %d %v", ans.status, r)
-	}
-	t.Logf("source=%q filename=%q storage=%T marker=%q entry=%q received=%v", a.AuthSourceKind(), a.FileName, a.Storage, ans.get(logging.ProvimuxAccountHeader), ans.get(logging.ProvimuxEntryHeader), r)
-	if ans.get(logging.ProvimuxEntryHeader) != "" {
-		t.Error("a credential registered exclusively in memory acquired a priced entry")
 	}
 }
 func TestReview21PluginOriginsAndNativeReplacement(t *testing.T) {

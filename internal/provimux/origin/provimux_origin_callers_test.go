@@ -22,15 +22,11 @@ func TestProvimuxOriginCallers(t *testing.T) {
 	}
 	allowed := map[string][]string{
 		"origin.NoteGatewayTransport(":      {"sdk/cliproxy/provimux_origin.go"},
-		"origin.InstallLoadedMark(":         {"sdk/cliproxy/auth/provimux_loaded.go"},
-		"origin.MarkLoaded(":                {"internal/store/provimux_loaded.go", "sdk/auth/provimux_loaded.go", "internal/watcher/synthesizer/provimux_loaded.go"},
-		"provimuxMarkLoaded(":               {"internal/store/provimux_loaded.go", "sdk/auth/provimux_loaded.go", "internal/watcher/synthesizer/provimux_loaded.go", "internal/store/gitstore.go", "internal/store/objectstore.go", "internal/store/postgresstore.go", "sdk/auth/filestore.go", "internal/watcher/synthesizer/file.go", "internal/watcher/synthesizer/config.go"},
 		"provimuxGatewayTransports(":        {"sdk/cliproxy/builder.go", "sdk/cliproxy/provimux_origin.go"},
 		"provimuxRegistering(":              {"sdk/cliproxy/auth/conductor_lifecycle.go", "sdk/cliproxy/auth/provimux_answered.go"},
 		"provimuxNoteExecutor(":             {}, // the per-call record removed in part (5): in no product file
 		"provimuxExecutorSequence(":         {}, // the same
 		"StandInForTests(":                  {"internal/provimux/origin/origin.go"},
-		"MarkLoadedForTests(":               {"internal/provimux/origin/origin.go"},
 		"coreauth.SetProvimuxAnswerEntry(":  {"sdk/cliproxy/provimux_answer_entry.go"},
 		"provimuxWithManager(":              {"sdk/cliproxy/auth/conductor_execution.go", "sdk/cliproxy/auth/provimux_answered.go"},
 		"origin.DefaultTransportUnchanged(": {"sdk/cliproxy/executor/provimux_sent.go"},

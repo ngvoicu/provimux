@@ -73,7 +73,6 @@ func sentCopilot(t *testing.T, h *sentHarness, modelIDs ...string) *coreauth.Aut
 		CopilotCatalog: copilot.NewCatalog(models, time.Now()),
 		Metadata:       map[string]any{"access_token": "provimux-test-token", "base_url": "https://api.individual.githubcopilot.com"},
 	}
-	origin.MarkLoadedForTests(login)
 	auth, err := h.service.coreManager.Register(t.Context(), login)
 	if err != nil {
 		t.Fatal(err)
@@ -286,12 +285,9 @@ func newSentHarness(t *testing.T, configBody string) *sentHarness {
 	return &sentHarness{namesHarness: names, stand: stand, server: server}
 }
 
-// register registers auth with the service's manager as a login the gateway's own loader parsed (the loader's mark, by
-// a seam that does nothing outside a test binary: rule A.3), binds its executor and puts models on it. A test of a
-// credential the loader did not make registers it with the manager directly.
+// register registers auth with the service's manager, binds its executor and puts models on it.
 func (h *sentHarness) register(auth *coreauth.Auth, models ...string) *coreauth.Auth {
 	h.t.Helper()
-	origin.MarkLoadedForTests(auth)
 	registered, err := h.service.coreManager.Register(h.t.Context(), auth)
 	if err != nil {
 		h.t.Fatal(err)

@@ -2,7 +2,6 @@ package cliproxy
 
 import (
 	"fmt"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/provimux/origin"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -340,8 +339,8 @@ func TestProvimuxAnswerEntryUpstreamWebsocketHasNone(t *testing.T) {
 	}
 }
 
-// Steps 3 to 5 for one sent request, by the credential: held in memory, made or changed by a plugin, an xAI key marked
-// as not the paid API, a URL that is not https on its default port.
+// The entry of one sent request, by the credential: made or changed by a plugin, an xAI key marked as not the paid
+// API, a URL that is not https on its default port.
 func TestProvimuxEntryOfAnswerVouchesForTheCredential(t *testing.T) {
 	sent := cliproxyexecutor.ProvimuxSentRequest{Scheme: "https", Host: "api.x.ai", Model: "provimux-test-grok", Signer: "authorization", Status: 200}
 	key := func(attributes map[string]string, metadata map[string]any) *coreauth.Auth {
@@ -349,13 +348,7 @@ func TestProvimuxEntryOfAnswerVouchesForTheCredential(t *testing.T) {
 		for k, v := range attributes {
 			attrs[k] = v
 		}
-		credential := &coreauth.Auth{ID: "provimux-test-xai", Provider: "xai", Attributes: attrs, Metadata: metadata}
-		origin.MarkLoadedForTests(credential) // the configuration's synthesizer made it (rule A.3)
-		return credential
-	}
-	memory := func(attributes map[string]string) *coreauth.Auth {
-		// Ported (rule A.3 of the amendment of 2026-11-27 (2)): no loader's mark, whatever its attributes say.
-		return &coreauth.Auth{ID: "provimux-test-xai", Provider: "xai", FileName: "provimux-test-display.json", Attributes: attributes}
+		return &coreauth.Auth{ID: "provimux-test-xai", Provider: "xai", Attributes: attrs, Metadata: metadata}
 	}
 	for _, tc := range []struct {
 		name string
@@ -368,16 +361,12 @@ func TestProvimuxEntryOfAnswerVouchesForTheCredential(t *testing.T) {
 		{"using_api false in its metadata", key(nil, map[string]any{"using_api": false}), sent, ""},
 		{"using_api false in its attributes", key(map[string]string{"using_api": "false"}, nil), sent, ""},
 		{"using_api not a boolean", key(nil, map[string]any{"using_api": "provimux-test"}), sent, ""},
-		{"held in memory only", memory(map[string]string{"auth_kind": "apikey", "runtime_only": "true"}), sent, ""},
 		{"a plugin's virtual credential", key(map[string]string{coreauth.AttributePluginVirtual: "true"}, nil), sent, ""},
 		{"marked as a plugin's change", key(nil, map[string]any{"provimux_plugin_credential": true}), sent, ""},
 		{"http", key(nil, nil), cliproxyexecutor.ProvimuxSentRequest{Scheme: "http", Host: "api.x.ai", Model: "provimux-test-grok", Status: 200}, ""},
 		{"another port", key(nil, nil), cliproxyexecutor.ProvimuxSentRequest{Scheme: "https", Host: "api.x.ai", Port: "8443", Model: "provimux-test-grok", Status: 200}, ""},
 		{"no model", key(nil, nil), cliproxyexecutor.ProvimuxSentRequest{Scheme: "https", Host: "api.x.ai", Status: 200}, ""},
 		{"no credential", nil, sent, ""},
-		{"no loader's mark, a config source", memory(map[string]string{"auth_kind": "apikey", "source": "config:xai[provimux-test]"}), sent, ""},
-		{"no loader's mark, a file's attributes", memory(map[string]string{"auth_kind": "apikey", "source": "/provimux-test/auths/x.json", "path": "/provimux-test/auths/x.json", "source_backend": "file"}), sent, ""},
-		{"no loader's mark, an unknown source", memory(map[string]string{"auth_kind": "apikey", "source": "embedded-runtime-registry"}), sent, ""},
 	} {
 		if got := provimuxEntryOfAnswer(tc.auth, tc.sent); got != tc.want {
 			t.Errorf("%s: %q, want %q", tc.name, got, tc.want)

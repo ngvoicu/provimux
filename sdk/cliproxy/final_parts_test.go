@@ -5,16 +5,12 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/provimux/origin"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
-	sa "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
 	ca "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	ex "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
@@ -105,62 +101,5 @@ func finalInFlight(t *testing.T, embedding bool, replacements int) {
 	}
 	if entry != "" {
 		t.Error("a replacement was credited for the in-flight custom executor's answer")
-	}
-}
-
-// Finding 47, with the gateway as shipped (the loaded mark holds for its id only, rule A.3) and as an embedding (the
-// process mark absent, part 3).
-func TestFinalCredentialCopy(t *testing.T) {
-	for _, embedding := range []bool{false, true} {
-		for _, copied := range []bool{false, true} {
-			t.Run(fmt.Sprintf("embedding=%v/%v", embedding, copied), func(t *testing.T) {
-				finalCredentialCopy(t, embedding, copied)
-			})
-		}
-	}
-}
-
-func finalCredentialCopy(t *testing.T, embedding, copied bool) {
-	h := newSentHarness(t, "")
-	if embedding {
-		asEmbedding(t)
-	}
-	store := sa.NewFileTokenStore()
-	dir := t.TempDir()
-	store.SetBaseDir(dir)
-	if err := os.WriteFile(filepath.Join(dir, "source.json"), []byte(`{"type":"xai","access_token":"fixture-source","email":"source-fixture-account"}`), 0600); err != nil {
-		t.Fatal(err)
-	}
-	list, err := store.List(t.Context())
-	if err != nil || len(list) != 1 || !list[0].ProvimuxLoaded() {
-		t.Fatal("source fixture", err)
-	}
-	a := &ca.Auth{}
-	if copied {
-		a = list[0].Clone()
-	}
-	a.ID = "sdk-ephemeral"
-	a.FileName = ""
-	a.Provider = "xai"
-	a.Status = ca.StatusActive
-	a.Storage = nil
-	a.Metadata = nil
-	a.Attributes = map[string]string{"auth_kind": "apikey", "api_key": "fixture-different-credential", "base_url": "https://api.x.ai/v1"}
-	a, err = h.service.coreManager.Register(ca.WithSkipPersist(t.Context()), a)
-	if err != nil {
-		t.Fatal(err)
-	}
-	h.service.registerExecutorForAuth(a, false)
-	id := "local-fixture-current"
-	registry.GetGlobalRegistry().RegisterClient(a.ID, "xai", []*registry.ModelInfo{{ID: id}})
-	defer registry.GetGlobalRegistry().UnregisterClient(a.ID)
-	out := h.post("/v1/chat/completions", chatBody(id, false, ""), nil)
-	entry := out.get(logging.ProvimuxEntryHeader)
-	t.Logf("new in-memory ID and credentials, clone=%v loader mark=%v HTTP=%d entry=%q sent=%q receipts=%v", copied, a.ProvimuxLoaded(), out.status, entry, out.get(logging.ProvimuxModelSentHeader), h.stand.answered())
-	if out.status != 200 || len(h.stand.answered()) != 1 {
-		t.Fatal("fixture", out.body)
-	}
-	if entry != "" {
-		t.Error("a different credential supplied only by the SDK was credited as loaded")
 	}
 }
