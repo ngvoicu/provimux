@@ -56,6 +56,9 @@ server's address, see [For a team](#for-a-team)). Docker, release archives and b
 - **[Send a conversation back to your first account](#send-a-conversation-back-to-your-first-account).** With session
   affinity on, a client sees which account its conversation is bound to and whether a higher-priority one is free
   again, and releases it so that its next message goes to the first free account.
+- **[A conversation that fell back goes back by itself](#a-conversation-that-fell-back-goes-back-by-itself).** Set
+  `routing.session-affinity-return.cold-after`, and a conversation that fell back to a lower-priority account goes
+  back at its next message once none of its messages has been routed to an account for that long. Off unless set.
 
 **Clarity: you see which account has which models, which one answered, and why a route is paused.**
 
@@ -1058,7 +1061,8 @@ second time, with and without an error, and how often the client left during the
 **What you get.** When an account cools down, a conversation moves to the next account that serves the name. With
 `routing.session-affinity: true` it stays there even after the first account is free again. That can mean a shorter
 prompt cache, or a paid key where you wanted your subscription. Now a client can see where its conversation is bound
-and send it back. Nothing moves a conversation back by itself: the client decides when.
+and send it back. Or let the gateway do it:
+[A conversation that fell back goes back by itself](#a-conversation-that-fell-back-goes-back-by-itself).
 
 **How to use it.** Two requests of the gateway's own, sent with a client key (`access.api-keys`) as any model request
 is. A gateway without client keys answers `not-seen`.
@@ -1122,6 +1126,53 @@ curl -s "$PROVIMUX/v1/provimux/session-route/release" -H "Authorization: Bearer 
 - Right after a configuration reload, or a plugin scheduler being added or removed, a conversation may show
   `not-seen` until its next message after a show. One turned off just as a message ended may show `not-bound` once
   turned back on, until its binding's lifetime has passed (`session-affinity-ttl`, an hour by default).
+
+### A conversation that fell back goes back by itself
+
+**What you get.** When an account cools down, session affinity moves the conversation to the next account by
+priority, and keeps it there after the first account is free again: a shorter prompt cache, or a paid key where you
+wanted your subscription. Set one time and you no longer send it back by hand. Once no message of the conversation
+has been routed to an account for that time, its next message goes to the highest-priority account that message may
+use.
+
+```yaml
+routing:
+  session-affinity: true
+  session-affinity-return:
+    cold-after: "6m"
+```
+
+**What it promises.** It never moves a conversation that had a message routed to an account within `cold-after`. A
+provider refreshes its prompt cache when a request reads it, so set the time to the longest cache lifetime of any
+account your conversations can fall to, plus a margin. Two things are not use: a message the gateway refused before
+choosing an account (it reached no provider), and an answer while it streams, so the message after an answer that
+itself took longer than `cold-after` can go back.
+
+**How it decides.** Only at the conversation's own next message, and only if the account it is bound to is below the
+highest-priority account that message may use right now (also after you add a higher-priority account). Then the
+binding is dropped and the message is routed as a new conversation's. In any doubt it does nothing. It sends nothing
+to any provider and changes no account's state.
+
+**The time.** A duration of at least `1m` (`"6m"`, `"1h30m"`). Anything else is refused with the key named; a write
+through the config API then leaves the file as it was. Without the key, or with `cold-after: null`, it is off, as it is
+by default. At or above `session-affinity-ttl` it does nothing: an unused binding ends by itself first. A change
+applies from the next message; each conversation's first message after it is not judged.
+
+**Left alone.** Sub-agents and forks (they follow their parent), conversations your client does not name with a
+session id, messages pinned to one account (a follow-up on an open Codex WebSocket), and a conversation's first
+message after a restart. Nothing happens with session affinity off, in Home mode, with a plugin scheduler, or with
+`session-affinity-rebind-on: never`.
+
+**Seeing it.** `GET /v8/management/provimux/session-return` (management key) says whether it is in effect and, if
+not, why: `not-set`, `not-below-ttl` (with the `ttl_s` it compared with), `rebind-never`, `session-affinity-off`,
+`home-mode` or `plugin-scheduler`. It also counts the conversations sent back since the start; one conversation can
+count more than once. A client's `POST /v1/provimux/session-route` says whether it is in effect, and the time, in its
+`rule` field.
+
+**Known limits.**
+
+- After a scheduling plugin is switched off while the gateway runs, a conversation it routed in the meantime can go
+  back at its first message.
 
 ### Works with Pi
 
