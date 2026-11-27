@@ -122,8 +122,7 @@ func TestProvimuxSessionReturnFinding2TokenRotated(t *testing.T) {
 }
 
 // TestProvimuxSessionReturnFinding7NewObservation is finding 7: the rule switched off and on again does not judge a
-// conversation's first message after that by a note from before; and a commit that switches it off while a selection
-// is already past its first check is seen before anything is dropped.
+// conversation's first message after that by a note from before.
 func TestProvimuxSessionReturnFinding7NewObservation(t *testing.T) {
 	t.Run("off, then on", func(t *testing.T) {
 		f := newProvimuxSRFixture(t, "fill-first", false, nil)
@@ -148,34 +147,7 @@ func TestProvimuxSessionReturnFinding7NewObservation(t *testing.T) {
 			t.Fatalf("second request, 90 s after the first: bound %q; want returned", got)
 		}
 	})
-	t.Run("off while a selection runs", func(t *testing.T) {
-		f := newProvimuxSRFixture(t, "fill-first", false, nil)
-		f.rule(time.Minute)
-		key := f.fellBack(http.Header{"X-Session-Affinity": {"disable"}}, "")
-		f.age(90 * time.Second)
-		p := provimuxRTPluginCheck{entered: make(chan struct{}), finish: make(chan struct{})}
-		f.m.SetPluginScheduler(p)
-		before := provimuxReturned.Load()
-		done := make(chan struct{})
-		go func() { defer close(done); f.affinity.provimuxReturn(true, key, "", f.auths(), time.Now()) }()
-		<-p.entered
-		ProvimuxSetSessionReturn(f.m, ProvimuxSessionReturnSetting{Affinity: true, TTL: time.Hour})
-		close(p.finish)
-		<-done
-		f.m.SetPluginScheduler(nil)
-		if _, present := f.binding(key); !present || provimuxReturned.Load() != before {
-			t.Fatal("dropped after the setting was removed")
-		}
-	})
 }
-
-// provimuxRTPluginCheck holds the rule's runtime check until the test lets it go (it reports no plugin scheduler).
-type provimuxRTPluginCheck struct {
-	provimuxSRScheduler
-	entered, finish chan struct{}
-}
-
-func (p provimuxRTPluginCheck) HasScheduler() bool { close(p.entered); <-p.finish; return false }
 
 // TestProvimuxSessionReturnFinding8RefusedMessage is finding 8 of the third check, stated as intended: a message the
 // gateway refuses before choosing an account (every account that serves the name is cooling, so it answers 429

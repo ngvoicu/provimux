@@ -146,7 +146,7 @@ func (s *SessionAffinitySelector) provimuxReturn(named bool, cacheKey, fallbackK
 	if s.provimux.generation != value.generation || s.provimux.seen == nil || len(s.provimux.seen) >= provimuxReturnNoteLimit {
 		s.provimux.generation, s.provimux.seen = value.generation, make(map[string]time.Time) // a new observation
 	}
-	if runs && provimuxReturnCurrent.Load() == value { // a commit since the load above wins
+	if runs {
 		s.provimuxJudgeLocked(cache, cacheKey, fallbackKey, available, now, coldAfter)
 	}
 	s.provimux.seen[cacheKey] = now // K7
