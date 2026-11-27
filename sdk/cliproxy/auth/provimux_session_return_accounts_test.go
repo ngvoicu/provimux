@@ -10,7 +10,7 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
-// Provimux: only the accounts this request may use count as "higher" (K5 of the rule, session-route.md 15.3): an
+// Provimux: only the accounts this request may use count as "higher" (K5 of the rule, session-route.md 15.2): an
 // account the request may not use, or one of a provider outside its set, never draws a conversation away. Every
 // account and key is invented; nothing is sent anywhere.
 

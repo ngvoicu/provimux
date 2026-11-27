@@ -6,9 +6,9 @@ import (
 	"time"
 )
 
-// Provimux: routing.session-affinity-return (.github/provimux/design/session-route.md 15.6): one key, off unless set; a
-// value that is not a duration of at least one minute is refused where the configuration is read, with the key named
-// (finding 8: the value is kept as the duration it was read as, 1m0.9s included).
+// Provimux: routing.session-affinity-return (.github/provimux/design/session-route.md 15.4): one key, off unless set; a
+// value that is not a duration of at least one minute is refused where the configuration is read, with the key named;
+// the value is kept as the duration it was read as, 1m0.9s included.
 
 func provimuxReturnYAML(value string) []byte {
 	return []byte("config-version: 8\nrouting:\n  session-affinity: true\n  session-affinity-return:\n    cold-after: " + value + "\n")

@@ -12,15 +12,15 @@ import (
 // That is read from the rule's own note: the time a request of the conversation last came to selection. A message
 // refused before selection reaches no provider and leaves no note. A provider's prompt cache is refreshed when a
 // request reads it, not while the answer is written, so the time since the last routed message is what tells whether
-// the cache can still be warm. Whatever is not certain leaves the binding alone. No book,
-// no result hook, no usage record, no timer, nothing from a file.
+// the cache can still be warm. Whatever is not certain leaves the binding alone. No book, no result hook, no usage
+// record, no timer, nothing from a file.
 //
 // The names of upstream's this file uses: the selector's cache, rebindOnNever and its own field provimux; the cache's
-// mu, entries, ttl, ensureInitializedLocked and removeAliasGroupLocked; an entry's authID, expiresAt and aliases;
-// sameSessionEntryGroup; authPriority; the manager's Selector, HomeEnabled and hasPluginScheduler.
+// mu, entries, ttl, maxEntries, ensureInitializedLocked and removeAliasGroupLocked; an entry's authID, expiresAt and
+// aliases; sameSessionEntryGroup; authPriority; the manager's Selector, HomeEnabled and hasPluginScheduler.
 
-// provimuxReturnNoteLimit is the number of keys the table of notes holds; at that size it is emptied (15.4). The marks
-// of returns (for part one's expect) are kept apart and never emptied while their binding stands.
+// provimuxReturnNoteLimit is the number of keys the table of notes holds; at that size it is emptied (15.2, K7). The
+// marks of returns (for part one's expect) are kept apart and never emptied while their binding stands.
 const provimuxReturnNoteLimit = 16384
 
 // provimuxSessionReturn is the selector's own part of the rule, guarded by the selector's cache's mu; the zero value is
@@ -84,7 +84,7 @@ func provimuxReturnRuns(m *Manager, s *SessionAffinitySelector, coldAfter time.D
 	return !s.rebindOnNever && coldAfter < s.cache.ttl && !m.HomeEnabled() && !m.hasPluginScheduler()
 }
 
-// provimuxReturn is the rule (15.3), called by Pick right before it looks the binding up. named is K2 (the client
+// provimuxReturn is the rule (15.2), called by Pick right before it looks the binding up. named is K2 (the client
 // named the conversation and it is neither a sub-agent nor a fork); cacheKey and fallbackKey are Pick's keys;
 // available is the list Pick chooses from for this request; now is the time Pick took. It returns nothing: it either
 // dropped the binding or did not, and Pick's own lines decide everything after it. Unset, it is one atomic load and a
@@ -110,16 +110,15 @@ func (s *SessionAffinitySelector) provimuxReturn(named bool, cacheKey, fallbackK
 	s.provimux.seen[cacheKey] = now // K7
 }
 
-// provimuxJudgeLocked is K3 to K6 and the comparison, under the cache's write lock; it reports whether it dropped
-// the binding.
-func (s *SessionAffinitySelector) provimuxJudgeLocked(cache *SessionCache, cacheKey, fallbackKey string, available []*Auth, now time.Time, coldAfter time.Duration) bool {
+// provimuxJudgeLocked is K3 to K6 and the comparison, under the cache's write lock: it drops the binding, or not.
+func (s *SessionAffinitySelector) provimuxJudgeLocked(cache *SessionCache, cacheKey, fallbackKey string, available []*Auth, now time.Time, coldAfter time.Duration) {
 	entry, ok := cache.entries[cacheKey] // K3: a live binding
 	if !ok || entry.authID == "" || !now.Before(entry.expiresAt) {
-		return false
+		return
 	}
 	if fallbackKey != "" && fallbackKey != cacheKey { // K4: the second key is in the same binding
 		if other, okOther := cache.entries[fallbackKey]; okOther && other.authID != "" && now.Before(other.expiresAt) && !sameSessionEntryGroup(other, entry) {
-			return false
+			return
 		}
 	}
 	boundFound, boundPriority, highest, seenAny := false, 0, 0, false // K5: a higher account this request may use
@@ -136,7 +135,7 @@ func (s *SessionAffinitySelector) provimuxJudgeLocked(cache *SessionCache, cache
 		}
 	}
 	if !boundFound || boundPriority >= highest {
-		return false
+		return
 	}
 	var last time.Time // K6: the conversation's last routed message, through any key of its binding
 	for _, key := range append([]string{cacheKey}, entry.aliases...) {
@@ -145,7 +144,7 @@ func (s *SessionAffinitySelector) provimuxJudgeLocked(cache *SessionCache, cache
 		}
 	}
 	if last.IsZero() || now.Sub(last) < coldAfter {
-		return false
+		return
 	}
 	cache.removeAliasGroupLocked(entry)
 	s.provimux.returns++
@@ -153,7 +152,6 @@ func (s *SessionAffinitySelector) provimuxJudgeLocked(cache *SessionCache, cache
 	provimuxReturned.Add(1)
 	at := now
 	provimuxReturnedLast.Store(&at)
-	return true
 }
 
 // markReturnedLocked marks keys with the selector's latest return number. The marks are kept while their key has a

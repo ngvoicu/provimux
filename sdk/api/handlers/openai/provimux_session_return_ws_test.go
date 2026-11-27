@@ -18,11 +18,11 @@ import (
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 )
 
-// Provimux: finding 12 of the review of the rule's first build, its real-socket case, against the rule as built now
-// (design section 15). A turn on an open Codex WebSocket is pinned to the connection's login, so the rule never moves
-// it (K5: its list is that login alone), and it is a use of the conversation like any other. A new connection's first
-// turn is not pinned: it returns only if the conversation has been unused for cold-after, its pinned turns included.
-// Every account and key is invented; the executor is a stand-in in this process; frames go over loopback only.
+// Provimux: row 10 of session-route.md 15.6, over a real socket. A turn on an open Codex WebSocket is pinned to the
+// connection's login, so the rule never moves it (K5: its list is that login alone), and it is a use of the
+// conversation like any other. A new connection's first turn is not pinned: it returns only if the conversation has
+// been unused for cold-after, its pinned turns included. Every account and key is invented; the executor is a stand-in
+// in this process; frames go over loopback only.
 func TestProvimuxSessionReturnWebsocket(t *testing.T) {
 	const model = "provimux-sr-return-ws-model"
 	const cold, ttl = 2 * time.Hour, 4 * time.Hour

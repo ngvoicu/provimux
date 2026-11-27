@@ -10,7 +10,7 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
-// Provimux: what counts as use (K6 and K7 of the rule, session-route.md 15.3). The rule never moves a conversation
+// Provimux: what counts as use (K6 and K7 of the rule, session-route.md 15.2). The rule never moves a conversation
 // that had a message routed to an account within cold-after, counted from the message, not from the end of its answer
 // or from a result; a message refused before selection is not use; switched off and on, the rule starts afresh. Every
 // account and key is invented; the executors are stand-ins in this process.

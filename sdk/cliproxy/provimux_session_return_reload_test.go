@@ -13,7 +13,7 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
-// Provimux: J3 of session-route.md 15.13. Every path that commits a configuration reaches the layer's hook, and the
+// Provimux: row 14 of session-route.md 15.6. Every path that commits a configuration reaches the layer's hook, and the
 // rule's value in use follows: the first configuration of a start (not committed), a hot reload as the watcher
 // applies it, and a write through the config API the console uses, read back from the file. Each change of the
 // routing settings makes a new selector, and the state reads it as it runs. Nothing is sent anywhere.

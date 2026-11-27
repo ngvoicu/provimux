@@ -11,10 +11,11 @@ import (
 	"testing"
 )
 
-// Provimux: J1 of the design's 15.13, settled by reading this package's source as the compiler does. The rule sits in
-// Pick, one line before the binding is looked up; that is enough only if Pick is the one place a named conversation's
-// binding in the session cache decides an account. Every read of the cache that can hand an account back is listed
-// here with the function it is in. A read upstream adds, or moves, fails this test, and whoever syncs reads it again.
+// Provimux: row 15 of the design's 15.6, settled by reading this package's source as the compiler does. The rule sits
+// in Pick, one line before the binding is looked up; that is enough only if Pick is the one place a named
+// conversation's binding in the session cache decides an account. Every read of the cache that can hand an account back
+// is listed here with the function it is in. A read upstream adds, or moves, fails this test, and whoever syncs reads
+// it again.
 
 // provimuxCacheReads is every place in this package, outside Provimux's own files and tests, that reads a binding out
 // of the session cache, by function. Pick honours it; LookupAffinity only observes (it selects nothing); and
@@ -108,7 +109,7 @@ func dedupe(sorted []string) []string {
 	return out
 }
 
-// TestProvimuxSessionReturnTwoLines: the two lines of 15.4 are where the design puts them: the field is the selector's,
+// TestProvimuxSessionReturnTwoLines: the two lines of 15.3 are where the design puts them: the field is the selector's,
 // and in Pick the rule is the statement right before the binding is looked up, with Pick's own values.
 func TestProvimuxSessionReturnTwoLines(t *testing.T) {
 	fset := token.NewFileSet()

@@ -7,13 +7,12 @@ info:
     Contract 1 of `session-route.md` (beside this file). Three requests of Provimux's own. Stock
     CLIProxyAPI has none of them: a 404 means "not this build".
 
-    Amended 2026-11-27 with the second design of the rule (not in this repository): the operator's
+    Amended 2026-11-27 with the second design of the rule (design section 15): the operator's
     list of bindings and its release are withdrawn, as is the object `cache` of the show; the rule's
     state is `GET /v8/management/provimux/session-return`. None of the withdrawn parts was released.
 
-    **This release has the two client requests only** (decided on 2026-11-27). The rule
-    and its state request are **not in this release** (the state request is described with the rule,
-    in its own later step, and answers 404 now): in this release the show's `rule` is always
+    The first release, v8.1.7-pmx.4, has the two client requests only. A build without the rule
+    answers the state request with 404 and the show's `rule` with
     `{in_effect: false, cold_after_s: null}`.
 
     With `routing.session-affinity: true` the gateway binds a conversation to the account that served
@@ -472,7 +471,7 @@ components:
         rule:
           type: object
           description: |
-            What the gateway does by itself (the second design of the rule). With `in_effect`: at this
+            What the gateway does by itself (design section 15). With `in_effect`: at this
             conversation's next request, if it is bound to an account below the highest-priority
             account that request may use, and no message of it was routed to an account for `cold_after_s`, the binding is
             dropped and the request is routed as a new conversation's. It is decided at that request,

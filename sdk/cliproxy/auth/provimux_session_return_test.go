@@ -15,7 +15,7 @@ import (
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
 
-// Provimux: the tests of the rule of session-route (.github/provimux/design/session-route.md 15.3 and 15.10). Every
+// Provimux: the tests of the rule of session-route (.github/provimux/design/session-route.md 15.2 and 15.6). Every
 // account, key and session is invented; every executor is a stand-in in this process; nothing is sent anywhere. No
 // test sleeps and none depends on the machine's speed or the date: the rule's own function is called with a time the
 // test chooses from the entry it made, and through a real Pick the bindings and notes are moved into the past by
@@ -112,7 +112,7 @@ func (f *provimuxSRFixture) auths() []*Auth {
 	return []*Auth{mustAuth(f.t, f.m, f.high), mustAuth(f.t, f.m, f.low)}
 }
 
-// TestProvimuxSessionReturnSevenThings is the table of 15.3: each of K1 to K7, and the comparison, with what it must
+// TestProvimuxSessionReturnSevenThings is the table of 15.2: each of K1 to K7, and the comparison, with what it must
 // know and its "not certain: nothing". The rule's function is called with a time chosen from the conversation's note.
 // Each row starts from a conversation bound below a free higher-priority account, whose last message was at sent.
 func TestProvimuxSessionReturnSevenThings(t *testing.T) {
@@ -263,8 +263,8 @@ func TestProvimuxSessionReturnSevenThings(t *testing.T) {
 }
 
 // TestProvimuxSessionReturnNoteTable is K7's table: written under the cache's lock, on the selector, emptied when it
-// reaches its size, and after that the first request of a key is not judged (it has no note). Finding 3 of the
-// second review: the emptying does not touch the binding's life, so the show still gives the token it gave, and that
+// reaches its size, and after that the first request of a key is not judged (it has no note). The emptying does not
+// touch the binding's life, so the show still gives the token it gave, and that
 // token still releases the binding.
 func TestProvimuxSessionReturnNoteTable(t *testing.T) {
 	f := newProvimuxSRFixture(t, "round-robin", false, nil)
@@ -301,7 +301,7 @@ func TestProvimuxSessionReturnNoteTable(t *testing.T) {
 	}
 }
 
-// TestProvimuxSessionReturnPin is rows 1 and 2 of 15.10: through a real Manager and selector, under each strategy, on
+// TestProvimuxSessionReturnPin is rows 1 and 2 of 15.6: through a real Manager and selector, under each strategy, on
 // one provider and on two, for each kind of named conversation (sub-agents apart), a conversation bound below and
 // unused for cold-after goes to the highest priority at its next request, and one used within it does not; with the
 // setting absent the same samples select as upstream does and the rule writes nothing.
@@ -359,7 +359,7 @@ func TestProvimuxSessionReturnPin(t *testing.T) {
 	}
 }
 
-// TestProvimuxSessionReturnLeftAlone is row 4 of 15.10: a pinned request never drops a binding, nor a sub-agent, a
+// TestProvimuxSessionReturnLeftAlone is row 4 of 15.6: a pinned request never drops a binding, nor a sub-agent, a
 // fork, a conversation without a session id, or one the prefix matcher binds by its content; and nothing is dropped
 // for a conversation the rule has not seen since it was switched on.
 func TestProvimuxSessionReturnLeftAlone(t *testing.T) {
@@ -426,7 +426,7 @@ func TestProvimuxSessionReturnLeftAlone(t *testing.T) {
 	}
 }
 
-// TestProvimuxSessionReturnAliases is row 5 (finding 6): two aliases of one binding used in turn; the last use is the
+// TestProvimuxSessionReturnAliases is row 5 of 15.6: two aliases of one binding used in turn; the last use is the
 // group's, whichever alias asks, and a return drops every alias.
 func TestProvimuxSessionReturnAliases(t *testing.T) {
 	calls := &provimuxRTCalls{}
@@ -472,7 +472,7 @@ func TestProvimuxSessionReturnAliases(t *testing.T) {
 	}
 }
 
-// TestProvimuxSessionReturnRestored is row 6, second half (finding 7): a binding written before this selector existed
+// TestProvimuxSessionReturnRestored is row 6 of 15.6: a binding written before this selector existed
 // (a new selector after a change of the routing settings, a restore after a restart) has no note, so it is not
 // judged at its first request, whatever its times say; from its second request on it is.
 func TestProvimuxSessionReturnRestored(t *testing.T) {
@@ -557,7 +557,7 @@ func TestProvimuxSessionReturnRestoredFromSnapshot(t *testing.T) {
 	}
 }
 
-// TestProvimuxSessionReturnBounds is row 7 (finding 8): cold-after at 1m0.9s is kept to the nanosecond: dropped
+// TestProvimuxSessionReturnBounds is row 7 of 15.6: cold-after at 1m0.9s is kept to the nanosecond: dropped
 // exactly from that time on, never before.
 func TestProvimuxSessionReturnBounds(t *testing.T) {
 	cold := time.Minute + 900*time.Millisecond
@@ -578,7 +578,7 @@ func TestProvimuxSessionReturnBounds(t *testing.T) {
 	}
 }
 
-// TestProvimuxSessionReturnHeldRequest is row 8 (finding 4): a request held in an executor on the low account for
+// TestProvimuxSessionReturnHeldRequest is row 8 of 15.6: a request held in an executor on the low account for
 // longer than cold-after, while a second request of the conversation returns it: the held one's success and its
 // failure both leave the new binding.
 func TestProvimuxSessionReturnHeldRequest(t *testing.T) {
@@ -625,8 +625,8 @@ func TestProvimuxSessionReturnHeldRequest(t *testing.T) {
 	}
 }
 
-// TestProvimuxSessionReturnCountRacing is row 9: with requests of one conversation racing, and a client's release
-// racing them, the binding below is dropped once, and the counter equals the number of drops. Run under -race.
+// TestProvimuxSessionReturnCountRacing is row 9 of 15.6: with requests of one conversation racing, and a client's
+// release racing them, the binding below is dropped once, and the counter equals the number of drops. Run under -race.
 func TestProvimuxSessionReturnCountRacing(t *testing.T) {
 	const conversations, requests = 8, 6
 	for _, withRelease := range []bool{false, true} {
@@ -732,9 +732,9 @@ func TestProvimuxSessionReturnEndsTheLife(t *testing.T) {
 	}
 }
 
-// TestProvimuxSessionReturnState is row 11: the state names each reason of 15.6, in the contract's order, and the rule
-// does nothing where the state says it is not in effect; in effect, it says so. With affinity off there is no selector
-// of affinity in use to ask.
+// TestProvimuxSessionReturnState is row 13 of 15.6: the state names each reason of 15.4, in the contract's order, and
+// the rule does nothing where the state says it is not in effect; in effect, it says so. With affinity off there is no
+// selector of affinity in use to ask.
 func TestProvimuxSessionReturnState(t *testing.T) {
 	rows := []struct {
 		reason  string

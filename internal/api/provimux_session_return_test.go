@@ -11,8 +11,8 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
-// Provimux: GET /v8/management/provimux/session-return, the rule's state (session-route.md 15.6, rows 11 and 12 of
-// 15.10), through the real management router behind the management key, in each mode, against the contract; and the
+// Provimux: GET /v8/management/provimux/session-return, the rule's state (session-route.md 15.4, row 13 of 15.6),
+// through the real management router behind the management key, in each mode, against the contract; and the
 // show's rule, which says the same in two fields. Every account and key is invented.
 
 // srReturnRule puts cold-after in force for m, as the service's hook does, until the test ends.
