@@ -54,7 +54,7 @@ The check found the three marks of A set only where this section says, and three
 **The process mark.** The entry and the record exist only in a process that Provimux's own `main` started. `cmd/server/main.go` calls `logging.ProvimuxShippedGateway()` as the first thing `main` does (one line); it sets one mark for the whole process in `internal/provimux/origin`. Both packages are internal: a program in another Go module cannot import them, so no embedding can set the mark, and `TestProvimuxOriginCallers` fails when any product file but those two calls the setter. Where the mark is not set: no answer names an entry, nor `X-Provimux-Model-Sent`, `-Model` or `-Model-Basis` (A's own condition); nothing is noted; the record has no place, so its file is neither read nor written; and neither list carries `answered`. The account marker (`X-Provimux-Account`, `account` on the rows) does not depend on it. Tests that stand for the gateway as shipped set the mark through `origin.ShippedGatewayForTests`, which does nothing outside a test binary; a test that stands for an embedding does not (`asEmbedding`) and expects none of it. The three marks of A stay: inside the shipped gateway they keep a plugin's parts out.
 
 **Inside the gateway as shipped.**
-- *45.* The answer is credited to the registration that was in force for the whole call: the call's first attempt context counts the manager's executor registrations and unregistrations (all providers), and an entry is named only if the count at publication is the same. Any registration while the call runs (a reload, a plugin's executor) gives that answer none. This is earlier than the brief's "when the request is handed to the transport": in the reviewer's case the request is handed over after both re-registrations, so a revision noted then would have matched.
+- *45.* (Narrowed by part (4) below.) The answer is credited to the registration that was in force for the whole call: the call's first attempt context counts the manager's executor registrations and unregistrations (all providers), and an entry is named only if the count at publication is the same. Any registration while the call runs (a reload, a plugin's executor) gives that answer none. This is earlier than the brief's "when the request is handed to the transport": in the reviewer's case the request is handed over after both re-registrations, so a revision noted then would have matched.
 - *47.* The loader's mark holds the credential's id when the loader made it, and holds only for that id: a copy registered under another id has none.
 - *46.* The gateway as shipped installs no HTTP decorator on a context but Provimux's own (`provimuxObserveSent`); Antigravity's client removes the decorator for an inner client and applies it once itself. A decorator of another program exists only in an embedding, which the process mark excludes.
 
@@ -75,6 +75,32 @@ The check found the three marks of A set only where this section says, and three
 | 47 | the mark per id; the process mark | `TestFinalCredentialCopy` (shipped and embedding): FAIL → PASS |
 | 48 | the time by sequence | `TestFinalLastWrittenTime`: FAIL → PASS |
 | 49 | drop on disable | `TestFinalDisablePendingWrite`: FAIL → PASS |
+
+### (4) Decided by the lead on 2026-11-27: rule A.1 narrowed to what changes the executor in place
+
+Part (3) credited an answer only if the manager's count of executor registrations, across all providers, was the same at publication as at the call's first attempt. In the gateway as shipped, everyday events move that count: the service puts its own executor back for a provider whenever a login of that provider is added, refreshed, disabled or removed, at every configuration save (for nine providers at once), and at every model-list refresh; a plugin registers executors for its own providers. With a streaming answer held before it was stated, each of these cost the answer its entry (`TestProvimuxEverydayEventsKeepTheEntry`, below). Narrowed, as the rule now is:
+
+**An answer names an entry only if the executor the manager publishes for the answering credential's provider is the service's own built-in one it recorded, at that registration, and no registration for that provider put another kind of executor in place after the call's first attempt.** The service putting its own built-in executor of the same kind back, with nothing between, is no change. A change is: another program's registration for the provider (seen as a gap in the provider's revisions at the service's next registration, or as a revision that is not the service's at publication), an unregistration, or the service's own registration of another kind (a type not on the list, the plugin-refresh wrapper). Each change is numbered in the order it is seen; the call notes the last number at its first attempt and must see no later change for its provider. Registrations for other providers never matter.
+
+| Event, with a streaming answer held before it is stated | Moves the count of part (3) | Entry before (part 3) | Entry now |
+|---|---|---|---|
+| nothing (control) | no | kept | kept |
+| the answering login's token refreshed, its file saved | yes (claude) | lost | kept |
+| a login of the same provider added | yes (claude) | lost | kept |
+| a login of the same provider disabled | yes (claude) | lost | kept |
+| a login of the same provider removed | yes (claude) | lost | kept |
+| a login of another provider added | yes (meta) | lost | kept |
+| a login of another provider disabled | no | kept | kept |
+| a login of another provider removed | no | kept | kept |
+| the configuration saved, an unrelated change | yes (nine providers) | lost | kept |
+| the configuration saved, a change to the answering provider's keys | yes (nine providers) | lost | kept |
+| the configuration saved, a change to another provider's keys | yes (nine providers) | lost | kept |
+| a plugin loaded, for a provider of its own | yes (its provider) | lost | kept |
+| a plugin reloaded, for a provider of its own | yes (its provider) | lost | kept |
+| the model lists refreshed | yes (seven providers) | lost | kept |
+| control: a plugin's executor put in place for the answering provider, then the service's again | yes (claude) | lost | lost, as it must |
+
+Finding 45's tests (`TestFinalInFlightWatcherReload`, `TestFinalInFlightExecutor`, shipped and embedding) still pass: there another program's executor was in place when the call began, and the service's registrations during the call follow a gap.
 
 ## Amended 2026-11-27: decided by the lead (the entry only when certain; the record per client key)
 
