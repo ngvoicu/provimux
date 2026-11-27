@@ -1,6 +1,7 @@
 package cliproxy
 
 import (
+	"context"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -481,4 +482,30 @@ func TestProvimuxAnswerEntryDevinRequestIDsOverTheCatalog(t *testing.T) {
 		}
 	}
 	t.Logf("%d request ids over %d models; %d have no entry: %v", checked, len(models), len(unresolved), unresolved)
+}
+
+// The second try on the same account after an overload refusal (routing.retry.same-account-retry): the refused first
+// try answered no 2xx, so it is no candidate, and the answer of the second names its account and its entry.
+func TestProvimuxAnswerEntryAfterASecondTry(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%v", stream), func(t *testing.T) {
+			h := newSentHarness(t, answeredClaudeConfig+"routing:\n  retry:\n    same-account-retry: true\n")
+			t.Cleanup(coreauth.ProvimuxSetRetryClockForTest(func(ctx context.Context, _ time.Duration) error { return ctx.Err() }, nil))
+			key := sentKeyFor(t, h, "provimux-test-claude-key")
+			h.stand.mu.Lock()
+			h.stand.refusal = `{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`
+			h.stand.status = func(_ *http.Request, n int) (int, http.Header) {
+				if n == 0 {
+					return 529, nil
+				}
+				return 0, nil
+			}
+			h.stand.mu.Unlock()
+			answer := h.post("/v1/chat/completions", chatBody("provimux-test-claude-key", stream, ""), nil)
+			if received := h.stand.all(); len(received) != 2 || received[0].Status != 529 || received[1].Status != http.StatusOK {
+				t.Fatalf("fixture: the stand-in received %+v", received)
+			}
+			h.checkSent(answer, key, "api.anthropic.com", "anthropic/provimux-test-claude-sent")
+		})
+	}
 }

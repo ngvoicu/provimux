@@ -51,6 +51,8 @@ type sentStandIn struct {
 	received []sentReceived
 	// status answers a request with a status other than 200 when it returns one (a refusal, a redirect).
 	status func(r *http.Request, n int) (int, http.Header)
+	// refusal is the body of such an answer; "" for the harness's own.
+	refusal string
 }
 
 func (s *sentStandIn) RoundTripperFor(*coreauth.Auth) http.RoundTripper { return s }
@@ -89,7 +91,7 @@ func sentCopilot(t *testing.T, h *sentHarness, modelIDs ...string) *coreauth.Aut
 func (s *sentStandIn) reset() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.received, s.status = nil, nil
+	s.received, s.status, s.refusal = nil, nil, ""
 }
 
 // answered returns the received requests that carried a model and were answered with a 2xx.
@@ -185,12 +187,16 @@ func (s *sentStandIn) RoundTrip(r *http.Request) (*http.Response, error) {
 	}
 	received.Status = status
 	s.received = append(s.received, received)
+	refusal := s.refusal
 	s.mu.Unlock()
 	if status != http.StatusOK {
 		if header.Get("Content-Type") == "" {
 			header.Set("Content-Type", "application/json")
 		}
-		return &http.Response{StatusCode: status, Header: header, Body: io.NopCloser(strings.NewReader(`{"error":{"message":"provimux-test stand-in refusal","type":"invalid_request_error"}}`)), Request: r}, nil
+		if refusal == "" {
+			refusal = `{"error":{"message":"provimux-test stand-in refusal","type":"invalid_request_error"}}`
+		}
+		return &http.Response{StatusCode: status, Header: header, Body: io.NopCloser(strings.NewReader(refusal)), Request: r}, nil
 	}
 	return standInAnswer(r, body, received.Model), nil
 }
