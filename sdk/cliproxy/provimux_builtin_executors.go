@@ -5,8 +5,8 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
-// Provimux: the closed list of built-in executors (.github/provimux/design/answered-by.md, rule A.1 as decided in part
-// (5)). An answer names an entry only when the executor that answers is of a type on the list below, and no executor
+// Provimux: the closed list of built-in executors (.github/provimux/design/answered-by.md, "Where an entry is named").
+// An answer names an entry only when the executor that answers is of a type on the list below, and no executor
 // that is not one of the gateway's own was ever put in place for its provider in this process: the manager marks the
 // provider at the registration itself, before such an executor is in place (coreauth.provimuxRegistering), by what is
 // registered, never by comparing anything afterwards. The gateway putting its own executors back never marks anything.

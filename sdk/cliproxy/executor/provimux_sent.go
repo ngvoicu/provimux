@@ -473,7 +473,7 @@ func provimuxConnectModel(path string, body []byte) (model string, unread bool) 
 }
 
 // provimuxHousekeeping reports whether request is on the closed list of requests of executor (a kind of the closed
-// executor list) that cannot produce an answer (the lead's amendments of 2026-11-27): a token exchange or refresh, a
+// executor list) that cannot produce an answer: a token exchange or refresh, a
 // model catalog, a project discovery. A request is housekeeping only when the executor that answered is the one that
 // sends it, and its method, exact authority (https on the default port, the Host its URL's), exact path and shape are
 // those of the list; it carries no model and nothing else makes it doubtful. Every other request counts as one that
