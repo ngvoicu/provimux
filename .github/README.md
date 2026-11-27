@@ -1131,7 +1131,7 @@ curl -s "$PROVIMUX/v1/provimux/session-route/release" -H "Authorization: Bearer 
 
 **What you get.** When an account cools down, session affinity moves the conversation to the next account by
 priority, and keeps it there after the first account is free again: a shorter prompt cache, or a paid key where you
-wanted your subscription. Set one time and you no longer send it back by hand. Once no message of the conversation
+wanted your subscription. Set a time once, and you no longer send it back by hand. Once no message of the conversation
 has been routed to an account for that time, its next message goes to the highest-priority account that message may
 use.
 
