@@ -43,7 +43,7 @@ func (s *Server) registerProvimuxClientRoutes(v1 *gin.RouterGroup) {
 type provimuxSessionRouteRequest struct {
 	Model    string
 	Identity []byte // the identity object as sent, or nil
-	Expect   string // "" when absent
+	Expect   string // "" when absent; never "" when present
 }
 
 // provimuxSessionRouteError answers in the /v1 group's error shape.
@@ -53,8 +53,8 @@ func provimuxSessionRouteError(c *gin.Context, status int, message string) {
 
 // provimuxParseSessionRouteBody reads the body as the contract's schema, and nothing looser: one JSON object, nothing
 // after it; each field at most once; model a non-empty string; identity an object where present; expect, on the
-// release only, a well-formed binding token where present (an empty, blank or null expect is refused, never taken as
-// absent); no other field.
+// release only, a non-empty string where present (an empty or null expect is refused, never taken as absent; any other
+// string that names no life of the binding is answered 409 by the release); no other field.
 func provimuxParseSessionRouteBody(raw []byte, release bool) (provimuxSessionRouteRequest, error) {
 	var request provimuxSessionRouteRequest
 	notObject := errors.New("the body must be one JSON object, with nothing after it")
@@ -91,8 +91,8 @@ func provimuxParseSessionRouteBody(raw []byte, release bool) (provimuxSessionRou
 			}
 			request.Identity = append([]byte(nil), trimmed...)
 		case key == "expect" && release:
-			if isNull || json.Unmarshal(trimmed, &request.Expect) != nil || !coreauth.ProvimuxValidBindingToken(request.Expect) {
-				return request, errors.New("expect must be the binding token a show gave (b. and 16 characters); leave it out to release whatever is bound")
+			if isNull || json.Unmarshal(trimmed, &request.Expect) != nil || request.Expect == "" {
+				return request, errors.New("expect must be the binding token a show gave; leave it out to release whatever is bound")
 			}
 		case key == "expect":
 			return request, errors.New("expect belongs to the release request")

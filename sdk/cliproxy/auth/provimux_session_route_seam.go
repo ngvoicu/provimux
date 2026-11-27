@@ -82,9 +82,9 @@ type provimuxSeamKey struct {
 // provimuxSeamResultKey returns the cache key the result's binding was made under. First from what Pick wrote into
 // the request's metadata (the provider, the model and the canonical session id); where a path lost them, derived as
 // SessionAffinitySelector.OnResult derives them. ok is false for a conversation bound by its content only (the prefix
-// matcher), for one with no session at all, and for one whose provider or model part holds upstream's delimiter:
-// then upstream's string could be split more than one way, and the book refuses to note it (session-route G1).
-// The caller still requires the cache to hold the key (I1).
+// matcher), for one with no session at all, and for one any of whose three parts holds upstream's delimiter: then
+// another triple can join to the same key, upstream holds one binding for both, and the book cannot tell whose it is
+// (design section 15.11), so it notes neither. The caller still requires the cache to hold the key (I1).
 func provimuxSeamResultKey(res Result) (provimuxSeamKey, bool) {
 	metadata := res.Options.Metadata
 	if metadata != nil {
@@ -128,7 +128,7 @@ func provimuxSeamResultKey(res Result) (provimuxSeamKey, bool) {
 	if provider == "" || session == "" || modelKey == "" {
 		return provimuxSeamKey{}, false
 	}
-	if strings.Contains(provider, provimuxKeyDelimiter) || strings.Contains(modelKey, provimuxKeyDelimiter) {
+	if provimuxSeamAmbiguous(provider, session, modelKey) {
 		return provimuxSeamKey{}, false
 	}
 	// The metadata's parent is also where Pick puts an alias of the same conversation (a prompt_cache_key's
@@ -150,6 +150,30 @@ func provimuxSeamResultKey(res Result) (provimuxSeamKey, bool) {
 		Socket:     socket,
 		Derived:    derived,
 	}, true
+}
+
+// provimuxSeamAmbiguous reports whether a triple's joined key could also be another triple's: any part holding the
+// delimiter makes the join ambiguous.
+func provimuxSeamAmbiguous(provider, session, modelKey string) bool {
+	return strings.Contains(provider, provimuxKeyDelimiter) || strings.Contains(session, provimuxKeyDelimiter) ||
+		strings.Contains(modelKey, provimuxKeyDelimiter)
+}
+
+// provimuxSeamFailureRemoves reports whether upstream's own OnResult, which runs right after the result hooks, removes
+// the binding of res's key from the cache when it is bound to res's account: the same tests in the same order
+// (SessionAffinitySelector.OnResult). The book ends that binding's life there, so a token of it never names the
+// binding made next, even on the same account.
+func provimuxSeamFailureRemoves(affinity *SessionAffinitySelector, res Result) bool {
+	if affinity == nil || res.Success {
+		return false
+	}
+	if res.Error != nil && shouldSkipCredentialCooldown(res.Error) {
+		return false
+	}
+	if affinity.rebindOnNever || (affinity.rebindOnQuotaOnly && !shouldRebindSessionAffinityOnError(res.Error)) {
+		return false
+	}
+	return true
 }
 
 // provimuxSeamNamedSession returns the bounded identity a turn with these headers and this body is bound under, read
@@ -178,13 +202,12 @@ type provimuxSeamBinding struct {
 	ExpiresAt time.Time
 	TTL       time.Duration
 	Session   string        // the session of the selection that made or last chose the binding ("" when unknown)
-	Sequence  uint64        // that selection's place in the cache's order: a new one at every selection
 	Cache     *SessionCache // the cache instance: a new one when the routing settings change
 }
 
 func provimuxSeamBindingOf(cache *SessionCache, entry sessionEntry) provimuxSeamBinding {
 	return provimuxSeamBinding{AuthID: entry.authID, ExpiresAt: entry.expiresAt, TTL: cache.ttl,
-		Session: entry.binding.sessionID, Sequence: entry.binding.sequence, Cache: cache}
+		Session: entry.binding.sessionID, Cache: cache}
 }
 
 // provimuxSeamLookup reads the binding under key without touching it (no refresh, no eviction order), under the
@@ -211,20 +234,16 @@ func provimuxSeamTTL(affinity *SessionAffinitySelector) time.Duration {
 	return affinity.cache.ttl
 }
 
-// provimuxSeamBeforeRemove runs inside provimuxSeamRelease between the judgement and the removal, before the cache's
-// lock is taken. Only tests set it, to prove that a binding changed in between is left.
+// provimuxSeamBeforeRemove runs in a release between the show of the binding it acts on (its look-up) and the
+// locked step that checks and removes it. Only tests set it, to prove that a binding changed in between is left.
 var provimuxSeamBeforeRemove func()
 
 // provimuxSeamRelease removes the binding under key, with every alias of its group, only while still holds for the
-// binding as it is under the cache's write lock: the judgement and the removal are one step, so nothing can come
-// between them. Unlike Invalidate, no alias of the group survives to bring the binding back. It reports whether it
-// removed it.
+// binding as it is under the cache's write lock. Unlike Invalidate, no alias of the group survives to bring the
+// binding back. It reports whether it removed it.
 func provimuxSeamRelease(affinity *SessionAffinitySelector, key string, still func(provimuxSeamBinding) bool) bool {
 	if affinity == nil || affinity.cache == nil || key == "" || still == nil {
 		return false
-	}
-	if hook := provimuxSeamBeforeRemove; hook != nil {
-		hook()
 	}
 	cache := affinity.cache
 	cache.mu.Lock()

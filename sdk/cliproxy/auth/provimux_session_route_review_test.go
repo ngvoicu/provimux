@@ -44,9 +44,8 @@ func (f *provimuxSRFixture) serve(models ...string) {
 
 // TestProvimuxSessionRouteDelimiterOwnership is finding 1: upstream joins provider, session and model into one string
 // with "::", which a session id and a configured name may hold, so two different (session, name) pairs can make one
-// string. Key A uses (x, "sr::m"); key B uses ("x::sr", "m"): the same upstream string. B may never show or release
-// A's pair, which B never used; and the book never notes a pair whose name holds the delimiter (it could not tell
-// whose it is), so A is answered "not-seen" for it, safely.
+// string, and upstream holds one binding for both. Key A uses (x, "sr::m"); key B uses ("x::sr", "m"). The book cannot
+// tell whose that binding is, so it is "not-seen" in both directions (design section 15.11), and nothing is released.
 func TestProvimuxSessionRouteDelimiterOwnership(t *testing.T) {
 	f := newProvimuxSRFixture(t, "round-robin", false, nil)
 	f.serve("sr::m", "m")
@@ -59,29 +58,29 @@ func TestProvimuxSessionRouteDelimiterOwnership(t *testing.T) {
 	if err := f.turnModel("m", pairB, scopeB, nil); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.book.Show(scopeB, pairA, nil, "sr::m"); got.Conversation != "not-seen" {
-		t.Fatalf("key B shows the pair of key A, which it never used: %s", mustJSON(t, got))
+	for _, c := range []struct {
+		who    string
+		scope  string
+		header http.Header
+		model  string
+	}{
+		{"key B asking for A's pair", scopeB, pairA, "sr::m"},
+		{"key A asking for B's pair", scopeA, pairB, "m"},
+		{"key A asking for its own pair", scopeA, pairA, "sr::m"},
+		{"key B asking for its own pair", scopeB, pairB, "m"},
+	} {
+		if got := f.book.Show(c.scope, c.header, nil, c.model); got.Conversation != "not-seen" {
+			t.Fatalf("%s: %s", c.who, mustJSON(t, got))
+		}
+		if released, _ := f.book.Release(c.scope, c.header, nil, c.model, ""); released.Released || released.Conversation != "not-seen" {
+			t.Fatalf("%s released: %s", c.who, mustJSON(t, released))
+		}
 	}
-	if released, _ := f.book.Release(scopeB, pairA, nil, "sr::m", ""); released.Released || released.Conversation != "not-seen" {
-		t.Fatalf("key B releases the pair of key A: %s", mustJSON(t, released))
-	}
-	key := "mixed::affinity:x::sr::m"
-	if _, ok := f.binding(key); !ok {
+	if _, ok := f.binding("mixed::affinity:x::sr::m"); !ok {
 		t.Fatal("the shared upstream binding is gone")
 	}
-	if got := f.book.Show(scopeA, pairA, nil, "sr::m"); got.Conversation != "not-seen" {
-		t.Fatalf("a name holding the delimiter is noted: %s", mustJSON(t, got))
-	}
-	for _, entry := range f.book.Entries() {
-		if strings.Contains(entry.ModelKey, "::") {
-			t.Fatalf("the book noted a name holding the delimiter: %+v", entry)
-		}
-		if entry.hasScope(scopeA) && entry.Session != "affinity:x" {
-			t.Fatalf("key A's scope is on another pair: %+v", entry)
-		}
-		if entry.hasScope(scopeB) && (entry.Session != "affinity:x::sr" || entry.ModelKey != "m") {
-			t.Fatalf("key B's scope is on another pair: %+v", entry)
-		}
+	if entries := f.book.Entries(); len(entries) != 0 {
+		t.Fatalf("the book noted an ambiguous pair: %+v", entries)
 	}
 }
 

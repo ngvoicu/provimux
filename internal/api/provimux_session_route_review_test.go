@@ -21,18 +21,18 @@ func (f *srAPIFixture) srBound(key string, header http.Header) bool {
 	return bytes.Contains(body, []byte(`"conversation":"bound"`))
 }
 
-// TestProvimuxSessionRouteReleaseRequests is finding 3 (b) for the release: an expect that is present must be a
-// well-formed token, and a body that does not parse is refused; each is 400 and releases nothing. Leaving expect out
-// releases, as documented.
+// TestProvimuxSessionRouteReleaseRequests is finding 3 (b) for the release, to the amended contract: an empty or null
+// expect, and a body that is not exactly one object of the schema, are 400; a non-empty expect that names no life of
+// the binding (blank, malformed) is 409; none of them releases anything. Leaving expect out releases, as documented.
 func TestProvimuxSessionRouteReleaseRequests(t *testing.T) {
 	for _, c := range []struct {
 		name, body string
 		want       int
 	}{
 		{"empty expect", `{"model":"` + srAPIModel + `","expect":""}`, http.StatusBadRequest},
-		{"blank expect", `{"model":"` + srAPIModel + `","expect":" "}`, http.StatusBadRequest},
+		{"blank expect", `{"model":"` + srAPIModel + `","expect":" "}`, http.StatusConflict},
 		{"null expect", `{"model":"` + srAPIModel + `","expect":null}`, http.StatusBadRequest},
-		{"malformed expect", `{"model":"` + srAPIModel + `","expect":"b.x"}`, http.StatusBadRequest},
+		{"malformed expect", `{"model":"` + srAPIModel + `","expect":"b.x"}`, http.StatusConflict},
 		{"number expect", `{"model":"` + srAPIModel + `","expect":7}`, http.StatusBadRequest},
 		{"trailing bracket", `{"model":"` + srAPIModel + `"}] `, http.StatusBadRequest},
 		{"second object", `{"model":"` + srAPIModel + `"}{}`, http.StatusBadRequest},

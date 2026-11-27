@@ -615,6 +615,10 @@ func srTypeIs(types []string, value any) bool {
 			if n, ok := value.(float64); ok && n == float64(int64(n)) {
 				return true
 			}
+		case "number":
+			if _, ok := value.(float64); ok {
+				return true
+			}
 		case "object":
 			if _, ok := value.(map[string]any); ok {
 				return true
