@@ -17,11 +17,11 @@ import (
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 )
 
-// Provimux: finding 1 of the second review of the rule, the reviewer's own case through the real Responses handler. A
-// streamed answer of 90 seconds; the handler stops execution after delivering response.completed, before the stream's
-// end, so upstream never refreshes the binding from the result. The rule reads the conversation's last message routed to an account:
-// with cold-after 3m the follow-up stays on its account; with 1m it goes back, as intended (the message was sent 90
-// seconds before). Every account and key is invented; the executor is a stand-in in this process.
+// Provimux: row 10 of session-route.md 15.6, through the real Responses handler. A streamed answer of 90 seconds; the
+// handler stops execution after delivering response.completed, before the stream's end, so upstream never refreshes the
+// binding from the result. The rule reads the conversation's last message routed to an account: with cold-after 3m the
+// follow-up stays on its account; with 1m it goes back, as intended (the message was sent 90 seconds before). Every
+// account and key is invented; the executor is a stand-in in this process.
 
 type srReturnSSEExecutor struct {
 	srSocketExecutor

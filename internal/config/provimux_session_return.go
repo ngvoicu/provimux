@@ -8,7 +8,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Provimux: routing.session-affinity-return (.github/provimux/design/session-route.md 15.6). One key, cold-after: how
+// Provimux: routing.session-affinity-return (.github/provimux/design/session-route.md 15.4). One key, cold-after: how
 // long a conversation must be unused before its cache can be taken as cold. Off unless it is set; removing the key is
 // "off". Only the setting lives here; the rule is sdk/cliproxy/auth's (provimux_session_return.go).
 
@@ -22,8 +22,8 @@ type ProvimuxSessionReturn struct {
 }
 
 // ProvimuxColdAfter is routing.session-affinity-return.cold-after, kept as written. The duration it stands for is read
-// with time.ParseDuration and only ever compared with another duration (finding 8 of the review: nothing is added to
-// it and nothing turns it into seconds).
+// with time.ParseDuration and only ever compared with another duration: nothing is added to it and nothing turns it
+// into seconds.
 type ProvimuxColdAfter string
 
 // provimuxColdAfterError names the key and what it takes.

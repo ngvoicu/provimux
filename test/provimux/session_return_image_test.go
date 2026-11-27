@@ -18,12 +18,11 @@ import (
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
-// Provimux: finding 2 of the review of the rule's first build, the reviewer's own HTTP case, against the rule as built
-// now (session-route.md 15). The image route may not use a free account. Two paid Codex accounts of priority 10 and a
-// free one of priority 20 serve the image model; a conversation named by Session-Id is bound to a paid account, its
-// first route for that route. Unused for cold-after, its next request goes to the same paid account, with the rule set
-// and without it (the first build moved it to the other paid one). Every key and account is invented; the executor
-// is a stand-in in this process whose answer names the account that answered.
+// Provimux: row 3 of session-route.md 15.6, over HTTP. The image route may not use a free account. Two paid Codex
+// accounts of priority 10 and a free one of priority 20 serve the image model; a conversation named by Session-Id is
+// bound to a paid account, its first route for that route. Unused for cold-after, its next request goes to the same
+// paid account, with the rule set and without it. Every key and account is invented; the executor is a stand-in in this
+// process whose answer names the account that answered.
 
 type sessionReturnImageExecutor struct{ coreauth.ProviderExecutor }
 
