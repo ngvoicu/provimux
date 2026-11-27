@@ -124,6 +124,8 @@ paths:
             `accounts`: each model gains `accounts`, each with its marker and what its answers said.
             `figures`: each model gains `accounts`, and the answer gains `figures`.
             A value the server does not know is ignored.
+            Only this list carries `figures`: `GET /v1/models/{id}` with `include=figures` answers the
+            model with `accounts` and without `figures` (decided by the lead on 2026-11-27).
           schema:
             type: string
           examples:
@@ -439,7 +441,10 @@ components:
           oneOf:
             - $ref: "#/components/schemas/Timestamp"
             - type: "null"
-          description: When providers.dev built that dataset.
+          description: |
+            When providers.dev built that dataset. A dataset generated more than 24 hours ahead of the
+            gateway's clock is never held, fetched or from the disk copy (decided by the lead on
+            2026-11-27).
         fetched_at:
           oneOf:
             - $ref: "#/components/schemas/Timestamp"
@@ -491,7 +496,9 @@ components:
             `per_use`: the account is charged these prices per token. `reference`: the account is
             not billed per token (a subscription); the prices are the API list prices of the entry
             in `reference`, for comparison. `unknown`: no price applies or none is known; every
-            price is null.
+            price is null. Also `unknown` where providers.dev names the API entry of a `reference`
+            in a form that is not an EntryRef: the entry's price is left out (decided by the lead on
+            2026-11-27).
           enum: [per_use, reference, unknown]
         reference:
           oneOf:
@@ -516,7 +523,8 @@ components:
           type: array
           description: |
             The prices of writing to the cache, shortest lifetime first; an item whose lifetime is
-            not stated comes first. Empty where the source states none.
+            not stated comes first. Empty where the source states none. A negative price the source
+            states is left out (decided by the lead on 2026-11-27).
           items:
             $ref: "#/components/schemas/CacheWritePrice"
         tiers:
@@ -555,7 +563,9 @@ components:
       properties:
         input_tokens_above:
           type: integer
-          description: The tier holds for a request whose input is above this many tokens.
+          description: |
+            The tier holds for a request whose input is above this many tokens. A tier whose size is
+            above 2^53 - 1 is left out (decided by the lead on 2026-11-27).
         input:
           oneOf:
             - $ref: "#/components/schemas/Price"
@@ -693,7 +703,10 @@ components:
         lifetime_s:
           type: integer
           minimum: 0
-          description: The oldest tested age through which every check hit; 0 = no such age.
+          description: |
+            The oldest tested age through which every check hit; 0 = no such age. A measurement
+            providers.dev lists without a lifetime is no measurement and is not listed (decided by
+            the lead on 2026-11-27).
         date:
           oneOf:
             - $ref: "#/components/schemas/Day"
@@ -726,6 +739,11 @@ components:
       properties:
         tokens:
           type: [integer, "null"]
+          minimum: 0
+          maximum: 9007199254740991
+          description: |
+            Null where unknown, and where providers.dev states a count above 2^53 - 1: left out,
+            never clamped (decided by the lead on 2026-11-27).
         at_least:
           type: boolean
           description: True where the value is only the largest an evaluation saw accepted; the real limit may be higher.

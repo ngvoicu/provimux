@@ -74,6 +74,24 @@ What stood in both reviews is the map from what was really sent to a providers.d
 
 Read for this amendment: Provimux `main` at `9d0786d95` (v8.1.7); F1 at `4f14c2cff` (`provimux-figures-f1-rebase`); the account marker as built at `9b71b947f` (`provimux-answered-by`); the two reviews of F1 (the second at `/tmp/provimux-fig02-r2-28aErf/FIG-02-second-review.md` when read). Nothing was sent to a provider, the owner's gateway or port 8787.
 
+## Note of 2026-11-27: after the review of F2 and F3
+
+Decided by the lead on 2026-11-27. The architect was not asked. The review of F2 and F3 found one defect and made notes. These rules change or are stated for the first time; 6.2 and the contract say them in place.
+
+| Rule | Where | Why |
+|---|---|---|
+| The disk copy is held at the start of a round, before any request of that round, the listings' included | 6.2 "Never blocking" | The defect. The copy was read only after the listings' request. With providers.dev accepting the connection and never answering, both paths said `none` for up to 30 seconds |
+| After a failure, the figures' next request is counted from the time of the round that sent it, not from the end of the listings' request: 10 minutes, then 70 | 6.2 "When" | It was asked at 20 and 80 minutes, a scan late each time |
+| Turning the switch off stops a fetch under way: no request leaves after that, nothing of that fetch is applied, and no failure is recorded | 6.2 "The switch" | Up to 9 more pages could leave |
+| A document with no entry Provimux can read is refused like any other bad document (`invalid_response`), whatever is held: every entry unreadable, or `total` 0. The log says "no entry could be read" | 6.2 "replaces the held one only if" | 450 held entries became 0, on disk too |
+| A `generated_at` more than 24 hours ahead of the gateway's clock is refused, from the network (`invalid_response`) and from the disk copy (ignored with its one warning) | 6.2; `openapi.yaml`, `Figures.generated_at` | One future date blocked every later document until that time, and survived a restart |
+| A redirect is followed only to the same host over `https`. Any other is answered as the redirect itself, an `http_status` failure | 6.2 | A 302 to another host was followed and its document accepted |
+| Values only a broken summary carries are left out where they are read, never the entry or the document: a negative cache write price (as a negative cache read price already was); a `price_from` that is empty or not of the form `<provider>/<model>` (the entry's price is left out: `billing` `unknown`, every price null); an item of `cache_lifetime.lifetimes` whose `lifetime_s` is missing or null (no measurement, not a measured 0); a token count above 2^53 − 1 (left out, not clamped), the window, the output limit and a tier's size alike | 4.1; `openapi.yaml`, `EntryPrice.billing`, `Limit.tokens`, `PriceTier` | The review's stand-in served each; the record carried a negative price, a reference no tool could read, a measured 0 nobody measured, a window clamped to the largest integer |
+| The disk copy's entries pass the same reading as fetched ones: every value of the contract's form, every enum one the contract knows, `rely_on_s` what the rule of 4.2 gives from the entry's own values. An entry that does not is left out alone, counted as unread, and its page is asked again without its `ETag`. A copy with no entry left is ignored. What an interrupted write left (`.figures.json.*.tmp`) is removed when the copy is read at the start | 6.2 "Disk" | A schema-1 file with entries lacking `cache` and `price`, with unknown `basis` or `billing`, or a hand-written `rely_on_s` was held and served |
+| `GET /v1/models/<id>` with `include=figures` gives the model with `accounts` and without `figures`; only the list carries `figures`. The behaviour stays | 5; `openapi.yaml`, `include` | It was not stated |
+
+Not in this round: an unusable `proxy-url` means a direct request (upstream's behaviour for every request the gateway makes); 12 of the review, decided earlier.
+
 ## 1. The design in one page
 
 | Piece | Where | What it does |
@@ -426,12 +444,12 @@ If-None-Match: <the page's ETag, when one is held>
 
 - **The fixed set** is a constant: `anthropic`, `antigravity`, `claude-subscription`, `devin`, `github-copilot`, `google`, `google-vertex`, `meta-subscription`, `openai`, `openai-codex`, `openrouter`, `xai`. It does not depend on the accounts a user has, so the request is the same for every user and tells the server nothing about him (the rule of `model-lists.md` section 7).
 - **Size** [ran]: the set without `openrouter` and with one Kimi provider is 190 entries in one page, 51 KB gzip, 1.53 MB decoded; `openrouter` is 400 entries in two pages, 68 KB gzip. So about 580 entries, three pages, about 120 KB on a day the dataset changed; with `If-None-Match` a `304` with no body. What Provimux keeps of 190 entries is about 150 KB as JSON.
-- **When:** in the round that fetches the listings (`sdk/cliproxy/provimux_published_lists.go:37-44`): at start in the background, every 6 hours, on `POST /v8/management/models/refresh`; after a failure 10 minutes, then 1 hour. Pages one after another until `next_offset` is null, at most 10.
-- **A fetched document replaces the held one only if** every page is a `200` or a `304`, well-formed, at most 8 MB, all pages name one `dataset_version`, together they hold `total` entries, and `generated_at` is not before the held document's. Anything else is a failed fetch: the held document stays, and the failure is recorded as a code. An entry Provimux cannot read is left out alone.
-- **Disk:** `model-lists/figures.json` beside `published.json`: the kept records, the dataset version, the dates and each page's `ETag`. Mode `0600`, temporary file and rename (`internal/provimux/modellists/published.go:387`). A damaged or foreign file is ignored with one warning and replaced by the next accepted document.
-- **Never blocking:** no request is awaited at start or on any path that serves a client. The disk copy is read when the model lists' folder is opened; a start without network gives the figures of the last run, with their dates.
+- **When:** in the round that fetches the listings (`sdk/cliproxy/provimux_published_lists.go:37-44`): at start in the background, every 6 hours, on `POST /v8/management/models/refresh`; after a failure 10 minutes, then 1 hour, each counted from the time of the round that sent the failed request (note of 2026-11-27). Pages one after another until `next_offset` is null, at most 10. A redirect is followed only to the same host over `https` (note of 2026-11-27).
+- **A fetched document replaces the held one only if** every page is a `200` or a `304`, well-formed, at most 8 MB, all pages name one `dataset_version`, together they hold `total` entries, at least one of them can be read, and `generated_at` is not before the held document's and not more than 24 hours ahead of the gateway's clock (note of 2026-11-27). Anything else is a failed fetch: the held document stays, and the failure is recorded as a code. An entry Provimux cannot read is left out alone, and so is a value only a broken summary carries (note of 2026-11-27).
+- **Disk:** `model-lists/figures.json` beside `published.json`: the kept records, the dataset version, the dates and each page's `ETag`. Mode `0600`, temporary file and rename (`internal/provimux/modellists/published.go:387`). A damaged or foreign file, one with no entry, and one generated more than 24 hours ahead of the gateway's clock are ignored with one warning and replaced by the next accepted document. Each entry of the copy passes the reading a fetched one passes; one that does not is left out alone and its page asked again. Leftovers of an interrupted write are removed when the copy is read (note of 2026-11-27).
+- **Never blocking:** no request is awaited at start or on any path that serves a client. The disk copy is read at the start of the first round with the switch on, before any request of that round, the listings' included (note of 2026-11-27); a start without network gives the figures of the last run, with their dates.
 - **Unreachable:** the held document stays, however old; its dates say so. With nothing held, `state` is `none` and there are no figures.
-- **The switch:** `models.published-lists: false` already means "Provimux never contacts providers.dev" (`internal/registry/catalog_config.go:21-24`). It turns this request off too: `state` is `off`, no figure is given, the disk copy is not read. Off in a test binary and in Home mode, as the listings are. Decision 3.
+- **The switch:** `models.published-lists: false` already means "Provimux never contacts providers.dev" (`internal/registry/catalog_config.go:21-24`). It turns this request off too: `state` is `off`, no figure is given, the disk copy is not read. Turned off while a fetch is under way, no further page is asked and nothing of that fetch is applied (note of 2026-11-27). Off in a test binary and in Home mode, as the listings are. Decision 3.
 - **Through the configured proxy,** within 30 seconds a page.
 
 No model list, no route and no request to a vendor depends on any of it. No executor, translator or auth file changes.
@@ -580,8 +598,10 @@ type Figures struct { /* Provider, Model, URL, Access, Price, Cache, InputWindow
 // FiguresDocument is an accepted answer, as held in memory and written to figures.json.
 type FiguresDocument struct { /* Schema, ETags, DatasetVersion, GeneratedAt, FetchedAt, Entries by ref */ }
 
-// FetchFigures asks every page. A result with NotModified keeps the held document.
-func FetchFigures(ctx context.Context, client *http.Client, base string, held *FiguresDocument, userAgent string, now time.Time) (FiguresResult, error)
+// FetchFigures asks every page. A result with NotModified keeps the held document. proceed is asked before each
+// page: false stops the fetch (the switch was turned off; note of 2026-11-27).
+func FetchFigures(ctx context.Context, client *http.Client, base string, held *FiguresDocument, userAgent string, now time.Time,
+	pageTimeout time.Duration, proceed func() bool) (FiguresResult, error)
 
 // CountsForRelyOn reports whether a measurement by this providers.dev client id is a real client's
 // through Provimux (prices-and-cache.md 4.2): today only "agent+cliproxyapi". A plain probe's
@@ -595,7 +615,7 @@ type MeasuredLifetime struct { /* Client, Label, Counts, Seconds, Date, Checks, 
 // counts (of equal ones the newest), else the safe value by its basis, else nothing.
 func RelyOn(safeSeconds *int, safeBasis string, safeDate string, throughProvimux []MeasuredLifetime) (seconds *int, basis string, date string)
 
-func (s *Store) ReadFigures() (*FiguresDocument, error)
+func (s *Store) ReadFigures(now time.Time) (*FiguresDocument, error) // now: the gateway's clock (note of 2026-11-27)
 func (s *Store) WriteFigures(doc *FiguresDocument) error
 
 // sdk/cliproxy
