@@ -2,15 +2,16 @@ package store
 
 import (
 	"context"
-	"encoding/json"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/MoeForge/moego/json"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/meta"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
 	sa "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
 	ca "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
-	"os"
-	"path/filepath"
-	"testing"
 )
 
 func TestFollowLoginStores(t *testing.T) {

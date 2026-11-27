@@ -23,6 +23,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -86,14 +87,7 @@ func FigureProviders() []string {
 	return out
 }
 
-func isFigureProvider(provider string) bool {
-	for _, p := range figureProviders {
-		if p == provider {
-			return true
-		}
-	}
-	return false
-}
+func isFigureProvider(provider string) bool { return slices.Contains(figureProviders, provider) }
 
 // FiguresRequestURL is one page of the request Provimux sends, built on base.
 func FiguresRequestURL(base string, offset int) string {
@@ -1002,11 +996,8 @@ func trimmed(value *string) string {
 
 // oneOf returns the value when it is one of allowed, else fallback.
 func oneOf(value *string, fallback string, allowed ...string) string {
-	v := trimmed(value)
-	for _, a := range allowed {
-		if v == a {
-			return v
-		}
+	if v := trimmed(value); slices.Contains(allowed, v) {
+		return v
 	}
 	return fallback
 }

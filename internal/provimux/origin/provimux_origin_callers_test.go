@@ -9,9 +9,9 @@ import (
 	"testing"
 )
 
-// The positive marks of the lead's amendment of 2026-11-27 (2) are set in a few places of the gateway's own code, and
-// the test seams nowhere in product code. This reads every product (non-test) Go file of the module and fails when a
-// call is anywhere else. A program outside the module cannot import this package at all (Go's internal rule).
+// The process mark is set only by the gateway's own main, and its test seam is called nowhere in product code. This
+// reads every product (non-test) Go file of the module and fails when a call is anywhere else. A program outside the
+// module cannot import this package at all (Go's internal rule).
 func TestProvimuxOriginCallers(t *testing.T) {
 	root, err := filepath.Abs(filepath.Join("..", "..", ".."))
 	if err != nil {
@@ -21,16 +21,9 @@ func TestProvimuxOriginCallers(t *testing.T) {
 		t.Fatalf("the module root: %v", err)
 	}
 	allowed := map[string][]string{
-		"provimuxRegistering(":             {"sdk/cliproxy/auth/conductor_lifecycle.go", "sdk/cliproxy/auth/provimux_answered.go"},
-		"provimuxNoteExecutor(":            {}, // the per-call record removed in part (5): in no product file
-		"provimuxExecutorSequence(":        {}, // the same
-		"coreauth.SetProvimuxAnswerEntry(": {"sdk/cliproxy/provimux_answer_entry.go"},
-		"provimuxWithManager(":             {"sdk/cliproxy/auth/conductor_execution.go", "sdk/cliproxy/auth/provimux_answered.go"},
-		"origin.MarkShippedGateway(":       {"internal/logging/provimux_shipped.go"},
-		"logging.ProvimuxShippedGateway(":  {"cmd/server/main.go"},
-		"ShippedGatewayForTests(":          {"internal/provimux/origin/origin.go"},
-		"ProvimuxPassesRequestsUnchanged":  {}, // the declaration the earlier build read: in no product file
-		"ProvimuxStockTransport":           {}, // the same
+		"origin.MarkShippedGateway(":      {"internal/logging/provimux_shipped.go"},
+		"logging.ProvimuxShippedGateway(": {"cmd/server/main.go"},
+		"ShippedGatewayForTests(":         {"internal/provimux/origin/origin.go"},
 	}
 	found := map[string][]string{}
 	errWalk := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
