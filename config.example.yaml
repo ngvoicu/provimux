@@ -308,6 +308,12 @@ routing:
     # Retry rounds that need no wait remain controlled by request-retry.
     max-retry-interval: 30
 
+    # Provimux: after a passing fault of the vendor (overloaded, 502/503/504/529, or the connection
+    # failed before any answer byte), wait 0.5-1 s and try the same account once more before moving
+    # on; a fault after the answer has begun is never retried. On unless set to false; false is
+    # CLIProxyAPI's behaviour. See "A passing fault" in Provimux's README.
+    # same-account-retry: true
+
   cooldown:
     # When true, disable auth/model cooldown scheduling globally (prevents blackout windows after failure states).
     # A credential/provider disable-cooling value, when present, overrides this global value.

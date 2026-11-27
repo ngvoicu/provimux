@@ -150,6 +150,27 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/Absent"
+  /provimux/same-account-retry:
+    get:
+      operationId: provimuxSameAccountRetry
+      summary: Whether a passing fault is tried once more on the same account, and what that did since the start
+      description: |
+        routing.retry.same-account-retry as in use (on unless the file sets false) and the counts since the
+        gateway started. The value is written through the generic config path,
+        /config/routing/retry/same-account-retry (true or false; DELETE returns to the default).
+      responses:
+        "200":
+          description: The value in use and the counts.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SameAccountRetryResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/Absent"
 components:
   securitySchemes:
     managementKey:
@@ -826,6 +847,47 @@ components:
             Whether the service's held list names the model: true for a learned model; for a row, whether the
             list names the model the row names (false marks a row the service no longer lists; rows are never
             dropped). Null without a list in use, and for a plugin's model.
+    SameAccountRetryResponse:
+      type: object
+      required: [observed_at, enabled, set_in_file, default, applies, wait_min_ms, wait_max_ms, retry_after_max_ms, since, retries, saved, not_saved]
+      properties:
+        observed_at:
+          $ref: "#/components/schemas/Timestamp"
+        enabled:
+          type: boolean
+          description: The value in use.
+        set_in_file:
+          type: boolean
+          description: Whether the config file sets the key; false means enabled is the default.
+        default:
+          type: boolean
+          description: The value when the key is not set (true in the gateway).
+        applies:
+          type: boolean
+          description: enabled, and the gateway is not in Home mode (where Home chooses the accounts and nothing is retried).
+        wait_min_ms:
+          type: integer
+          description: The shortest wait before the second try without a Retry-After.
+        wait_max_ms:
+          type: integer
+          description: The longest wait before the second try without a Retry-After.
+        retry_after_max_ms:
+          type: integer
+          description: The longest vendor Retry-After still waited; a longer one counts as not passing.
+        since:
+          $ref: "#/components/schemas/Timestamp"
+        retries:
+          type: integer
+          minimum: 0
+          description: Second tries made since `since` (the process start). In memory only.
+        saved:
+          type: integer
+          minimum: 0
+          description: Of the retries, those the same account answered.
+        not_saved:
+          type: integer
+          minimum: 0
+          description: Of the retries, those that failed again (or whose client went away during the wait); the gateway then went on as without the rule.
     NamesResponse:
       type: object
       required: [observed_at, only_my_names, applied, names, keep_ignored, others, refused]

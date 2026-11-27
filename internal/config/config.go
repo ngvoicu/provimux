@@ -130,6 +130,8 @@ type Config struct {
 	// failover or immediate additional rounds allowed by RequestRetry.
 	MaxRetryInterval int `yaml:"max-retry-interval" json:"max-retry-interval"`
 
+	SameAccountRetry *bool `yaml:"same-account-retry,omitempty" json:"same-account-retry,omitempty"` // Provimux: ProvimuxSameAccountRetry
+
 	// QuotaExceeded defines the behavior when a quota is exceeded.
 	QuotaExceeded QuotaExceeded `yaml:"quota-exceeded" json:"quota-exceeded"`
 
