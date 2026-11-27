@@ -77,6 +77,8 @@ func TestProvimuxAffinityGatewayProcess(t *testing.T) {
 	if interval, errParse := time.ParseDuration(os.Getenv(affinityInterval)); errParse == nil {
 		cliproxy.SetProvimuxAffinitySnapshotInterval(interval)
 	}
+	// The start's deadline is not what these tests are about: a loaded machine must not trip it.
+	cliproxy.SetProvimuxAffinityStartDeadline(time.Minute)
 	if stall := os.Getenv(affinityStall); stall != "" {
 		cliproxy.SetProvimuxAffinityBeforeWrite(func() { affinityWaitWhile(stall) })
 	}
@@ -102,10 +104,13 @@ func TestProvimuxAffinityGatewayProcess(t *testing.T) {
 	}
 }
 
-// affinityVendor is the stand-in vendor: it answers chat completions and records which key asked.
+// affinityVendor is the stand-in vendor: it answers chat completions and records which key asked. A request whose
+// body holds "[hold]" is announced on held (with its key) and answered only once release is closed.
 type affinityVendor struct {
-	mu   sync.Mutex
-	last string
+	mu      sync.Mutex
+	last    string
+	held    chan string
+	release chan struct{}
 }
 
 func (v *affinityVendor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -113,11 +118,16 @@ func (v *affinityVendor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	_, _ = io.Copy(io.Discard, r.Body)
+	body, _ := io.ReadAll(r.Body)
 	key := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	v.mu.Lock()
 	v.last = key
+	held, release := v.held, v.release
 	v.mu.Unlock()
+	if held != nil && bytes.Contains(body, []byte("[hold]")) {
+		held <- key
+		<-release
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = io.WriteString(w, `{"id":"c","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"answer from `+key+`"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
 }
@@ -129,6 +139,7 @@ type affinityOptions struct {
 	saveCooldown bool // routing.cooldown.save-cooldown-status
 	kvDisabled   bool // kv-store.disabled
 	affinityOff  bool // routing.session-affinity: false
+	drain        int  // server.restart-drain-seconds (0: not in the file; a test binary's default is then 0)
 	home         bool // Home mode, the Home server a closed loopback port
 }
 
@@ -161,6 +172,10 @@ func newAffinityGateway(t *testing.T, o affinityOptions) *affinityGateway {
 	if !o.clientKeys {
 		access = ""
 	}
+	drain := ""
+	if o.drain > 0 {
+		drain = fmt.Sprintf("  restart-drain-seconds: %d\n", o.drain)
+	}
 	persist := fmt.Sprintf("  session-affinity-persist: %t\n", o.persist)
 	if o.unset {
 		persist = ""
@@ -172,7 +187,7 @@ models:
 server:
   host: "127.0.0.1"
   port: %d
-%srouting:
+%s%srouting:
   strategy: "round-robin"
   session-affinity: %t
 %s  cooldown:
@@ -195,7 +210,7 @@ api-keys:
       models:
         - name: "provimux-test-upstream"
           alias: %q
-`, g.port, access, !o.affinityOff, persist, o.saveCooldown, o.kvDisabled, authDir, upstream.URL+"/v1", affinityModel)
+`, g.port, drain, access, !o.affinityOff, persist, o.saveCooldown, o.kvDisabled, authDir, upstream.URL+"/v1", affinityModel)
 	if err := os.WriteFile(g.config, []byte(yaml), 0o600); err != nil {
 		t.Fatal(err)
 	}

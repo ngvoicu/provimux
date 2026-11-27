@@ -26,12 +26,11 @@ package auth
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
-	"net/url"
 	"reflect"
 	"sort"
 	"strings"
@@ -353,10 +352,6 @@ func provimuxAffinityEntryLayout() string {
 // info level; those lines describe samples, not traffic, so they are not logged (this runs at
 // start, before the server exists, a few milliseconds).
 func provimuxAffinityRunPin(samples []ProvimuxAffinityPinSample) (results []string, err error) {
-	if level := log.GetLevel(); level > log.WarnLevel {
-		log.SetLevel(log.WarnLevel)
-		defer log.SetLevel(level)
-	}
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			err = fmt.Errorf("session affinity: a pin sample failed: %v", recovered)
@@ -367,6 +362,30 @@ func provimuxAffinityRunPin(samples []ProvimuxAffinityPinSample) (results []stri
 		results[i] = provimuxAffinityRunSample(sample)
 	}
 	return results, nil
+}
+
+// provimuxQuietLogKey marks a context whose selector lines go nowhere: the pin's samples run real
+// selectors, and their lines are not the gateway's. The process's log level is never touched (it
+// would drop every other goroutine's lines while the samples run).
+type provimuxQuietLogKey struct{}
+
+var (
+	provimuxQuietContext = context.WithValue(context.Background(), provimuxQuietLogKey{}, true)
+	provimuxQuietLogger  = func() *log.Logger {
+		logger := log.New()
+		logger.SetOutput(io.Discard)
+		logger.SetLevel(log.PanicLevel)
+		return logger
+	}()
+)
+
+// provimuxQuietSelectorLog is the selector's log entry for a context of the pin's samples; nil for
+// any other.
+func provimuxQuietSelectorLog(ctx context.Context) *log.Entry {
+	if quiet, _ := ctx.Value(provimuxQuietLogKey{}).(bool); quiet {
+		return log.NewEntry(provimuxQuietLogger)
+	}
+	return nil
 }
 
 func provimuxAffinityRunSample(sample ProvimuxAffinityPinSample) string {
@@ -403,7 +422,7 @@ func provimuxAffinityRunSample(sample ProvimuxAffinityPinSample) string {
 			if step.Op == "pick" {
 				_, opts = cliproxysession.Enrich(req, opts)
 			}
-			picked, errPick := selector.Pick(context.Background(), provider, step.Model, opts, auths)
+			picked, errPick := selector.Pick(provimuxQuietContext, provider, step.Model, opts, auths)
 			last.model, last.opts, last.authID = step.Model, opts, ""
 			if errPick != nil {
 				fmt.Fprintf(&out, "pick error %v\n", errPick)
@@ -648,77 +667,17 @@ func provimuxAffinityPinSamples() []ProvimuxAffinityPinSample {
 	return samples
 }
 
-// ProvimuxAccountIdentity returns the stable vendor identity of the account behind an auth, or
-// false when none can be established (its bindings are then neither written nor restored).
-// API keys: the provider, the key and its host. Logins: the vendor's own account ids from the
-// login's metadata. A file name or a label is never one.
+// ProvimuxAccountIdentity returns the identity of the account behind an auth as its vendor names it, or false when
+// the gateway does not hold one (its bindings are then neither written nor restored). It is the account marker's
+// rule (provimux_account_marker.go, answered-by.md 2.2): exactly the credentials whose marker begins with "a." have
+// one. Those whose marker begins with "s." (a Kimi login, an AI Studio connection, a credential a plugin made or
+// held only in memory, a Claude login without an organisation id or with an account id the gateway made up, a
+// Codex login without a user, a login missing the fields its vendor's rule reads) have none: their identity would
+// be the login file itself, which another account's login can take.
 func ProvimuxAccountIdentity(auth *Auth) (string, bool) {
-	if auth == nil {
+	basis, identity := provimuxAccountIdentity(auth)
+	if basis != provimuxBasisAccount || len(identity) == 0 {
 		return "", false
 	}
-	provider := strings.ToLower(strings.TrimSpace(auth.Provider))
-	meta := func(key string) string {
-		if auth.Metadata == nil {
-			return ""
-		}
-		value, _ := auth.Metadata[key].(string)
-		return strings.TrimSpace(value)
-	}
-	join := func(parts ...string) (string, bool) {
-		for _, part := range parts {
-			if part == "" {
-				return "", false
-			}
-		}
-		return strings.Join(append([]string{provider}, parts...), "\x00"), true
-	}
-	if auth.AuthKind() == AuthKindAPIKey {
-		key := authAttribute(auth, AttributeAPIKey)
-		host := provider
-		if base := authAttribute(auth, "base_url"); base != "" {
-			if parsed, errParse := url.Parse(base); errParse == nil && parsed.Host != "" {
-				host = strings.ToLower(parsed.Host)
-			}
-		}
-		return join("apikey", host, key)
-	}
-	switch provider {
-	case "claude":
-		return join("account", meta("account_uuid"), meta("organization_uuid"))
-	case "codex":
-		user := provimuxJWTClaim(meta("id_token"), "chatgpt_user_id")
-		if user == "" {
-			user = provimuxJWTClaim(meta("id_token"), "sub")
-		}
-		return join("account", meta("account_id"), user)
-	case "devin":
-		return join("user", meta("user_id"))
-	}
-	return "", false
-}
-
-// provimuxJWTClaim reads a claim of a JWT's payload (top level, or OpenAI's auth claim object)
-// without verifying it: it names the account, it does not authorize anything.
-func provimuxJWTClaim(token, claim string) string {
-	parts := strings.Split(token, ".")
-	if len(parts) < 2 {
-		return ""
-	}
-	payload, errDecode := base64.RawURLEncoding.DecodeString(strings.TrimRight(parts[1], "="))
-	if errDecode != nil {
-		return ""
-	}
-	var claims map[string]any
-	if json.Unmarshal(payload, &claims) != nil {
-		return ""
-	}
-	if value, ok := claims[claim].(string); ok {
-		return strings.TrimSpace(value)
-	}
-	if nested, ok := claims["https://api.openai.com/auth"].(map[string]any); ok {
-		if value, okNested := nested[claim].(string); okNested {
-			return strings.TrimSpace(value)
-		}
-	}
-	return ""
+	return string(identity), true
 }

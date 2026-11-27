@@ -811,10 +811,11 @@ restart`) to the account it was on, so the provider reads its prompt cache inste
 account. CLIProxyAPI keeps session affinity's bindings in memory only: without this, a restart sends about half the
 conversations behind a name with two accounts to the other account, whose cache is cold.
 
-**It is on whenever session affinity is on.** With `routing.session-affinity: true` there is nothing to set: after an
-upgrade, the two files below appear at the first stop or within 5 minutes. It does not apply in Home mode or with
-`kv-store.disabled: true`. Whenever it does not apply, for any reason, nothing is written and Provimux's own files from
-an earlier run are removed (unless another running Provimux uses the same store). `GET
+**It is on whenever session affinity is on.** With `routing.session-affinity: true` there is nothing to set. The
+restart that installs this version keeps nothing yet, because the version before it wrote no file: the two files below
+appear at its first stop or within 5 minutes, and from then on a restart keeps conversations. It does not apply in
+Home mode or with `server.kv-store.disabled: true`. Whenever it does not apply, for any reason, nothing is written and
+Provimux's own files from an earlier run are removed (unless another running Provimux uses the same store). `GET
 /v8/management/provimux/session-affinity-persist` says whether it is in effect and, if not, why.
 
 **How to turn it off.** Set it to `false` in the configuration, or in the console
@@ -839,12 +840,26 @@ and `.affinity-key`). Nothing is read or written while a request is routed.
   vendor identity. No client key, login file name, login e-mail address or conversation content is in them.
 - Provimux replaces or removes a file at those two names only when it authenticates with that key. Anything else
   there, a damaged file of Provimux's included, is left as it is, nothing is restored or written, and the state says
-  so: a damaged snapshot must be removed by hand.
+  so: a damaged snapshot must be removed by hand. A file Provimux was writing when its process ended is removed at the
+  next start.
 
 **What comes back.** At the next start, before anything is served, each binding with lifetime left goes back to the
 same account, with the lifetime it had, never longer than its last use plus the `session-affinity-ttl` configured now.
 From there on CLIProxyAPI's own rules apply, as if there had been no restart. The file stays until the next write
-replaces it, so after a crash routing returns to the last file written, up to 5 minutes old.
+replaces it, so after a crash routing returns to the last file written. That file is normally at most 5 minutes old;
+it is older after a write that failed, after a second crash before any write, or after a run of a version without this
+feature; a binding never comes back past its own lifetime.
+
+**Which accounts come back.** A conversation comes back only to an account Provimux can name the way its provider
+names it: an account whose marker in `GET /v1/models?include=accounts` begins with `a.` (see
+[Which account answered](#which-account-answered); with `models.answered-by: false` the list shows no marker, and the
+rule is the same). That is every API key, and the logins that hold their provider's own id for the account: Claude
+(an organisation id and an account id), Codex (a workspace and a user), Copilot, Devin, xAI, a Vertex service account,
+Meta and Antigravity. An account whose marker begins with `s.` starts afresh after a restart: a Kimi login, an AI
+Studio connection, a login or key a plugin made, a Claude login without an organisation id or whose profile Anthropic
+refused, and any login that lacks the ids its provider's rule reads. A Claude login whose file does not hold its ids
+yet gets them at its first request, and CLIProxyAPI saves them to the login file: its conversations are kept from
+then on. The state counts the bindings left out for this reason (`left_out_no_account_identity`).
 
 **What does not come back.**
 
@@ -853,8 +868,7 @@ replaces it, so after a crash routing returns to the last file written, up to 5 
   named by a hash of its opening, and it comes back.
 - A conversation whose account was not the same vendor account at every check (every 5 seconds) from its last use to
   the write: a login file replaced by another account's, or unreadable, while Provimux runs has all its bindings left
-  out for the rest of the run, and one replaced while Provimux was stopped gets nothing. Logins without a stable
-  vendor identity (Meta's) start afresh.
+  out for the rest of the run, and one replaced while Provimux was stopped gets nothing.
 - Which accounts were cooling down after a 429 (unless `routing.cooldown.save-cooldown-status: true`), the weighted
   strategy's credits and the round-robin position. Devin's per-session request counter starts again at 0, as it does
   when Devin's own client restarts.
@@ -867,13 +881,16 @@ replaces it, so after a crash routing returns to the last file written, up to 5 
   account once after an upgrade, where its cache is cold; it is never an error.
 - Two client keys that send the same session id share one account in CLIProxyAPI's memory; a restart keeps that as it
   was.
-- What the answers still being streamed change after the write at stop is not in the file. On a disk that does not
-  respond, the write at stop is given up after 1.5 seconds, and it never lands later.
+- On a disk that does not respond, the write at stop is given up after 1.5 seconds, and it never lands later; a start
+  that cannot read the file within 1.5 seconds goes on without it, and the state says so.
 
-**A restart in the middle of an answer.** By default (`server.shutdown-timeout: 0`) a restart closes the answers being
-streamed at that moment: the client gets a truncated answer. `brew services restart` stops the service with SIGTERM
-and gives it 20 seconds before it is killed; with `server.shutdown-timeout: 15`, answers under way get up to 15 seconds
-to finish, and the new process starts when the old one has stopped.
+**A restart in the middle of an answer.** A stop first writes the file, then lets the answers in flight finish, as
+[Restarts and upgrades](#restarts-and-upgrades) says. The write takes milliseconds on a healthy disk and is given up
+after 1.5 seconds on one that does not respond; the wait for the answers starts when it is done, up to
+`server.restart-drain-seconds` (25 by default). Neither lengthens the other: the write does not wait for the answers,
+and the wait keeps its own length after the write. CLIProxyAPI bounds the whole stop at 30 seconds, so with a wait of
+30 the 1.5 seconds of a stalled disk come out of the wait. A conversation whose answer is still being written at the
+stop is in the file, because it was bound when its answer started; what that answer changes afterwards is not.
 
 ### Works with Pi
 
