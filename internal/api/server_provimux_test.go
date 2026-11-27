@@ -2,11 +2,13 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -124,6 +126,10 @@ func (w provimuxSavingsWaiter) HandleUsage(context.Context, coreusage.Record) {
 	}
 }
 
+// provimuxSavingsRoutesRuns numbers the runs of the test below in one process: Savings' recorder is the process's
+// own, so each run counts a model of its own and never the record of a run before it.
+var provimuxSavingsRoutesRuns atomic.Int64
+
 // Savings records from the moment the server registered its management routes.
 func TestProvimuxSavingsRecordingStartsWithTheRoutes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -132,10 +138,11 @@ func TestProvimuxSavingsRecordingStartsWithTheRoutes(t *testing.T) {
 	s := provimuxTestServer(t, true, false)
 	seen := make(provimuxSavingsWaiter, 4)
 	coreusage.RegisterNamedPlugin("provimux-savings-routes-test", seen) // after Savings'
-	coreusage.PublishRecord(context.Background(), coreusage.Record{Provider: "claude", Model: "routes-test-model", AuthType: "oauth",
+	model := fmt.Sprintf("routes-test-model-%d", provimuxSavingsRoutesRuns.Add(1))
+	coreusage.PublishRecord(context.Background(), coreusage.Record{Provider: "claude", Model: model, AuthType: "oauth",
 		Detail: coreusage.Detail{InputTokens: 1, OutputTokens: 1}})
 	<-seen
-	recorder := provimuxServe(s, "/v8/management/provimux/savings?period=today&model=routes-test-model", true)
+	recorder := provimuxServe(s, "/v8/management/provimux/savings?period=today&model="+model, true)
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"requests":1,`) {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
