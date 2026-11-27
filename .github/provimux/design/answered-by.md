@@ -2,6 +2,42 @@
 
 Design, 2026-11-26, amended late that evening (the next section). The contract a build is checked against is `prices-and-cache/openapi.yaml` (amended with this document: the schemas `Account`, `Answered`, `AnswerStatement` and the six headers) with `prices-and-cache/examples/answers.json` beside it.
 
+## Amended 2026-11-27: decided by the lead (the entry only when certain; the record per client key)
+
+Review B of W6a and W6b (`provimux-answered-entry` at `2ec324bf2`, findings 18 to 31) found answers that named an entry the vendor did not receive, and a record that told one client key about another's answers. The lead decided how each finding is answered while the architect is away; this section is that decision as built, to be read against the rest. Where it and a later section disagree, this one holds.
+
+**A. The entry on an answer: only when it is certain.** One rule replaces the separate cases of 4.3 step 2. An answer names an entry only when all of this holds; in every other case it names none, and one noted earlier in the same attempt is cancelled:
+
+1. In the attempt, **exactly one request that could have produced the answer** was answered with a 2xx, and the reader read it whole. Housekeeping is a **closed list** of requests known by destination and shape (`provimuxHousekeepingList` in `sdk/cliproxy/executor/provimux_sent.go`: Google's OAuth token endpoint, as a form; Antigravity's project discovery, onboarding and user information; Copilot's token exchange and model catalog). Every other request counts: a second one cancels, also when it carries no model, goes to another Devin method, or is the same request again. A refused request (not 2xx) does not count, so a failover, a compression retry and a redirect still name the request that answered. A request made on another context than the attempt's own (a detached one) cancels.
+2. **No connection was made in the attempt that the reader did not see.** Each attempt's context carries a connection trace (`net/http/httptrace`, which Go's transport and gorilla's WebSocket dialer both call); a connection asked for by a request the decorator observed is counted as seen. An upstream WebSocket, or a client no helper decorated, leaves an unseen connection: no entry.
+3. **What the reader read is what left, to the host it priced.** The `Host` a request is sent with must be its URL's host and port (a configured `Host` header cancels). A transport below the reader that is not one of the gateway's own (Go's, or one of the gateway's own packages) cancels, on the client and as the per-credential transport of an SDK embedding; a transport may declare that it hands requests on unchanged (`ProvimuxStockTransport`), which tests' stand-ins do.
+4. **The credential's making is positively known.** An entry is given only for a key of the configuration or a login record one of the gateway's own logins wrote (a file, or a record of the git, object or Postgres store), with no plugin's mark. An unknown or empty origin (an SDK registration held in memory) is not vouched for. A credential a plugin makes carries `provimux_plugin_credential: true` in its metadata from the moment the plugin host makes it (a plugin's login, an update a plugin returns with its models), so it is stored with it and survives every reload. Every native login that writes a credential's record (a save with creation intent, through any of the four token stores) sets it to `false`, the same way for every provider. Nothing else in a login record is touched.
+
+**B. The record of past answers (`answered`): per client key, and simpler.** It replaces 4.4's "per marker and name" and the key-value store of W6b.
+
+1. **Per client key.** A row of `/v1/models?include=accounts` gives what the credential's answers for the name said **to the caller's own key**, by day. Callers without a key share one record. The management `model-routes` gives every key's record together, with the time. One client can no longer watch another's activity through the list. The store keeps a keyed hash of the client key under the markers' key, never the key; the credential's id likewise.
+2. **Only what the client was given.** A statement is recorded where it is written to the client, after it is written: once the response's headers that carry it are committed (`internal/logging/cpa_trace.go`), or once a WebSocket turn's `response.created` carrying its marker has been written. A statement only offered, or headers committed without one (a keep-alive first), record nothing. An answer that named the account and no entry is recorded as `null`, which is what the client was given.
+3. **Under the name called and the credential that answered, exactly.** No case folding: `Lab/Model` and `lab/model` are two rows. The name called where the credential registers exactly it, else that name without its thinking suffix where it registers exactly that, else nothing. A speech call records under the name the client called (`tts-1`), not the model it was routed to. Each credential keeps its own record, also two credentials of one vendor account; the marker is part of the row, so another account's login in the same file starts empty.
+4. **Newest first is true**: the time is taken under the lock that orders the list.
+5. **The place.** One file of its own in the auth folder (`provimux-answered.v1`, not a login file: the watcher reads `.json` only), rewritten whole and atomically (a temporary file, then a rename) by one writer: when an item is added, dropped or changes its day, when the auth folder changes, and at the stop. What is in memory belongs to one file: when the folder changes, memory is written to the old file and replaced by what the new one holds, never written over it. At the stop the intake closes first, then the last write runs: a note that arrives after that is not accepted. A file that exists and cannot be read is left as it is and not written over; without a usable folder the record lives for the run and the log says so once. An item older than 90 days is not shown, and is removed from the file at the next write; nothing stronger is promised. The file was chosen over the key-value store because it needs no store of its own, no key scan, and no tie to the store's life: the two places the service applies a config and stops already call it.
+
+| Finding | Answered by |
+|---|---|
+| 18 (an unseen answering request; a detached one) | A.2 and A.1 |
+| 19 (a plugin login turning native; a native login keeping a plugin's mark) | A.4 |
+| 20 (an in-memory credential priced) | A.4 |
+| 21 (a `Host` override; a translating transport below the reader) | A.3 |
+| 22 (a second answered request without a model, or to another Devin method) | A.1 |
+| 23 (history from an answer whose headers left without a statement) | B.2 |
+| 24 (a hidden name's history under a case twin) | B.3 |
+| 25 (a speech answer under another name) | B.3 |
+| 26 (two credentials of one account sharing a record) | B.3 |
+| 27 (newest first false under concurrency) | B.4 |
+| 28 (a store move erasing the destination's record) | B.5 |
+| 29 (a note lost at the stop) | B.5 |
+| 30 (one key watching another's activity) | B.1 |
+| 31 (expired data retained in the store) | B.5 |
+
 ## Amended 2026-11-26, late evening: the entry is read from the request that was sent
 
 The second review of F1 (the build step that gave each account row a predicted providers.dev entry) found five more rows whose answer was sent as something else, after the first review's six. By the staff's rule the work changes instead of going back a third time. This amendment is that change. It touches **nothing W1 to W3 build**: the marker, its key, `account` in the lists, the statement and where it is written are as they were, and as `provimux-answered-by` has them at `9b71b947f`.
@@ -249,6 +285,8 @@ Nothing in the gateway attaches a decorator today [ran: `git grep`; only tests d
 
 ### 4.3 The rule
 
+(Amended 2026-11-27 by the lead: step 2 is now rule A of the amendment at the top: exactly one candidate request, no unseen connection, what was read is what left, and a credential of positively known making.)
+
 Where the conductor states who answered (`publishAnsweredAuthMetadata`, then `publishProvimuxAnswer`, which W3 built), with the attempt's context and the credential that answered:
 
 1. The attempt answered and its bytes are not a plugin's (`UpstreamAnswered`, as today). Else nobody is named.
@@ -276,6 +314,8 @@ Why step 2 is enough, case by case [helper for what each executor sends beside i
 **The cost.** One more read of each outgoing body to find `model`: a scan of the bytes already in memory. A zstd body (Codex, `upstream-request-compression`, off unless set) is decoded for it. With `models.answered-by: false` the decorator is not attached and nothing is read.
 
 ### 4.4 What a list row carries: `answered`
+
+(Amended 2026-11-27 by the lead: the record is per client key, per credential and per exact name, recorded where the answer is written, and kept in a file of its own: rule B of the amendment at the top. Where this section says "any client's", "per marker and name", "in the key-value store" or "before the first byte", rule B holds.)
 
 A row cannot say what the next request will be sent as. It can say what this account's answers for this name were sent as. So in place of `entry` and `entry_per_request` a row carries a record:
 

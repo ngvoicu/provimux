@@ -523,7 +523,7 @@ For Provimux's README, its page on the site and the notes of the release (the ow
 
 - "Per account behind a model name, Provimux gives providers.dev's list price, cache prices, cache lifetime and window, each with its date and source: in the console, and to tools in `/v1/models?include=figures`."
 - "Every answer names the account that gave it by an opaque marker, the model that answered, and its providers.dev entry (`X-Provimux-*`), read from the request Provimux sent for it. So a tool knows what the answer cost and how long its cache lives, without knowing any provider. pi-cache-keeper is such a tool for Pi."
-- "Before an answer, the model list says what each account last answered as. It is a record, not a promise: the request decides, each time."
+- "Before an answer, the model list says what each account last answered you as: what its answers to your own key said. It is a record, not a promise: the request decides, each time." (Amended 2026-11-27 by the lead: the record is per client key, `answered-by.md`, the amendment of that day.)
 - "The cache lifetime is the one providers.dev measured with a real client through Provimux where it has such a measurement, and its safe value otherwise. Plain test requests never decide it. Every value says what it rests on and when it was measured."
 - A README section "Figures for tools": the three steps of section 5, the promises, and the example.
 

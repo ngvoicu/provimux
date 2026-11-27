@@ -361,13 +361,15 @@ components:
           type: array
           maxItems: 4
           description: |
-            What this credential's answers for this model said of themselves (answered-by.md 4.4): the distinct
-            providers.dev entries (`<provider>/<model>`) its answers named, newest first, each with the time of the
-            last answer that named it; null for answers that named none. The same items as the account's `answered`
-            in GET /v1/models?include=accounts, which gives the day only. It is a record of answers and predicts
+            What this credential's answers for this model said of themselves (answered-by.md 4.4, amended
+            2026-11-27 by the lead): the distinct providers.dev entries (`<provider>/<model>`) its answers to every
+            client key together named, newest first, each with the time of the last answer that named it; null for
+            answers that named none. Per credential and per exact model name. GET /v1/models?include=accounts gives
+            each client key only its own answers' items, with the day only. It is a record of answers and predicts
             nothing: an answer's entry is read from the request the gateway sent for it, so the next answer can
-            differ from every item. Empty when no answer of this credential for this model is recorded (kept 90 days,
-            and across restarts where the gateway keeps its marker key).
+            differ from every item. Empty when no answer of this credential for this model is recorded. An item is
+            not shown after 90 days and is removed from the record at its next write; the record outlives a restart
+            where the gateway keeps its marker key.
             Optional in this contract: a gateway from before answered-by W6, and one with models.answered-by off,
             leaves it out, and a reader treats missing and empty alike. No route carries a predicted `entry`.
           items:
