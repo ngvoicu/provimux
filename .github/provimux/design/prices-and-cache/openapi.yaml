@@ -35,13 +35,16 @@ info:
     - `X-Provimux-Entry` is there and is no key of `figures.entries`: providers.dev has no such
       entry, or the gateway holds no figures (`figures.state`).
     - A statement without `X-Provimux-Entry`: the gateway has no entry for what it sent (the
-      account, the host or the model has no row in its map), or it could not read what it sent.
+      account, the host or the model has no row in its map), it could not read what it sent, or
+      not every part of the answer was the gateway's own as shipped (below).
     - No statement.
 
     Before an answer, a tool has what the account's earlier answers to its own key said:
     `answered` on its row (amended 2026-11-27, decided by the lead: per client key; another key's
     answers are not on it). That is a record, not a promise. A tool may show it and price by it as
-    an expectation, and takes what the answer itself says the moment there is one.
+    an expectation, and takes what the answer itself says the moment there is one. It is a
+    best-effort memory of what answers named, rebuilt by the next answer, and nothing a user owns
+    (amended 2026-11-27 (2), decided by the lead): it can be empty where answers were given.
 
     What contract 1 promises:
     - Every property listed as required is always present. A value that is not known is null,
@@ -52,18 +55,29 @@ info:
     - Prices are US dollars per million tokens. Lifetimes are seconds. Windows and limits are
       tokens. Dates are YYYY-MM-DD. Times are RFC 3339 in UTC.
     - `rely_on_s` is chosen by the rule written on the schema `Lifetime`.
-    - An answer names its entry and its account itself. Once the answer's headers (on the
-      Responses WebSocket, its turn's response.created) have been written to the client, the
-      newest item of `answered` on that client key's row of that account under the model that
-      was called is that entry (or null where the answer named none), until a later answer of
-      that account for that model to that key says otherwise (amended 2026-11-27, decided by the
-      lead). No row says more than that: `answered` is what answers said, never what the next
-      one will say.
-    - An answer names an entry only when it is certain (amended 2026-11-27, decided by the
-      lead): the attempt sent exactly one request that could have produced it, read whole, to
-      the host the entry is priced at, with no connection the gateway did not see, for a
-      credential whose making the gateway knows (a key of its configuration or a login one of
-      its own logins wrote, not made or changed by a plugin). In every other case it names none.
+    - An answer names its entry and its account itself. Where the gateway's own output route
+      wrote the answer (its headers; on the Responses WebSocket, its turn's response.created),
+      the record keeps what those headers said at the moment they went out: the entry, or null
+      where the account was named and no entry. Where the record keeps it, it is the newest
+      item of `answered` on that caller's row of that account under the model that was called,
+      until a later answer of that account for that model to that caller says otherwise. The
+      record does not keep it, and promises nothing, for an answer written by a server or a
+      writer an embedding of the SDK put in place, around a change of the auth folder, after the
+      gateway began to stop, and beyond a restart on a gateway that does not own its auth
+      folder's record (amended 2026-11-27 (2), decided by the lead). No row says more than
+      that: `answered` is what answers said, never what the next one will say.
+    - A caller is a caller as the gateway authenticates it: with the client keys of its
+      configuration, one key. An access provider of an embedding that maps several keys to one
+      subject makes them one caller, with one record (amended 2026-11-27 (2)).
+    - An answer names an entry only in the gateway as shipped, where it made every part itself
+      (amended 2026-11-27 (2), decided by the lead): the executor that answered is one of its
+      built-in executors, registered by its own service; the HTTP client is one it built over
+      transports it made itself; its own loader made the credential, from the auth folder, a
+      store record or the configuration, and no plugin made or changed it; and the attempt sent
+      exactly one request that could have produced the answer, whose model was read from the
+      bytes handed to the transport, to the host the entry is priced at, with no connection the
+      gateway did not see. Everywhere else it names none: in particular an answer of an executor,
+      a transport or a credential an embedding of the SDK supplies.
     - A marker is the same on every answer of one account and in every list, for as long as the
       gateway keeps its key; another account never has it. It is compared, never parsed, except
       for its first character.
@@ -290,9 +304,11 @@ components:
           type: array
           maxItems: 4
           description: |
-            What this account's answers for this model to the caller's own client key said of
-            themselves (amended 2026-11-27, decided by the lead: per client key; callers without a
-            key share one record): the distinct values of `X-Provimux-Entry` on the answers written
+            What this account's answers for this model to the caller said of themselves, as the
+            gateway's own output route wrote them (amended 2026-11-27, decided by the lead: per
+            client key; callers without a key share one record; and 2026-11-27 (2): a caller is a
+            caller as the gateway authenticates it, so the keys an embedding's access provider maps
+            to one subject share one record): the distinct values of `X-Provimux-Entry` on the answers written
             to this key for this exact model name, newest first, each with the day of the last
             answer that carried it. An answer that named the account and no entry is an item whose
             `entry` is null. At most four: an older one gives way to a newer.
@@ -303,9 +319,12 @@ components:
             caller's effort chose another variant, a rule of the operator rewrote the request.
             One item is what a tool may expect and must not rely on. Several say that this
             account's answers for this model differ. None says that no answer of this account for
-            this model to this key is recorded. An item is not shown after 90 days and is removed
-            from the gateway's record at its next write; the record outlives a restart where the
-            gateway keeps its marker key.
+            this model to this key is recorded. It is a best-effort memory, rebuilt by the next
+            answer and owned by nobody: an answer around a change of the auth folder may be missing
+            from it, and so may one a second gateway on the same auth folder gave (it keeps its record
+            in memory only). An item is not shown after 90 days and is removed from the gateway's
+            record at its next write; the record outlives a restart where the gateway owns its auth
+            folder's record file and keeps its marker key.
 
             Present wherever `account` is; empty when nothing is recorded. There is no `entry` on a
             row: the gateway predicts none.
