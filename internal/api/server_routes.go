@@ -74,6 +74,7 @@ func (s *Server) setupRoutes() {
 			c.Set(handlers.ModelDetailIDContextKey, strings.TrimPrefix(c.Param("model"), "/"))
 			s.unifiedModelsHandler(openaiHandlers, claudeCodeHandlers)(c)
 		})
+		s.registerProvimuxClientRoutes(v1) // Provimux: session-route.md 7.1
 		v1.POST("/chat/completions", openaiHandlers.ChatCompletions)
 		v1.POST("/completions", openaiHandlers.Completions)
 		v1.POST("/images/generations", openaiHandlers.ImagesGenerations)

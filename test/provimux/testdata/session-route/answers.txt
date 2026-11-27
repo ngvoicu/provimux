@@ -1,0 +1,213 @@
+GET /healthz key="" headers=map[] fail-high=false
+200
+Access-Control-Allow-Headers: ["Authorization, Content-Type, X-Api-Key, X-Goog-Api-Key, Anthropic-Version, Anthropic-Beta"]
+Access-Control-Allow-Methods: ["GET, POST, PUT, PATCH, DELETE, OPTIONS"]
+Access-Control-Allow-Origin: ["*"]
+Access-Control-Expose-Headers: ["X-CPA-TRACE-ID, X-CPA-AUTH-KIND, X-CPA-AUTH-PROVIDER, X-CPA-AUTH-HOST, X-CPA-VERSION, X-CPA-COMMIT, X-CPA-BUILD-DATE, X-CPA-SUPPORT-PLUGIN, X-CPA-SERVER-ID, X-CPA-HOME-VERSION, X-CPA-HOME-BUILD-DATE, X-SERVER-VERSION, X-SERVER-BUILD-DATE, Location, Retry-After, ETag, X-Request-Id, OpenAI-Request-Id"]
+Content-Type: ["application/json; charset=utf-8"]
+Vary: ["Accept-Encoding"]
+{"status":"ok"}
+calls: []
+
+GET /v1/models key="sk-fixture-one" headers=map[] fail-high=false
+200
+Access-Control-Allow-Headers: ["Authorization, Content-Type, X-Api-Key, X-Goog-Api-Key, Anthropic-Version, Anthropic-Beta"]
+Access-Control-Allow-Methods: ["GET, POST, PUT, PATCH, DELETE, OPTIONS"]
+Access-Control-Allow-Origin: ["*"]
+Access-Control-Expose-Headers: ["X-CPA-TRACE-ID, X-CPA-AUTH-KIND, X-CPA-AUTH-PROVIDER, X-CPA-AUTH-HOST, X-CPA-VERSION, X-CPA-COMMIT, X-CPA-BUILD-DATE, X-CPA-SUPPORT-PLUGIN, X-CPA-SERVER-ID, X-CPA-HOME-VERSION, X-CPA-HOME-BUILD-DATE, X-SERVER-VERSION, X-SERVER-BUILD-DATE, Location, Retry-After, ETag, X-Request-Id, OpenAI-Request-Id"]
+Content-Type: ["application/json; charset=utf-8"]
+Vary: ["Accept-Encoding"]
+(models of this fixture) {"created":1700000000,"id":"provimux-session-route-fixture","object":"model","owned_by":"provimux-test"}
+calls: []
+
+GET /v1/models?include=accounts key="sk-fixture-one" headers=map[] fail-high=false
+200
+Access-Control-Allow-Headers: ["Authorization, Content-Type, X-Api-Key, X-Goog-Api-Key, Anthropic-Version, Anthropic-Beta"]
+Access-Control-Allow-Methods: ["GET, POST, PUT, PATCH, DELETE, OPTIONS"]
+Access-Control-Allow-Origin: ["*"]
+Access-Control-Expose-Headers: ["X-CPA-TRACE-ID, X-CPA-AUTH-KIND, X-CPA-AUTH-PROVIDER, X-CPA-AUTH-HOST, X-CPA-VERSION, X-CPA-COMMIT, X-CPA-BUILD-DATE, X-CPA-SUPPORT-PLUGIN, X-CPA-SERVER-ID, X-CPA-HOME-VERSION, X-CPA-HOME-BUILD-DATE, X-SERVER-VERSION, X-SERVER-BUILD-DATE, Location, Retry-After, ETag, X-Request-Id, OpenAI-Request-Id"]
+Content-Type: ["application/json; charset=utf-8"]
+Vary: ["Accept-Encoding"]
+(models of this fixture) {"accounts":[{"provider":"session-route-fixture","kind":"","priority":10},{"provider":"session-route-fixture","kind":"apikey","priority":5,"host":"low.fixture.example.test"}],"created":1700000000,"id":"provimux-session-route-fixture","object":"model","owned_by":"provimux-test"}
+calls: []
+
+POST /v1/chat/completions key="sk-fixture-one" headers=map[X-Session-Affinity:[fixture-pi-0001]] fail-high=false
+200
+Access-Control-Allow-Headers: ["Authorization, Content-Type, X-Api-Key, X-Goog-Api-Key, Anthropic-Version, Anthropic-Beta"]
+Access-Control-Allow-Methods: ["GET, POST, PUT, PATCH, DELETE, OPTIONS"]
+Access-Control-Allow-Origin: ["*"]
+Access-Control-Expose-Headers: ["X-CPA-TRACE-ID, X-CPA-AUTH-KIND, X-CPA-AUTH-PROVIDER, X-CPA-AUTH-HOST, X-CPA-VERSION, X-CPA-COMMIT, X-CPA-BUILD-DATE, X-CPA-SUPPORT-PLUGIN, X-CPA-SERVER-ID, X-CPA-HOME-VERSION, X-CPA-HOME-BUILD-DATE, X-SERVER-VERSION, X-SERVER-BUILD-DATE, Location, Retry-After, ETag, X-Request-Id, OpenAI-Request-Id"]
+Content-Type: ["application/json"]
+Vary: ["Accept-Encoding"]
+X-Cpa-Trace-Id: ["(trace id)"]
+{"id":"chatcmpl-fixture","object":"chat.completion","created":1700000000,"model":"provimux-session-route-fixture","choices":[{"index":0,"message":{"role":"assistant","content":"fixture answer"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}
+calls: [session-route-fixture-high]
+
+POST /v1/chat/completions key="sk-fixture-one" headers=map[X-Session-Affinity:[fixture-pi-0001]] fail-high=true
+200
+Access-Control-Allow-Headers: ["Authorization, Content-Type, X-Api-Key, X-Goog-Api-Key, Anthropic-Version, Anthropic-Beta"]
+Access-Control-Allow-Methods: ["GET, POST, PUT, PATCH, DELETE, OPTIONS"]
+Access-Control-Allow-Origin: ["*"]
+Access-Control-Expose-Headers: ["X-CPA-TRACE-ID, X-CPA-AUTH-KIND, X-CPA-AUTH-PROVIDER, X-CPA-AUTH-HOST, X-CPA-VERSION, X-CPA-COMMIT, X-CPA-BUILD-DATE, X-CPA-SUPPORT-PLUGIN, X-CPA-SERVER-ID, X-CPA-HOME-VERSION, X-CPA-HOME-BUILD-DATE, X-SERVER-VERSION, X-SERVER-BUILD-DATE, Location, Retry-After, ETag, X-Request-Id, OpenAI-Request-Id"]
+Content-Type: ["application/json"]
+Vary: ["Accept-Encoding"]
+X-Cpa-Auth-Host: ["low.fixture.example.test"]
+X-Cpa-Auth-Kind: ["apikey"]
+X-Cpa-Auth-Provider: ["session-route-fixture"]
+X-Cpa-Trace-Id: ["(trace id)"]
+{"id":"chatcmpl-fixture","object":"chat.completion","created":1700000000,"model":"provimux-session-route-fixture","choices":[{"index":0,"message":{"role":"assistant","content":"fixture answer"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}
+calls: [session-route-fixture-high session-route-fixture-low]
+
+POST /v1/chat/completions key="sk-fixture-one" headers=map[X-Session-Affinity:[fixture-pi-0001]] fail-high=false
+200
+Access-Control-Allow-Headers: ["Authorization, Content-Type, X-Api-Key, X-Goog-Api-Key, Anthropic-Version, Anthropic-Beta"]
+Access-Control-Allow-Methods: ["GET, POST, PUT, PATCH, DELETE, OPTIONS"]
+Access-Control-Allow-Origin: ["*"]
+Access-Control-Expose-Headers: ["X-CPA-TRACE-ID, X-CPA-AUTH-KIND, X-CPA-AUTH-PROVIDER, X-CPA-AUTH-HOST, X-CPA-VERSION, X-CPA-COMMIT, X-CPA-BUILD-DATE, X-CPA-SUPPORT-PLUGIN, X-CPA-SERVER-ID, X-CPA-HOME-VERSION, X-CPA-HOME-BUILD-DATE, X-SERVER-VERSION, X-SERVER-BUILD-DATE, Location, Retry-After, ETag, X-Request-Id, OpenAI-Request-Id"]
+Content-Type: ["application/json"]
+Vary: ["Accept-Encoding"]
+X-Cpa-Auth-Host: ["low.fixture.example.test"]
+X-Cpa-Auth-Kind: ["apikey"]
+X-Cpa-Auth-Provider: ["session-route-fixture"]
+X-Cpa-Trace-Id: ["(trace id)"]
+{"id":"chatcmpl-fixture","object":"chat.completion","created":1700000000,"model":"provimux-session-route-fixture","choices":[{"index":0,"message":{"role":"assistant","content":"fixture answer"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}
+calls: [session-route-fixture-low]
+
+POST /v1/chat/completions key="sk-fixture-two" headers=map[X-Session-Affinity:[fixture-pi-0001]] fail-high=false
+200
+Access-Control-Allow-Headers: ["Authorization, Content-Type, X-Api-Key, X-Goog-Api-Key, Anthropic-Version, Anthropic-Beta"]
+Access-Control-Allow-Methods: ["GET, POST, PUT, PATCH, DELETE, OPTIONS"]
+Access-Control-Allow-Origin: ["*"]
+Access-Control-Expose-Headers: ["X-CPA-TRACE-ID, X-CPA-AUTH-KIND, X-CPA-AUTH-PROVIDER, X-CPA-AUTH-HOST, X-CPA-VERSION, X-CPA-COMMIT, X-CPA-BUILD-DATE, X-CPA-SUPPORT-PLUGIN, X-CPA-SERVER-ID, X-CPA-HOME-VERSION, X-CPA-HOME-BUILD-DATE, X-SERVER-VERSION, X-SERVER-BUILD-DATE, Location, Retry-After, ETag, X-Request-Id, OpenAI-Request-Id"]
+Cache-Control: ["no-cache"]
+Connection: ["keep-alive"]
+Content-Type: ["text/event-stream"]
+Vary: ["Accept-Encoding"]
+X-Cpa-Auth-Host: ["low.fixture.example.test"]
+X-Cpa-Auth-Kind: ["apikey"]
+X-Cpa-Auth-Provider: ["session-route-fixture"]
+X-Cpa-Trace-Id: ["(trace id)"]
+data: {"id":"chatcmpl-fixture","object":"chat.completion.chunk","created":1700000000,"model":"provimux-session-route-fixture","choices":[{"index":0,"delta":{"content":"fixture answer"},"finish_reason":"stop"}]}
+
+data: [DONE]
+
+
+calls: [session-route-fixture-low]
+
+POST /v1/chat/completions key="sk-fixture-two" headers=map[] fail-high=false
+200
+Access-Control-Allow-Headers: ["Authorization, Content-Type, X-Api-Key, X-Goog-Api-Key, Anthropic-Version, Anthropic-Beta"]
+Access-Control-Allow-Methods: ["GET, POST, PUT, PATCH, DELETE, OPTIONS"]
+Access-Control-Allow-Origin: ["*"]
+Access-Control-Expose-Headers: ["X-CPA-TRACE-ID, X-CPA-AUTH-KIND, X-CPA-AUTH-PROVIDER, X-CPA-AUTH-HOST, X-CPA-VERSION, X-CPA-COMMIT, X-CPA-BUILD-DATE, X-CPA-SUPPORT-PLUGIN, X-CPA-SERVER-ID, X-CPA-HOME-VERSION, X-CPA-HOME-BUILD-DATE, X-SERVER-VERSION, X-SERVER-BUILD-DATE, Location, Retry-After, ETag, X-Request-Id, OpenAI-Request-Id"]
+Content-Type: ["application/json"]
+Vary: ["Accept-Encoding"]
+X-Cpa-Auth-Host: ["low.fixture.example.test"]
+X-Cpa-Auth-Kind: ["apikey"]
+X-Cpa-Auth-Provider: ["session-route-fixture"]
+X-Cpa-Trace-Id: ["(trace id)"]
+{"id":"chatcmpl-fixture","object":"chat.completion","created":1700000000,"model":"provimux-session-route-fixture","choices":[{"index":0,"message":{"role":"assistant","content":"fixture answer"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}
+calls: [session-route-fixture-low]
+
+POST /v1/chat/completions key="sk-fixture-one" headers=map[Session-Id:[fixture-codex-0002]] fail-high=false
+200
+Access-Control-Allow-Headers: ["Authorization, Content-Type, X-Api-Key, X-Goog-Api-Key, Anthropic-Version, Anthropic-Beta"]
+Access-Control-Allow-Methods: ["GET, POST, PUT, PATCH, DELETE, OPTIONS"]
+Access-Control-Allow-Origin: ["*"]
+Access-Control-Expose-Headers: ["X-CPA-TRACE-ID, X-CPA-AUTH-KIND, X-CPA-AUTH-PROVIDER, X-CPA-AUTH-HOST, X-CPA-VERSION, X-CPA-COMMIT, X-CPA-BUILD-DATE, X-CPA-SUPPORT-PLUGIN, X-CPA-SERVER-ID, X-CPA-HOME-VERSION, X-CPA-HOME-BUILD-DATE, X-SERVER-VERSION, X-SERVER-BUILD-DATE, Location, Retry-After, ETag, X-Request-Id, OpenAI-Request-Id"]
+Content-Type: ["application/json"]
+Vary: ["Accept-Encoding"]
+X-Cpa-Auth-Host: ["low.fixture.example.test"]
+X-Cpa-Auth-Kind: ["apikey"]
+X-Cpa-Auth-Provider: ["session-route-fixture"]
+X-Cpa-Trace-Id: ["(trace id)"]
+{"id":"chatcmpl-fixture","object":"chat.completion","created":1700000000,"model":"provimux-session-route-fixture","choices":[{"index":0,"message":{"role":"assistant","content":"fixture answer"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}
+calls: [session-route-fixture-low]
+
+POST /v1/responses key="sk-fixture-one" headers=map[Session-Id:[fixture-codex-0002]] fail-high=false
+200
+Access-Control-Allow-Headers: ["Authorization, Content-Type, X-Api-Key, X-Goog-Api-Key, Anthropic-Version, Anthropic-Beta"]
+Access-Control-Allow-Methods: ["GET, POST, PUT, PATCH, DELETE, OPTIONS"]
+Access-Control-Allow-Origin: ["*"]
+Access-Control-Expose-Headers: ["X-CPA-TRACE-ID, X-CPA-AUTH-KIND, X-CPA-AUTH-PROVIDER, X-CPA-AUTH-HOST, X-CPA-VERSION, X-CPA-COMMIT, X-CPA-BUILD-DATE, X-CPA-SUPPORT-PLUGIN, X-CPA-SERVER-ID, X-CPA-HOME-VERSION, X-CPA-HOME-BUILD-DATE, X-SERVER-VERSION, X-SERVER-BUILD-DATE, Location, Retry-After, ETag, X-Request-Id, OpenAI-Request-Id"]
+Content-Type: ["application/json"]
+Vary: ["Accept-Encoding"]
+X-Cpa-Auth-Host: ["low.fixture.example.test"]
+X-Cpa-Auth-Kind: ["apikey"]
+X-Cpa-Auth-Provider: ["session-route-fixture"]
+X-Cpa-Trace-Id: ["(trace id)"]
+{"id":"chatcmpl-fixture","object":"chat.completion","created":1700000000,"model":"provimux-session-route-fixture","choices":[{"index":0,"message":{"role":"assistant","content":"fixture answer"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}
+calls: [session-route-fixture-low]
+
+POST /v1/messages key="sk-fixture-one" headers=map[X-Claude-Code-Session-Id:[fixture-claude-0003]] fail-high=false
+200
+Access-Control-Allow-Headers: ["Authorization, Content-Type, X-Api-Key, X-Goog-Api-Key, Anthropic-Version, Anthropic-Beta"]
+Access-Control-Allow-Methods: ["GET, POST, PUT, PATCH, DELETE, OPTIONS"]
+Access-Control-Allow-Origin: ["*"]
+Access-Control-Expose-Headers: ["X-CPA-TRACE-ID, X-CPA-AUTH-KIND, X-CPA-AUTH-PROVIDER, X-CPA-AUTH-HOST, X-CPA-VERSION, X-CPA-COMMIT, X-CPA-BUILD-DATE, X-CPA-SUPPORT-PLUGIN, X-CPA-SERVER-ID, X-CPA-HOME-VERSION, X-CPA-HOME-BUILD-DATE, X-SERVER-VERSION, X-SERVER-BUILD-DATE, Location, Retry-After, ETag, X-Request-Id, OpenAI-Request-Id"]
+Content-Type: ["application/json"]
+Vary: ["Accept-Encoding"]
+X-Cpa-Auth-Host: ["low.fixture.example.test"]
+X-Cpa-Auth-Kind: ["apikey"]
+X-Cpa-Auth-Provider: ["session-route-fixture"]
+X-Cpa-Trace-Id: ["(trace id)"]
+{"id":"chatcmpl-fixture","object":"chat.completion","created":1700000000,"model":"provimux-session-route-fixture","choices":[{"index":0,"message":{"role":"assistant","content":"fixture answer"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}
+calls: [session-route-fixture-low]
+
+POST /v1/chat/completions key="sk-fixture-one" headers=map[] fail-high=false
+400
+Access-Control-Allow-Headers: ["Authorization, Content-Type, X-Api-Key, X-Goog-Api-Key, Anthropic-Version, Anthropic-Beta"]
+Access-Control-Allow-Methods: ["GET, POST, PUT, PATCH, DELETE, OPTIONS"]
+Access-Control-Allow-Origin: ["*"]
+Access-Control-Expose-Headers: ["X-CPA-TRACE-ID, X-CPA-AUTH-KIND, X-CPA-AUTH-PROVIDER, X-CPA-AUTH-HOST, X-CPA-VERSION, X-CPA-COMMIT, X-CPA-BUILD-DATE, X-CPA-SUPPORT-PLUGIN, X-CPA-SERVER-ID, X-CPA-HOME-VERSION, X-CPA-HOME-BUILD-DATE, X-SERVER-VERSION, X-SERVER-BUILD-DATE, Location, Retry-After, ETag, X-Request-Id, OpenAI-Request-Id"]
+Content-Type: ["application/json"]
+Vary: ["Accept-Encoding"]
+{"error":{"message":"unknown provider for model no-such-model","type":"invalid_request_error","code":"model_not_found","param":"model"}}
+calls: []
+
+POST /v1/chat/completions key="" headers=map[] fail-high=false
+401
+Access-Control-Allow-Headers: ["Authorization, Content-Type, X-Api-Key, X-Goog-Api-Key, Anthropic-Version, Anthropic-Beta"]
+Access-Control-Allow-Methods: ["GET, POST, PUT, PATCH, DELETE, OPTIONS"]
+Access-Control-Allow-Origin: ["*"]
+Access-Control-Expose-Headers: ["X-CPA-TRACE-ID, X-CPA-AUTH-KIND, X-CPA-AUTH-PROVIDER, X-CPA-AUTH-HOST, X-CPA-VERSION, X-CPA-COMMIT, X-CPA-BUILD-DATE, X-CPA-SUPPORT-PLUGIN, X-CPA-SERVER-ID, X-CPA-HOME-VERSION, X-CPA-HOME-BUILD-DATE, X-SERVER-VERSION, X-SERVER-BUILD-DATE, Location, Retry-After, ETag, X-Request-Id, OpenAI-Request-Id"]
+Connection: ["close"]
+Content-Type: ["application/json; charset=utf-8"]
+Vary: ["Accept-Encoding"]
+{"error":"Missing API key"}
+calls: []
+
+POST /v1/chat/completions key="sk-unknown" headers=map[] fail-high=false
+401
+Access-Control-Allow-Headers: ["Authorization, Content-Type, X-Api-Key, X-Goog-Api-Key, Anthropic-Version, Anthropic-Beta"]
+Access-Control-Allow-Methods: ["GET, POST, PUT, PATCH, DELETE, OPTIONS"]
+Access-Control-Allow-Origin: ["*"]
+Access-Control-Expose-Headers: ["X-CPA-TRACE-ID, X-CPA-AUTH-KIND, X-CPA-AUTH-PROVIDER, X-CPA-AUTH-HOST, X-CPA-VERSION, X-CPA-COMMIT, X-CPA-BUILD-DATE, X-CPA-SUPPORT-PLUGIN, X-CPA-SERVER-ID, X-CPA-HOME-VERSION, X-CPA-HOME-BUILD-DATE, X-SERVER-VERSION, X-SERVER-BUILD-DATE, Location, Retry-After, ETag, X-Request-Id, OpenAI-Request-Id"]
+Connection: ["close"]
+Content-Type: ["application/json; charset=utf-8"]
+Vary: ["Accept-Encoding"]
+{"error":"Invalid API key"}
+calls: []
+
+POST /v1/provimux/unknown key="sk-fixture-one" headers=map[] fail-high=false
+404
+Access-Control-Allow-Headers: ["Authorization, Content-Type, X-Api-Key, X-Goog-Api-Key, Anthropic-Version, Anthropic-Beta"]
+Access-Control-Allow-Methods: ["GET, POST, PUT, PATCH, DELETE, OPTIONS"]
+Access-Control-Allow-Origin: ["*"]
+Access-Control-Expose-Headers: ["X-CPA-TRACE-ID, X-CPA-AUTH-KIND, X-CPA-AUTH-PROVIDER, X-CPA-AUTH-HOST, X-CPA-VERSION, X-CPA-COMMIT, X-CPA-BUILD-DATE, X-CPA-SUPPORT-PLUGIN, X-CPA-SERVER-ID, X-CPA-HOME-VERSION, X-CPA-HOME-BUILD-DATE, X-SERVER-VERSION, X-SERVER-BUILD-DATE, Location, Retry-After, ETag, X-Request-Id, OpenAI-Request-Id"]
+Connection: ["close"]
+Vary: ["Accept-Encoding"]
+
+calls: []
+
+GET /v1/models key="sk-fixture-two" headers=map[] fail-high=false
+200
+Access-Control-Allow-Headers: ["Authorization, Content-Type, X-Api-Key, X-Goog-Api-Key, Anthropic-Version, Anthropic-Beta"]
+Access-Control-Allow-Methods: ["GET, POST, PUT, PATCH, DELETE, OPTIONS"]
+Access-Control-Allow-Origin: ["*"]
+Access-Control-Expose-Headers: ["X-CPA-TRACE-ID, X-CPA-AUTH-KIND, X-CPA-AUTH-PROVIDER, X-CPA-AUTH-HOST, X-CPA-VERSION, X-CPA-COMMIT, X-CPA-BUILD-DATE, X-CPA-SUPPORT-PLUGIN, X-CPA-SERVER-ID, X-CPA-HOME-VERSION, X-CPA-HOME-BUILD-DATE, X-SERVER-VERSION, X-SERVER-BUILD-DATE, Location, Retry-After, ETag, X-Request-Id, OpenAI-Request-Id"]
+Content-Type: ["application/json; charset=utf-8"]
+Vary: ["Accept-Encoding"]
+(models of this fixture) {"created":1700000000,"id":"provimux-session-route-fixture","object":"model","owned_by":"provimux-test"}
+calls: []
+
