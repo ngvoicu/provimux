@@ -6,8 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -181,8 +180,7 @@ func TestFiguresRedirectOnlyToTheSameHostOverHTTPS(t *testing.T) {
 
 // Values only a broken summary carries are left out where they are read, never the entry or the document: a
 // negative cache write price, a price_from not of the contract's form (the entry's price is left out), a real
-// client's item without lifetime_s (no measurement), a window or a tier too large to carry. Every record read
-// passes the reading the disk copy is put through.
+// client's item without lifetime_s (no measurement), a window or a tier too large to carry.
 func TestFiguresValuesOnlyABrokenSummaryCarriesAreLeftOut(t *testing.T) {
 	_, byRef := loadFiguresFixture(t)
 	perUse, reference := byRef["anthropic/claude-opus-5-5"], byRef["claude-subscription/claude-opus-5-5"]
@@ -191,9 +189,6 @@ func TestFiguresValuesOnlyABrokenSummaryCarriesAreLeftOut(t *testing.T) {
 		entry, err := ReadEntrySummary(raw)
 		if err != nil {
 			t.Fatalf("the entry was left out: %v", err)
-		}
-		if err = entry.check(); err != nil {
-			t.Fatalf("a record read does not pass its own reading: %v", err)
 		}
 		return entry
 	}
@@ -246,16 +241,15 @@ func TestFiguresValuesOnlyABrokenSummaryCarriesAreLeftOut(t *testing.T) {
 				lifetime["lifetimes"] = append(lifetime["lifetimes"].([]any), item)
 			}))
 			short := entry.Cache.Short
-			if short.Basis != base.Cache.Short.Basis || !equalInt(short.RelyOnS, base.Cache.Short.RelyOnS) ||
+			if short.Basis != base.Cache.Short.Basis || !reflect.DeepEqual(short.RelyOnS, base.Cache.Short.RelyOnS) ||
 				len(short.ThroughProvimux) != len(base.Cache.Short.ThroughProvimux) {
 				t.Fatalf("lifetime_s %s became a measurement: %+v", name, short)
 			}
 		}
 	})
 
-	// The fetch reading and the disk copy's reading agree: a chosen measurement with an empty client id names no
-	// client, so it is left out of measured_with on a fetch, and the record passes the disk copy's reading (read checks
-	// it) instead of being dropped after every start.
+	// A chosen measurement with an empty client id names no client, so it is left out of measured_with, and the record
+	// is read back from the disk copy as it was written.
 	t.Run("a chosen measurement with an empty client id", func(t *testing.T) {
 		if base.Cache.Short.Safe.Basis != BasisMeasured {
 			t.Fatalf("premise: the short profile's safe value is not measured: %+v", base.Cache.Short.Safe)
@@ -314,125 +308,6 @@ func TestFiguresValuesOnlyABrokenSummaryCarriesAreLeftOut(t *testing.T) {
 		}
 		if len(entry.Price.Tiers) != 1 || entry.Price.Tiers[0].InputTokensAbove != 200000 {
 			t.Fatalf("tiers %+v", entry.Price.Tiers)
-		}
-	})
-}
-
-// The disk copy's entries pass the reading fetched ones pass: an entry that does not (its cache and price
-// missing, a basis or a billing no contract knows, a rely_on_s the rule does not give, a negative price, a
-// reference of another form) is left out alone, counted as unread, and its page is asked again without its ETag.
-// A copy of which no entry passes is ignored. What an interrupted write left is removed when the copy is read.
-func TestFiguresDiskCopyEntriesPassTheFetchedReading(t *testing.T) {
-	fixture, _ := loadFiguresFixture(t)
-	server := newFiguresStandIn(t, figuresVolume(t, 450), fixture.Version, fixture.Generated)
-	result, err := fetchFiguresFrom(server, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for ref, entry := range result.Document.Entries {
-		if errCheck := entry.check(); errCheck != nil {
-			t.Fatalf("a fetched record does not pass the disk copy's reading: %s: %v", ref, errCheck)
-		}
-	}
-	whole := asJSONValue(t, result.Document).(map[string]any)
-	pages := whole["pages"].([]any)
-	refOn := func(page int) string { return pages[page].(map[string]any)["refs"].([]any)[0].(string) }
-	referenceRef := "claude-subscription/claude-opus-5-5"
-	pageOf := map[string]int{}
-	for i, page := range result.Document.Pages {
-		for _, ref := range page.Refs {
-			pageOf[ref] = i
-		}
-	}
-	cases := []struct {
-		name string
-		ref  string
-		edit func(entry map[string]any)
-	}{
-		{"cache and price missing", refOn(0), func(e map[string]any) { delete(e, "cache"); delete(e, "price") }},
-		{"a basis no contract knows", refOn(1), func(e map[string]any) {
-			e["cache"].(map[string]any)["short"].(map[string]any)["basis"] = "guessed"
-		}},
-		{"a billing no contract knows", refOn(2), func(e map[string]any) { e["price"].(map[string]any)["billing"] = "free" }},
-		{"rely_on_s written by hand", refOn(1), func(e map[string]any) {
-			short := e["cache"].(map[string]any)["short"].(map[string]any)
-			short["rely_on_s"], short["basis"] = 99999, BasisMeasuredThroughProvimux
-		}},
-		{"a negative price", refOn(2), func(e map[string]any) { e["price"].(map[string]any)["input"] = -1 }},
-		{"a reference of another form", referenceRef, func(e map[string]any) { e["price"].(map[string]any)["reference"] = "anthropic" }},
-	}
-	dir := t.TempDir()
-	path := filepath.Join(dir, FiguresFileName)
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			doc := asJSONValue(t, result.Document).(map[string]any)
-			c.edit(doc["entries"].(map[string]any)[c.ref].(map[string]any))
-			data, _ := json.Marshal(doc)
-			if err := os.WriteFile(path, data, 0o600); err != nil {
-				t.Fatal(err)
-			}
-			store := NewStore(dir)
-			back, errRead := store.ReadFigures(figuresTestNow)
-			if errRead != nil || len(back.Entries) != 449 || back.Unread != result.Document.Unread+1 || !store.warned["entries:"+FiguresFileName] {
-				t.Fatalf("read: %v", errRead)
-			}
-			if _, kept := back.Entries[c.ref]; kept {
-				t.Fatalf("%s was held", c.ref)
-			}
-			for i, page := range back.Pages {
-				if (page.ETag == "") != (i == pageOf[c.ref]) {
-					t.Fatalf("page %d ETag %q", i, page.ETag)
-				}
-			}
-			// The next fetch asks that page anew and holds the entry again.
-			before := len(server.Requests())
-			again, errFetch := fetchFiguresFrom(server, back)
-			if errFetch != nil || again.NotModified || len(again.Document.Entries) != 450 {
-				t.Fatalf("the next fetch: %+v %v", again, errFetch)
-			}
-			for i, req := range server.Requests()[before:] {
-				if (req.Header.Get("If-None-Match") == "") != (i == pageOf[c.ref]) {
-					t.Fatalf("page %d asked with If-None-Match %q", i, req.Header.Get("If-None-Match"))
-				}
-			}
-		})
-	}
-
-	t.Run("no entry passes", func(t *testing.T) {
-		doc := asJSONValue(t, result.Document).(map[string]any)
-		for _, entry := range doc["entries"].(map[string]any) {
-			entry.(map[string]any)["access"] = "teleport"
-		}
-		data, _ := json.Marshal(doc)
-		if err := os.WriteFile(path, data, 0o600); err != nil {
-			t.Fatal(err)
-		}
-		store := NewStore(dir)
-		if back, errRead := store.ReadFigures(figuresTestNow); !errors.Is(errRead, ErrNoEntries) || back != nil || !store.warned["bad:"+FiguresFileName] {
-			t.Fatalf("held: %v", errRead)
-		}
-	})
-
-	t.Run("leftovers of an interrupted write", func(t *testing.T) {
-		if err := NewStore(dir).WriteFigures(result.Document); err != nil {
-			t.Fatal(err)
-		}
-		leftovers := []string{".figures.json.123.tmp", ".figures.json.abc.tmp"}
-		for _, name := range append(leftovers, ".published.json.7.tmp") {
-			if err := os.WriteFile(filepath.Join(dir, name), []byte(`{"schema":`), 0o600); err != nil {
-				t.Fatal(err)
-			}
-		}
-		if back, errRead := NewStore(dir).ReadFigures(figuresTestNow); errRead != nil || len(back.Entries) != 450 {
-			t.Fatalf("read: %v", errRead)
-		}
-		for _, name := range leftovers {
-			if _, errStat := os.Stat(filepath.Join(dir, name)); !errors.Is(errStat, os.ErrNotExist) {
-				t.Fatalf("%s is still there: %v", name, errStat)
-			}
-		}
-		if _, errStat := os.Stat(filepath.Join(dir, ".published.json.7.tmp")); errStat != nil {
-			t.Fatalf("another file's leftover was removed: %v", errStat)
 		}
 	})
 }

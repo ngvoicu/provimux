@@ -893,9 +893,9 @@ func AcceptFigures(held, fetched *FiguresDocument) (*FiguresDocument, error) {
 
 // ReadFigures returns the disk copy of the last accepted figures, read at the gateway's clock now. It first
 // removes what an interrupted write left (.figures.json.*.tmp). ErrNotCached without a copy; any other error
-// means the file was damaged or foreign and was ignored (warned once). Each entry passes the reading a fetched
-// one passes (Figures.check): one that does not is left out alone, and its page is asked again without its
-// ETag. A copy with no entry left, or one generated more than FiguresMaxAhead ahead of now, is ignored.
+// means the file was damaged or foreign and was ignored (warned once). The file is the gateway's own: its
+// entries are not read again as a fetched page's are. A copy generated more than FiguresMaxAhead ahead of now
+// is ignored.
 func (s *Store) ReadFigures(now time.Time) (*FiguresDocument, error) {
 	if s == nil || s.dir == "" {
 		return nil, ErrNotCached
@@ -921,20 +921,9 @@ func (s *Store) ReadFigures(now time.Time) (*FiguresDocument, error) {
 	if err == nil {
 		err = doc.check(now)
 	}
-	left := 0
-	var why error
-	if err == nil {
-		left, why = doc.leaveOutUnreadable()
-		if len(doc.Entries) == 0 {
-			err = ErrNoEntries
-		}
-	}
 	if err != nil {
 		s.warnOnce("bad:"+FiguresFileName, "model lists cache: ignoring %s (%v); the next accepted document replaces it", FiguresFileName, err)
 		return nil, err
-	}
-	if left > 0 {
-		s.warnOnce("entries:"+FiguresFileName, "model lists cache: %d entries of %s left out (%v); their pages are asked again", left, FiguresFileName, why)
 	}
 	return &doc, nil
 }
@@ -945,34 +934,6 @@ func (s *Store) removeFiguresLeftovers() {
 	for _, leftover := range leftovers {
 		_ = os.Remove(leftover)
 	}
-}
-
-// leaveOutUnreadable leaves out each entry that does not pass Figures.check, as a fetched entry Provimux cannot
-// read is left out: it counts as unread, and its page loses its ETag so that the next fetch reads it anew. It
-// returns how many were left out and the first reason.
-func (d *FiguresDocument) leaveOutUnreadable() (int, error) {
-	left := 0
-	var first error
-	for i := range d.Pages {
-		page := &d.Pages[i]
-		kept := page.Refs[:0]
-		for _, ref := range page.Refs {
-			entry := d.Entries[ref]
-			if err := entry.check(); err != nil {
-				if first == nil {
-					first = fmt.Errorf("%s: %w", ref, err)
-				}
-				delete(d.Entries, ref)
-				page.ETag = ""
-				d.Unread++
-				left++
-				continue
-			}
-			kept = append(kept, ref)
-		}
-		page.Refs = kept
-	}
-	return left, first
 }
 
 func (d *FiguresDocument) check(now time.Time) error {
@@ -1028,122 +989,6 @@ func (s *Store) WriteFigures(doc *FiguresDocument) error {
 	return nil
 }
 
-// ---- the reading a kept record must pass (prices-and-cache.md 6.2, decided by the lead on 2026-11-27)
-
-// check reports whether the record is one ReadEntrySummary can give: every value of the contract's form, every
-// enum one the contract knows, and rely_on_s what the rule of 4.2 gives from the record's own values. A record
-// from the disk copy that fails it is left out alone.
-func (f *Figures) check() error {
-	switch {
-	case f.Provider == "" || f.Model == "" || strings.Contains(f.Provider, "/") || !isFigureProvider(f.Provider):
-		return errors.New("provider or model")
-	case f.URL != EntryPageURL(f.Provider, f.Model):
-		return errors.New("url")
-	case !isOneOf(f.Access, "api", "subscription", "unknown"):
-		return errors.New("access")
-	case !isOneOf(f.Cache.Documented, "yes", "no", "unknown") || !isOneOf(f.Cache.Retention, "supported", "unsupported", "unknown"):
-		return errors.New("cache")
-	}
-	if err := f.Price.check(); err != nil {
-		return fmt.Errorf("price: %w", err)
-	}
-	if err := f.Cache.Short.check(); err != nil {
-		return fmt.Errorf("cache.short: %w", err)
-	}
-	if err := f.Cache.Long.check(); err != nil {
-		return fmt.Errorf("cache.long: %w", err)
-	}
-	if !f.InputWindow.valid() || !f.MaxOutput.valid() {
-		return errors.New("input_window or max_output")
-	}
-	return nil
-}
-
-func (p *EntryPrice) check() error {
-	switch {
-	case !isOneOf(p.Billing, "per_use", "reference", "unknown"):
-		return errors.New("billing")
-	case p.CacheWrite == nil || p.Tiers == nil:
-		return errors.New("cache_write or tiers missing")
-	case !validDay(p.Date):
-		return errors.New("date")
-	case p.Billing == "unknown" && (p.Reference != nil || p.Input != nil || p.Output != nil || p.CacheRead != nil ||
-		len(p.CacheWrite) > 0 || len(p.Tiers) > 0 || p.OtherRates):
-		return errors.New("a price where billing is unknown")
-	case p.Billing == "per_use" && p.Reference != nil:
-		return errors.New("reference on per_use")
-	case p.Reference != nil && !isEntryRef(*p.Reference):
-		return errors.New("reference")
-	case !validOptionalPrice(p.Input) || !validOptionalPrice(p.Output) || !validOptionalPrice(p.CacheRead):
-		return errors.New("a negative price")
-	}
-	for i, rate := range p.CacheWrite {
-		if !validPrice(rate.Price) || (rate.LifetimeS != nil && *rate.LifetimeS <= 0) {
-			return errors.New("cache_write")
-		}
-		if i > 0 {
-			previous := p.CacheWrite[i-1].LifetimeS
-			if rate.LifetimeS == nil && previous != nil || rate.LifetimeS != nil && previous != nil && *rate.LifetimeS < *previous {
-				return errors.New("cache_write order")
-			}
-		}
-	}
-	for i, tier := range p.Tiers {
-		if int64(tier.InputTokensAbove) > maxFiguresTokens || int64(tier.InputTokensAbove) < -maxFiguresTokens ||
-			!validOptionalPrice(tier.Input) || !validOptionalPrice(tier.Output) || !validOptionalPrice(tier.CacheRead) || !validOptionalPrice(tier.CacheWrite) {
-			return errors.New("tier")
-		}
-		if i > 0 && tier.InputTokensAbove < p.Tiers[i-1].InputTokensAbove {
-			return errors.New("tier order")
-		}
-	}
-	return nil
-}
-
-func (l *Lifetime) check() error {
-	safe := &l.Safe
-	switch {
-	case !isOneOf(safe.Basis, BasisMeasured, BasisDocumented, BasisNone):
-		return errors.New("safe.basis")
-	case (safe.Seconds == nil) != (safe.Basis == BasisNone) || (safe.Seconds != nil && *safe.Seconds < 0):
-		return errors.New("safe.seconds")
-	case !validDay(safe.Date) || safe.MeasuredWith == nil || (safe.Basis != BasisMeasured && len(safe.MeasuredWith) > 0):
-		return errors.New("safe")
-	case l.DocumentedS != nil && *l.DocumentedS < 0:
-		return errors.New("documented_s")
-	case l.ThroughProvimux == nil:
-		return errors.New("through_provimux missing")
-	}
-	clients := map[string]bool{}
-	for _, client := range safe.MeasuredWith {
-		if client.Client == "" || clients[client.Client] {
-			return errors.New("safe.measured_with")
-		}
-		clients[client.Client] = true
-	}
-	for i, m := range l.ThroughProvimux {
-		if !throughProvimux(m.Client) || m.Counts != CountsForRelyOn(m.Client) || m.LifetimeS < 0 || !validDay(m.Date) ||
-			(m.FirstMissS != nil && *m.FirstMissS < 0) {
-			return errors.New("through_provimux")
-		}
-		if i > 0 && dayAfter(m.Date, l.ThroughProvimux[i-1].Date) {
-			return errors.New("through_provimux order")
-		}
-	}
-	seconds, basis, date := RelyOn(safe.Seconds, safe.Basis, safe.Date, l.ThroughProvimux)
-	if !equalInt(seconds, l.RelyOnS) || basis != l.Basis || !equalString(date, l.Date) {
-		return errors.New("rely_on_s is not what the rule gives")
-	}
-	return nil
-}
-
-func (l *FiguresLimit) valid() bool {
-	if l.Tokens == nil {
-		return !l.AtLeast && validDay(l.Date)
-	}
-	return *l.Tokens >= 0 && int64(*l.Tokens) <= maxFiguresTokens && validDay(l.Date)
-}
-
 // ---- small helpers
 
 // isEntryRef reports whether value is of the contract's EntryRef form: "<provider>/<model>", a provider
@@ -1153,26 +998,9 @@ func isEntryRef(value string) bool {
 	return slash > 0 && slash < len(value)-1 && !strings.ContainsAny(value, "\n\r")
 }
 
-func isOneOf(value string, allowed ...string) bool {
-	for _, a := range allowed {
-		if value == a {
-			return true
-		}
-	}
-	return false
-}
-
 func validPrice(value float64) bool {
 	return value >= 0 && !math.IsInf(value, 0) && !math.IsNaN(value)
 }
-
-func validOptionalPrice(value *float64) bool { return value == nil || validPrice(*value) }
-
-func validDay(value *string) bool { return value == nil || isDay(*value) }
-
-func equalInt(a, b *int) bool { return (a == nil) == (b == nil) && (a == nil || *a == *b) }
-
-func equalString(a, b *string) bool { return (a == nil) == (b == nil) && (a == nil || *a == *b) }
 
 func trimmed(value *string) string {
 	if value == nil {
