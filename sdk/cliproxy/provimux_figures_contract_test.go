@@ -575,8 +575,7 @@ func TestProvimuxFiguresBothPathsFollowTheContract(t *testing.T) {
 	g := newFiguresGateway(t)
 	key := sentKeyFor(t, g.sentHarness, "provimux-test-claude-key")
 	house := sentKeyFor(t, g.sentHarness, "provimux-test-house")
-	// A login as the gateway's own loader makes one (the entry branch's helper): an SDK registration in memory names
-	// no entry (the amendment of 2026-11-27 (2), rule A.3).
+	// A Copilot login, as the gateway's own login writes one (the entry branch's helper).
 	copilot := sentCopilot(t, g.sentHarness, figuresNative, figuresAlternate)
 	route := "copilot/" + figuresNative
 	plain := g.get("/v1/models", sentClientKey)

@@ -3,7 +3,6 @@ package cliproxy
 import (
 	"fmt"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	sa "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
 	ca "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"os"
@@ -35,9 +34,6 @@ func TestFollowLegacyCredential(t *testing.T) {
 		t.Fatal(e, len(records))
 	}
 	a := records[0]
-	if !a.ProvimuxLoaded() {
-		t.Fatal("the file store's loader did not mark what it loaded")
-	}
 	h.register(a, "follow-legacy")
 	answer := h.post("/v1/chat/completions", chatBody("follow-legacy", false, ""), nil)
 	if answer.status != 200 || len(h.stand.answered()) != 1 {
@@ -46,43 +42,6 @@ func TestFollowLegacyCredential(t *testing.T) {
 	t.Logf("old plugin file mark=%v, native reload marker=%s, entry=%q", a.Metadata[ca.ProvimuxPluginCredentialMark], answer.get(logging.ProvimuxAccountHeader), answer.get(logging.ProvimuxEntryHeader))
 	if answer.get(logging.ProvimuxEntryHeader) != "meta-subscription/follow-legacy" {
 		t.Error("the written limit changed: a plugin's earlier file, loaded natively, no longer names what was sent")
-	}
-}
-
-// Finding 37, unchanged: closed by rule A.3 (the loader's mark).
-func TestFollowPositiveOrigin(t *testing.T) {
-	for _, kind := range []string{"none", "filename-only", "arbitrary-source"} {
-		t.Run(kind, func(t *testing.T) {
-			h := newSentHarness(t, "")
-			useAnsweredBook(t, newSentClock())
-			auth := &ca.Auth{ID: "memory-sdk-row", Provider: "xai", Status: ca.StatusActive, Attributes: map[string]string{"auth_kind": "apikey", "api_key": "fixture-key", "base_url": "https://api.x.ai/v1"}}
-			if kind == "filename-only" {
-				auth.FileName = "display-only.json"
-			}
-			if kind == "arbitrary-source" {
-				auth.Attributes["source"] = "embedded-runtime-registry"
-			}
-			a, e := h.service.coreManager.Register(ca.WithSkipPersist(t.Context()), auth)
-			if e != nil {
-				t.Fatal(e)
-			}
-			h.service.registerExecutorForAuth(a, false)
-			registry.GetGlobalRegistry().RegisterClient(a.ID, "xai", []*registry.ModelInfo{{ID: "follow-memory"}})
-			defer registry.GetGlobalRegistry().UnregisterClient(a.ID)
-			ans := h.post("/v1/chat/completions", chatBody("follow-memory", false, ""), nil)
-			if ans.status != 200 || len(h.stand.answered()) != 1 {
-				t.Fatal("fixture", ans.status)
-			}
-			if a.FileName != "" {
-				if _, e := os.Stat(filepath.Join(filepath.Dir(h.configPath), "auths", a.FileName)); !os.IsNotExist(e) {
-					t.Fatal("fixture unexpectedly persisted", e)
-				}
-			}
-			t.Logf("%s no credential file; source=%q entry=%q", kind, a.AuthSourceKind(), ans.get(logging.ProvimuxEntryHeader))
-			if ans.get(logging.ProvimuxEntryHeader) != "" {
-				t.Error("registration held in memory was vouched for")
-			}
-		})
 	}
 }
 

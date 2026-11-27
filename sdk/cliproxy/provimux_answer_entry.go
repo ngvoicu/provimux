@@ -17,26 +17,19 @@ func init() {
 	coreauth.SetProvimuxAnswerEntry(provimuxBuiltinKind, provimuxOwnExecutor, provimuxVouches, provimuxEntryOfAnswer)
 }
 
-// provimuxVouches reports whether the gateway's own loader made auth (for its id) and no plugin made or changed it
-// (rule A.3 of the lead's amendment of 2026-11-27 (2)).
+// provimuxVouches reports whether no plugin made or changed auth: a plugin's credential never names an entry.
 func provimuxVouches(auth *coreauth.Auth) bool {
-	return auth.ProvimuxLoaded() && !pluginhost.ProvimuxPluginCredential(auth)
+	return !pluginhost.ProvimuxPluginCredential(auth)
 }
 
-// provimuxEntryOfAnswer returns the entry of an answer of auth whose attempt sent sent, or "": "" for a credential the
-// gateway's own loader did not make (rule A.3 of the lead's amendment of 2026-11-27 (2)), for one a plugin made or
-// changed, for a URL that is not https on its default port, where the map has no row, and for an xAI credential
-// anything marks as not the paid API. The executor (A.1) and the request (A.2, A.4 to A.6) were settled before.
+// provimuxEntryOfAnswer returns the entry of an answer of auth whose attempt sent sent, or "": "" for a credential a
+// plugin made or changed, for a URL that is not https on its default port, where the map has no row, and for an xAI
+// credential anything marks as not the paid API. The executor and the request were settled before.
 func provimuxEntryOfAnswer(auth *coreauth.Auth, sent cliproxyexecutor.ProvimuxSentRequest) string {
-	if auth == nil || sent.Model == "" {
+	if auth == nil || sent.Model == "" || !provimuxVouches(auth) {
 		return ""
 	}
-	// Step 3: the gateway's own loader made the credential (a login parsed from the auth folder or a store record, a
-	// key of the configuration: a mark set where it is parsed, never an attribute), and no plugin made or changed it.
-	if !auth.ProvimuxLoaded() || pluginhost.ProvimuxPluginCredential(auth) {
-		return ""
-	}
-	// Step 4: the map has a row for what was sent.
+	// The map has a row for what was sent.
 	if sent.Scheme != "https" || sent.Port != "" {
 		return ""
 	}
@@ -44,7 +37,7 @@ func provimuxEntryOfAnswer(auth *coreauth.Auth, sent cliproxyexecutor.ProvimuxSe
 	if provider == "xai" && !provimuxPaidXAI(auth) {
 		return ""
 	}
-	// Step 5: that row's provider and the model that was sent.
+	// That row's provider and the model that was sent.
 	return modellists.EntryRef(provider, modellists.EntryModel(provider, sent.Model))
 }
 

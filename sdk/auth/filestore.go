@@ -354,7 +354,6 @@ func (s *FileTokenStore) readAuthFiles(path, baseDir string) ([]*cliproxyauth.Au
 		auth.Attributes["email"] = email
 	}
 	cliproxyauth.ApplyCustomHeadersFromMetadata(auth)
-	provimuxMarkLoaded(auth) // Provimux: the gateway's own loader made it (answered-by.md, rule A.3)
 	return []*cliproxyauth.Auth{auth}, nil
 }
 

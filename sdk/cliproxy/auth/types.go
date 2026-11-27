@@ -165,7 +165,6 @@ type Auth struct {
 	nonAuthCredentialLastError  *Error    `json:"-"`
 	nonQuotaCooldownUntil       time.Time `json:"-"`
 	forceCooldownSeeded         bool      `json:"-"`
-	provimuxLoaded              string    `json:"-"` // Provimux: the id the gateway's own loader made it for (provimux_loaded.go)
 
 	recentRequests recentRequestRing `json:"-"`
 	indexAssigned  bool              `json:"-"`

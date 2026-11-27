@@ -53,8 +53,8 @@ func ProvimuxLoginClearsPluginMark(ctx context.Context, auth *Auth) {
 // provimuxEntryHooks are the functions that decide an answer's entry, set once by sdk/cliproxy while the program
 // initialises (SetProvimuxAnswerEntry): kind names the closed-list kind of a built-in executor, "" for any other, and
 // own says whether an executor is one of the gateway's built-in ones at all (the closed list, and AI Studio's, which
-// names no entry) (answered-by.md, rule A.1 as decided in part (5)); vouch says whether the gateway's own loader made
-// the credential and no plugin made or changed it (A.3); entry gives the entry of what that credential's attempt sent
+// names no entry) (answered-by.md, rule A.1 as decided in part (5)); vouch says whether no plugin made or changed
+// the credential (A.3); entry gives the entry of what that credential's attempt sent
 // (answered-by.md 4.3, steps 4 and 5). Without them no answer names an entry.
 type provimuxEntryHooks struct {
 	kind  func(exec ProviderExecutor) string

@@ -335,7 +335,6 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
 			}
 		}
 	}
-	provimuxMarkLoaded(a) // Provimux: the gateway's own loader made it (answered-by.md, rule A.3)
 	a.BindFileSnapshot(fullPath, data)
 	return []*coreauth.Auth{a}, false, nil
 }

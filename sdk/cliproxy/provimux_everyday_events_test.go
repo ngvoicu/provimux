@@ -12,7 +12,6 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/provimux/origin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
@@ -105,22 +104,22 @@ func provimuxEverydayEvents() []provimuxEverydayEvent {
 			apply(h, refreshed)
 		}, false},
 		{"a login of the same provider added", func(t *testing.T, h *sentHarness, _ map[string]*coreauth.Auth) {
-			apply(h, provimuxLoaded(login("claude", "provimux-test-claude-second.json", map[string]any{"access_token": "provimux-test-second", "expired": sentFar()})))
+			apply(h, login("claude", "provimux-test-claude-second.json", map[string]any{"access_token": "provimux-test-second", "expired": sentFar()}))
 		}, false},
 		{"a login of the same provider disabled", func(t *testing.T, h *sentHarness, _ map[string]*coreauth.Auth) {
-			second := provimuxLoaded(login("claude", "provimux-test-claude-third.json", map[string]any{"access_token": "provimux-test-third", "expired": sentFar()}))
+			second := login("claude", "provimux-test-claude-third.json", map[string]any{"access_token": "provimux-test-third", "expired": sentFar()})
 			apply(h, second)
 			disabled := second.Clone()
 			disabled.Disabled, disabled.Status = true, coreauth.StatusDisabled
 			apply(h, disabled)
 		}, false},
 		{"a login of the same provider removed", func(t *testing.T, h *sentHarness, _ map[string]*coreauth.Auth) {
-			second := provimuxLoaded(login("claude", "provimux-test-claude-fourth.json", map[string]any{"access_token": "provimux-test-fourth", "expired": sentFar()}))
+			second := login("claude", "provimux-test-claude-fourth.json", map[string]any{"access_token": "provimux-test-fourth", "expired": sentFar()})
 			apply(h, second)
 			h.service.applyCoreAuthRemoval(context.Background(), second.ID)
 		}, false},
 		{"a login of another provider added", func(t *testing.T, h *sentHarness, _ map[string]*coreauth.Auth) {
-			apply(h, provimuxLoaded(login("meta", "provimux-test-meta-second.json", map[string]any{"api_key": "provimux-test-meta-second", "user_email": "provimux-test-meta-second", "expired": sentFar()})))
+			apply(h, login("meta", "provimux-test-meta-second.json", map[string]any{"api_key": "provimux-test-meta-second", "user_email": "provimux-test-meta-second", "expired": sentFar()}))
 		}, false},
 		{"a login of another provider disabled", func(t *testing.T, h *sentHarness, logins map[string]*coreauth.Auth) {
 			current, _ := h.service.coreManager.GetByID(logins["meta"].ID)
@@ -165,12 +164,6 @@ func provimuxEverydayEvents() []provimuxEverydayEvent {
 			h.service.registerExecutorForAuth(current, true)
 		}, true},
 	}
-}
-
-// provimuxLoaded marks a login as the gateway's loader would have made it (test seam).
-func provimuxLoaded(auth *coreauth.Auth) *coreauth.Auth {
-	origin.MarkLoadedForTests(auth)
-	return auth
 }
 
 func TestProvimuxEverydayEventsKeepTheEntry(t *testing.T) {
