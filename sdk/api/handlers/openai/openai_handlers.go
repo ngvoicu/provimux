@@ -87,6 +87,7 @@ func (h *OpenAIAPIHandler) OpenAIModels(c *gin.Context) {
 	var accounts map[string][]modelAccount
 	if wantsAccounts(c) {
 		accounts = h.modelAccounts()
+		provimuxFillAnswered(c, accounts) // Provimux: what each row's answers to this caller's key said (answered-by.md 4.4)
 	}
 	filteredModels := make([]map[string]any, len(allModels))
 	for i, model := range allModels {

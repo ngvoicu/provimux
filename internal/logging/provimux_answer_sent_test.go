@@ -2,7 +2,11 @@ package logging
 
 import (
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"github.com/gin-gonic/gin"
 )
 
 // Provimux: what the attempt sent, on the wire (answered-by.md 3.2, step W6a): with a model read from the sent
@@ -119,5 +123,57 @@ func TestProvimuxAnswerSentIsExposedToBrowsers(t *testing.T) {
 		if got := header.Get("Access-Control-Expose-Headers"); got != test.want {
 			t.Fatalf("%+v: %q, want %q", test.answer, got, test.want)
 		}
+	}
+}
+
+// The record is handed a statement once, after the headers that carry it are written, and only the one they carried:
+// headers committed first without a statement (a keep-alive) hand nothing on, whatever is confirmed after; a statement
+// only offered hands nothing on. The record's values are never on the wire.
+func TestProvimuxAnswerNotedOnlyWhenWritten(t *testing.T) {
+	withProvimuxAnsweredBy(t, true)
+	var noted []AuthStatement
+	SetProvimuxAnsweredWritten(func(s AuthStatement) { noted = append(noted, s) })
+	t.Cleanup(func() { SetProvimuxAnsweredWritten(nil) })
+	statement := AuthStatement{Kind: "apikey", Provider: "claude", Host: "gateway.example.test",
+		Provimux: ProvimuxAnswer{Account: provimuxTestMarker, ModelSent: "provimux-test-a", Entry: "anthropic/provimux-test-a", Credential: "provimux-test-cred", Name: "provimux-test-name", Client: "k.client"}}
+	serve := func(handler func(c *gin.Context)) http.Header {
+		gin.SetMode(gin.TestMode)
+		router := gin.New()
+		router.Use(CPATraceIDMiddleware())
+		router.GET("/", handler)
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+		return recorder.Header()
+	}
+	header := serve(func(c *gin.Context) {
+		OfferGinCPAAuthStatement(c, statement)
+		ConfirmGinCPAAuthOffer(c)
+		c.String(http.StatusOK, "answer")
+		c.String(http.StatusOK, " more")
+	})
+	if len(noted) != 1 || noted[0].Provimux != statement.Provimux {
+		t.Fatalf("a written answer: noted %+v", noted)
+	}
+	for name := range header {
+		for _, value := range header.Values(name) {
+			if strings.Contains(value, "provimux-test-cred") || strings.Contains(value, "provimux-test-name") || strings.Contains(value, "k.client") {
+				t.Fatalf("the record's values are on the wire: %s: %s", name, value)
+			}
+		}
+	}
+	noted = nil
+	serve(func(c *gin.Context) {
+		c.Writer.WriteHeaderNow() // a keep-alive commits the headers first
+		c.Writer.Flush()
+		OfferGinCPAAuthStatement(c, statement)
+		ConfirmGinCPAAuthOffer(c)
+		c.String(http.StatusOK, "answer")
+	})
+	serve(func(c *gin.Context) {
+		OfferGinCPAAuthStatement(c, statement) // offered, never confirmed
+		c.String(http.StatusOK, "answer")
+	})
+	if len(noted) != 0 {
+		t.Fatalf("noted %+v without the statement on the written headers", noted)
 	}
 }

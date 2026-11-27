@@ -19,11 +19,31 @@ import (
 // AnsweredAuthCallbackMetadataKey's callback is, and right after it.
 const ProvimuxAnswerCallbackMetadataKey = "provimux_answer_callback"
 
-// ProvimuxPluginCredentialMark is the metadata key that marks a credential a plugin changed with the models it
-// returned (the service sets it where it commits the update, before the update is stored). It is stored with the
-// credential, so it outlives the process: a login file a plugin rewrote is read at the next start by the native
-// loader, whose credential has no plugin storage. A native login that writes the file anew drops it.
+// ProvimuxPluginCredentialMark is the metadata key that marks a credential a plugin made or changed (the lead's rule
+// of 2026-11-27): the plugin host sets it where it makes a credential from a plugin's data, so a plugin's login and an
+// update a plugin returns carry it from the moment they exist, and it is stored with them. A native login that writes
+// the credential's record anew sets it to false, the same way for every provider and every store
+// (ProvimuxLoginClearsPluginMark).
 const ProvimuxPluginCredentialMark = "provimux_plugin_credential"
+
+// ProvimuxLoginClearsPluginMark is called by every token store where it saves a credential: a save of a login (one
+// with creation intent) whose storage is not the plugin host's records that a native login wrote it, so a mark an
+// earlier plugin left in the same record does not outlive it. Any other save is left as it is.
+func ProvimuxLoginClearsPluginMark(ctx context.Context, auth *Auth) {
+	if auth == nil || !HasAuthCreationIntent(ctx) {
+		return
+	}
+	if made, ok := auth.Storage.(interface{ ProvimuxPluginMade() bool }); ok && made.ProvimuxPluginMade() {
+		return
+	}
+	if auth.Metadata == nil {
+		if auth.Storage == nil {
+			return // nothing is written from this record's metadata: a store refuses it as it did
+		}
+		auth.Metadata = make(map[string]any)
+	}
+	auth.Metadata[ProvimuxPluginCredentialMark] = false
+}
 
 // provimuxAnswerEntry holds the one function that gives an answer's entry: steps 3 to 5 of answered-by.md 4.3, for the
 // credential that answered and what its attempt sent. sdk/cliproxy sets it (SetProvimuxAnswerEntry); nil = no entry.
@@ -39,50 +59,95 @@ func SetProvimuxAnswerEntry(entry func(auth *Auth, sent cliproxyexecutor.Provimu
 	provimuxAnswerEntry.Store(&entry)
 }
 
-// ProvimuxAnsweredItem is one item of what an account's answers for a name said of themselves (answered-by.md 4.4):
-// an entry, "" for answers that named none, and when the last answer that said so was stated.
+// ProvimuxAnsweredItem is one item of what a credential's answers for a name said of themselves (answered-by.md 4.4
+// as amended on 2026-11-27): an entry, "" for answers that named none, and when the last answer that said so was
+// written to its client.
 type ProvimuxAnsweredItem struct {
 	Entry string
 	At    time.Time
 }
 
-// provimuxAnsweredRecord holds the record of answered-by.md 4.4, set by sdk/cliproxy (SetProvimuxAnswered): note is
-// called for every statement that names an account, with its marker, the credential, the model the client asked
-// for and the statement's entry; read gives a marker's items under a name, newest first. nil = nothing recorded.
-var provimuxAnsweredRecord atomic.Pointer[provimuxAnsweredHooks]
-
+// provimuxAnsweredHooks are the record's functions, set by sdk/cliproxy (SetProvimuxAnswered): name gives the row an
+// answer for a called name stands on ("" for none); read gives the items of one client (all clients with all) for a
+// credential, its marker and a name.
 type provimuxAnsweredHooks struct {
-	note func(marker string, auth *Auth, requestedModel, entry string)
-	read func(marker, model string) []ProvimuxAnsweredItem
+	name func(authID, called string) string
+	read func(client string, all bool, authID, marker, name string) []ProvimuxAnsweredItem
 }
 
-// SetProvimuxAnswered sets the record's two functions; nil for either removes both.
-func SetProvimuxAnswered(note func(marker string, auth *Auth, requestedModel, entry string), read func(marker, model string) []ProvimuxAnsweredItem) {
-	if note == nil || read == nil {
+var provimuxAnsweredRecord atomic.Pointer[provimuxAnsweredHooks]
+
+// SetProvimuxAnswered sets the record's functions; nil for either removes both.
+func SetProvimuxAnswered(name func(authID, called string) string, read func(client string, all bool, authID, marker, name string) []ProvimuxAnsweredItem) {
+	if name == nil || read == nil {
 		provimuxAnsweredRecord.Store(nil)
 		return
 	}
-	provimuxAnsweredRecord.Store(&provimuxAnsweredHooks{note: note, read: read})
+	provimuxAnsweredRecord.Store(&provimuxAnsweredHooks{name: name, read: read})
 }
 
-// ProvimuxAnswered returns what the answers of the account with marker said for model, newest first; nil without a
-// marker, with models.answered-by off, or without a record. Both lists read it.
-func ProvimuxAnswered(marker, model string) []ProvimuxAnsweredItem {
+// ProvimuxAnswered returns what the answers of credential authID (whose marker is marker) for name said to the client
+// whose reference is client (ProvimuxClientRef; "" for callers without a key), newest first. nil without a marker, with
+// models.answered-by off, or without a record.
+func ProvimuxAnswered(client, authID, marker, name string) []ProvimuxAnsweredItem {
+	return provimuxAnsweredRead(client, false, authID, marker, name)
+}
+
+// ProvimuxAnsweredAll is ProvimuxAnswered over every client's record together: the management list's.
+func ProvimuxAnsweredAll(authID, marker, name string) []ProvimuxAnsweredItem {
+	return provimuxAnsweredRead("", true, authID, marker, name)
+}
+
+func provimuxAnsweredRead(client string, all bool, authID, marker, name string) []ProvimuxAnsweredItem {
 	hooks := provimuxAnsweredRecord.Load()
-	if hooks == nil || marker == "" || model == "" || !logging.ProvimuxAnsweredBy() {
+	if hooks == nil || marker == "" || name == "" || authID == "" || !logging.ProvimuxAnsweredBy() {
 		return nil
 	}
-	return hooks.read(marker, model)
+	return hooks.read(client, all, authID, marker, name)
+}
+
+// ProvimuxClientRef is what the record keeps of a client key: a keyed hash under the markers' key, never the key.
+// "" for a caller without a key (they share one record) and without the markers' key.
+func ProvimuxClientRef(clientKey string) string {
+	return provimuxRef("k", "provimux answered client v1", clientKey)
+}
+
+// ProvimuxCredentialRef is what the record keeps of a credential's id: a keyed hash, as the client's.
+func ProvimuxCredentialRef(authID string) string {
+	return provimuxRef("c", "provimux answered credential v1", authID)
+}
+
+func provimuxRef(basis, context, value string) string {
+	if value == "" {
+		return ""
+	}
+	key := provimuxMarkerKey.Load()
+	if key == nil || len(*key) == 0 {
+		return ""
+	}
+	return provimuxMarkerOf(*key, basis, []byte(context+"\x00"+value))
+}
+
+type provimuxCalledNameKey struct{}
+
+// WithProvimuxCalledName says, on a call's context, the name its client called where the route passes the manager
+// another (a speech call routed to its executor's model): the record stands under the name called.
+func WithProvimuxCalledName(ctx context.Context, name string) context.Context {
+	if ctx == nil || name == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, provimuxCalledNameKey{}, name)
 }
 
 // publishProvimuxAnswer completes the statement the conductor has just made for the response it returns, and hands it
 // to ProvimuxAnswerCallbackMetadataKey. It is called only from publishAnsweredAuthMetadata, after its callback, with
 // the same attempt context, credential and statement; for an empty statement it hands over the empty statement.
 //
-// A statement that names an account gains what its attempt sent (answered-by.md 4.3): where the attempt's
-// observations agree on one model request that was answered (cliproxyexecutor.ProvimuxSent), its model, and the
-// entry the gateway gives it for this credential. Where they do not, neither: never a value from anywhere else. It is
-// then noted in the record of what the account's answers said (answered-by.md 4.4), whatever the entry, none included.
+// A statement that names an account gains what its attempt sent (answered-by.md 4.3 and the lead's rule of
+// 2026-11-27): where the attempt's one candidate request is certain (cliproxyexecutor.ProvimuxSent), its model, and
+// the entry the gateway gives it for this credential. Where it is not, neither. It also carries, for the record and
+// never on the wire, the credential and the row the answer stands on; the record is written where the statement is
+// written to the client, never here.
 func publishProvimuxAnswer(attemptCtx context.Context, meta map[string]any, auth *Auth, statement logging.AuthStatement) {
 	callback, ok := meta[ProvimuxAnswerCallbackMetadataKey].(func(logging.AuthStatement))
 	if !ok || callback == nil {
@@ -95,9 +160,13 @@ func publishProvimuxAnswer(attemptCtx context.Context, meta map[string]any, auth
 				statement.Provimux.Entry = (*entry)(auth, sent)
 			}
 		}
-		// The record (answered-by.md 4.4), before the statement is handed on: so before the answer's first byte.
 		if hooks := provimuxAnsweredRecord.Load(); hooks != nil {
-			hooks.note(statement.Provimux.Account, auth, stringMetadataValue(meta, cliproxyexecutor.RequestedModelMetadataKey), statement.Provimux.Entry)
+			called, _ := attemptCtx.Value(provimuxCalledNameKey{}).(string)
+			if called == "" {
+				called = stringMetadataValue(meta, cliproxyexecutor.RequestedModelMetadataKey)
+			}
+			statement.Provimux.Credential = auth.ID
+			statement.Provimux.Name = hooks.name(auth.ID, called)
 		}
 	}
 	callback(statement)

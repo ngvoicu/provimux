@@ -261,6 +261,8 @@ func CPATraceIDMiddleware() gin.HandlerFunc {
 type cpaTraceResponseWriter struct {
 	gin.ResponseWriter
 	state *cpaTraceState
+
+	provimux provimuxWritten // Provimux: the statement written, for the record (answered-by.md 4.4)
 }
 
 func (w *cpaTraceResponseWriter) Unwrap() http.ResponseWriter {
@@ -272,21 +274,25 @@ func (w *cpaTraceResponseWriter) Unwrap() http.ResponseWriter {
 
 func (w *cpaTraceResponseWriter) WriteHeader(statusCode int) {
 	w.applyTraceHeader()
+	defer w.provimuxNote() // Provimux: the record, once the headers are written
 	w.ResponseWriter.WriteHeader(statusCode)
 }
 
 func (w *cpaTraceResponseWriter) WriteHeaderNow() {
 	w.applyTraceHeader()
+	defer w.provimuxNote() // Provimux: the record, once the headers are written
 	w.ResponseWriter.WriteHeaderNow()
 }
 
 func (w *cpaTraceResponseWriter) Write(data []byte) (int, error) {
 	w.applyTraceHeader()
+	defer w.provimuxNote() // Provimux: the record, once the headers are written
 	return w.ResponseWriter.Write(data)
 }
 
 func (w *cpaTraceResponseWriter) WriteString(data string) (int, error) {
 	w.applyTraceHeader()
+	defer w.provimuxNote() // Provimux: the record, once the headers are written
 	return w.ResponseWriter.WriteString(data)
 }
 
@@ -297,6 +303,7 @@ func (w *cpaTraceResponseWriter) Flush() {
 // FlushError preserves trace headers while forwarding transport errors.
 func (w *cpaTraceResponseWriter) FlushError() error {
 	w.applyTraceHeader()
+	defer w.provimuxNote() // Provimux: the record, once the headers are written
 	return httpwire.FlushResponse(w.ResponseWriter)
 }
 
@@ -319,4 +326,5 @@ func (w *cpaTraceResponseWriter) applyTraceHeader() {
 		}
 	}
 	SetProvimuxAnswerHeaders(w.ResponseWriter.Header(), statement) // Provimux: from the same statement (answered-by.md 5)
+	w.provimux.applied = statement
 }

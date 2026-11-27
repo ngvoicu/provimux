@@ -16,14 +16,21 @@ import (
 func init() { coreauth.SetProvimuxAnswerEntry(provimuxEntryOfAnswer) }
 
 // provimuxEntryOfAnswer returns the entry of an answer of auth whose attempt sent sent, or "": "" for a credential
-// held in memory only or one a plugin made or changed, for a URL that is not https on its default port, where the map
+// whose making is not positively known (held in memory only, of no known origin) or one a plugin made or changed, for a URL that is not https on its default port, where the map
 // has no row, and for an xAI credential anything marks as not the paid API.
 func provimuxEntryOfAnswer(auth *coreauth.Auth, sent cliproxyexecutor.ProvimuxSentRequest) string {
 	if auth == nil || sent.Model == "" {
 		return ""
 	}
-	// Step 3: the gateway vouches for the credential.
-	if auth.AuthSourceKind() == coreauth.AuthSourceMemory || pluginhost.ProvimuxPluginCredential(auth) {
+	// Step 3: the gateway vouches for the credential: its making is positively known (the lead's rule of 2026-11-27):
+	// a key of the configuration, or a login record one of the gateway's own logins wrote (a file, or a record of the
+	// git, object or Postgres store), that no plugin made or changed. An unknown or empty origin is not vouched for.
+	switch auth.AuthSourceKind() {
+	case coreauth.AuthSourceConfig, coreauth.AuthSourceFile, coreauth.AuthSourceGit, coreauth.AuthSourceObjectStore, coreauth.AuthSourcePostgres:
+	default:
+		return ""
+	}
+	if pluginhost.ProvimuxPluginCredential(auth) {
 		return ""
 	}
 	// Step 4: the map has a row for what was sent.

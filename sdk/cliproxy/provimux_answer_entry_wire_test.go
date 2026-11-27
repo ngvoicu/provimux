@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
@@ -179,12 +178,7 @@ func sentMatrix() []sentMatrixCase {
 func TestProvimuxAnswerEntryEveryExecutorOnTheWire(t *testing.T) {
 	h := newSentHarness(t, sentMatrixConfig)
 	logins := sentLogins(t, h)
-	logins["copilot"] = registerCopilotRoutingTestAuth(t, h.service.coreManager, "", "provimux-test-copilot")
-	copilotTestPublisher(t)(append(registry.GetStaticModelDefinitionsByChannel("copilot"), &registry.ModelInfo{ID: "provimux-test-copilot"}))
-	h.service.registerExecutorForAuth(logins["copilot"], false)
-	if !h.service.refreshModelRegistrationForAuth(logins["copilot"]) {
-		t.Fatal("fixture: Copilot's models")
-	}
+	logins["copilot"] = sentCopilot(t, h, "provimux-test-copilot")
 	for _, tc := range sentMatrix() {
 		t.Run(tc.name, func(t *testing.T) {
 			h.t = t

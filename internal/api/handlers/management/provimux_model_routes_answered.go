@@ -6,7 +6,7 @@ import (
 
 // Provimux: `answered` on a route of GET /v8/management/provimux/model-routes (.github/provimux/design/answered-by.md
 // 4.4; pui13/openapi.yaml, RouteAnswered): the same items as /v1/models?include=accounts, with the time, behind the
-// management key.
+// management key: every client key's record together (answered-by.md 4.4 as amended on 2026-11-27).
 
 // provimuxRouteAnswered is one item: the entry those answers named (null: none) and when the last of them was stated.
 type provimuxRouteAnswered struct {
@@ -14,13 +14,13 @@ type provimuxRouteAnswered struct {
 	At    string  `json:"at"`
 }
 
-// provimuxAnsweredTimes is the route's `answered` for the account with marker under model: empty when nothing is
-// recorded, nil (left out) without a marker.
-func provimuxAnsweredTimes(marker *string, model string) *[]provimuxRouteAnswered {
+// provimuxAnsweredTimes is the route's `answered`: what the answers of the credential authID (whose marker is marker)
+// for model said, to every client key together; empty when nothing is recorded, nil (left out) without a marker.
+func provimuxAnsweredTimes(marker *string, authID, model string) *[]provimuxRouteAnswered {
 	if marker == nil || *marker == "" {
 		return nil
 	}
-	items := coreauth.ProvimuxAnswered(*marker, model)
+	items := coreauth.ProvimuxAnsweredAll(authID, *marker, model)
 	out := make([]provimuxRouteAnswered, 0, len(items))
 	for _, item := range items {
 		answered := provimuxRouteAnswered{At: item.At.UTC().Format("2006-01-02T15:04:05.000Z07:00")}

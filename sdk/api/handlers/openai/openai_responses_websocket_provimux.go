@@ -1,8 +1,11 @@
 package openai
 
 import (
+	"context"
+
 	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
 // Provimux: who answered, on the Responses WebSocket (.github/provimux/design/answered-by.md 5.2). Each turn's
@@ -53,4 +56,23 @@ func setResponsesWebsocketProvimux(payload []byte, authStatement func() logging.
 		}
 	}
 	return payload
+}
+
+// provimuxNoteResponsesWebsocketTurn hands the record the turn's statement once its response.created, carrying that
+// statement's marker, has been written to the client (answered-by.md 4.4 as amended on 2026-11-27).
+func provimuxNoteResponsesWebsocketTurn(eventType string, payload []byte, authStatement func() logging.AuthStatement) {
+	if eventType != "response.created" || authStatement == nil || !logging.ProvimuxAnsweredBy() {
+		return
+	}
+	statement := authStatement()
+	if account := statement.OnTheWire().Provimux.Account; account == "" || ojson.GetBytesNoCopy(payload, logging.ProvimuxAccountField).String() != account {
+		return
+	}
+	logging.ProvimuxNoteWritten(statement)
+}
+
+// provimuxCalledName says on a call's context the name its client called, where the route passes the manager another
+// (a speech call): the record of what answers said stands under the name called.
+func provimuxCalledName(ctx context.Context, name string) context.Context {
+	return coreauth.WithProvimuxCalledName(ctx, name)
 }

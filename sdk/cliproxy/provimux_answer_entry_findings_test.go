@@ -203,12 +203,7 @@ func TestProvimuxFinding15APayloadRuleByHeader(t *testing.T) {
       params:
         - model
 `)
-	account := registerCopilotRoutingTestAuth(t, h.service.coreManager, "", native, alternate, bare)
-	copilotTestPublisher(t)(append(registry.GetStaticModelDefinitionsByChannel("copilot"), &registry.ModelInfo{ID: native}, &registry.ModelInfo{ID: alternate}, &registry.ModelInfo{ID: bare}))
-	h.service.registerExecutorForAuth(account, false)
-	if !h.service.refreshModelRegistrationForAuth(account) {
-		t.Fatal("fixture: Copilot's models")
-	}
+	account := sentCopilot(t, h, native, alternate, bare)
 	route := "copilot/" + native
 	for _, tc := range []struct{ tier, want string }{{"normal", native}, {"special", alternate}, {"normal", native}} {
 		h.stand.reset()

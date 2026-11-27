@@ -73,6 +73,7 @@ func (h *OpenAIAPIHandler) handleXAISpeech(c *gin.Context) {
 	}
 
 	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
+	cliCtx = provimuxCalledName(cliCtx, requested) // Provimux: the record stands under the name called
 	// Keep-alive newlines would be prefixed onto the audio body.
 	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, xaiSpeechHandlerType, model, payload, "")
 	if errMsg != nil {
