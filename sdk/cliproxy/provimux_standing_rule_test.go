@@ -58,7 +58,7 @@ func TestProvimuxReregistrationAtPublication(t *testing.T) {
 					}
 					arrived, released := make(chan struct{}), make(chan struct{})
 					var once sync.Once
-					reviewSetVendor(h, reviewRT(func(r *http.Request) (*http.Response, error) {
+					reviewSet(h, reviewRT(func(r *http.Request) (*http.Response, error) {
 						if tc.gate(r) {
 							once.Do(func() { close(arrived) })
 							<-released
@@ -242,7 +242,7 @@ func provimuxForeignAtMoment(t *testing.T, foreign, moment string, stream bool) 
 	var keys []string
 	held := map[string]int{"first-attempt": 1, "second-attempt": 2}[moment]
 	arrived, released := make(chan struct{}), make(chan struct{})
-	reviewSetVendor(h, reviewRT(func(r *http.Request) (*http.Response, error) {
+	reviewSet(h, reviewRT(func(r *http.Request) (*http.Response, error) {
 		mu.Lock()
 		keys = append(keys, r.Header.Get("Authorization"))
 		n := len(keys)

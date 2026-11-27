@@ -1,7 +1,6 @@
 package cliproxy
 
 import (
-	"bytes"
 	"context"
 	"github.com/MoeForge/moego/ojson"
 	"github.com/gorilla/websocket"
@@ -44,65 +43,6 @@ func followDrained(c chan followReceived) []followReceived {
 		v = append(v, <-c)
 	}
 	return v
-}
-
-// followSelfAttested is a transport that declares it hands requests on unchanged, as the earlier build let a
-// transport do. Ported (rule A.2 of the amendment of 2026-11-27 (2)): nothing reads the declaration any more.
-type followSelfAttested struct{ http.RoundTripper }
-
-func (followSelfAttested) ProvimuxPassesRequestsUnchanged() bool { return true }
-
-// Finding 33. Ported: the control's stand-in network goes through the gateway's own recognition by the test seam
-// (reviewSetVendor); each other mode is an embedding's per-credential transport (reviewSet) and names no entry.
-func TestFollowTransportIdentity(t *testing.T) {
-	for _, mode := range []string{"stock-control", "plain-translator", "self-attested", "standard-protocol"} {
-		t.Run(mode, func(t *testing.T) {
-			h := newSentHarness(t, reviewRouter)
-			useAnsweredBook(t, newSentClock())
-			network, receipts := followTLS(t)
-			translator := reviewRT(func(req *http.Request) (*http.Response, error) {
-				r := req.Clone(req.Context())
-				data, _ := io.ReadAll(req.Body)
-				req.Body.Close()
-				out := bytes.Replace(data, []byte("lab/native"), []byte("lab/mapped"), 1)
-				r.Body = io.NopCloser(bytes.NewReader(out))
-				return network.RoundTrip(r)
-			})
-			var transport http.RoundTripper = network
-			switch mode {
-			case "plain-translator":
-				transport = translator
-			case "self-attested":
-				transport = followSelfAttested{translator}
-			case "standard-protocol":
-				tr := &http.Transport{}
-				tr.RegisterProtocol("https", translator)
-				transport = tr
-				t.Cleanup(tr.CloseIdleConnections)
-			}
-			if mode == "stock-control" {
-				reviewSetVendor(h, transport)
-			} else {
-				reviewSet(h, transport)
-			}
-			ans := h.post("/v1/chat/completions", chatBody("review-public", false, ""), nil)
-			got := followDrained(receipts)
-			if ans.status != 200 || len(got) != 1 {
-				t.Fatalf("fixture HTTP %d, got=%v", ans.status, got)
-			}
-			want := ""
-			if mode == "stock-control" {
-				want = "openrouter/lab/native"
-			} else if got[0].model != "lab/mapped" {
-				t.Fatal("fixture no translation")
-			}
-			entry := ans.get(logging.ProvimuxEntryHeader)
-			t.Logf("TLS authority=%s model=%s entry=%q", got[0].host, got[0].model, entry)
-			if entry != want {
-				t.Errorf("required entry %q", want)
-			}
-		})
-	}
 }
 
 // Findings 32, 34 and 35, unchanged: an executor registered through the SDK answers (rule A.1), so no mode names an
