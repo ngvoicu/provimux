@@ -3,12 +3,11 @@ package executor
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"io"
 	"net/http"
+	"runtime"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
 )
 
@@ -20,40 +19,44 @@ func (provimuxConsuming) RoundTrip(r *http.Request) (*http.Response, error) {
 		_, _ = io.Copy(io.Discard, r.Body)
 		_ = r.Body.Close()
 	}
-	return &http.Response{StatusCode: 200, Body: http.NoBody, Header: http.Header{}, Request: r}, nil
+	return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody, Header: http.Header{}, Request: r}, nil
 }
 
-// What observing a request costs (the lead's amendment of 2026-11-27 (2), part 3): with models.answered-by off; on,
-// for a call whose caller did not ask for the statement (nothing is copied); on and asked (the body is copied while the
-// transport reads it, the model read, the copy let go). The body is prepared before the timing.
-func BenchmarkProvimuxSentObserve(b *testing.B) {
-	// Bodies of exactly 1 KiB, 8 MiB and 64 MiB (the largest the reader reads), and one byte more than that.
-	for _, size := range []int{1 << 10, 8 << 20, 64 << 20, 64<<20 + 1} {
-		prefix := []byte(`{"model":"provimux-test","input":"`)
-		body := append(append([]byte(nil), prefix...), bytes.Repeat([]byte("g"), size-len(prefix)-2)...)
-		body = append(body, `"}`...)
-		for _, mode := range []string{"off", "on-not-asked", "on-asked"} {
-			b.Run(fmt.Sprintf("%d/%s", size, mode), func(b *testing.B) {
-				was := logging.SetProvimuxAnsweredBy(mode != "off")
-				defer logging.SetProvimuxAnsweredBy(was)
-				base := context.Background()
-				if mode == "on-asked" {
-					base = WithProvimuxStatementAsked(base)
-				}
-				client := &http.Client{Transport: provimuxConsuming{}}
-				b.ReportAllocs()
-				b.ResetTimer()
-				for i := 0; i < b.N; i++ {
-					ctx := WithUpstreamAttemptTracker(base)
-					req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.x.ai/v1/responses", bytes.NewReader(body))
-					req.Header.Set("Content-Type", "application/json")
-					resp, err := httptransport.Decorate(ctx, client).Do(req)
-					if err == nil {
-						_ = resp.Body.Close()
-					}
-					ProvimuxSent(ctx, "xai")
-				}
-			})
-		}
+// What the entry costs per request with models.answered-by on (the default): once a 32 MiB request's response headers
+// are back, the attempt holds its model and nothing of its body. The body the caller built stays alive through the
+// test; the heap may not hold a second copy of it beside that.
+func TestProvimuxSentHoldsNoCopyOfTheBody(t *testing.T) {
+	provimuxSentOn(t, true)
+	const size = 32 << 20
+	prefix := []byte(`{"model":"provimux-test","input":"`)
+	body := append(append(append([]byte(nil), prefix...), bytes.Repeat([]byte("g"), size-len(prefix)-2)...), `"}`...)
+	live := func() uint64 {
+		runtime.GC()
+		runtime.GC()
+		var stats runtime.MemStats
+		runtime.ReadMemStats(&stats)
+		return stats.HeapAlloc
 	}
+	ctx := WithUpstreamAttemptTracker(context.Background())
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.x.ai/v1/responses", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	before := live()
+	resp, err := httptransport.Decorate(ctx, &http.Client{Transport: provimuxConsuming{}}).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	after := live()
+	sent, ok := ProvimuxSent(ctx, "xai")
+	if !ok || sent.Model != "provimux-test" {
+		t.Fatalf("fixture: %+v %v", sent, ok)
+	}
+	if after > before && after-before > size/8 {
+		t.Fatalf("the attempt holds %d bytes more once the headers are back, for a body of %d", after-before, size)
+	}
+	runtime.KeepAlive(body)
+	runtime.KeepAlive(ctx)
 }
