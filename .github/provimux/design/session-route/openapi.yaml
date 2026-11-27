@@ -4,14 +4,17 @@ info:
   version: "1"
   summary: Where a conversation is bound, and releasing it.
   description: |
-    Contract 1 of `session-route.md` (beside this file). Four requests of Provimux's own. Stock
+    Contract 1 of `session-route.md` (beside this file). Three requests of Provimux's own. Stock
     CLIProxyAPI has none of them: a 404 means "not this build".
 
-    **This release has the two client requests only** (decided by the lead on 2026-11-27). The
-    operator's two requests (`/v8/management/provimux/session-routes`), the automatic return (the
-    rule) and its setting are **not in this release**: they are described here for a later one and
-    answer 404 now. In this release `rule` is always `{in_effect: false, will: stay}` and a cache's
-    `basis` is always `setting`.
+    Amended 2026-11-27 with the second design of the rule (section 15 of the design): the operator's
+    list of bindings and its release are withdrawn, as is the object `cache` of the show; the rule's
+    state is `GET /v8/management/provimux/session-return`. None of the withdrawn parts was released.
+
+    **This release has the two client requests only** (decided by the lead on 2026-11-27). The rule
+    and its state request are **not in this release** (the state request is described with the rule,
+    by its own work package, and answers 404 now): in this release the show's `rule` is always
+    `{in_effect: false, cold_after_s: null}`.
 
     With `routing.session-affinity: true` the gateway binds a conversation to the account that served
     it. These requests show that binding and remove it. Removing it sends nothing: the conversation's
@@ -32,7 +35,7 @@ tags:
   - name: client
     description: For any configured client key. A key sees and releases only conversations it has used.
   - name: operator
-    description: Behind the management key. Every binding. Not in this release.
+    description: Behind the management key. The rule's state. Not in this release.
 
 paths:
   /v1/provimux/session-route:
@@ -129,8 +132,8 @@ paths:
         as upstream does: if the parent has been bound again on the lower login by then, the child
         goes there too.
 
-        With `expect`, only exactly the binding that token stands for is released; else `409`.
-        Releasing what is not bound is not an error: `released: false`.
+        With `expect`, only the life of the binding that token names is released (`expect`, below);
+        else `409`. Releasing what is not bound is not an error: `released: false`.
       security:
         - clientKey: []
       parameters:
@@ -166,82 +169,13 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "409":
           description: |
-            `expect` was given and the binding is no longer the one it stands for: the conversation was
-            routed again since the show (a turn, even on the same account), moved, or was released and
-            bound again. Nothing was released. The body is the state now, with the current token.
+            `expect` was given and the binding is no longer the one it stands for (the conversation
+            moved, or was released and bound again, on the same account too), or the string names no
+            life of it. Nothing was released. The body is the state now, with the current token.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/SessionRoute"
-
-  /v8/management/provimux/session-routes:
-    get:
-      tags: [operator]
-      operationId: listSessionRoutes
-      summary: The rule's setting, the value in use, and every binding. Not in this release.
-      description: |
-        **Not in this release** (404). Read-only, from memory. `setting` is what is set; `in_effect` and `reason` are what holds.
-        `conversations` lists the bindings of the session cache and the conversations the gateway
-        recognises by their content, newest answer first, at most `limit`.
-      security:
-        - managementKey: []
-      parameters:
-        - name: below_first
-          in: query
-          description: "`true`: only conversations below their first route."
-          schema: { type: boolean, default: false }
-        - name: limit
-          in: query
-          schema: { type: integer, minimum: 0, maximum: 1000, default: 200 }
-      responses:
-        "200":
-          description: The state.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SessionRoutesState"
-              examples:
-                in-effect:
-                  $ref: "#/components/examples/StateInEffect"
-                affinity-off:
-                  $ref: "#/components/examples/StateAffinityOff"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-
-  /v8/management/provimux/session-routes/release:
-    post:
-      tags: [operator]
-      operationId: releaseSessionRouteByHandle
-      summary: Remove one binding, by its handle from the list. Not in this release.
-      description: "**Not in this release** (404)."
-      security:
-        - managementKey: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              required: [id]
-              properties:
-                id:
-                  type: string
-                  description: A conversation's `id` from the list. It stands for that binding on that account.
-            examples:
-              one:
-                value: { id: "c.5tq2hb7yw3mdk4zn" }
-      responses:
-        "200":
-          description: "What was done. A handle whose binding is gone or has moved answers `released: false`."
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Release"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
 
 components:
   securitySchemes:
@@ -275,8 +209,9 @@ components:
         field at most once, no field the schema does not name. `400` for: a body that does not parse,
         is not an object, or has anything after the object; a field given twice or unknown; `model`
         absent, not a string, `null`, or empty or blank; `identity` present and not an object
-        (`null` included); `expect` on a show; on a release, `expect` present and not a well-formed
-        token (empty, blank, `null`, not a string, or not `b.` and 16 characters); a body over 64 KiB.
+        (`null` included); `expect` on a show; on a release, `expect` present and empty, `null` or
+        not a string (a non-empty string that names no life of the binding is `409`); a body over
+        64 KiB.
         Also a name this gateway does not serve to this key (with "serve only my names", the
         setting's own message, as a turn for the name gets). A refused request changes nothing.
       content:
@@ -294,6 +229,10 @@ components:
     Error:
       type: object
       required: [error]
+      additionalProperties: true
+      description: |
+        In the shape of the route group the request was sent to: `/v1` puts an object under `error`;
+        `/v8/management` puts a code under `error` and the words under `message` (G2).
       properties:
         error:
           description: The gateway's error, in the shape of the route group it was sent to.
@@ -322,13 +261,17 @@ components:
           $ref: "#/components/schemas/Identity"
         expect:
           type: string
-          pattern: "^b\\.[a-z2-7]{16}$"
+          minLength: 1
           description: |
-            `binding` from a show. With it, the release happens only while the binding is still exactly
-            that one: the token is computed again from the binding as it is and compared at the moment
-            of the removal; else `409` and nothing is released. Without it, whatever is bound is
-            released. Present, it must be a well-formed token: an empty, blank or `null` `expect` is
-            `400`, never taken as absent.
+            `binding` from a show. It names one life of the binding: from the answer after which the
+            gateway first held it for this conversation, to its removal by anyone. With it, the
+            release happens only while that life lasts; a binding that was removed and made again,
+            on the same account too, is another, and the answer is `409`. A binding that ended by
+            its own lifetime and was made again on the same account counts as the same. Without
+            `expect`, whatever is bound is released. An empty string, `null`, or a body that is not
+            exactly one object of this schema is refused with `400`. (As built: the life is checked
+            and the binding removed under one lock, in that order; a non-empty string that names no
+            life of the binding, a blank one included, is `409`.)
 
     Identity:
       type: object
@@ -385,61 +328,9 @@ components:
           type: boolean
           enum: [false]
 
-    OperatorRoute:
-      description: A route as the operator sees it, with what `model-routes` already shows him.
-      allOf:
-        - $ref: "#/components/schemas/Route"
-        - type: object
-          required: [auth_index, login, recorded_cooldown]
-          properties:
-            auth_index:
-              type: [string, "null"]
-            login:
-              type: object
-              description: As `ModelRoute.login` of `pui13/openapi.yaml`.
-              required: [name, email, label]
-              properties:
-                name: { type: [string, "null"] }
-                email: { type: [string, "null"] }
-                label: { type: [string, "null"] }
-            recorded_cooldown:
-              description: As `ModelRoute.recorded_cooldown` of `pui13/openapi.yaml`; `null` when none is recorded.
-              type: [object, "null"]
-
-    Cache:
-      type: object
-      description: How long the gateway takes this conversation's cache on the bound account to live.
-      required: [lifetime_s, basis, entry, last_use_at, cold, cold_at]
-      properties:
-        lifetime_s:
-          type: integer
-          minimum: 0
-        basis:
-          type: string
-          description: |
-            `answers`: what this conversation's own answers on the bound account reported writing
-            (3,600 or 300). `figures`: the largest lifetime providers.dev's figures state for the entry
-            the account last answered this name as. `setting`: `cold-after`. In this release always
-            `setting`, with its default hour: the other sources are not in this release.
-          enum: [answers, figures, setting]
-        entry:
-          type: [string, "null"]
-          description: With `figures`, the providers.dev entry, `<provider>/<model>`. Else `null`. Always `null` in this release.
-        last_use_at:
-          type: string
-          format: date-time
-          description: The conversation's last request or answer on the binding, whichever is later.
-        cold:
-          type: boolean
-          description: "`last_use_at` is further back than `lifetime_s` plus 60 seconds."
-        cold_at:
-          type: string
-          format: date-time
-          description: When it is, or was, cold by that measure.
-
     SessionRoute:
       type: object
-      required: [observed_at, affinity, conversation, model, routed_model, binding, bound, position, first, cache, rule, websocket_may_hold, subagent]
+      required: [observed_at, affinity, conversation, model, routed_model, binding, bound, position, first, rule, websocket_may_hold, subagent]
       properties:
         observed_at:
           type: string
@@ -472,12 +363,11 @@ components:
             Added in G1, after the review.
         binding:
           type: [string, "null"]
-          pattern: "^b\\.[a-z2-7]{16}$"
           description: |
-            A token for exactly this binding, for `expect`: the conversation, the account, and the
-            selection that made or last chose the binding. Every turn of the conversation is a new
-            selection, so after a turn the token is another (show again); so it is after a release and
-            a new binding, even on the same account. `null` unless `bound`.
+            A token for this binding's life, for `expect` (`ReleaseRequest.expect`): the same through
+            every turn on it; another once it was removed and made again. `null` unless `bound`, and
+            `null` while the gateway has not yet seen an answer on the binding (it is bound, but its
+            life has not started).
         bound:
           type: [object, "null"]
           description: "`null` unless `bound`."
@@ -539,27 +429,25 @@ components:
             `bound`.
           items:
             $ref: "#/components/schemas/Route"
-        cache:
-          description: "`null` unless `bound`."
-          oneOf:
-            - $ref: "#/components/schemas/Cache"
-            - type: "null"
         rule:
           type: object
-          description: "What the gateway does by itself with this binding. Not in this release: always `{in_effect: false, will: stay}`."
-          required: [in_effect, will]
+          description: |
+            What the gateway does by itself (design section 15). With `in_effect`: at this
+            conversation's next request, if it is bound to an account below the highest-priority
+            account that request may use, and it has not been used for `cold_after_s`, the binding is
+            dropped and the request is routed as a new conversation's. It is decided at that request,
+            from that request's own accounts, so no show can say beforehand that it will happen. Never
+            for a sub-agent or a fork, a pinned turn, or a conversation the client did not name.
+            The object `cache` of an earlier draft of this contract is withdrawn: the gateway states
+            no cache's lifetime. Not in this release: always `{in_effect: false, cold_after_s: null}`.
+          required: [in_effect, cold_after_s]
           properties:
             in_effect:
               type: boolean
-              description: Whether `routing.session-affinity-return` runs.
-            will:
-              type: string
-              description: |
-                `return-when-cold`: below a free higher-priority route; released once `cache.cold`.
-                `return-when-free`: below its first route and cold, or soon cold; released once a
-                higher-priority account is available. `stay`: on a first route, or the rule is not
-                in effect, or nothing is bound.
-              enum: [return-when-cold, return-when-free, stay]
+              description: Whether the rule runs (`routing.session-affinity-return.cold-after` is set and applies).
+            cold_after_s:
+              type: [number, "null"]
+              description: The operator's time, in seconds; `null` when not set.
         websocket_may_hold:
           type: boolean
           description: |
@@ -616,139 +504,9 @@ components:
           type: boolean
           description: As in a show. With `true`, close the connection before its next turn, or the release is undone.
 
-    SessionRoutesState:
-      type: object
-      required: [observed_at, setting, in_effect, reason, affinity, lifetimes, counts, conversations, truncated]
-      properties:
-        observed_at:
-          type: string
-          format: date-time
-        setting:
-          type: object
-          description: "`routing.session-affinity-return` as it applies."
-          required: [enabled, set, cold_after_s, cold_after_set]
-          properties:
-            enabled:
-              type: boolean
-              description: "The value as it applies: `true` unless the configuration says `false`."
-            set:
-              type: boolean
-              description: Whether the configuration sets `enabled`.
-            cold_after_s:
-              type: integer
-              minimum: 60
-              description: "`cold-after` as it applies: 3,600 unless set."
-            cold_after_set:
-              type: boolean
-        in_effect:
-          type: boolean
-          description: Whether the rule runs now. This, not `setting.enabled`, is the value in use.
-        reason:
-          type: [string, "null"]
-          description: Why not, when not in effect. `null` when in effect.
-          enum: [session-affinity-off, home-mode, plugin-scheduler, switch-off, null]
-        affinity:
-          type: object
-          description: Upstream's settings the rule depends on, as they run.
-          required: [enabled, ttl_s, strategy, subagents, rebind_on]
-          properties:
-            enabled: { type: boolean }
-            ttl_s: { type: integer }
-            strategy:
-              type: string
-              enum: [round-robin, fill-first, weighted-round-robin]
-            subagents: { type: boolean }
-            rebind_on:
-              type: string
-              enum: [any, quota, never]
-        lifetimes:
-          type: array
-          description: The sources of a cache lifetime this build has, in the order they are tried.
-          items:
-            type: string
-            enum: [answers, figures, setting]
-        counts:
-          type: object
-          required: [bound, below_first, released_by_rule, released_by_client, released_by_operator, last_rule_release_at, since]
-          properties:
-            bound:
-              type: integer
-              description: Bindings now.
-            below_first:
-              type: integer
-              description: Of those, below their first route now.
-            released_by_rule: { type: integer }
-            released_by_client: { type: integer }
-            released_by_operator: { type: integer }
-            last_rule_release_at:
-              type: [string, "null"]
-              format: date-time
-            since:
-              type: string
-              format: date-time
-              description: "When the counting started: the gateway's start."
-        conversations:
-          type: array
-          items:
-            $ref: "#/components/schemas/OperatorConversation"
-        truncated:
-          type: boolean
-          description: More conversations exist than `limit` allowed.
-
-    OperatorConversation:
-      type: object
-      required: [id, session, named_by, model, bound, since, origin, fell_back_from, fell_back_at, below_first, higher_priority_free, first, cache, will, subagent, callers]
-      properties:
-        id:
-          type: string
-          description: A handle for the release request. It stands for this binding on this account.
-        session:
-          type: string
-          description: The first 8 characters of the session id, after its prefix. Never the whole id.
-        named_by:
-          type: string
-          description: |
-            What names the conversation: the prefix of its identity (`claude`, `codex`, `affinity`,
-            `header`, `pck`, ...), or `content` for one the gateway recognises by its content only.
-        model:
-          type: string
-        bound:
-          $ref: "#/components/schemas/OperatorRoute"
-        since:
-          type: [string, "null"]
-          format: date-time
-        origin:
-          type: string
-          enum: [first, fallback, not-known]
-        fell_back_from:
-          oneOf:
-            - $ref: "#/components/schemas/OperatorRoute"
-            - type: "null"
-        fell_back_at:
-          type: [string, "null"]
-          format: date-time
-        below_first:
-          type: boolean
-        higher_priority_free:
-          type: boolean
-        first:
-          type: array
-          items:
-            $ref: "#/components/schemas/OperatorRoute"
-        cache:
-          $ref: "#/components/schemas/Cache"
-        will:
-          type: string
-          enum: [return-when-cold, return-when-free, stay]
-        subagent:
-          type: boolean
-        callers:
-          type: integer
-          description: How many client keys the gateway has seen use it since the start. 0 after a restart, until its next answer.
-
   examples:
     FellBackCacheCold:
-      summary: "With the rule, not in this release: fell back to a paid key 40 minutes ago, quiet for 9 minutes, the first route is free"
+      summary: "Fell back to a paid key 40 minutes ago, the first route is free (rule as with the rule, not in this release)"
       value:
         observed_at: "2026-11-27T10:15:00Z"
         affinity: "on"
@@ -765,14 +523,7 @@ components:
         position: { below_first: true, higher_priority_free: true, higher_priority_free_at: null }
         first:
           - { provider: claude, kind: oauth, priority: 10, account: "a.b2hw7ynq4rkx6mdz3tcv" }
-        cache:
-          lifetime_s: 300
-          basis: answers
-          entry: null
-          last_use_at: "2026-11-27T10:06:00Z"
-          cold: true
-          cold_at: "2026-11-27T10:12:00Z"
-        rule: { in_effect: true, will: return-when-cold }
+        rule: { in_effect: true, cold_after_s: 360 }
         websocket_may_hold: false
         subagent: false
     FellBackFirstRouteCooling:
@@ -793,14 +544,7 @@ components:
         position: { below_first: true, higher_priority_free: false, higher_priority_free_at: "2026-11-27T10:40:00Z" }
         first:
           - { provider: claude, kind: apikey, priority: 5, host: api.anthropic.com, account: "a.f6zq3m2hx7kd4vwn5tyb" }
-        cache:
-          lifetime_s: 3600
-          basis: setting
-          entry: null
-          last_use_at: "2026-11-27T10:14:30Z"
-          cold: false
-          cold_at: "2026-11-27T11:15:30Z"
-        rule: { in_effect: false, will: stay }
+        rule: { in_effect: false, cold_after_s: null }
         websocket_may_hold: false
         subagent: false
     BoundToUnlisted:
@@ -821,18 +565,11 @@ components:
         position: null
         first:
           - { provider: claude, kind: apikey, priority: 5, host: api.anthropic.com, account: "a.f6zq3m2hx7kd4vwn5tyb" }
-        cache:
-          lifetime_s: 3600
-          basis: setting
-          entry: null
-          last_use_at: "2026-11-27T10:14:10Z"
-          cold: false
-          cold_at: "2026-11-27T11:15:10Z"
-        rule: { in_effect: false, will: stay }
+        rule: { in_effect: false, cold_after_s: null }
         websocket_may_hold: false
         subagent: false
     OnFirstRoute:
-      summary: On a first route; two accounts share the top priority (the rule's value is not in this release)
+      summary: On a first route; two accounts share the top priority (rule as with the rule, not in this release)
       value:
         observed_at: "2026-11-27T10:15:00Z"
         affinity: "on"
@@ -850,14 +587,7 @@ components:
         first:
           - { provider: claude, kind: oauth, priority: 10, account: "a.b2hw7ynq4rkx6mdz3tcv" }
           - { provider: claude, kind: oauth, priority: 10, account: "a.q5tm3xw7n2hkz4vd6byc" }
-        cache:
-          lifetime_s: 3600
-          basis: answers
-          entry: null
-          last_use_at: "2026-11-27T10:14:10Z"
-          cold: false
-          cold_at: "2026-11-27T11:15:10Z"
-        rule: { in_effect: true, will: stay }
+        rule: { in_effect: true, cold_after_s: 360 }
         websocket_may_hold: false
         subagent: false
     NotSeen:
@@ -872,8 +602,7 @@ components:
         bound: null
         position: null
         first: []
-        cache: null
-        rule: { in_effect: true, will: stay }
+        rule: { in_effect: true, cold_after_s: 360 }
         websocket_may_hold: false
         subagent: false
     AffinityOff:
@@ -888,8 +617,7 @@ components:
         bound: null
         position: null
         first: []
-        cache: null
-        rule: { in_effect: false, will: stay }
+        rule: { in_effect: false, cold_after_s: null }
         websocket_may_hold: false
         subagent: false
     Released:
@@ -939,85 +667,3 @@ components:
         was: null
         next: []
         websocket_may_hold: false
-    StateInEffect:
-      summary: The rule runs; one conversation is on a later route
-      value:
-        observed_at: "2026-11-27T10:15:00Z"
-        setting: { enabled: true, set: false, cold_after_s: 3600, cold_after_set: false }
-        in_effect: true
-        reason: null
-        affinity: { enabled: true, ttl_s: 3600, strategy: round-robin, subagents: true, rebind_on: any }
-        lifetimes: [answers, setting]
-        counts:
-          bound: 4
-          below_first: 1
-          released_by_rule: 12
-          released_by_client: 1
-          released_by_operator: 0
-          last_rule_release_at: "2026-11-27T09:58:30Z"
-          since: "2026-11-27T06:00:11Z"
-        conversations:
-          - id: "c.5tq2hb7yw3mdk4zn"
-            session: "0c9b1f0e"
-            named_by: affinity
-            model: opus
-            bound:
-              provider: claude
-              kind: apikey
-              priority: 5
-              host: api.anthropic.com
-              account: "a.f6zq3m2hx7kd4vwn5tyb"
-              auth_index: "5d0c2a7e91b3f486"
-              login: { name: null, email: null, label: "claude-apikey" }
-              recorded_cooldown: null
-            since: "2026-11-27T09:35:12Z"
-            origin: fallback
-            fell_back_from:
-              provider: claude
-              kind: oauth
-              priority: 10
-              account: "a.b2hw7ynq4rkx6mdz3tcv"
-              auth_index: "9a41e6c0d27b385f"
-              login: { name: "claude-first.json", email: null, label: "first" }
-              recorded_cooldown: null
-            fell_back_at: "2026-11-27T09:35:12Z"
-            below_first: true
-            higher_priority_free: true
-            first:
-              - provider: claude
-                kind: oauth
-                priority: 10
-                account: "a.b2hw7ynq4rkx6mdz3tcv"
-                auth_index: "9a41e6c0d27b385f"
-                login: { name: "claude-first.json", email: null, label: "first" }
-                recorded_cooldown: null
-            cache:
-              lifetime_s: 300
-              basis: answers
-              entry: null
-              last_use_at: "2026-11-27T10:06:00Z"
-              cold: true
-              cold_at: "2026-11-27T10:12:00Z"
-            will: return-when-cold
-            subagent: false
-            callers: 1
-        truncated: false
-    StateAffinityOff:
-      summary: Set on, not in effect
-      value:
-        observed_at: "2026-11-27T10:15:00Z"
-        setting: { enabled: true, set: false, cold_after_s: 3600, cold_after_set: false }
-        in_effect: false
-        reason: session-affinity-off
-        affinity: { enabled: false, ttl_s: 3600, strategy: round-robin, subagents: true, rebind_on: any }
-        lifetimes: [answers, setting]
-        counts:
-          bound: 0
-          below_first: 0
-          released_by_rule: 0
-          released_by_client: 0
-          released_by_operator: 0
-          last_rule_release_at: null
-          since: "2026-11-27T06:00:11Z"
-        conversations: []
-        truncated: false
