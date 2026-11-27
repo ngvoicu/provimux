@@ -2,7 +2,6 @@ package auth
 
 import (
 	"context"
-	"maps"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -114,41 +113,25 @@ func (m *Manager) provimuxForeignTookPart(auth *Auth, exec ProviderExecutor) boo
 
 type provimuxAttemptKey struct{}
 
-// provimuxAttempt is what an attempt's context says for its entry: which manager runs it, and the executors that
-// manager had in place when the attempt was handed over (finding 57: an answer goes by the executor that served it,
-// never by what the table holds when it is published).
-type provimuxAttempt struct {
-	m  *Manager
-	in *Manager // a manager value holding only the executors in place, looked up as the conductor looks them up
-}
-
-// provimuxWithManager says, on an attempt's context, which manager runs it and which executors it had in place: the
-// conductor calls newUpstreamAttemptContext right after it picked the attempt's credential and executor, before it
-// hands the attempt over, so these are the executors the attempt was picked from. An inner context of the same attempt
-// (a retry after a refresh, with the same executor) keeps the first. Outside the gateway as shipped it adds nothing.
+// provimuxWithManager says, on an attempt's context, which manager runs it: the conductor calls
+// newUpstreamAttemptContext right after it picked the attempt's credential and executor. An inner context of the same
+// attempt (a retry after a refresh) keeps the first. Outside the gateway as shipped it adds nothing.
 func provimuxWithManager(ctx context.Context, m *Manager) context.Context {
 	if ctx == nil || m == nil || provimuxAnswerEntry.Load() == nil || !logging.ProvimuxAnsweredBy() || !origin.ShippedGateway() {
 		return ctx
 	}
-	if earlier, ok := ctx.Value(provimuxAttemptKey{}).(provimuxAttempt); ok && earlier.m == m {
+	if earlier, ok := ctx.Value(provimuxAttemptKey{}).(*Manager); ok && earlier == m {
 		return ctx
 	}
-	m.mu.RLock()
-	in := &Manager{executors: maps.Clone(m.executors)}
-	m.mu.RUnlock()
-	return context.WithValue(ctx, provimuxAttemptKey{}, provimuxAttempt{m: m, in: in})
+	return context.WithValue(ctx, provimuxAttemptKey{}, m)
 }
 
-// provimuxServingExecutor returns the executor the attempt was handed to for auth, from what was in place when it was
-// handed over, looked up the way the conductor picks it.
-func (a provimuxAttempt) provimuxServingExecutor(auth *Auth) ProviderExecutor {
-	if a.in == nil || auth == nil {
-		return nil
-	}
+// provimuxServingExecutor returns the executor in place for auth, looked up the way the conductor picks it.
+func (m *Manager) provimuxServingExecutor(auth *Auth) ProviderExecutor {
 	key := executorKeyFromAuth(auth)
-	exec, ok := a.in.executorLocked(key) // a private copy: no lock
+	exec, ok := m.Executor(key)
 	if !ok {
-		exec, ok = a.in.executorLocked(canonicalSchedulingProvider(key))
+		exec, ok = m.Executor(canonicalSchedulingProvider(key))
 	}
 	if !ok {
 		return nil
@@ -285,13 +268,12 @@ func provimuxSentByBuiltin(attemptCtx context.Context, auth *Auth) (cliproxyexec
 	if hooks == nil || attemptCtx == nil || !origin.ShippedGateway() || !hooks.vouch(auth) {
 		return cliproxyexecutor.ProvimuxSentRequest{}, false
 	}
-	attempt, ok := attemptCtx.Value(provimuxAttemptKey{}).(provimuxAttempt)
+	m, ok := attemptCtx.Value(provimuxAttemptKey{}).(*Manager)
 	if !ok {
 		return cliproxyexecutor.ProvimuxSentRequest{}, false
 	}
-	// The executor that served the attempt, as it was handed over; nothing is read from the table now.
-	exec := attempt.provimuxServingExecutor(auth)
-	if exec == nil || attempt.m.provimuxForeignTookPart(auth, exec) {
+	exec := m.provimuxServingExecutor(auth)
+	if exec == nil || m.provimuxForeignTookPart(auth, exec) {
 		return cliproxyexecutor.ProvimuxSentRequest{}, false
 	}
 	kind := hooks.kind(exec)
