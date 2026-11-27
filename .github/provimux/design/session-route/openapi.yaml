@@ -26,7 +26,8 @@ info:
       values it does not know.
     - Unknown is `null`, never left out, except `account` on a route, which is absent where the build
       or the configuration gives no account marker.
-    - Times are RFC 3339 in UTC. Durations are whole seconds.
+    - Times are RFC 3339 in UTC. Durations are whole seconds, except `cold_after_s`, which is the
+      operator's time with its fraction (`1m0.9s` is 60.9).
     - A session id is never in a URL: a conversation is named by headers and by the body.
 servers:
   - url: http://localhost:8317
@@ -35,7 +36,7 @@ tags:
   - name: client
     description: For any configured client key. A key sees and releases only conversations it has used.
   - name: operator
-    description: Behind the management key. The rule's state. Not in this release.
+    description: Behind the management key. The rule's state.
 
 paths:
   /v1/provimux/session-route:
@@ -181,6 +182,34 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SessionRoute"
+
+  /v8/management/provimux/session-return:
+    get:
+      tags: [operator]
+      operationId: showSessionReturn
+      summary: The rule's setting and the value in use.
+      description: |
+        Read-only, from memory. `setting` is what the configuration says; `in_effect` and `reason`
+        are what holds. `counts.returned` is exact: it is raised in the same step that drops a
+        binding. There is no list of bindings and no release here (design section 15.5).
+      security:
+        - managementKey: []
+      responses:
+        "200":
+          description: The state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionReturnState"
+              examples:
+                in-effect:
+                  $ref: "#/components/examples/ReturnInEffect"
+                not-set:
+                  $ref: "#/components/examples/ReturnNotSet"
+                not-below-ttl:
+                  $ref: "#/components/examples/ReturnNotBelowTTL"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
 
 components:
   securitySchemes:
@@ -443,15 +472,19 @@ components:
             from that request's own accounts, so no show can say beforehand that it will happen. Never
             for a sub-agent or a fork, a pinned turn, or a conversation the client did not name.
             The object `cache` of an earlier draft of this contract is withdrawn: the gateway states
-            no cache's lifetime. Not in this release: always `{in_effect: false, cold_after_s: null}`.
+            no cache's lifetime. A conversation used within `cold_after_s` is never moved by the rule.
           required: [in_effect, cold_after_s]
           properties:
             in_effect:
               type: boolean
-              description: Whether the rule runs (`routing.session-affinity-return.cold-after` is set and applies).
+              description: |
+                Whether the rule runs (`routing.session-affinity-return.cold-after` is set and applies):
+                the state request's `in_effect`.
             cold_after_s:
               type: [number, "null"]
-              description: The operator's time, in seconds; `null` when not set.
+              description: |
+                The operator's time, in seconds with its fraction; `null` when not set. Given also when
+                the rule is not in effect (the state request says why).
         websocket_may_hold:
           type: boolean
           description: |
@@ -508,9 +541,69 @@ components:
           type: boolean
           description: As in a show. With `true`, close the connection before its next turn, or the release is undone.
 
+
+    SessionReturnState:
+      type: object
+      required: [observed_at, setting, in_effect, reason, affinity, counts]
+      properties:
+        observed_at:
+          type: string
+          format: date-time
+        setting:
+          type: object
+          description: "`routing.session-affinity-return` as the configuration has it."
+          required: [cold_after_s]
+          properties:
+            cold_after_s:
+              type: [number, "null"]
+              minimum: 60
+              description: |
+                `cold-after` in seconds, with its fraction where it has one (`1m0.9s` is 60.9); `null`
+                when not set. The gateway compares the duration itself, never this number.
+        in_effect:
+          type: boolean
+          description: Whether the rule runs now. This is the value in use.
+        reason:
+          type: [string, "null"]
+          description: |
+            Why not, when not in effect; `null` when in effect. The first that applies: `home-mode`,
+            `plugin-scheduler`, `session-affinity-off` (bindings are not honoured by this gateway's
+            selection), `not-set` (no `cold-after`), `rebind-never`
+            (`session-affinity-rebind-on: never`), `not-below-ttl` (`cold-after` is not shorter than
+            `session-affinity-ttl`: a binding ends by itself first).
+          enum: [home-mode, plugin-scheduler, session-affinity-off, not-set, rebind-never, not-below-ttl, null]
+        affinity:
+          type: object
+          description: Upstream's settings the rule depends on, as they run.
+          required: [enabled, ttl_s, strategy, subagents, rebind_on]
+          properties:
+            enabled: { type: boolean }
+            ttl_s: { type: integer }
+            strategy:
+              type: string
+              enum: [round-robin, fill-first, weighted-round-robin]
+            subagents: { type: boolean }
+            rebind_on:
+              type: string
+              enum: [any, quota, never]
+        counts:
+          type: object
+          required: [returned, last_returned_at, since]
+          properties:
+            returned:
+              type: integer
+              description: Bindings the rule dropped at a request since the gateway started.
+            last_returned_at:
+              type: [string, "null"]
+              format: date-time
+            since:
+              type: string
+              format: date-time
+              description: "When the counting started: the gateway's start."
+
   examples:
     FellBackCacheCold:
-      summary: "Fell back to a paid key 40 minutes ago, the first route is free (rule as with the rule, not in this release)"
+      summary: "Fell back to a paid key 40 minutes ago, the first route is free"
       value:
         observed_at: "2026-11-27T10:15:00Z"
         affinity: "on"
@@ -573,7 +666,7 @@ components:
         websocket_may_hold: false
         subagent: false
     OnFirstRoute:
-      summary: On a first route; two accounts share the top priority (rule as with the rule, not in this release)
+      summary: On a first route; two accounts share the top priority
       value:
         observed_at: "2026-11-27T10:15:00Z"
         affinity: "on"
@@ -671,3 +764,31 @@ components:
         was: null
         next: []
         websocket_may_hold: false
+
+    ReturnInEffect:
+      summary: The operator set six minutes
+      value:
+        observed_at: "2026-11-27T10:15:00Z"
+        setting: { cold_after_s: 360 }
+        in_effect: true
+        reason: null
+        affinity: { enabled: true, ttl_s: 3600, strategy: round-robin, subagents: true, rebind_on: any }
+        counts: { returned: 12, last_returned_at: "2026-11-27T09:58:30Z", since: "2026-11-27T06:00:11Z" }
+    ReturnNotSet:
+      summary: No time is set (as installed)
+      value:
+        observed_at: "2026-11-27T10:15:00Z"
+        setting: { cold_after_s: null }
+        in_effect: false
+        reason: not-set
+        affinity: { enabled: true, ttl_s: 3600, strategy: round-robin, subagents: true, rebind_on: any }
+        counts: { returned: 0, last_returned_at: null, since: "2026-11-27T06:00:11Z" }
+    ReturnNotBelowTTL:
+      summary: Two hours set, against a binding lifetime of one
+      value:
+        observed_at: "2026-11-27T10:15:00Z"
+        setting: { cold_after_s: 7200 }
+        in_effect: false
+        reason: not-below-ttl
+        affinity: { enabled: true, ttl_s: 3600, strategy: round-robin, subagents: true, rebind_on: any }
+        counts: { returned: 0, last_returned_at: null, since: "2026-11-27T06:00:11Z" }
