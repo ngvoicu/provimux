@@ -529,6 +529,9 @@ var namesRouteInventory = map[string]string{
 	"POST /openai/v1/videos": "d2", "POST /backend-api/codex/responses": "d2",
 	"POST /backend-api/codex/responses/compact": "d2", "POST /backend-api/codex/alpha/search": "d2",
 	"POST /v1beta/interactions": "d2", "POST /v1beta/models/*action": "d2",
+	// session-route (session-route.md 4.3): a model in the request, never sent anywhere; a name not served is refused
+	// with the setting's message (internal/api TestProvimuxSessionRouteRequests).
+	"POST /v1/provimux/session-route": "session-route", "POST /v1/provimux/session-route/release": "session-route",
 	// Walked by D2 separately: the Responses websocket, and video retrieval by id (default model).
 	"GET /v1/responses": "websocket", "GET /backend-api/codex/responses": "websocket",
 	"GET /v1/videos/:request_id": "default-model", "GET /openai/v1/videos/:video_id": "default-model",
