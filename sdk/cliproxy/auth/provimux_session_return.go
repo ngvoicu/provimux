@@ -3,7 +3,6 @@ package auth
 import (
 	"sync/atomic"
 	"time"
-	"weak"
 )
 
 // Provimux: session-route, the rule (.github/provimux/design/session-route.md 15). At a conversation's next request,
@@ -25,81 +24,51 @@ import (
 const provimuxReturnNoteLimit = 16384
 
 // provimuxSessionReturn is the selector's own part of the rule, guarded by the selector's cache's mu; the zero value is
-// ready. seen is K7: when a request of each key last came to selection. returned is the number of the rule's last
-// return of a binding each key was in.
+// ready. seen is K7: when a request of each key last came to selection, under the value observed. returned is the
+// number of the rule's last return of a binding each key was in.
 type provimuxSessionReturn struct {
-	generation uint64 // the setting's generation the notes were written under
-	seen       map[string]time.Time
-	returned   map[string]uint64
-	returns    uint64 // the last return number given by this selector
+	observed *provimuxReturnValue // the value in use when the notes were written
+	seen     map[string]time.Time
+	returned map[string]uint64
+	returns  uint64 // the last return number given by this selector
 }
 
-// ProvimuxSessionReturnSetting is the configuration the rule depends on, as the service's hook read it.
-type ProvimuxSessionReturnSetting struct {
-	ColdAfter    time.Duration // routing.session-affinity-return.cold-after; 0 when not set
-	ColdAfterSet bool
-	Affinity     bool          // routing.session-affinity
-	Home         bool          // home.enabled
-	TTL          time.Duration // routing.session-affinity-ttl as it applies
-	Strategy     string        // routing.strategy as it applies
-	Subagents    bool          // routing.session-affinity-subagents as it applies
-	RebindOn     string        // routing.session-affinity-rebind-on as it applies
-}
-
-// provimuxReturnValue is the value in use: the setting, the manager it was committed for, whether the configuration
-// lets the rule run at all, and its generation, which changes whenever cold-after or that answer changes. One atomic
-// value, loaded once at the top of each call.
+// provimuxReturnValue is cold-after as committed for the gateway's manager. A new value is stored only when one of
+// the two changes, so its identity says "changed".
 type provimuxReturnValue struct {
-	setting    ProvimuxSessionReturnSetting
-	manager    weak.Pointer[Manager]
-	possible   bool
-	generation uint64
+	coldAfter time.Duration
+	manager   *Manager
 }
 
 var (
-	provimuxReturnCurrent    atomic.Pointer[provimuxReturnValue]
-	provimuxReturnGeneration atomic.Uint64
+	provimuxReturnCurrent atomic.Pointer[provimuxReturnValue] // nil: not set
 	// provimuxReturned counts the bindings the rule dropped since startup: raised in the step that drops one.
 	provimuxReturned     atomic.Int64
 	provimuxReturnedLast atomic.Pointer[time.Time]
 	provimuxReturnSince  = time.Now()
 )
 
-// ProvimuxSetSessionReturn puts setting in force for m, where the service commits a configuration and for the first
-// configuration of a start. A nil m puts the rule out of force. When the value in use changes (set, changed, removed,
-// set again), a new observation starts: every selector empties its notes at its next call, so the first message of
-// each conversation after that is not judged.
-func ProvimuxSetSessionReturn(m *Manager, setting ProvimuxSessionReturnSetting) {
-	if m == nil {
+// ProvimuxSetSessionReturn puts coldAfter in force for m, where the service commits a configuration and for the first
+// configuration of a start; 0 puts the rule out of force. When the value changes (set, changed, removed, set again), a
+// new observation starts: every selector empties its notes at its next call, so the first message of each
+// conversation after that is not judged. An unchanged value keeps the notes.
+func ProvimuxSetSessionReturn(m *Manager, coldAfter time.Duration) {
+	if m == nil || coldAfter <= 0 {
 		provimuxReturnCurrent.Store(nil)
 		return
 	}
-	possible := setting.ColdAfterSet && setting.ColdAfter > 0 && setting.Affinity && !setting.Home &&
-		normalizeSessionAffinityRebindOn(setting.RebindOn) != SessionAffinityRebindOnNever &&
-		(setting.TTL <= 0 || setting.ColdAfter < setting.TTL)
-	value := &provimuxReturnValue{setting: setting, manager: weak.Make(m), possible: possible}
-	if previous := provimuxReturnCurrent.Load(); previous != nil && previous.manager.Value() == m &&
-		previous.possible == possible && previous.setting.ColdAfter == setting.ColdAfter {
-		value.generation = previous.generation
-	} else {
-		value.generation = provimuxReturnGeneration.Add(1)
+	if previous := provimuxReturnCurrent.Load(); previous != nil && previous.manager == m && previous.coldAfter == coldAfter {
+		return
 	}
-	provimuxReturnCurrent.Store(value)
-}
-
-// SetProvimuxSessionReturnForTest puts a setting in force for m and returns the function that puts the previous value
-// back. For tests only.
-func SetProvimuxSessionReturnForTest(m *Manager, setting ProvimuxSessionReturnSetting) (restore func()) {
-	previous := provimuxReturnCurrent.Load()
-	ProvimuxSetSessionReturn(m, setting)
-	return func() { provimuxReturnCurrent.Store(previous) }
+	provimuxReturnCurrent.Store(&provimuxReturnValue{coldAfter: coldAfter, manager: m})
 }
 
 // ProvimuxSessionReturnAgeForTest moves every note of the rule on m's selector d into the past, as if d had passed
-// since each message. For tests only.
+// since each message. For tests only: the tests of other packages that go through a real request need it, as Pick
+// takes its own time.
 func ProvimuxSessionReturnAgeForTest(m *Manager, d time.Duration) {
 	s, ok := m.Selector().(*SessionAffinitySelector)
-	if !ok || s == nil || s.cache == nil {
+	if !ok {
 		return
 	}
 	s.cache.mu.Lock()
@@ -112,31 +81,31 @@ func ProvimuxSessionReturnAgeForTest(m *Manager, d time.Duration) {
 // provimuxReturnRuns reports whether the rule judges on s, m's selector: not Home, no plugin scheduler, s does not
 // refuse to move a bound conversation (rebind-on never), and cold-after is shorter than s's binding lifetime.
 func provimuxReturnRuns(m *Manager, s *SessionAffinitySelector, coldAfter time.Duration) bool {
-	return !s.rebindOnNever && coldAfter > 0 && coldAfter < s.cache.ttl && !m.HomeEnabled() && !m.hasPluginScheduler()
+	return !s.rebindOnNever && coldAfter < s.cache.ttl && !m.HomeEnabled() && !m.hasPluginScheduler()
 }
 
 // provimuxReturn is the rule (15.3), called by Pick right before it looks the binding up. named is K2 (the client
 // named the conversation and it is neither a sub-agent nor a fork); cacheKey and fallbackKey are Pick's keys;
 // available is the list Pick chooses from for this request; now is the time Pick took. It returns nothing: it either
-// dropped the binding or did not, and Pick's own lines decide everything after it. Not in effect, it is one atomic
-// load and a return. Every request that passes K1 and K2 is noted, judged or not, so a note is always the
-// conversation's last message routed to an account.
+// dropped the binding or did not, and Pick's own lines decide everything after it. Unset, it is one atomic load and a
+// return: nothing locked, nothing written. Set, every request that passes K2 is noted, judged or not, so a note is
+// always the conversation's last message routed to an account; the judgement comes first, so it reads the note of
+// the message before this one.
 func (s *SessionAffinitySelector) provimuxReturn(named bool, cacheKey, fallbackKey string, available []*Auth, now time.Time) {
 	value := provimuxReturnCurrent.Load()
-	if value == nil || !value.possible || !named || s == nil || cacheKey == "" { // K1 (as configured), K2
+	if value == nil || !named { // K1 (set), K2
 		return
 	}
-	coldAfter := value.setting.ColdAfter
-	runs := provimuxReturnRuns(value.manager.Value(), s, coldAfter) // K1 (as it runs)
+	runs := provimuxReturnRuns(value.manager, s, value.coldAfter) // K1 (in effect)
 	cache := s.cache
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
 	cache.ensureInitializedLocked()
-	if s.provimux.generation != value.generation || s.provimux.seen == nil || len(s.provimux.seen) >= provimuxReturnNoteLimit {
-		s.provimux.generation, s.provimux.seen = value.generation, make(map[string]time.Time) // a new observation
+	if s.provimux.observed != value || len(s.provimux.seen) >= provimuxReturnNoteLimit {
+		s.provimux.observed, s.provimux.seen = value, make(map[string]time.Time) // a new observation
 	}
 	if runs {
-		s.provimuxJudgeLocked(cache, cacheKey, fallbackKey, available, now, coldAfter)
+		s.provimuxJudgeLocked(cache, cacheKey, fallbackKey, available, now, value.coldAfter)
 	}
 	s.provimux.seen[cacheKey] = now // K7
 }
@@ -252,13 +221,12 @@ const (
 	provimuxReturnNotBelowTTL     = "not-below-ttl"
 )
 
-// provimuxReturnColdAfterOf is cold-after as committed for m, and whether it is set.
-func provimuxReturnColdAfterOf(m *Manager) (time.Duration, bool) {
-	value := provimuxReturnCurrent.Load()
-	if m == nil || value == nil || value.manager.Value() != m || !value.setting.ColdAfterSet || value.setting.ColdAfter <= 0 {
-		return 0, false
+// provimuxReturnColdAfter is cold-after as committed, and whether it is set.
+func provimuxReturnColdAfter() (time.Duration, bool) {
+	if value := provimuxReturnCurrent.Load(); value != nil {
+		return value.coldAfter, true
 	}
-	return value.setting.ColdAfter, true
+	return 0, false
 }
 
 // provimuxSeconds is d in seconds, with its fraction: what the contract shows, never what the rule compares.
@@ -268,42 +236,24 @@ func provimuxSeconds(d time.Duration) *float64 {
 }
 
 // provimuxReturnReason is why the rule does not run for m now, or "" when it runs: the first that applies, in the
-// contract's order. Each part holds when it holds as configured (the value Pick loads first) or as it runs (the
-// manager's mode and selector, which Pick checks next), so "" is exactly when Pick's rule acts, a reload in between
-// included.
+// contract's order. It reads what Pick's call reads (the value in use, m's mode and m's selector as it runs), so ""
+// is exactly when that call judges.
 func provimuxReturnReason(m *Manager) string {
-	if m == nil {
-		return provimuxReturnNotSet
-	}
+	affinity, isAffinity := m.Selector().(*SessionAffinitySelector)
 	value := provimuxReturnCurrent.Load()
-	if value != nil && value.manager.Value() != m {
-		value = nil
-	}
-	var setting ProvimuxSessionReturnSetting
-	if value != nil {
-		setting = value.setting
-	}
-	if m.HomeEnabled() || setting.Home {
+	switch {
+	case m.HomeEnabled():
 		return provimuxReturnHomeMode
-	}
-	if m.hasPluginScheduler() {
+	case m.hasPluginScheduler():
 		return provimuxReturnPluginScheduler
-	}
-	affinity, ok := m.Selector().(*SessionAffinitySelector)
-	if !ok || affinity == nil || affinity.cache == nil || (value != nil && !setting.Affinity) {
+	case !isAffinity:
 		return provimuxReturnAffinityOff
-	}
-	if value == nil || !setting.ColdAfterSet || setting.ColdAfter <= 0 {
+	case value == nil:
 		return provimuxReturnNotSet
-	}
-	if affinity.rebindOnNever || normalizeSessionAffinityRebindOn(setting.RebindOn) == SessionAffinityRebindOnNever {
+	case affinity.rebindOnNever:
 		return provimuxReturnRebindNever
-	}
-	if setting.ColdAfter >= affinity.cache.ttl || (setting.TTL > 0 && setting.ColdAfter >= setting.TTL) {
+	case value.coldAfter >= affinity.cache.ttl:
 		return provimuxReturnNotBelowTTL
-	}
-	if !value.possible || !provimuxReturnRuns(m, affinity, setting.ColdAfter) {
-		return provimuxReturnNotSet // not reached: every condition of the two is named above
 	}
 	return ""
 }
@@ -320,8 +270,8 @@ func provimuxStrategyOf(selector Selector) string {
 	}
 }
 
-// ProvimuxSessionReturnStateOf is the rule's state for m at now: the setting, the value in use and why, upstream's
-// settings as they run, and the exact count of returns since the start. It reads; it changes nothing.
+// ProvimuxSessionReturnStateOf is the rule's state for m at now: the setting, whether the rule runs and why not,
+// upstream's settings as they run, and the exact count of returns since the start. It reads; it changes nothing.
 func ProvimuxSessionReturnStateOf(m *Manager, now time.Time) ProvimuxSessionReturnState {
 	state := ProvimuxSessionReturnState{
 		ObservedAt: provimuxTime(now),
@@ -331,39 +281,24 @@ func ProvimuxSessionReturnStateOf(m *Manager, now time.Time) ProvimuxSessionRetu
 	if last := provimuxReturnedLast.Load(); last != nil {
 		state.Counts.LastReturnedAt = provimuxTimePtr(*last)
 	}
-	if coldAfter, set := provimuxReturnColdAfterOf(m); set {
+	if coldAfter, set := provimuxReturnColdAfter(); set {
 		state.Setting.ColdAfterS = provimuxSeconds(coldAfter)
 	}
-	if value := provimuxReturnCurrent.Load(); value != nil && m != nil && value.manager.Value() == m {
-		if value.setting.TTL > 0 {
-			state.Affinity.TTLS = int64(value.setting.TTL / time.Second)
+	switch selector := m.Selector().(type) {
+	case *SessionAffinitySelector:
+		state.Affinity.Enabled = true
+		state.Affinity.TTLS = int64(selector.cache.ttl / time.Second)
+		state.Affinity.Strategy = provimuxStrategyOf(selector.fallback)
+		state.Affinity.Subagents = selector.subagentAffinity
+		if selector.rebindOnQuotaOnly {
+			state.Affinity.RebindOn = SessionAffinityRebindOnQuota
 		}
-		if value.setting.Strategy != "" {
-			state.Affinity.Strategy = value.setting.Strategy
+		if selector.rebindOnNever {
+			state.Affinity.RebindOn = SessionAffinityRebindOnNever
 		}
-		state.Affinity.Subagents = value.setting.Subagents
-		state.Affinity.RebindOn = normalizeSessionAffinityRebindOn(value.setting.RebindOn)
-	}
-	if m != nil {
-		switch selector := m.Selector().(type) {
-		case *SessionAffinitySelector:
-			if selector != nil && selector.cache != nil {
-				state.Affinity.Enabled = true
-				state.Affinity.TTLS = int64(selector.cache.ttl / time.Second)
-				state.Affinity.Strategy = provimuxStrategyOf(selector.fallback)
-				state.Affinity.Subagents = selector.subagentAffinity
-				state.Affinity.RebindOn = SessionAffinityRebindOnAny
-				if selector.rebindOnQuotaOnly {
-					state.Affinity.RebindOn = SessionAffinityRebindOnQuota
-				}
-				if selector.rebindOnNever {
-					state.Affinity.RebindOn = SessionAffinityRebindOnNever
-				}
-			}
-		case nil:
-		default:
-			state.Affinity.Strategy = provimuxStrategyOf(selector)
-		}
+	case nil:
+	default:
+		state.Affinity.Strategy = provimuxStrategyOf(selector)
 	}
 	if reason := provimuxReturnReason(m); reason != "" {
 		state.Reason = &reason
@@ -377,7 +312,7 @@ func ProvimuxSessionReturnStateOf(m *Manager, now time.Time) ProvimuxSessionRetu
 // set).
 func provimuxSessionRuleOf(m *Manager) ProvimuxSessionRule {
 	rule := ProvimuxSessionRule{InEffect: provimuxReturnReason(m) == ""}
-	if coldAfter, set := provimuxReturnColdAfterOf(m); set {
+	if coldAfter, set := provimuxReturnColdAfter(); set {
 		rule.ColdAfterS = provimuxSeconds(coldAfter)
 	}
 	return rule

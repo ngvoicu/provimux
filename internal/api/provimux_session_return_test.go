@@ -15,8 +15,10 @@ import (
 // 15.10), through the real management router behind the management key, in each mode, against the contract; and the
 // show's rule, which says the same in two fields. Every account and key is invented.
 
-func srReturnSetting(cold, ttl time.Duration) auth.ProvimuxSessionReturnSetting {
-	return auth.ProvimuxSessionReturnSetting{ColdAfter: cold, ColdAfterSet: cold > 0, Affinity: true, TTL: ttl, Strategy: "round-robin", Subagents: true, RebindOn: "any"}
+// srReturnRule puts cold-after in force for m, as the service's hook does, until the test ends.
+func srReturnRule(t *testing.T, m *auth.Manager, cold time.Duration) {
+	auth.ProvimuxSetSessionReturn(m, cold)
+	t.Cleanup(func() { auth.ProvimuxSetSessionReturn(nil, 0) })
 }
 
 func TestProvimuxSessionReturnStatePath(t *testing.T) {
@@ -28,40 +30,32 @@ func TestProvimuxSessionReturnStatePath(t *testing.T) {
 		reason  string
 		cold    any
 	}{
-		{name: "not set (as installed)", reason: "not-set", cold: nil, prepare: func(t *testing.T, m *auth.Manager) {
-			t.Cleanup(auth.SetProvimuxSessionReturnForTest(m, srReturnSetting(0, time.Hour)))
-		}},
+		{name: "not set (as installed)", reason: "not-set", cold: nil, prepare: func(t *testing.T, m *auth.Manager) {}},
 		{name: "in effect", reason: "", cold: 360.0, prepare: func(t *testing.T, m *auth.Manager) {
-			t.Cleanup(auth.SetProvimuxSessionReturnForTest(m, srReturnSetting(6*time.Minute, time.Hour)))
+			srReturnRule(t, m, 6*time.Minute)
 		}},
 		{name: "not below the TTL", reason: "not-below-ttl", cold: 7200.0, prepare: func(t *testing.T, m *auth.Manager) {
-			t.Cleanup(auth.SetProvimuxSessionReturnForTest(m, srReturnSetting(2*time.Hour, time.Hour)))
+			srReturnRule(t, m, 2*time.Hour)
 		}},
 		{name: "rebind-on never", reason: "rebind-never", cold: 360.0, prepare: func(t *testing.T, m *auth.Manager) {
 			never := auth.NewSessionAffinitySelectorWithConfig(auth.SessionAffinityConfig{Fallback: &auth.RoundRobinSelector{}, TTL: time.Hour, RebindOn: "never"})
 			t.Cleanup(never.Stop)
 			m.SetSelector(never)
-			setting := srReturnSetting(6*time.Minute, time.Hour)
-			setting.RebindOn = "never"
-			t.Cleanup(auth.SetProvimuxSessionReturnForTest(m, setting))
+			srReturnRule(t, m, 6*time.Minute)
 		}},
 		{name: "session affinity off", reason: "session-affinity-off", cold: 360.0, prepare: func(t *testing.T, m *auth.Manager) {
 			m.SetSelector(&auth.FillFirstSelector{})
-			setting := srReturnSetting(6*time.Minute, time.Hour)
-			setting.Affinity = false
-			t.Cleanup(auth.SetProvimuxSessionReturnForTest(m, setting))
+			srReturnRule(t, m, 6*time.Minute)
 		}},
 		{name: "plugin scheduler", reason: "plugin-scheduler", cold: 360.0, prepare: func(t *testing.T, m *auth.Manager) {
 			m.SetPluginScheduler(srAPIScheduler{})
-			t.Cleanup(auth.SetProvimuxSessionReturnForTest(m, srReturnSetting(6*time.Minute, time.Hour)))
+			srReturnRule(t, m, 6*time.Minute)
 		}},
 		{name: "Home mode", reason: "home-mode", cold: 360.0, prepare: func(t *testing.T, m *auth.Manager) {
 			cfg := &proxyconfig.Config{}
 			cfg.Home.Enabled = true
 			m.SetConfig(cfg)
-			setting := srReturnSetting(6*time.Minute, time.Hour)
-			setting.Home = true
-			t.Cleanup(auth.SetProvimuxSessionReturnForTest(m, setting))
+			srReturnRule(t, m, 6*time.Minute)
 		}},
 	} {
 		t.Run(mode.name, func(t *testing.T) {
@@ -105,7 +99,7 @@ func TestProvimuxSessionReturnShowRule(t *testing.T) {
 	for _, set := range []bool{false, true} {
 		f := newSRAPIFixture(t)
 		if set {
-			t.Cleanup(auth.SetProvimuxSessionReturnForTest(f.manager, srReturnSetting(6*time.Minute, time.Hour)))
+			srReturnRule(t, f.manager, 6*time.Minute)
 		}
 		header := http.Header{"X-Session-Affinity": {"pi-show-rule"}}
 		f.turn("sk-sr-one", header)

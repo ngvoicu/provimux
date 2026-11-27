@@ -56,7 +56,8 @@ func TestProvimuxSessionReturnLongAnswerSSE(t *testing.T) {
 			t.Cleanup(selector.Stop)
 			m := coreauth.NewManager(nil, selector, nil)
 			m.RegisterExecutor(&srReturnSSEExecutor{m: m})
-			t.Cleanup(coreauth.SetProvimuxSessionReturnForTest(m, coreauth.ProvimuxSessionReturnSetting{Affinity: true, ColdAfterSet: true, ColdAfter: row.cold, TTL: time.Hour}))
+			coreauth.ProvimuxSetSessionReturn(m, row.cold)
+			t.Cleanup(func() { coreauth.ProvimuxSetSessionReturn(nil, 0) })
 			for i, id := range []string{"sr-sse-low", "sr-sse-high"} {
 				if _, err := m.Register(coreauth.WithSkipPersist(t.Context()), &coreauth.Auth{Provider: "antigravity", ID: id, Status: coreauth.StatusActive,
 					Attributes: map[string]string{"priority": fmt.Sprint(5 + 5*i), "api_key": "synthetic"}}); err != nil {

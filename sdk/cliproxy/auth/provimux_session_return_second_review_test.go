@@ -129,7 +129,7 @@ func TestProvimuxSessionReturnFinding7NewObservation(t *testing.T) {
 		f.rule(time.Minute)
 		header := http.Header{"X-Session-Affinity": {"toggle"}}
 		key := f.fellBack(header, "")
-		ProvimuxSetSessionReturn(f.m, ProvimuxSessionReturnSetting{Affinity: true, TTL: time.Hour})
+		ProvimuxSetSessionReturn(f.m, 0)
 		f.age(90 * time.Second)
 		f.rule(time.Minute)
 		before := provimuxReturned.Load()
