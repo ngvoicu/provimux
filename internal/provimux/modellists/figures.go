@@ -65,10 +65,6 @@ var (
 	ErrAhead = errors.New("generated_at more than 24 hours ahead of the gateway's clock")
 )
 
-// ErrStopped means the fetch stopped before a page because its caller said so (the switch was turned off):
-// no request left after that. It is no failure of providers.dev.
-var ErrStopped = errors.New("the fetch was stopped")
-
 // EntriesURL is providers.dev's entries resource. Tests point the client elsewhere; nothing in the config
 // changes it.
 const EntriesURL = "https://providers.dev/api/v1/entries"
@@ -683,11 +679,9 @@ type figuresPageJSON struct {
 }
 
 // FetchFigures asks every page, each within pageTimeout. held is the held document (nil without one). now is
-// the gateway's clock. proceed, when not nil, is asked before each page: false stops the fetch there with
-// ErrStopped, and no further request leaves. A result with NotModified means every page answered 304: the held
-// document is current.
+// the gateway's clock. A result with NotModified means every page answered 304: the held document is current.
 func FetchFigures(ctx context.Context, client *http.Client, base string, held *FiguresDocument, userAgent string,
-	now time.Time, pageTimeout time.Duration, proceed func() bool) (FiguresResult, error) {
+	now time.Time, pageTimeout time.Duration) (FiguresResult, error) {
 	if client == nil {
 		client = http.DefaultClient
 	}
@@ -709,9 +703,6 @@ func FetchFigures(ctx context.Context, client *http.Client, base string, held *F
 	for i := 0; ; i++ {
 		if i == FiguresMaxPages {
 			return FiguresResult{}, failure(FailureResponse, fmt.Errorf("more than %d pages", FiguresMaxPages))
-		}
-		if proceed != nil && !proceed() {
-			return FiguresResult{}, ErrStopped
 		}
 		heldPage := heldPages[offset]
 		etag := ""

@@ -88,7 +88,7 @@ func newFiguresStandIn(t *testing.T, entries []json.RawMessage, version, generat
 var figuresTestNow = time.Date(2026, 11, 26, 12, 0, 0, 0, time.UTC)
 
 func fetchFiguresFrom(server *pdentries.Server, held *FiguresDocument) (FiguresResult, error) {
-	return FetchFigures(context.Background(), server.Client(), server.EntriesURL(), held, "provimux/test", figuresTestNow, 5*time.Second, nil)
+	return FetchFigures(context.Background(), server.Client(), server.EntriesURL(), held, "provimux/test", figuresTestNow, 5*time.Second)
 }
 
 func asJSONValue(t *testing.T, v any) any {
@@ -558,7 +558,7 @@ func TestFiguresFetchFailures(t *testing.T) {
 			_, _ = w.Write([]byte(`{"meta":`))
 		}))
 		t.Cleanup(server.Close)
-		_, err := FetchFigures(context.Background(), server.Client(), server.URL, nil, "provimux/test", figuresTestNow, 5*time.Second, nil)
+		_, err := FetchFigures(context.Background(), server.Client(), server.URL, nil, "provimux/test", figuresTestNow, 5*time.Second)
 		var fetchErr *FetchError
 		if !errors.As(err, &fetchErr) || fetchErr.Category != FailureNetwork {
 			t.Fatalf("err %v", err)
@@ -568,7 +568,7 @@ func TestFiguresFetchFailures(t *testing.T) {
 	t.Run("unreachable", func(t *testing.T) {
 		closed := httptest.NewServer(http.NotFoundHandler())
 		closed.Close()
-		_, err := FetchFigures(context.Background(), nil, closed.URL, nil, "provimux/test", figuresTestNow, 5*time.Second, nil)
+		_, err := FetchFigures(context.Background(), nil, closed.URL, nil, "provimux/test", figuresTestNow, 5*time.Second)
 		var fetchErr *FetchError
 		if !errors.As(err, &fetchErr) || fetchErr.Category != FailureNetwork {
 			t.Fatalf("err %v", err)
@@ -581,7 +581,7 @@ func TestFiguresFetchFailures(t *testing.T) {
 		server.SetHang(hang)
 		t.Cleanup(func() { close(hang) })
 		started := time.Now()
-		_, err := FetchFigures(context.Background(), server.Client(), server.EntriesURL(), nil, "provimux/test", figuresTestNow, 100*time.Millisecond, nil)
+		_, err := FetchFigures(context.Background(), server.Client(), server.EntriesURL(), nil, "provimux/test", figuresTestNow, 100*time.Millisecond)
 		var fetchErr *FetchError
 		if !errors.As(err, &fetchErr) || fetchErr.Category != FailureNetwork || time.Since(started) > 5*time.Second {
 			t.Fatalf("err %v after %s", err, time.Since(started))

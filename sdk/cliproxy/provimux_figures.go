@@ -96,30 +96,19 @@ func (st *provimuxFiguresStore) loadCache(cache *modellists.Store) {
 		provimuxShortVersion(doc.DatasetVersion), doc.GeneratedAt.UTC().Format(time.DateOnly), len(doc.Entries))
 }
 
-// provimuxFiguresRound is the figures' part of a round at the clock's time now, with the switch on.
+// provimuxFiguresRound is the figures' part of a round, with the switch on: the disk copy once, then the request
+// when it is due.
 func (s *Service) provimuxFiguresRound(ctx context.Context, cfg *config.Config) {
-	s.provimuxFiguresRoundAt(ctx, cfg, liveModelListNow())
-}
-
-// provimuxFiguresRoundAt is the figures' part of the round that began at roundAt, with the switch on: the disk
-// copy once, then the request when it is due. The next fetch is due counted from roundAt.
-func (s *Service) provimuxFiguresRoundAt(ctx context.Context, cfg *config.Config, roundAt time.Time) {
 	provimuxFigures.loadCache(liveModelLists.cache.Load())
-	if provimuxFiguresBase == "" || !provimuxFigures.due(roundAt) {
+	if provimuxFiguresBase == "" || !provimuxFigures.due(liveModelListNow()) {
 		return
 	}
-	s.refreshFigures(ctx, cfg, roundAt)
+	s.refreshFigures(ctx, cfg)
 }
 
-// provimuxFiguresStillOn reports whether the switch is still on for this service: asked before each page, so
-// that no request leaves once the switch is turned off (decided by the lead on 2026-11-27).
-func (s *Service) provimuxFiguresStillOn() bool {
-	return provimuxPublishedListsOn(s.currentConfig())
-}
-
-// refreshFigures sends the request, page after page, and applies its answer. The next fetch is due counted
-// from roundAt, the time of the round it belongs to.
-func (s *Service) refreshFigures(ctx context.Context, cfg *config.Config, roundAt time.Time) {
+// refreshFigures sends the request, page after page, and applies its answer. A fetch that ends after the switch
+// went off is not applied. The next fetch is due counted from the start of this one.
+func (s *Service) refreshFigures(ctx context.Context, cfg *config.Config) {
 	st := provimuxFigures
 	st.fetching.Lock()
 	defer st.fetching.Unlock()
@@ -132,9 +121,8 @@ func (s *Service) refreshFigures(ctx context.Context, cfg *config.Config, roundA
 	}
 	now := liveModelListNow()
 	result, err := modellists.FetchFigures(ctx, client, provimuxFiguresBase, held, "provimux/"+buildinfo.DisplayVersion(), now,
-		provimuxFiguresPageTimeout, s.provimuxFiguresStillOn)
-	if ctx.Err() != nil || errors.Is(err, modellists.ErrStopped) || !s.provimuxFiguresStillOn() {
-		// Stopped, or the switch went off meanwhile: nothing of this fetch is applied, and no failure recorded.
+		provimuxFiguresPageTimeout)
+	if ctx.Err() != nil || !provimuxPublishedListsOn(s.currentConfig()) {
 		return
 	}
 	accepted := held
@@ -144,12 +132,12 @@ func (s *Service) refreshFigures(ctx context.Context, cfg *config.Config, roundA
 		accepted, err = modellists.AcceptFigures(held, result.Document)
 	}
 	if err != nil {
-		s.provimuxFiguresFailed(err, held, now, roundAt)
+		s.provimuxFiguresFailed(err, held, now)
 		return
 	}
 	st.mu.Lock()
 	st.failure, st.failures = nil, 0
-	st.next = roundAt.Add(provimuxPublishedInterval)
+	st.next = now.Add(provimuxPublishedInterval)
 	st.doc, st.fromCache = accepted, false
 	logged := st.lastLogged == accepted.DatasetVersion
 	st.lastLogged = accepted.DatasetVersion
@@ -168,7 +156,7 @@ func (s *Service) refreshFigures(ctx context.Context, cfg *config.Config, roundA
 	}
 }
 
-func (s *Service) provimuxFiguresFailed(err error, held *modellists.FiguresDocument, now, roundAt time.Time) {
+func (s *Service) provimuxFiguresFailed(err error, held *modellists.FiguresDocument, now time.Time) {
 	st := provimuxFigures
 	category, status := modellists.FailureNetwork, 0
 	var fetchErr *modellists.FetchError
@@ -185,7 +173,7 @@ func (s *Service) provimuxFiguresFailed(err error, held *modellists.FiguresDocum
 		wait = provimuxPublishedBackoff[st.failures]
 	}
 	st.failures++
-	st.next = roundAt.Add(wait)
+	st.next = now.Add(wait)
 	st.mu.Unlock()
 	kept := "no figures are held"
 	if held != nil {

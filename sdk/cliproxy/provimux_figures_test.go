@@ -103,7 +103,7 @@ func provimuxFiguresSeedDisk(t *testing.T, dir string) {
 	t.Helper()
 	seedServer := provimuxFiguresStandIn(t)
 	seed, err := modellists.FetchFigures(t.Context(), seedServer.Client(), seedServer.EntriesURL(), nil, "provimux/test",
-		provimuxFiguresSeededAt, time.Second, nil)
+		provimuxFiguresSeededAt, time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
