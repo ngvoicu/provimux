@@ -24,6 +24,7 @@ func (s *Server) registerProvimuxRoutes(v8 *gin.RouterGroup) {
 	v8.GET("/provimux/restart-drain", func(c *gin.Context) { s.mgmt.ProvimuxRestartDrainOf(c, s.getConfig()) })
 	v8.GET("/provimux/same-account-retry", s.mgmt.ProvimuxSameAccountRetry)
 	v8.GET("/provimux/figures", s.mgmt.ProvimuxFigures)
+	v8.GET("/provimux/session-return", s.mgmt.ProvimuxSessionReturn)
 }
 
 // ProvimuxRoutes lists the method and path of every route the server registered, for Provimux's tests
