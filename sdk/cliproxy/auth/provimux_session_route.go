@@ -627,7 +627,7 @@ func (b *ProvimuxSessionBook) lifeToken(owner provimuxConversation, life uint64)
 // heldLife is the life the book holds for the binding found, or 0 where the book does not hold it (no answer seen on
 // it yet).
 func heldLife(entry ProvimuxSessionBookEntry, binding provimuxSeamBinding) uint64 {
-	if entry.Life == 0 || entry.Current != binding.AuthID || entry.lifeCache.Value() != binding.Cache || entry.lifeReturned != binding.Returned {
+	if entry.Life == 0 || entry.Current != binding.AuthID || entry.lifeCache.Value() != binding.Cache {
 		return 0
 	}
 	return entry.Life
@@ -710,7 +710,7 @@ func (b *ProvimuxSessionBook) show(r provimuxResolved, asked, routed string, now
 
 	route := provimuxRouteOf(r.auth, name)
 	bound := &ProvimuxSessionBound{Route: route, Origin: "not-known"}
-	if r.entry.Current == r.binding.AuthID && !r.entry.Since.IsZero() && r.entry.lifeReturned == r.binding.Returned {
+	if r.entry.Current == r.binding.AuthID && !r.entry.Since.IsZero() {
 		bound.Since = provimuxTimePtr(r.entry.Since)
 		bound.Origin = "first"
 		if r.entry.Previous != "" {
@@ -810,12 +810,12 @@ func (b *ProvimuxSessionBook) ReleaseRouted(scope string, headers http.Header, b
 		}
 	}
 	if !conflict && entry != nil {
-		held, heldCache, heldReturned := entry.Current, entry.lifeCache.Value(), entry.lifeReturned
+		held, heldCache := entry.Current, entry.lifeCache.Value()
 		still := func(binding provimuxSeamBinding) bool {
 			if binding.Session != owner.Session {
 				return false
 			}
-			if expect != "" && (binding.AuthID != held || binding.Cache != heldCache || binding.Returned != heldReturned) {
+			if expect != "" && (binding.AuthID != held || binding.Cache != heldCache) {
 				return false
 			}
 			removedAuth = binding.AuthID

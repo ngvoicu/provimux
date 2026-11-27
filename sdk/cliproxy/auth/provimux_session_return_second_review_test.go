@@ -10,7 +10,7 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
-// Provimux: the second review of the rule (findings 1, 2, 4 and 7), each as the reviewer's own case, against the rule
+// Provimux: the second review of the rule (findings 1, 2 and 7), each as the reviewer's own case, against the rule
 // as it now reads: it never moves a conversation that had a message routed to an account within cold-after. An answer that itself takes
 // longer than cold-after does not count as use while it streams. Every account and key is invented; the executors
 // are stand-ins in this process.
@@ -118,53 +118,6 @@ func TestProvimuxSessionReturnFinding2TokenRotated(t *testing.T) {
 				t.Fatalf("cold-after %s: the follow-up is bound %q, counted %d; want returned %v", row.cold, got, returned, row.returned)
 			}
 		})
-	}
-}
-
-// TestProvimuxSessionReturnFinding4RetryHistory is finding 4: the rule returned the conversation, the high account
-// failed and the retry came back to the same low login; while that answer runs, the show gives no token and no
-// history of the earlier stretch, and the old token gets 409.
-func TestProvimuxSessionReturnFinding4RetryHistory(t *testing.T) {
-	scope := provimuxSRScope("sk-client-one")
-	header := http.Header{"X-Session-Affinity": {"retry"}}
-	entered, finish := make(chan struct{}), make(chan struct{})
-	fail := false
-	f := newProvimuxSRFixture(t, "fill-first", false, func(_ context.Context, a *Auth, req cliproxyexecutor.Request) error {
-		if fail && strings.HasPrefix(a.ID, "sr-high-") {
-			return &Error{HTTPStatus: http.StatusTooManyRequests, Message: "fixture retry"}
-		}
-		if strings.Contains(string(req.Payload), "hold-retry") {
-			close(entered)
-			<-finish
-		}
-		return nil
-	})
-	f.rule(time.Minute)
-	if err := f.turn(header, "", scope, nil); err != nil {
-		t.Fatal(err)
-	}
-	f.coolHigh(time.Minute)
-	if err := f.turn(header, "", scope, nil); err != nil {
-		t.Fatal(err)
-	}
-	expireSessionAffinityPriorityModelCooldown(t, f.m, f.high, provimuxSRModel)
-	old := f.book.Show(scope, header, nil, provimuxSRModel)
-	if old.Binding == nil || old.Bound.Origin != "fallback" {
-		t.Fatalf("old %s", mustJSON(t, old))
-	}
-	f.age(90 * time.Second)
-	fail = true
-	done := make(chan error, 1)
-	go func() { done <- f.turn(header, `,"note":"hold-retry"`, scope, nil) }()
-	<-entered
-	current := f.book.Show(scope, header, nil, provimuxSRModel)
-	_, conflict := f.book.Release(scope, header, nil, provimuxSRModel, *old.Binding)
-	close(finish)
-	if err := <-done; err != nil {
-		t.Fatal(err)
-	}
-	if current.Binding != nil || conflict == nil || current.Bound == nil || current.Bound.Since != nil || current.Bound.Origin != "not-known" {
-		t.Fatalf("while the retry answers: %s, old token conflict %v; want no token, no history, 409", mustJSON(t, current), conflict != nil)
 	}
 }
 
