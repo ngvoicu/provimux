@@ -73,6 +73,7 @@ func TestProvimuxSessionReturnStatePath(t *testing.T) {
 			var state struct {
 				InEffect bool    `json:"in_effect"`
 				Reason   *string `json:"reason"`
+				TTLS     any     `json:"ttl_s"`
 				Setting  struct {
 					ColdAfterS any `json:"cold_after_s"`
 				} `json:"setting"`
@@ -82,8 +83,12 @@ func TestProvimuxSessionReturnStatePath(t *testing.T) {
 			if state.Reason != nil {
 				reason = *state.Reason
 			}
-			if reason != mode.reason || state.InEffect != (mode.reason == "") || state.Setting.ColdAfterS != mode.cold {
-				t.Fatalf("state %s; want reason %q, cold_after_s %v", body, mode.reason, mode.cold)
+			var ttl any = 3600.0
+			if mode.reason == "session-affinity-off" {
+				ttl = nil
+			}
+			if reason != mode.reason || state.InEffect != (mode.reason == "") || state.Setting.ColdAfterS != mode.cold || state.TTLS != ttl {
+				t.Fatalf("state %s; want reason %q, cold_after_s %v, ttl_s %v", body, mode.reason, mode.cold, ttl)
 			}
 			if recorder := provimuxServe(s, "/v8/management/provimux/session-return", false); recorder.Code != http.StatusUnauthorized {
 				t.Fatalf("without the management key: %d", recorder.Code)

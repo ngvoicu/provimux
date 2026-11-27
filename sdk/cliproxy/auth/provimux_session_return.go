@@ -182,26 +182,17 @@ func (r *provimuxSessionReturn) returnedOfLocked(key string) uint64 {
 // ProvimuxSessionReturnState is the answer of GET /v8/management/provimux/session-return (SessionReturnState in
 // session-route/openapi.yaml).
 type ProvimuxSessionReturnState struct {
-	ObservedAt string                        `json:"observed_at"`
-	Setting    ProvimuxSessionReturnSet      `json:"setting"`
-	InEffect   bool                          `json:"in_effect"`
-	Reason     *string                       `json:"reason"`
-	Affinity   ProvimuxSessionReturnAffinity `json:"affinity"`
-	Counts     ProvimuxSessionReturnCounts   `json:"counts"`
+	ObservedAt string                      `json:"observed_at"`
+	Setting    ProvimuxSessionReturnSet    `json:"setting"`
+	InEffect   bool                        `json:"in_effect"`
+	Reason     *string                     `json:"reason"`
+	TTLS       *int64                      `json:"ttl_s"` // the binding lifetime in use; nil with session affinity off
+	Counts     ProvimuxSessionReturnCounts `json:"counts"`
 }
 
 // ProvimuxSessionReturnSet is SessionReturnState.setting.
 type ProvimuxSessionReturnSet struct {
 	ColdAfterS *float64 `json:"cold_after_s"`
-}
-
-// ProvimuxSessionReturnAffinity is SessionReturnState.affinity: upstream's settings the rule depends on, as they run.
-type ProvimuxSessionReturnAffinity struct {
-	Enabled   bool   `json:"enabled"`
-	TTLS      int64  `json:"ttl_s"`
-	Strategy  string `json:"strategy"`
-	Subagents bool   `json:"subagents"`
-	RebindOn  string `json:"rebind_on"`
 }
 
 // ProvimuxSessionReturnCounts is SessionReturnState.counts.
@@ -258,24 +249,11 @@ func provimuxReturnReason(m *Manager) string {
 	return ""
 }
 
-// provimuxStrategyOf names the strategy of a fallback selector as the configuration names it.
-func provimuxStrategyOf(selector Selector) string {
-	switch selector.(type) {
-	case *FillFirstSelector:
-		return "fill-first"
-	case *WeightedRoundRobinSelector:
-		return "weighted-round-robin"
-	default:
-		return "round-robin"
-	}
-}
-
-// ProvimuxSessionReturnStateOf is the rule's state for m at now: the setting, whether the rule runs and why not,
-// upstream's settings as they run, and the exact count of returns since the start. It reads; it changes nothing.
+// ProvimuxSessionReturnStateOf is the rule's state for m at now: the setting, whether the rule runs and why not, the
+// binding lifetime in use, and the exact count of returns since the start. It reads; it changes nothing.
 func ProvimuxSessionReturnStateOf(m *Manager, now time.Time) ProvimuxSessionReturnState {
 	state := ProvimuxSessionReturnState{
 		ObservedAt: provimuxTime(now),
-		Affinity:   ProvimuxSessionReturnAffinity{TTLS: int64(time.Hour / time.Second), Strategy: "round-robin", Subagents: true, RebindOn: SessionAffinityRebindOnAny},
 		Counts:     ProvimuxSessionReturnCounts{Returned: provimuxReturned.Load(), Since: provimuxTime(provimuxReturnSince)},
 	}
 	if last := provimuxReturnedLast.Load(); last != nil {
@@ -284,21 +262,9 @@ func ProvimuxSessionReturnStateOf(m *Manager, now time.Time) ProvimuxSessionRetu
 	if coldAfter, set := provimuxReturnColdAfter(); set {
 		state.Setting.ColdAfterS = provimuxSeconds(coldAfter)
 	}
-	switch selector := m.Selector().(type) {
-	case *SessionAffinitySelector:
-		state.Affinity.Enabled = true
-		state.Affinity.TTLS = int64(selector.cache.ttl / time.Second)
-		state.Affinity.Strategy = provimuxStrategyOf(selector.fallback)
-		state.Affinity.Subagents = selector.subagentAffinity
-		if selector.rebindOnQuotaOnly {
-			state.Affinity.RebindOn = SessionAffinityRebindOnQuota
-		}
-		if selector.rebindOnNever {
-			state.Affinity.RebindOn = SessionAffinityRebindOnNever
-		}
-	case nil:
-	default:
-		state.Affinity.Strategy = provimuxStrategyOf(selector)
+	if affinity, ok := m.Selector().(*SessionAffinitySelector); ok {
+		ttl := int64(affinity.cache.ttl / time.Second)
+		state.TTLS = &ttl
 	}
 	if reason := provimuxReturnReason(m); reason != "" {
 		state.Reason = &reason
