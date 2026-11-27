@@ -54,8 +54,6 @@ type ProvimuxSentRequest struct {
 	// detached: the request was made on another context than the attempt's own. It is not known to be the attempt's:
 	// it never names an entry, though it can still be the answering executor's housekeeping.
 	detached bool
-	// superseded: a later try in the same attempt replaced it (ProvimuxSupersedeSent); it is not a candidate.
-	superseded bool
 
 	method, path, mediaType string   // for the reader and the closed housekeeping list
 	encodings               []string // its Content-Encoding, in order, without identity
@@ -127,7 +125,7 @@ func ProvimuxSent(ctx context.Context, executor string) (sent ProvimuxSentReques
 	}()
 	candidates := 0
 	for _, request := range requests {
-		if request.superseded || request.Status < 200 || request.Status > 299 {
+		if request.Status < 200 || request.Status > 299 {
 			continue
 		}
 		request.Model, request.unread = provimuxModelOf(request)
@@ -141,28 +139,6 @@ func ProvimuxSent(ctx context.Context, executor string) (sent ProvimuxSentReques
 		return ProvimuxSentRequest{}, false
 	}
 	return sent, true
-}
-
-// ProvimuxSupersedeSent marks every request the attempt of ctx has logged so far as superseded: ProvimuxSent leaves
-// them out of the count of candidates, and their copies of the body are let go. It is for a caller that sends the
-// attempt's request again, on the same account and in the same attempt, after a first try whose response began with a
-// 2xx and then failed inside its body: without it that first try is a second candidate and the answer names no entry.
-// (A first try refused with an error status is never a candidate, and needs nothing.) Only the log of ctx's attempt is
-// marked, and only what it holds when the call is made: a request handed to the transport after it counts as before.
-// Housekeeping, connections and the rest of the rule are unchanged. Without a log on ctx it does nothing.
-func ProvimuxSupersedeSent(ctx context.Context) {
-	log := provimuxSentLogOf(ctx)
-	if log == nil {
-		return
-	}
-	log.mu.Lock()
-	defer log.mu.Unlock()
-	for i := range log.requests {
-		if !log.requests[i].superseded {
-			log.requests[i].superseded = true
-			log.requests[i].body.release()
-		}
-	}
 }
 
 // provimuxObserveSent returns ctx with the attempt's log, its connection trace and Provimux's decorator on it. Only
