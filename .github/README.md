@@ -53,6 +53,9 @@ server's address, see [For a team](#for-a-team)). Docker, release archives and b
 - **[An overloaded provider does not cost you your first account](#an-overloaded-provider-does-not-cost-you-your-first-account).**
   When Anthropic's or OpenAI's own API refuses a request because it is overloaded, Provimux sends it once more to the
   same account before it moves on down your list.
+- **[Send a conversation back to your first account](#send-a-conversation-back-to-your-first-account).** With session
+  affinity on, a client sees which account its conversation is bound to and whether a higher-priority one is free
+  again, and releases it so that its next message goes to the first free account.
 
 **Clarity: you see which account has which models, which one answered, and why a route is paused.**
 
@@ -956,12 +959,13 @@ same-account retry: status 529 overloaded refusal on provider=claude auth_file=â
 ```
 
 The answer carries the headers of the account that gave it (`X-Provimux-Account`, see
-[Which account answered](#which-account-answered)). If keep-alive comments before the first token are turned on, the
-response's headers may already have been sent before the second try, and then that answer carries no account headers. Savings counts the
-refused request and the answered one as two requests; only the answered one has tokens.
-`GET /v8/management/provimux/same-account-retry` gives the value in use, whether your config sets it, and the counts
-since the start: how often the executor was called a second time, with and without an error, and how often the
-client left during the wait.
+[Which account answered](#which-account-answered)), and a
+[show of the conversation's route](#send-a-conversation-back-to-your-first-account) names that account as bound. If
+keep-alive comments before the first token are turned on, the response's headers may already have been sent before
+the second try, and then that answer carries no account headers. Savings counts the refused request and the answered
+one as two requests; only the answered one has tokens. `GET /v8/management/provimux/same-account-retry` gives the
+value in use, whether your config sets it, and the counts since the start: how often the executor was called a
+second time, with and without an error, and how often the client left during the wait.
 
 **Limits.**
 
@@ -972,6 +976,76 @@ client left during the wait.
 - A WebSocket turn is never sent twice.
 - A gateway connected to CLIProxyAPI Home does not do this; Home chooses the accounts there.
 - Token counting (`count_tokens`) does not do this.
+
+### Send a conversation back to your first account
+
+**What you get.** When an account cools down, a conversation moves to the next account that serves the name. With
+`routing.session-affinity: true` it stays there even after the first account is free again. That can mean a shorter
+prompt cache, or a paid key where you wanted your subscription. Now a client can see where its conversation is bound
+and send it back. Nothing moves a conversation back by itself: the client decides when.
+
+**How to use it.** Two requests of the gateway's own, sent with a client key (`access.api-keys`) as any model request
+is. A gateway without client keys answers `not-seen`.
+
+`POST /v1/provimux/session-route` shows where this conversation is bound for a name: the account, since when, and
+which account it fell back from. It names the accounts first in line now, says whether an account of a higher
+priority than the bound one is free, and if none is, when the first of them is expected free. Call it again whenever
+you like: every call answers from the gateway's state at that moment. It changes nothing, sends nothing to a vendor
+and ends no cooldown.
+
+`POST /v1/provimux/session-route/release` removes the binding. Nothing is sent: the conversation's next message is
+routed as a new conversation's, to the first free account it may use. Pass the `binding` the show gave as `expect` to
+release only that binding. The token stays the same through the conversation's messages; once the binding is removed
+and made again, on the same account too, it is another, and the release answers `409` with the state now and the new
+token, and releases nothing.
+
+```bash
+PROVIMUX=http://127.0.0.1:8317   # on the same machine; from another machine, use the server's address
+curl -s "$PROVIMUX/v1/provimux/session-route" -H "Authorization: Bearer $KEY" \
+  -H 'X-Session-Affinity: <session id>' -d '{"model":"opus"}'
+curl -s "$PROVIMUX/v1/provimux/session-route/release" -H "Authorization: Bearer $KEY" \
+  -H 'X-Session-Affinity: <session id>' -d '{"model":"opus","expect":"<binding>"}'
+```
+
+- Name the conversation the way its messages do. Send the same session header (`X-Session-Affinity`, `Session-Id`,
+  `X-Claude-Code-Session-Id`, â€¦), or put the body fields your messages carry under `identity`, for example
+  `{"identity":{"prompt_cache_key":"project-a"}}`.
+- Ask under the name you send. That finds the conversation for a plain name, and for `auto` as long as the catalog's
+  first model hasn't changed since. Otherwise, or if a plugin rewrote the name, ask under the model the message was
+  routed to: the `routed_model` an earlier answer named, or the plugin's target.
+- A key sees and releases only conversations the gateway has seen it use since it started (after a restart, from the
+  conversation's next message). Anything else answers `not-seen`: another key's conversation, or one forgotten after
+  its binding expired. A show sent the instant a streamed answer ends can also answer as if that message had not been
+  sent yet.
+- Each account is shown exactly as in `GET /v1/models?include=accounts`, with its marker
+  ([Which account answered](#which-account-answered)). An account that list no longer shows appears only as
+  `{"listed": false}`.
+- On a Codex WebSocket, close the connection **before its next message**. A message on the open connection binds the
+  conversation to the old account again, and closing afterwards does not undo that: release again, then close.
+  Answers say `websocket_may_hold: true` when this applies.
+- Under the default rebind policy, if a message was still running when you released, the conversation was bound again
+  to the same login before it finished, and that message then fails because of that login, the gateway drops the new
+  binding too and the next message picks again. With `session-affinity-rebind-on: never` the new binding stays.
+- A sub-agent keeps its own binding. With sub-agent inheritance on (the default), a released sub-agent's next message
+  goes back to its parent's account, even if the show named a higher one, and a sub-agent started after a release
+  follows its parent's binding as it is then. With inheritance off, a new sub-agent is routed on its own.
+- With `routing.session-affinity: false`, in Home mode, or under a plugin scheduler, nothing is bound or kept and both
+  answers say why (`affinity`).
+
+**Known limits.**
+
+- A release without `expect` at the very instant the gateway forgets your key can remove a binding another key's
+  conversation of the same name now uses. Pass `expect` to rule it out.
+- Session ids or names that begin or end with a colon can make two conversations look like one; they may be shown or
+  released together.
+- After two rare events an old `expect` answers unexpectedly: after the gateway's binding table was full (65,536
+  conversations) and the same account was bound again, it still matches; after a binding ended by its lifetime and a
+  show came before it was made again on the same account, it answers `409`. Show again and use the new token.
+- If every registration of a model is suspended, the model list shows no account for it, but a show still names the
+  account the conversation is bound to, and a release names it in `was`.
+- Right after a configuration reload, or a plugin scheduler being added or removed, a conversation may show
+  `not-seen` until its next message after a show. One turned off just as a message ended may show `not-bound` once
+  turned back on, until its binding's lifetime has passed (`session-affinity-ttl`, an hour by default).
 
 ### Works with Pi
 
