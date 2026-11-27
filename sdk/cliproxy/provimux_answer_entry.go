@@ -14,7 +14,7 @@ import (
 // the credential that answered, or none. It is the one function that gives an entry: nothing predicts one.
 
 func init() {
-	coreauth.SetProvimuxAnswerEntry(provimuxBuiltinExecutor, provimuxVouches, provimuxEntryOfAnswer)
+	coreauth.SetProvimuxAnswerEntry(provimuxBuiltinExecutor, provimuxExecutorSequence, provimuxVouches, provimuxEntryOfAnswer)
 }
 
 // provimuxVouches reports whether the gateway's own loader made auth (for its id) and no plugin made or changed it
