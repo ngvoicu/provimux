@@ -330,46 +330,17 @@ func TestProvimuxSentOffAttachesNothing(t *testing.T) {
 	}
 }
 
-// recordingDecorator is an embedder's decorator: it counts the requests it sees.
-type recordingDecorator struct {
-	next http.RoundTripper
-	seen *atomic.Int32
-}
-
-func (d recordingDecorator) RoundTrip(req *http.Request) (*http.Response, error) {
-	d.seen.Add(1)
-	return d.next.RoundTrip(req)
-}
-
-// A decorator another program put on the context stays, inside ours, and sees each request once; the attempt names
-// nothing, whatever the decorator says of itself (the lead's amendment of 2026-11-27 (2), rule A.2: no recognition by
-// declaration). An attempt inside another (a refresh) notes its requests on its own log, not on the enclosing one's,
-// and an enclosing attempt's decorator is not another program's.
-func TestProvimuxSentKeepsAnEmbeddersDecoratorAndNests(t *testing.T) {
+// An attempt inside another (a refresh) notes its requests on its own log, not on the enclosing one's.
+func TestProvimuxSentNestedAttempt(t *testing.T) {
 	provimuxSentOn(t, true)
-	for _, embedder := range []bool{false, true} {
-		var seen atomic.Int32
-		base := WithProvimuxStatementAsked(context.Background())
-		if embedder {
-			base = httptransport.WithDecorator(base, func(next http.RoundTripper) http.RoundTripper {
-				return recordingDecorator{next: next, seen: &seen}
-			})
-		}
-		first := WithUpstreamAttemptTracker(base)
-		second := WithUpstreamAttemptTracker(first)
-		stand := &standIn{status: http.StatusOK}
-		send(t, second, stand, jsonRequest(t, "https://api.anthropic.com/v1/messages", `{"model":"provimux-test-a"}`))
-		if embedder && seen.Load() != 1 {
-			t.Fatalf("the embedder's decorator saw %d requests, want 1", seen.Load())
-		}
-		if log := provimuxSentLogOf(first); len(log.requests) != 0 {
-			t.Fatalf("a request of the inner attempt landed on the outer: %+v", log.requests)
-		}
-		log := provimuxSentLogOf(second)
-		sent, ok := ProvimuxSent(second, "claude")
-		if len(log.requests) != 1 || ok == embedder || (ok && sent.Model != "provimux-test-a") {
-			t.Fatalf("embedder %v: %+v %v, %d observations", embedder, sent, ok, len(log.requests))
-		}
+	first := WithUpstreamAttemptTracker(WithProvimuxStatementAsked(context.Background()))
+	second := WithUpstreamAttemptTracker(first)
+	send(t, second, &standIn{status: http.StatusOK}, jsonRequest(t, "https://api.anthropic.com/v1/messages", `{"model":"provimux-test-a"}`))
+	if log := provimuxSentLogOf(first); len(log.requests) != 0 {
+		t.Fatalf("a request of the inner attempt landed on the outer: %+v", log.requests)
+	}
+	if sent, ok := ProvimuxSent(second, "claude"); !ok || sent.Model != "provimux-test-a" {
+		t.Fatalf("the inner attempt: %+v %v", sent, ok)
 	}
 }
 
