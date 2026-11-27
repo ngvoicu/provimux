@@ -378,9 +378,7 @@ func (g *figuresGateway) clientList(example string) (figuresListed, []byte) {
 			g.t.Fatalf("?%s differs from include=accounts,figures:\n%s\n%s", query, other, body)
 		}
 	}
-	if other := g.get("/v1/models?include=accounts,figures", sentOtherClientKey); string(other) != string(body) {
-		g.t.Fatalf("another client key gets another list:\n%s\n%s", other, body)
-	}
+	g.otherCaller(body)
 	var withFigures, accounts map[string]any
 	if err := moejson.Unmarshal(body, &withFigures); err != nil {
 		g.t.Fatal(err)
@@ -406,6 +404,71 @@ func (g *figuresGateway) clientList(example string) (figuresListed, []byte) {
 	}
 	figuresWriteExample(g.t, "models-"+example+".json", body)
 	return listed, body
+}
+
+// figuresNamed is the set of entries the `answered` items of a list's rows name.
+func figuresNamed(listed figuresListed) map[string]bool {
+	named := map[string]bool{}
+	for _, model := range listed.Data {
+		for i := range model.Accounts {
+			for _, entry := range figuresItems(&model.Accounts[i]) {
+				if entry != "null" {
+					named[entry] = true
+				}
+			}
+		}
+	}
+	return named
+}
+
+// figuresWithoutAnswers is a list with every row's `answered` and the figures' entries left out: what two callers
+// share.
+func figuresWithoutAnswers(t *testing.T, body []byte) string {
+	t.Helper()
+	var value map[string]any
+	if err := moejson.Unmarshal(body, &value); err != nil {
+		t.Fatalf("not JSON: %s", body)
+	}
+	for _, item := range value["data"].([]any) {
+		for _, row := range item.(map[string]any)["accounts"].([]any) {
+			delete(row.(map[string]any), "answered")
+		}
+	}
+	if figures, ok := value["figures"].(map[string]any); ok {
+		delete(figures, "entries")
+	}
+	out, _ := moejson.Marshal(value)
+	return string(out)
+}
+
+// otherCaller checks the list the other client key reads beside body (the caller's): `answered` is kept per caller,
+// so the other key gets the same models and rows, its own `answered`, and the figures of the entries its own rows name
+// only, never one only the caller's answers named.
+func (g *figuresGateway) otherCaller(body []byte) {
+	g.t.Helper()
+	other := g.get("/v1/models?include=accounts,figures", sentOtherClientKey)
+	figuresValidate(g.t, g.schemas, "ModelList", other)
+	if a, b := figuresWithoutAnswers(g.t, other), figuresWithoutAnswers(g.t, body); a != b {
+		g.t.Fatalf("another client key gets other models or rows:\n%s\n%s", a, b)
+	}
+	var mine, theirs figuresListed
+	if err := moejson.Unmarshal(body, &mine); err != nil {
+		g.t.Fatal(err)
+	}
+	if err := moejson.Unmarshal(other, &theirs); err != nil {
+		g.t.Fatal(err)
+	}
+	named := figuresNamed(theirs)
+	for ref := range theirs.Figures.Entries {
+		if !named[ref] {
+			g.t.Fatalf("another client key is given %s, which none of its own answers named:\n%s", ref, other)
+		}
+	}
+	for ref, record := range mine.Figures.Entries {
+		if mine.Figures.State != theirs.Figures.State || (named[ref] && string(theirs.Figures.Entries[ref]) != string(record)) {
+			g.t.Fatalf("the two keys read %s differently:\n%s\n%s", ref, other, body)
+		}
+	}
 }
 
 // status reads GET /v8/management/provimux/figures (query "" or "?all=true") and checks it against the contract.
@@ -512,12 +575,9 @@ func TestProvimuxFiguresBothPathsFollowTheContract(t *testing.T) {
 	g := newFiguresGateway(t)
 	key := sentKeyFor(t, g.sentHarness, "provimux-test-claude-key")
 	house := sentKeyFor(t, g.sentHarness, "provimux-test-house")
-	copilot := registerCopilotRoutingTestAuth(t, g.service.coreManager, "", figuresNative, figuresAlternate)
-	copilotTestPublisher(t)(append(registry.GetStaticModelDefinitionsByChannel("copilot"), &registry.ModelInfo{ID: figuresNative}, &registry.ModelInfo{ID: figuresAlternate}))
-	g.service.registerExecutorForAuth(copilot, false)
-	if !g.service.refreshModelRegistrationForAuth(copilot) {
-		t.Fatal("fixture: Copilot's models")
-	}
+	// A login as the gateway's own loader makes one (the entry branch's helper): an SDK registration in memory names
+	// no entry (the amendment of 2026-11-27 (2), rule A.3).
+	copilot := sentCopilot(t, g.sentHarness, figuresNative, figuresAlternate)
 	route := "copilot/" + figuresNative
 	plain := g.get("/v1/models", sentClientKey)
 
@@ -682,5 +742,51 @@ func TestProvimuxFiguresNothingForWhoDoesNotAsk(t *testing.T) {
 	}
 	if off := g.get("/v1/models?include=accounts", sentClientKey); figuresCanonical(t, on) != figuresCanonical(t, off) || strings.Contains(string(on), `"figures"`) {
 		t.Fatalf("include=accounts depends on the figures:\n%s\n%s", on, off)
+	}
+}
+
+// `answered` is kept per caller, and so are the figures: two client keys, each with answers of its own on the same
+// account, read /v1/models?include=accounts,figures (and include=figures alone) end to end. Each gets the figures of
+// the entries its own rows name and not the other's; the operator's path, which reads every caller's, gets both.
+func TestProvimuxFiguresPerCaller(t *testing.T) {
+	g := newFiguresGateway(t)
+	key := sentKeyFor(t, g.sentHarness, "provimux-test-claude-key")
+	g.hold()
+	g.clock.add(time.Hour)
+	g.checkSent(g.post("/v1/chat/completions", chatBody("provimux-test-claude-key", false, ""), nil), key, "api.anthropic.com", "anthropic/provimux-test-claude-sent")
+	g.stand.reset()
+	other := sentHeader("Authorization", "Bearer "+sentOtherClientKey)
+	g.checkSent(g.post("/v1/chat/completions", chatBody("provimux-test-claude-other", false, ""), other), key, "api.anthropic.com", "anthropic/provimux-test-claude-other")
+	marker := key.ProvimuxAccountMarker()
+	for _, caller := range []struct {
+		key, answered, notAnswered, entry, notEntry string
+	}{
+		{sentClientKey, "provimux-test-claude-key", "provimux-test-claude-other", "anthropic/provimux-test-claude-sent", "anthropic/provimux-test-claude-other"},
+		{sentOtherClientKey, "provimux-test-claude-other", "provimux-test-claude-key", "anthropic/provimux-test-claude-other", "anthropic/provimux-test-claude-sent"},
+	} {
+		for _, query := range []string{"include=accounts,figures", "include=figures"} {
+			body := g.get("/v1/models?"+query, caller.key)
+			figuresValidate(t, g.schemas, "ModelList", body)
+			var listed figuresListed
+			if err := moejson.Unmarshal(body, &listed); err != nil {
+				t.Fatal(err)
+			}
+			if got := figuresItems(listed.row(caller.answered, marker)); strings.Join(got, ",") != caller.entry {
+				t.Fatalf("%s ?%s: its own row %v, want %s", caller.key, query, got, caller.entry)
+			}
+			if got := figuresItems(listed.row(caller.notAnswered, marker)); got == nil || len(got) != 0 {
+				t.Fatalf("%s ?%s: the other caller's row %v, want empty", caller.key, query, got)
+			}
+			if listed.Figures.State != "held" || strings.Join(figuresKeys(listed.Figures.Entries), ",") != caller.entry {
+				t.Fatalf("%s ?%s: figures %s %v, want held [%s]", caller.key, query, listed.Figures.State, figuresKeys(listed.Figures.Entries), caller.entry)
+			}
+			if _, ok := listed.Figures.Entries[caller.notEntry]; ok {
+				t.Fatalf("%s ?%s: given %s, which only the other caller's answers named", caller.key, query, caller.notEntry)
+			}
+		}
+	}
+	status := g.status("", "")
+	if got := strings.Join(figuresKeys(status.Figures.Entries), ","); got != "anthropic/provimux-test-claude-other,anthropic/provimux-test-claude-sent" {
+		t.Fatalf("the operator's path: %s, want both callers' entries", got)
 	}
 }

@@ -32,6 +32,18 @@ func wantsFigures(c *gin.Context) bool {
 	return false
 }
 
+// provimuxFiguresAccounts is the accounts the list writes: those include=accounts already gave, else, for
+// include=figures alone, the same rows with `answered` filled for the caller, as include=accounts fills them. The
+// figures are selected from those rows' `answered`, so they are the caller's own.
+func (h *OpenAIAPIHandler) provimuxFiguresAccounts(c *gin.Context, figures bool, accounts map[string][]modelAccount) map[string][]modelAccount {
+	if !figures || accounts != nil {
+		return accounts
+	}
+	accounts = h.modelAccounts()
+	provimuxFillAnswered(c, accounts)
+	return accounts
+}
+
 // provimuxListFigures is the figures object for the list as it is written: the entries the `answered` items of the
 // rows in data name, and only those. The rows are read from data, not from every account the gateway has, so a
 // name the list does not show (one "serve only my names" does not serve) brings no entry, even where answers were

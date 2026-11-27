@@ -89,11 +89,9 @@ func (h *OpenAIAPIHandler) OpenAIModels(c *gin.Context) {
 		accounts = h.modelAccounts()
 		provimuxFillAnswered(c, accounts) // Provimux: what each row's answers to this caller's key said (answered-by.md 4.4)
 	}
-	// Provimux: include=figures also gives the accounts (prices-and-cache.md 5)
+	// Provimux: include=figures also gives the accounts, filled for this caller (prices-and-cache.md 5)
 	figures := wantsFigures(c)
-	if figures && accounts == nil {
-		accounts = h.modelAccounts()
-	}
+	accounts = h.provimuxFiguresAccounts(c, figures, accounts)
 	filteredModels := make([]map[string]any, len(allModels))
 	for i, model := range allModels {
 		filteredModel := map[string]any{
