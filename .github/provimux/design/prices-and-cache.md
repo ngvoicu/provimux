@@ -528,7 +528,11 @@ For Provimux's README, its page on the site and the notes of the release (the ow
 - "What each account last answered you as is a best-effort memory: Provimux keeps what its own server wrote to you, rebuilds it with the next answer, and promises no more. It can miss an answer made while the auth folder changes, and a second Provimux on the same auth folder keeps its own only until it stops."
 - (Amended 2026-11-27 (2) by the lead with the owner's word, `answered-by.md`, part (5).) "With a plugin that serves a provider, that provider's answers name the account and no providers.dev entry, from the moment the plugin's executor is in place until Provimux restarts."
 - (The same, written limit 50; in the README's limits.) "A program built from Provimux's code that presents itself as Provimux, as a fork can, is not Provimux as shipped, whatever its answers say."
-- (Amended 2026-11-27 (2) by the lead, `answered-by.md`, part (6).) "Provimux checks the digest of the file in which it keeps what each account last answered you as, before it uses it. A file that fails the check is left as it is, and the memory starts empty; remove the file by hand to let Provimux write a new one."
+- (Amended 2026-11-27 (2) by the lead, `answered-by.md`, part (6).) "Provimux checks the digest of the file in which it keeps what each account last answered you as, before it uses it. A file that fails the check is left as it is, and the memory starts empty. Once you remove it by hand, Provimux writes a new one at the next answer that changes what it keeps (removing the file does not by itself make Provimux write one)."
+- (Amended 2026-11-27 by the owner, `answered-by.md`, part (7): the known limits, in the README's limits.)
+  - "An answer can come without its entry in one rare moment: you load a plugin for a provider, and add a login of that provider at the very instant an answer starts. The entry is missing, never wrong; the next answer names it again."
+  - "After you remove a file that failed the check, a file another program puts at the same path in the instant before Provimux writes its own is written over."
+  - "A symbolic link at that file's path that points nowhere is replaced by Provimux's file."
 - "The cache lifetime is the one providers.dev measured with a real client through Provimux where it has such a measurement, and its safe value otherwise. Plain test requests never decide it. Every value says what it rests on and when it was measured."
 - A README section "Figures for tools": the three steps of section 5, the promises, and the example.
 
