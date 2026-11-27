@@ -42,7 +42,9 @@ func TestProvimuxReregistrationAtPublication(t *testing.T) {
 				return executor.NewOpenAICompatExecutor(exec.Identifier(), h.service.currentConfig())
 			}, func(r *http.Request) bool { return strings.HasSuffix(r.URL.Path, "/chat/completions") }},
 		{"claude-login", sentMatrixConfig, "provimux-test-claude-login", "claude-subscription/provimux-test-claude-login",
-			func(h *sentHarness) coreauth.ProviderExecutor { return executor.NewClaudeExecutor(h.service.currentConfig()) },
+			func(h *sentHarness) coreauth.ProviderExecutor {
+				return executor.NewClaudeExecutor(h.service.currentConfig())
+			},
 			func(r *http.Request) bool { return strings.HasSuffix(r.URL.Path, "/v1/messages") }},
 	}
 	for _, tc := range cases {
