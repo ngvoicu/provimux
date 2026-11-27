@@ -225,7 +225,7 @@ type ProvimuxSessionBookEntry struct {
 	LastTouched time.Time // the last answer of any account for it
 	TTL         time.Duration
 	PruneAt     time.Time // from then on the entry leaves once upstream holds no binding for it
-	// Life numbers the binding the book holds now (design section 15.11): made at the answer after which the book
+	// Life numbers the binding the book holds now (design section 4.5): made at the answer after which the book
 	// first holds it, dropped at its removal by anyone the book can see (a release, a failure upstream removes it
 	// for, a new account or cache instance, the account registered again). 0: the book holds no binding of it.
 	Life      uint64
@@ -443,7 +443,7 @@ func (b *ProvimuxSessionBook) OnResult(_ context.Context, res Result) {
 		b.newLifeLocked(entry, binding)
 	case !entry.LastSuccess.IsZero() && !now.Before(entry.LastSuccess.Add(ttl)):
 		// The binding ended by its own lifetime and was made again on the same account: a new stretch for since,
-		// the same life for expect (design section 15.11).
+		// the same life for expect (design section 4.5).
 		entry.Since, entry.Previous, entry.PreviousAt = now, "", time.Time{}
 	}
 	entry.LastSuccess = now
@@ -608,7 +608,7 @@ func (b *ProvimuxSessionBook) resolve(scope string, headers http.Header, body []
 	return r
 }
 
-// lifeToken is the token for expect: it names one life of one conversation's binding (design section 15.11), and
+// lifeToken is the token for expect: it names one life of one conversation's binding (design section 4.5), and
 // nothing else: not the account, not upstream's sequence.
 func (b *ProvimuxSessionBook) lifeToken(owner provimuxConversation, life uint64) string {
 	h := sha256.New()
@@ -776,7 +776,7 @@ func (b *ProvimuxSessionBook) Release(scope string, headers http.Header, body []
 
 // ReleaseRouted answers POST /v1/provimux/session-route/release for a client key's caller scope. Without expect it
 // removes whatever is bound for the conversation. With expect (any non-empty string: the handler refuses an empty
-// one), it removes the binding only while the life the token names lasts (design section 15.11): the life is checked
+// one), it removes the binding only while the life the token names lasts (design section 4.5): the life is checked
 // and the binding removed under the book's lock, in that order, so no answer can start a new life between them;
 // otherwise nothing is removed and conflict is the state now (409). A binding that is gone answers released: false.
 // It removes the binding and every alias of it from upstream's cache, and nothing else.

@@ -84,7 +84,7 @@ type provimuxSeamKey struct {
 // SessionAffinitySelector.OnResult derives them. ok is false for a conversation bound by its content only (the prefix
 // matcher), for one with no session at all, and for one any of whose three parts holds upstream's delimiter: then
 // another triple can join to the same key, upstream holds one binding for both, and the book cannot tell whose it is
-// (design section 15.11), so it notes neither. The caller still requires the cache to hold the key (I1).
+// (design section 3), so it notes neither. The caller still requires the cache to hold the key (I1).
 func provimuxSeamResultKey(res Result) (provimuxSeamKey, bool) {
 	metadata := res.Options.Metadata
 	if metadata != nil {

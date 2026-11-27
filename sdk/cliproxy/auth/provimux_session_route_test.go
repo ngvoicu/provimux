@@ -614,7 +614,7 @@ func TestProvimuxSessionRouteStrict(t *testing.T) {
 	}
 }
 
-// TestProvimuxSessionRouteExpect: the token names one life of the binding (design section 15.11): the same through
+// TestProvimuxSessionRouteExpect: the token names one life of the binding (design section 4.5): the same through
 // shows and turns on that binding; released and made again, even on the same account, another, and the older token is
 // refused (409) and releases nothing. The current token releases.
 func TestProvimuxSessionRouteExpect(t *testing.T) {
@@ -662,7 +662,7 @@ func TestProvimuxSessionRouteExpect(t *testing.T) {
 	}
 }
 
-// TestProvimuxSessionRouteExpectAcrossExpiry is decision E5 (design section 15.11): a binding that ended by its own
+// TestProvimuxSessionRouteExpectAcrossExpiry (design section 4.5): a binding that ended by its own
 // lifetime and was made again on the same account is the same life, so the older token still releases it.
 func TestProvimuxSessionRouteExpectAcrossExpiry(t *testing.T) {
 	f := newProvimuxSRFixture(t, "round-robin", false, nil)

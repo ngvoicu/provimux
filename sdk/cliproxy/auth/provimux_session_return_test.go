@@ -686,7 +686,7 @@ func TestProvimuxSessionReturnCountRacing(t *testing.T) {
 	}
 }
 
-// TestProvimuxSessionReturnEndsTheLife: a return by the rule ends the binding's life for expect (15.11: "to its
+// TestProvimuxSessionReturnEndsTheLife: a return by the rule ends the binding's life for expect (4.5: "to its
 // removal by anyone"), and the stretch after it starts at the first route: a token shown before the return does not
 // release the binding made after it, even when the request fell back to the same account again.
 func TestProvimuxSessionReturnEndsTheLife(t *testing.T) {
