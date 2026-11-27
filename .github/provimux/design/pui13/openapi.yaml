@@ -369,7 +369,10 @@ components:
             nothing: an answer's entry is read from the request the gateway sent for it, so the next answer can
             differ from every item. Empty when no answer of this credential for this model is recorded. An item is
             not shown after 90 days and is removed from the record at its next write; the record outlives a restart
-            where the gateway keeps its marker key.
+            where the gateway owns its auth folder's record file and keeps its marker key. It is a best-effort memory
+            (amended 2026-11-27 (2) by the lead): it keeps only what the gateway's own output route wrote, an answer
+            around a change of the auth folder may be missing, and a second gateway on the same auth folder keeps its
+            record in memory only.
             Optional in this contract: a gateway from before answered-by W6, and one with models.answered-by off,
             leaves it out, and a reader treats missing and empty alike. No route carries a predicted `entry`.
           items:
