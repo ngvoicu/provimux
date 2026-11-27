@@ -31,8 +31,7 @@ import (
 // trace. The decorator notes each request a client built for the attempt hands its transport: the scheme, host and
 // port of the URL, the bytes of the body exactly as the transport reads them (a copy taken while it reads; nothing is
 // read ahead or twice), the names of its credential headers, and whether anything makes the request not wholly the
-// gateway's own (a Host other than the URL's, a decorator of another program on the context, a request on another
-// context than the attempt's)
+// gateway's own (a Host other than the URL's, a request on another context than the attempt's)
 // and, when the response's headers arrive, the status. The model is read from those bytes when the answer is stated
 // (ProvimuxSent), and housekeeping is matched then, against the executor that answered. The trace counts every
 // connection the attempt's context asks for, so one the decorator did not see (an upstream WebSocket, a client no
@@ -77,8 +76,6 @@ type provimuxSentLog struct {
 	mu       sync.Mutex
 	requests []ProvimuxSentRequest
 	overflow bool
-	// foreign: when the attempt began, its context carried an HTTP decorator that is not Provimux's own.
-	foreign bool
 	// asked: the attempt's caller asked for the statement; only then are request bodies copied.
 	asked bool
 
@@ -118,9 +115,9 @@ func ProvimuxSent(ctx context.Context, executor string) (sent ProvimuxSentReques
 	}
 	log.mu.Lock()
 	requests := append([]ProvimuxSentRequest(nil), log.requests...)
-	overflow, foreign := log.overflow, log.foreign
+	overflow := log.overflow
 	log.mu.Unlock()
-	if overflow || foreign {
+	if overflow {
 		return ProvimuxSentRequest{}, false
 	}
 	defer func() { // the copies go as soon as the models are read
@@ -168,48 +165,18 @@ func ProvimuxSupersedeSent(ctx context.Context) {
 	}
 }
 
-// provimuxObserveSent returns ctx with the attempt's log, its connection trace and Provimux's decorator on it. A
-// decorator ctx already carried (another program's) still runs, inside ours, and the attempt names no entry. Only
+// provimuxObserveSent returns ctx with the attempt's log, its connection trace and Provimux's decorator on it. Only
 // WithUpstreamAttemptTracker calls it. With models.answered-by off it adds nothing.
 func provimuxObserveSent(ctx context.Context) context.Context {
 	if ctx == nil || !logging.ProvimuxAnsweredBy() {
 		return ctx
 	}
-	log := &provimuxSentLog{parent: provimuxSentLogOf(ctx), foreign: provimuxForeignDecorator(ctx), asked: ProvimuxStatementAsked(ctx)}
-	outer := ctx
+	log := &provimuxSentLog{parent: provimuxSentLogOf(ctx), asked: ProvimuxStatementAsked(ctx)}
 	ctx = context.WithValue(ctx, provimuxSentLogKey{}, log)
 	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{GetConn: func(string) { log.conns.Add(1) }})
 	return httptransport.WithDecorator(ctx, func(next http.RoundTripper) http.RoundTripper {
-		// The decorator ctx carried before ours, applied first, inside ours. A decorator of an enclosing attempt is
-		// replaced by this one: a client built for this attempt notes on this attempt's log.
-		inner := next
-		if decorated := httptransport.Decorate(outer, &http.Client{Transport: next}); decorated != nil && decorated.Transport != nil {
-			inner = decorated.Transport
-		}
-		if enclosing, ours := inner.(*provimuxSentObserver); ours {
-			inner = enclosing.next
-		}
-		return &provimuxSentObserver{next: inner, log: log}
+		return &provimuxSentObserver{next: next, log: log}
 	})
-}
-
-// provimuxForeignDecorator reports whether ctx carries an HTTP decorator other than an enclosing attempt's Provimux
-// decorator, applied as it is.
-func provimuxForeignDecorator(ctx context.Context) bool {
-	probe := provimuxProbeTransport{}
-	decorated := httptransport.Decorate(ctx, &http.Client{Transport: probe})
-	if decorated == nil || decorated.Transport == nil || decorated.Transport == http.RoundTripper(probe) {
-		return false
-	}
-	ours, ok := decorated.Transport.(*provimuxSentObserver)
-	return !ok || ours.next != http.RoundTripper(probe)
-}
-
-// provimuxProbeTransport is a transport no request is sent on: it only shows what a decorator does to a transport.
-type provimuxProbeTransport struct{}
-
-func (provimuxProbeTransport) RoundTrip(*http.Request) (*http.Response, error) {
-	return nil, http.ErrNotSupported
 }
 
 // provimuxSentObserver is the decorator's transport: it notes each request of the client built for log's attempt,
