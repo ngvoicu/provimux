@@ -656,3 +656,35 @@ Not verified, with what settles each:
 | J1 | that `Pick` is the only place an explicit conversation's binding is honoured. I read `Pick` whole and the five places that call it, not every caller of the cache's `Get` | row 1 of 15.10, and a search of `s.cache.` in the package during R1 |
 | J2 | that a time differs from itself with the monotonic reading stripped exactly when it has one, on the Go version in use | a unit test of that one helper in R1; if it does not hold, K6 keeps its two other conditions, which are enough for a restore |
 | J3 | that every path that commits a configuration runs the layer's hook, the hot reload included. I read the two calls, and that "serve only my names" follows a reload through them | row 11 of 15.10, after a reload in the test |
+
+### 15.14 As built in R1
+
+Built on part one's branch, with this section and the contract carried over (the design branch is not merged: it sits on G2 and would bring G2's files back). Files: `sdk/cliproxy/auth/provimux_session_return.go` (the rule, the setting's value, the state), its tests (`provimux_session_return_test.go` for 15.3 and 15.10, `_review_test.go` for the review's findings 2, 5 and 11, `_source_test.go` for J1 and the two lines), `internal/config/provimux_session_return.go`, `internal/api/handlers/management/provimux_session_return.go`, and the tests through the service (J3), the real router (the state path, against the contract), the image route over HTTP and a real loopback WebSocket.
+
+**Upstream lines.** R1 adds 13: `selector.go` +2 (the field, the call), `config_types.go` +2, `config.example.yaml` +9. Session-route as a whole: +18 in six upstream files, no line removed (with part one's `server_routes.go`, `builder.go` and `service_config.go`, +1 each).
+
+**Where it departs from 15.3 to 15.6, and why.**
+
+| | Design | As built | Why |
+|---|---|---|---|
+| 1 | the setting is stored by `provimuxSetNamesRule`'s hook | by part one's hook `provimuxFollowSessionRoute(m, cfg)`, at the same two call sites | that hook carries the manager. K1 needs it: Home mode, a plugin scheduler and the selector in use are the manager's, read as they run. No new upstream line |
+| 2 | K1: the time is set, below the TTL, not rebind-on never | also: the value was committed for this selector's manager, and this selector is the manager's current one | two selectors in one process share nothing (row 10), and a selector replaced by a reload never acts |
+| 3 | K6: the note, the expiry's monotonic reading, the expiry not before the note | also: `now` carries the monotonic reading (Pick's always does) | the comparison is then on monotonic readings at both ends |
+| 4 | the rule is the selector's alone | a return also marks the key's note with a return number, which part one's book reads: a return ends the binding's life for `expect`, and the stretch after it starts at the first route (`origin: first`) | 15.11: a life ends "at its removal by anyone". Without it, a token shown before a return released the binding made after it when the return's request fell back to the same account. Touches part one's `provimux_session_route.go` and its seam |
+| 5 | the state's reasons | each reason holds when it holds as configured or as running; `in_effect` is exactly when Pick's call acts, a reload in between included | the state must never say "in effect" where Pick does nothing |
+| 6 | contract: "durations are whole seconds" | `cold_after_s` is the exception (60.9 for `1m0.9s`) | the state's schema already said so |
+
+**J1, J2, J3.** J1 holds: in this package the session cache is read for a binding in `Pick` (honoured), `LookupAffinity` (observed only) and `boundAuthForRequest`, whose three callers each test `rebindOnNever` first, where the rule is not in effect; a source test lists them and fails on a new one. J2 holds on Go 1.26.10: `t != t.Round(0)` exactly when `t` has the reading (`Round(0)`, `Truncate(0)`, `UTC()`, `Local()`, `In`, `time.Unix`, JSON have none; `time.Now()` and `Add` keep it). J3 holds: the builder's first configuration, the watcher's reload and a write through the config API each put the value in force, and the state follows each change of affinity, TTL, rebind-on and the key.
+
+**Cost.** Unset: the call is one atomic load (1.5 ns, no allocation); a whole selection allocates the same as on part one's head (42 allocations, 2,680 bytes). Set, within cold-after: about 90 ns, no allocation. The table of notes holds at most 16,384 keys per selector.
+
+**Known limits** (each needs a timing, a file or a setup that ordinary use does not make; none is built around):
+
+- **An answer still streaming is used from when it was sent until it ends.** A second request of the same conversation sent while a first has been running for longer than `cold-after` (and nothing of the conversation answered meanwhile) can return the conversation. The first finishes where it is; its result does not touch the new binding (row 8).
+- **The first request after the table of notes was emptied** (16,384 keys in one selector) is not judged; such a conversation returns one request later.
+- **A binding restored from a file** (the persistence branch) is not judged at its first request; it is from its second. The real capture and restore is not on this branch: row 6's first half comes with that branch.
+- **A step of the wall clock** cannot be made in a test (Go makes no time with a monotonic reading and a moved wall clock); the comparison is on monotonic readings, which J2 and Go's documentation settle.
+- **One setting per process.** An embedding that runs several managers gets the rule on the manager of the last committed configuration only.
+- **A client's release without `expect` racing a return** can remove the binding the return's request just made on the first route; the next request is routed there again. With `expect` the answer is 409.
+- **Any plugin scheduler** turns the rule off, one that declines every pick included. **A lifetime so long that expiries pass the year 2157** loses the monotonic reading: such bindings are never judged.
+- Left alone always, as designed: sub-agents and forks, conversations the client did not name, pinned requests, Home mode, affinity off, rebind-on never.
