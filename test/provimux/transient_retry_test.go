@@ -49,9 +49,14 @@ func streamName(stream bool) string {
 	return "nonstream"
 }
 
-// The owner's report with the rule on: the login is tried once more, answers, and the conversation stays on it; no
-// other account is called, the login carries no cooldown, and the counts say one retry saved. With and without session
-// affinity.
+func countsDelta(before, after coreauth.ProvimuxSameAccountRetryCounts) [4]uint64 {
+	return [4]uint64{after.SecondTriesSent - before.SecondTriesSent, after.SecondTriesAnswered - before.SecondTriesAnswered,
+		after.SecondTriesFailed - before.SecondTriesFailed, after.LeftDuringWait - before.LeftDuringWait}
+}
+
+// The owner's report with the rule on: the login's 502 overloaded_error gets one second try, the login answers, and
+// the conversation stays on it; no other account is called, the login carries no cooldown, and the counts say one
+// second try sent and answered. With and without session affinity, stream and non-stream.
 func TestTransientRetryReportRuleOn(t *testing.T) {
 	for _, affinity := range []bool{true, false} {
 		for _, stream := range []bool{true, false} {
@@ -76,14 +81,13 @@ func TestTransientRetryReportRuleOn(t *testing.T) {
 					}
 				}
 				if cd := p.cooldown("login"); cd != 0 {
-					t.Errorf("login cooldown %v after a saved retry, want none", cd)
+					t.Errorf("login cooldown %v after an answered second try, want none", cd)
 				}
 				if waits := clock.recorded(); len(waits) != 1 || waits[0] < 500*time.Millisecond || waits[0] > time.Second {
 					t.Errorf("waits %v, want one between 500 ms and 1 s", waits)
 				}
-				stats := coreauth.ProvimuxSameAccountRetryStats()
-				if stats.Retries-statsBefore.Retries != 1 || stats.Saved-statsBefore.Saved != 1 || stats.NotSaved != statsBefore.NotSaved {
-					t.Errorf("counts %+v -> %+v, want one retry, saved", statsBefore, stats)
+				if got := countsDelta(statsBefore, coreauth.ProvimuxSameAccountRetryStats()); got != [4]uint64{1, 1, 0, 0} {
+					t.Errorf("counts (sent, answered, failed, left) %v, want [1 1 0 0]", got)
 				}
 				for i := 0; i < 3; i++ {
 					if code, body := p.send("conversation", stream); code != 200 || answeredBy(body) != "login" {
@@ -127,38 +131,42 @@ func TestTransientRetryReportRuleOff(t *testing.T) {
 	}
 }
 
-// Each fault of the table, once on the login, the other accounts healthy. Passing: the login twice, it answers, no
-// cooldown. Never: as today (one call, the next account answers, upstream's cooldown).
+// Each answer of the table, once on the Claude login, the other accounts healthy. A refusal: the login twice, it
+// answers, no cooldown. Anything else: as today (one call, the next account answers, upstream's cooldown).
 func TestTransientRetryFaultTable(t *testing.T) {
 	cases := []struct {
 		name    string
 		f       fault
-		passing bool
-		cools   bool // today's cooldown on the login (never-retried faults)
-		client  int  // the client's status when the request stops at the login
+		refusal bool
+		client  int // the client's status when the request stops at the login
 	}{
-		{name: "529 overloaded", f: fault{status: 529, body: bodyOverloaded}, passing: true},
-		{name: "502 overloaded", f: fault{status: 502, body: bodyOverloaded}, passing: true},
-		{name: "500 overloaded (body decides)", f: fault{status: 500, body: bodyOverloaded}, passing: true},
-		{name: "429 overloaded (body decides)", f: fault{status: 429, body: bodyOverloaded}, passing: true},
-		{name: "502 plain", f: fault{status: 502, body: bodyGatewayPlain}, passing: true},
-		{name: "503", f: fault{status: 503, body: bodyUnavailable}, passing: true},
-		{name: "504", f: fault{status: 504, body: bodyGatewayTimout}, passing: true},
-		{name: "503 Retry-After 2", f: fault{status: 503, body: bodyUnavailable, headers: map[string]string{"Retry-After": "2"}}, passing: true},
-		{name: "connection reset", f: fault{kind: "reset"}, passing: true},
-		{name: "closed before any byte", f: fault{kind: "eof"}, passing: true},
+		{name: "529 overloaded_error", f: fault{status: 529, body: bodyOverloaded}, refusal: true},
+		{name: "502 overloaded_error (the report)", f: fault{status: 502, body: bodyOverloaded}, refusal: true},
+		{name: "503 overloaded_error", f: fault{status: 503, body: bodyOverloaded}, refusal: true},
+		{name: "500 overloaded_error", f: fault{status: 500, body: bodyOverloaded}, refusal: true},
+		{name: "529 overloaded_error, insufficient capacity", f: fault{status: 529, body: `{"type":"error","error":{"type":"overloaded_error","message":"Insufficient server capacity. Try again shortly."}}`}, refusal: true},
+		{name: "529 overloaded_error, Retry-After 2", f: fault{status: 529, body: bodyOverloaded, headers: map[string]string{"Retry-After": "2"}}, refusal: true},
 
-		{name: "503 Retry-After 3", f: fault{status: 503, body: bodyUnavailable, headers: map[string]string{"Retry-After": "3"}}, cools: true},
-		{name: "503 stating a quota", f: fault{status: 503, body: `{"type":"error","error":{"type":"api_error","message":"usage quota exhausted"}}`}, cools: true},
-		{name: "500 api_error", f: fault{status: 500, body: bodyAPIError}, cools: true},
-		{name: "429 rate limit", f: fault{status: 429, body: bodyRateLimit}, cools: true},
-		{name: "429 weekly quota", f: fault{status: 429, body: bodyWeeklyQuota}, cools: true},
+		{name: "529 overloaded_error, Retry-After 3", f: fault{status: 529, body: bodyOverloaded, headers: map[string]string{"Retry-After": "3"}}},
+		{name: "529 overloaded_error, Retry-After unreadable", f: fault{status: 529, body: bodyOverloaded, headers: map[string]string{"Retry-After": "soon"}}},
+		{name: "429 overloaded_error", f: fault{status: 429, body: bodyOverloaded}},
+		{name: "529 api_error saying overloaded", f: fault{status: 529, body: `{"type":"error","error":{"type":"api_error","message":"Overloaded"}}`}},
+		{name: "502 plain", f: fault{status: 502, body: bodyGatewayPlain}},
+		{name: "503 api_error", f: fault{status: 503, body: bodyUnavailable}},
+		{name: "504 plain", f: fault{status: 504, body: bodyGatewayTimout}},
+		{name: "500 api_error", f: fault{status: 500, body: bodyAPIError}},
+		{name: "503 quota code", f: fault{status: 503, body: `{"type":"error","error":{"type":"billing_error","message":"overloaded"}}`}},
+		{name: "connection reset after the request was read", f: fault{kind: "reset"}},
+		{name: "closed after the request was read", f: fault{kind: "eof"}},
+		{name: "429 rate limit", f: fault{status: 429, body: bodyRateLimit}},
+		{name: "429 weekly quota", f: fault{status: 429, body: bodyWeeklyQuota}},
 		{name: "400", f: fault{status: 400, body: bodyBadRequest}, client: 400},
-		{name: "400 credit", f: fault{status: 400, body: bodyCreditTooLow}, cools: true},
-		{name: "401", f: fault{status: 401, body: bodyUnauthorized}, cools: true},
-		{name: "402", f: fault{status: 402, body: bodyPayment}, cools: true},
-		{name: "403", f: fault{status: 403, body: bodyForbidden}, cools: true},
-		{name: "404", f: fault{status: 404, body: bodyNotFound}, cools: true},
+		{name: "400 words only", f: fault{status: 400, body: `{"error":{"message":"unknown model overloaded-model"}}`}, client: 400},
+		{name: "400 credit", f: fault{status: 400, body: bodyCreditTooLow}},
+		{name: "401", f: fault{status: 401, body: bodyUnauthorized}},
+		{name: "402", f: fault{status: 402, body: bodyPayment}},
+		{name: "403", f: fault{status: 403, body: bodyForbidden}},
+		{name: "404", f: fault{status: 404, body: bodyNotFound}},
 	}
 	for _, stream := range []bool{true, false} {
 		for _, c := range cases {
@@ -172,7 +180,7 @@ func TestTransientRetryFaultTable(t *testing.T) {
 				after := p.calls()
 				login, devin := after["login"]-before["login"], after["devin"]-before["devin"]
 				switch {
-				case c.passing:
+				case c.refusal:
 					if code != 200 || answeredBy(body) != "login" || login != 2 || devin != 0 {
 						t.Fatalf("%d answered by %q, login %d devin %d calls; want the login twice, answering", code, answeredBy(body), login, devin)
 					}
@@ -190,11 +198,8 @@ func TestTransientRetryFaultTable(t *testing.T) {
 					if code != 200 || answeredBy(body) != "devin" || login != 1 || devin != 1 {
 						t.Fatalf("%d answered by %q, login %d devin %d; want today's: one login call, devin answers", code, answeredBy(body), login, devin)
 					}
-					if cd := p.cooldown("login"); c.cools && cd == 0 {
-						t.Errorf("no cooldown on the login; want upstream's")
-					}
 					if len(clock.recorded()) != 0 {
-						t.Errorf("waited %v for a fault that is not passing", clock.recorded())
+						t.Errorf("waited %v for an answer that is not a refusal", clock.recorded())
 					}
 				}
 			})
@@ -202,8 +207,7 @@ func TestTransientRetryFaultTable(t *testing.T) {
 	}
 }
 
-// A vendor Retry-After of at most 2 s is waited (the time a client waits at most because of the rule); the jitter
-// never takes the wait out of 500 ms to 1 s.
+// The wait: no Retry-After or 0 is 750 ms ± 250 ms; 1 and 2 are waited exactly; the longest is 2 s.
 func TestTransientRetryWaitBounds(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -213,16 +217,17 @@ func TestTransientRetryWaitBounds(t *testing.T) {
 	}{
 		{"shortest", -250 * time.Millisecond, "", 500 * time.Millisecond},
 		{"longest", 250 * time.Millisecond, "", time.Second},
-		{"Retry-After 1 below the jittered wait", 250 * time.Millisecond, "1", time.Second},
+		{"Retry-After 0 is the jittered wait", 100 * time.Millisecond, "0", 850 * time.Millisecond},
+		{"Retry-After 1", 250 * time.Millisecond, "1", time.Second},
+		{"Retry-After 1 above the jittered wait", -250 * time.Millisecond, "1", time.Second},
 		{"Retry-After 2: the most a client waits", -250 * time.Millisecond, "2", 2 * time.Second},
-		{"Retry-After 0.2", 0, "0.2", 750 * time.Millisecond},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			jitter := c.jitter
 			clock := installClock(t, func() time.Duration { return jitter })
 			p := newPool(t, poolOptions{rule: ruleOn})
-			f := fault{status: 503, body: bodyUnavailable}
+			f := fault{status: 529, body: bodyOverloaded}
 			if c.retryAfter != "" {
 				f.headers = map[string]string{"Retry-After": c.retryAfter}
 			}
@@ -252,15 +257,15 @@ func TestTransientRetryNotAfterFirstByte(t *testing.T) {
 	}
 }
 
-// A second passing fault goes on as today: the next account answers, the login carries upstream's transient cooldown
-// (60 s) and the binding moves, and the counts say not saved.
-func TestTransientRetrySecondFault(t *testing.T) {
+// A second refusal goes on as today: the next account answers, the login carries upstream's transient cooldown (60 s)
+// and the binding moves; the counts say one second try sent, failed.
+func TestTransientRetrySecondRefusal(t *testing.T) {
 	for _, stream := range []bool{true, false} {
 		t.Run(streamName(stream), func(t *testing.T) {
 			installClock(t, nil)
 			p := newPool(t, poolOptions{affinity: true, rebindOn: "any", rule: ruleOn})
 			p.send("conversation", stream)
-			p.vendors["login"].setScript(fault{status: 502, body: bodyOverloaded}, fault{status: 503, body: bodyUnavailable})
+			p.vendors["login"].setScript(fault{status: 502, body: bodyOverloaded}, fault{status: 529, body: bodyOverloaded})
 			before := coreauth.ProvimuxSameAccountRetryStats()
 			code, body := p.send("conversation", stream)
 			if code != 200 || answeredBy(body) != "devin" {
@@ -272,9 +277,8 @@ func TestTransientRetrySecondFault(t *testing.T) {
 			if cd := p.cooldown("login"); cd < 50*time.Second || cd > 61*time.Second {
 				t.Errorf("login cooldown %v, want upstream's 60 s", cd)
 			}
-			after := coreauth.ProvimuxSameAccountRetryStats()
-			if after.Retries-before.Retries != 1 || after.NotSaved-before.NotSaved != 1 || after.Saved != before.Saved {
-				t.Errorf("counts %+v -> %+v, want one retry, not saved", before, after)
+			if got := countsDelta(before, coreauth.ProvimuxSameAccountRetryStats()); got != [4]uint64{1, 0, 1, 0} {
+				t.Errorf("counts (sent, answered, failed, left) %v, want [1 0 1 0]", got)
 			}
 			if code, body := p.send("conversation", stream); code != 200 || answeredBy(body) != "devin" {
 				t.Fatalf("next turn %d answered by %q, want devin (the binding moved, as today)", code, answeredBy(body))
@@ -283,29 +287,13 @@ func TestTransientRetrySecondFault(t *testing.T) {
 	}
 }
 
-// A 429 is never retried, even on an account that just had a passing fault saved.
-func TestTransientRetryNever429(t *testing.T) {
-	clock := installClock(t, nil)
-	p := newPool(t, poolOptions{affinity: true, rule: ruleOn})
-	p.vendors["login"].setScript(fault{status: 503, body: bodyUnavailable}, fault{}, fault{status: 429, body: bodyRateLimit})
-	if _, body := p.send("conversation", true); answeredBy(body) != "login" {
-		t.Fatalf("first: %q", answeredBy(body))
-	}
-	if _, body := p.send("conversation", true); answeredBy(body) != "devin" {
-		t.Fatalf("429: answered by %q, want devin", answeredBy(body))
-	}
-	if got := p.vendors["login"].callCount(); got != 3 || len(clock.recorded()) != 1 {
-		t.Fatalf("login %d calls, waits %v; want 3 calls and one wait (the 503's)", got, clock.recorded())
-	}
-}
-
-// Two requests at once on one account, each meeting a passing fault: each is retried once on that account, and both
-// get the login's answer.
+// Two client requests at once on one account, each refused as overloaded: each is its own client call and gets its
+// own second try on that account, and both get the login's answer.
 func TestTransientRetryTwoAtOnce(t *testing.T) {
 	clock := installClock(t, nil)
 	p := newPool(t, poolOptions{rule: ruleOn})
 	login := p.vendors["login"]
-	login.setScript(fault{status: 503, body: bodyUnavailable}, fault{status: 503, body: bodyUnavailable})
+	login.setScript(fault{status: 529, body: bodyOverloaded}, fault{status: 529, body: bodyOverloaded})
 	gate := make(chan struct{})
 	login.setGate(gate)
 	var wg sync.WaitGroup
@@ -325,24 +313,10 @@ func TestTransientRetryTwoAtOnce(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
-	close(gate) // both first tries are in flight: both get the 503
+	close(gate) // both first tries are in flight: both get the refusal
 	wg.Wait()
 	if answers[0] != "login" || answers[1] != "login" || login.callCount() != 4 || p.vendors["devin"].callCount() != 0 || len(clock.recorded()) != 2 {
 		t.Fatalf("answers %v, login %d devin %d calls, waits %v; want both from the login after 4 calls, 2 waits", answers, login.callCount(), p.vendors["devin"].callCount(), clock.recorded())
-	}
-}
-
-// A client that goes away during the wait: no second try, counted not saved.
-func TestTransientRetryClientGoneDuringWait(t *testing.T) {
-	p := newPool(t, poolOptions{rule: ruleOn})
-	p.vendors["login"].setScript(fault{status: 503, body: bodyUnavailable})
-	restore := coreauth.ProvimuxSetRetryClockForTest(func(context.Context, time.Duration) error { return context.Canceled }, nil)
-	t.Cleanup(restore)
-	before := coreauth.ProvimuxSameAccountRetryStats()
-	p.send("", false)
-	after := coreauth.ProvimuxSameAccountRetryStats()
-	if p.vendors["login"].callCount() != 1 || after.NotSaved-before.NotSaved != 1 {
-		t.Fatalf("login %d calls, counts %+v -> %+v", p.vendors["login"].callCount(), before, after)
 	}
 }
 
@@ -369,7 +343,7 @@ func TestTransientRetryNoFaultSameBytes(t *testing.T) {
 			rec := p.sendRecorded(session, stream)
 			out.answers = append(out.answers, named.Replace(dumpAnswer(rec.Code, rec.Header(), rec.Body.String())))
 		}
-		// A fault that is not passing takes the same path on and off too.
+		// A fault that is not a refusal takes the same path on and off too.
 		p.vendors["login"].setScript(fault{status: 429, body: bodyRateLimit})
 		rec := p.sendRecorded("conversation", stream)
 		out.answers = append(out.answers, named.Replace(dumpAnswer(rec.Code, rec.Header(), rec.Body.String())))
@@ -421,8 +395,7 @@ func sortedKeys(header map[string][]string) []string {
 	return keys
 }
 
-// The account marker of an answer the retry saved is the retried account's (X-Provimux-Account), as it is for an
-// answer without a retry.
+// The account marker of an answer after a second try is the account's (X-Provimux-Account), as without one.
 func TestTransientRetryAccountMarker(t *testing.T) {
 	answeredBySwitch(t, true)
 	installClock(t, nil)
@@ -439,14 +412,14 @@ func TestTransientRetryAccountMarker(t *testing.T) {
 		plain := p.sendRecorded("", stream)
 		p.vendors["login"].setScript(fault{status: 502, body: bodyOverloaded})
 		retried := p.sendRecorded("", stream)
-		if answeredBy(retried.Body.String()) != "login" {
+		if answeredBy(retried.Body.String()) != "login" || p.vendors["devin"].callCount() != 0 {
 			t.Fatalf("%s: answered by %q", streamName(stream), answeredBy(retried.Body.String()))
 		}
 		if got := plain.Header().Get(logging.ProvimuxAccountHeader); got != marker {
-			t.Errorf("%s without a retry: X-Provimux-Account %q, want %q", streamName(stream), got, marker)
+			t.Errorf("%s without a second try: X-Provimux-Account %q, want %q", streamName(stream), got, marker)
 		}
 		if got := retried.Header().Get(logging.ProvimuxAccountHeader); got != marker {
-			t.Errorf("%s after a retry: X-Provimux-Account %q, want %q", streamName(stream), got, marker)
+			t.Errorf("%s after a second try: X-Provimux-Account %q, want %q", streamName(stream), got, marker)
 		}
 	}
 }

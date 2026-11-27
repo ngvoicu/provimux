@@ -775,7 +775,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 		activeAuth.Store(auth)
 		attemptCtx := startAttempt(execCtx)
 		startStream := time.Now()
-		streamResult, errStream := provimuxSameAccountOnce(m, attemptCtx, auth, execOpts, syncActiveAuth, func() (provimuxStream, error) { return executor.ExecuteStream(attemptCtx, auth, execReq, execOpts) }, provimuxDiscardStream) // Provimux: once more after a passing fault
+		streamResult, errStream := provimuxSameAccountOnce(m, attemptCtx, &auth, execReq, execOpts, syncActiveAuth, executor.ExecuteStream) // Provimux: one second try after an overload refusal
 		syncActiveAuth()
 		errStream = markUpstreamExecutionAttemptFromContext(attemptCtx, errStream)
 		durationStream := time.Since(startStream)
