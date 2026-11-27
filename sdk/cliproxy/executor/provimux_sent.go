@@ -14,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"unicode/utf8"
+	"unsafe"
 
 	"github.com/MoeForge/moego/ojson"
 	"github.com/klauspost/compress/zstd"
@@ -77,6 +78,8 @@ type provimuxSentLog struct {
 	overflow bool
 	// foreign: when the attempt began, its context carried an HTTP decorator that is not Provimux's own.
 	foreign bool
+	// asked: the attempt's caller asked for the statement; only then are request bodies copied.
+	asked bool
 
 	conns    atomic.Int64 // connections the attempt's context asked for (the trace)
 	observed atomic.Int64 // of those, the ones asked for by a request the decorator saw
@@ -119,6 +122,11 @@ func ProvimuxSent(ctx context.Context, executor string) (sent ProvimuxSentReques
 	if overflow || foreign {
 		return ProvimuxSentRequest{}, false
 	}
+	defer func() { // the copies go as soon as the models are read
+		for _, request := range requests {
+			request.body.release()
+		}
+	}()
 	candidates := 0
 	for _, request := range requests {
 		if request.Status < 200 || request.Status > 299 {
@@ -144,7 +152,7 @@ func provimuxObserveSent(ctx context.Context) context.Context {
 	if ctx == nil || !logging.ProvimuxAnsweredBy() {
 		return ctx
 	}
-	log := &provimuxSentLog{parent: provimuxSentLogOf(ctx), foreign: provimuxForeignDecorator(ctx)}
+	log := &provimuxSentLog{parent: provimuxSentLogOf(ctx), foreign: provimuxForeignDecorator(ctx), asked: ProvimuxStatementAsked(ctx)}
 	outer := ctx
 	ctx = context.WithValue(ctx, provimuxSentLogKey{}, log)
 	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{GetConn: func(string) { log.conns.Add(1) }})
@@ -208,7 +216,11 @@ func (o *provimuxSentObserver) RoundTrip(req *http.Request) (*http.Response, err
 			}
 		}}))
 	}
-	sent, observed.body = provimuxCaptureBody(sent)
+	if o.log.asked {
+		// The body is copied only for a call whose caller asked for the statement: no other call's answer names an
+		// entry or is recorded (the amendment of 2026-11-27 (2), part 3).
+		sent, observed.body = provimuxCaptureBody(sent)
+	}
 	resp, err := o.next.RoundTrip(sent)
 	if err == nil && resp != nil {
 		observed.Status = resp.StatusCode
@@ -416,9 +428,10 @@ func provimuxDecode(body []byte, encodings []string) ([]byte, bool) {
 // provimuxBodyCapture is a copy of the bytes a request's transport read from its body, taken while it read them: from
 // the body itself and from each body a retry asked GetBody for. Nothing is read that the transport did not read.
 type provimuxBodyCapture struct {
-	mu      sync.Mutex
-	none    bool // the request had no body
-	streams []*provimuxBodyStream
+	mu       sync.Mutex
+	none     bool // the request had no body
+	released bool // the copies were let go
+	streams  []*provimuxBodyStream
 }
 
 // provimuxBodyStream is what the transport read from one body.
@@ -455,13 +468,30 @@ func provimuxCaptureBody(req *http.Request) (*http.Request, *provimuxBodyCapture
 // tee returns body copying what is read from it into a stream of c, sized for length where it is known.
 func (c *provimuxBodyCapture) tee(body io.ReadCloser, length int64) io.ReadCloser {
 	stream := &provimuxBodyStream{}
-	if length > 0 && length <= provimuxSentBodyLimit {
+	switch {
+	case length > provimuxSentBodyLimit:
+		stream.failed = true // larger than the reader reads: nothing is copied, and the model is not read
+	case length > 0:
 		stream.data.Grow(int(length))
 	}
 	c.mu.Lock()
 	c.streams = append(c.streams, stream)
 	c.mu.Unlock()
 	return &provimuxTeeBody{body: body, stream: stream, capture: c}
+}
+
+// release lets the copies go: nothing is read from them after.
+func (c *provimuxBodyCapture) release() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, stream := range c.streams {
+		stream.data = bytes.Buffer{}
+		stream.whole, stream.failed = false, true
+	}
+	c.released = true
 }
 
 // bytes returns what the transport read, when it read one body whole, or every body it read whole the same; ok is
@@ -472,6 +502,9 @@ func (c *provimuxBodyCapture) bytes() (body []byte, ok bool) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.released {
+		return nil, false
+	}
 	if c.none {
 		return nil, true
 	}
@@ -527,7 +560,9 @@ func provimuxJSONModel(body []byte) (model string, unread bool) {
 	if !ojson.ValidBytes(body) {
 		return "", true
 	}
-	root := ojson.ParseBytes(body)
+	// A view of the bytes, not a copy of them (ParseBytes copies the whole body): the bytes do not change while it is
+	// read, and the model is copied out of it below, before the copy of the body is let go.
+	root := ojson.Parse(unsafe.String(unsafe.SliceData(body), len(body)))
 	if !root.IsObject() {
 		return "", true
 	}
@@ -540,7 +575,7 @@ func provimuxJSONModel(body []byte) (model string, unread bool) {
 			unread = true
 			return false
 		}
-		seen, model = true, value.String()
+		seen, model = true, strings.Clone(value.String())
 		return true
 	})
 	if unread {
@@ -688,4 +723,22 @@ func provimuxHousekeepingEntries() []provimuxHousekeepingRequest {
 		list = append(list, provimuxHousekeepingRequest{executor: "copilot", method: http.MethodGet, host: host, path: "/models", shape: provimuxShapeEmpty})
 	}
 	return list
+}
+
+type provimuxStatementAskedKey struct{}
+
+// WithProvimuxStatementAsked says, on a call's context, that its caller asked for the statement of who answered (the
+// handlers do, where they install the statement's callback). Only such a call's request bodies are copied to read the
+// model: no other call's answer names an entry or is recorded.
+func WithProvimuxStatementAsked(ctx context.Context) context.Context {
+	if ctx == nil || !logging.ProvimuxAnsweredBy() {
+		return ctx
+	}
+	return context.WithValue(ctx, provimuxStatementAskedKey{}, true)
+}
+
+// ProvimuxStatementAsked reports whether the caller of ctx's call asked for the statement.
+func ProvimuxStatementAsked(ctx context.Context) bool {
+	asked, _ := ctx.Value(provimuxStatementAskedKey{}).(bool)
+	return asked
 }

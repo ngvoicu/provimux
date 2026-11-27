@@ -15,9 +15,10 @@ type provimuxRouteAnswered struct {
 }
 
 // provimuxAnsweredTimes is the route's `answered`: what the answers of the credential authID (whose marker is marker)
-// for model said, to every client key together; empty when nothing is recorded, nil (left out) without a marker.
+// for model said, to every client key together; empty when nothing is recorded, nil (left out) without a marker or
+// without a record (off, or a process Provimux's own main did not start).
 func provimuxAnsweredTimes(marker *string, authID, model string) *[]provimuxRouteAnswered {
-	if marker == nil || *marker == "" {
+	if marker == nil || *marker == "" || !coreauth.ProvimuxRecordOn() {
 		return nil
 	}
 	items := coreauth.ProvimuxAnsweredAll(authID, *marker, model)

@@ -299,7 +299,7 @@ func TestProvimuxSentModelPerWireForm(t *testing.T) {
 func TestProvimuxSentDecoratorChangesNothing(t *testing.T) {
 	provimuxSentOn(t, true)
 	const body = `{"model":"provimux-test-a","messages":[]}`
-	ctx := WithUpstreamAttemptTracker(context.Background())
+	ctx := WithUpstreamAttemptTracker(WithProvimuxStatementAsked(context.Background()))
 	stand := &standIn{status: http.StatusOK}
 	send(t, ctx, stand, jsonRequest(t, "https://api.anthropic.com/v1/messages", body))
 	if len(stand.received) != 1 || string(stand.received[0]) != body {
@@ -320,7 +320,7 @@ func TestProvimuxSentDecoratorChangesNothing(t *testing.T) {
 // With models.answered-by off the decorator is not attached: the client is the one the helper built.
 func TestProvimuxSentOffAttachesNothing(t *testing.T) {
 	provimuxSentOn(t, false)
-	ctx := WithUpstreamAttemptTracker(context.Background())
+	ctx := WithUpstreamAttemptTracker(WithProvimuxStatementAsked(context.Background()))
 	client := &http.Client{Transport: &standIn{status: http.StatusOK}}
 	if httptransport.Decorate(ctx, client) != client {
 		t.Fatal("a decorator is attached with the switch off")
@@ -350,7 +350,7 @@ func TestProvimuxSentKeepsAnEmbeddersDecoratorAndNests(t *testing.T) {
 	provimuxSentOn(t, true)
 	for _, embedder := range []bool{false, true} {
 		var seen atomic.Int32
-		base := context.Background()
+		base := WithProvimuxStatementAsked(context.Background())
 		if embedder {
 			base = httptransport.WithDecorator(base, func(next http.RoundTripper) http.RoundTripper {
 				return recordingDecorator{next: next, seen: &seen}
@@ -418,6 +418,16 @@ func TestProvimuxSentTheRule(t *testing.T) {
 			log := &provimuxSentLog{}
 			ctx := context.WithValue(context.Background(), provimuxSentLogKey{}, log)
 			for _, request := range tc.requests {
+				// Each case's observation has a copy of its own: ProvimuxSent lets the copies go once it read them.
+				if request.body != nil {
+					copied := &provimuxBodyCapture{none: request.body.none}
+					for _, stream := range request.body.streams {
+						fresh := &provimuxBodyStream{whole: stream.whole, failed: stream.failed}
+						fresh.data.Write(stream.data.Bytes())
+						copied.streams = append(copied.streams, fresh)
+					}
+					request.body = copied
+				}
 				log.add(request)
 			}
 			log.overflow = log.overflow || tc.overflow
@@ -441,7 +451,7 @@ func TestProvimuxSentTheRule(t *testing.T) {
 // names nothing.
 func TestProvimuxSentDetachedRequestCancels(t *testing.T) {
 	provimuxSentOn(t, true)
-	ctx := WithUpstreamAttemptTracker(context.Background())
+	ctx := WithUpstreamAttemptTracker(WithProvimuxStatementAsked(context.Background()))
 	stand := &standIn{status: http.StatusOK}
 	client := httptransport.Decorate(ctx, &http.Client{Transport: stand})
 	for _, requestCtx := range []context.Context{ctx, context.Background()} {
@@ -495,7 +505,7 @@ func TestProvimuxSentWhatLeaves(t *testing.T) {
 				http.DefaultTransport = &http.Transport{}
 				t.Cleanup(func() { http.DefaultTransport = was })
 			}
-			ctx := WithUpstreamAttemptTracker(context.Background())
+			ctx := WithUpstreamAttemptTracker(WithProvimuxStatementAsked(context.Background()))
 			stand := &standIn{status: http.StatusOK}
 			if tc.ctx != nil {
 				ctx = tc.ctx(ctx, stand)
@@ -530,7 +540,7 @@ func TestProvimuxSentUnseenConnectionCancels(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 	for _, unseen := range []bool{false, true} {
-		ctx := WithUpstreamAttemptTracker(context.Background())
+		ctx := WithUpstreamAttemptTracker(WithProvimuxStatementAsked(context.Background()))
 		seen := jsonRequest(t, server.URL+"/v1/responses", `{"model":"provimux-test-a"}`)
 		resp, err := httptransport.Decorate(ctx, &http.Client{Transport: &http.Transport{}}).Do(seen.WithContext(ctx))
 		if err != nil {
@@ -620,5 +630,43 @@ func TestProvimuxSentObservation(t *testing.T) {
 		if got := public(provimuxObserveRequest(req)); got != public(tc.want) {
 			t.Errorf("%s %v: %+v, want %+v", tc.url, tc.header, got, tc.want)
 		}
+	}
+}
+
+// The body is copied only for a call whose caller asked for the statement, and the copy goes once the model is read
+// (the lead's amendment of 2026-11-27 (2), part 3).
+func TestProvimuxSentCopiesOnlyWhenAskedAndLetsGo(t *testing.T) {
+	provimuxSentOn(t, true)
+	for _, asked := range []bool{false, true} {
+		base := context.Background()
+		if asked {
+			base = WithProvimuxStatementAsked(base)
+		}
+		ctx := WithUpstreamAttemptTracker(base)
+		stand := &standIn{status: http.StatusOK}
+		send(t, ctx, stand, jsonRequest(t, "https://api.x.ai/v1/responses", `{"model":"provimux-test-a"}`))
+		log := provimuxSentLogOf(ctx)
+		if len(log.requests) != 1 || (log.requests[0].body != nil) != asked {
+			t.Fatalf("asked %v: a copy %v", asked, log.requests[0].body != nil)
+		}
+		sent, ok := ProvimuxSent(ctx, "xai")
+		if ok != asked || (ok && sent.Model != "provimux-test-a") {
+			t.Fatalf("asked %v: %+v %v", asked, sent, ok)
+		}
+		if asked {
+			capture := log.requests[0].body
+			capture.mu.Lock()
+			kept := 0
+			for _, stream := range capture.streams {
+				kept += stream.data.Cap()
+			}
+			capture.mu.Unlock()
+			if !capture.released || kept != 0 {
+				t.Fatalf("the copy was kept after the model was read: %d bytes", kept)
+			}
+		}
+	}
+	if WithProvimuxStatementAsked(context.Background()) == context.Background() {
+		t.Fatal("fixture: the switch is on")
 	}
 }

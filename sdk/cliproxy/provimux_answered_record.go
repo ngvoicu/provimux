@@ -51,7 +51,8 @@ import (
 //   - When the auth folder changes, memory is written to the old file and replaced by what the new one holds; a note
 //     that arrives around the change may be missed. The stop is final: the intake closes, the last write runs, and
 //     nothing opens the intake again in this process.
-//   - With models.answered-by off, and in Home mode, nothing is noted and the file is not read.
+//   - With models.answered-by off, in Home mode, and in a process Provimux's own main did not start, nothing is noted
+//     and the file is neither read nor written; switching to off or Home drops what is pending, unread.
 //
 // It holds markers, names, entries, times and keyed hashes: nothing of a request's content and no client key.
 
@@ -95,6 +96,7 @@ type provimuxAnsweredBook struct {
 	lock *flock.Flock // the place's lock, while held
 
 	wake       chan struct{}
+	noted      chan struct{} // a note was accepted (buffered, never waited on by the record itself)
 	writerOnce sync.Once
 	writing    sync.Mutex // one writer at a time
 	logged     atomic.Bool
@@ -109,7 +111,7 @@ type provimuxAnsweredSeen struct {
 }
 
 func newProvimuxAnsweredBook(now func() time.Time) *provimuxAnsweredBook {
-	return &provimuxAnsweredBook{now: now, rows: map[provimuxAnsweredRow]map[string][]provimuxAnsweredItem{}, wake: make(chan struct{}, 1)}
+	return &provimuxAnsweredBook{now: now, rows: map[provimuxAnsweredRow]map[string][]provimuxAnsweredItem{}, wake: make(chan struct{}, 1), noted: make(chan struct{}, 1)}
 }
 
 // provimuxAnswered is the gateway's record.
@@ -164,6 +166,10 @@ func (b *provimuxAnsweredBook) note(client, credential, marker, name, entry stri
 	b.unsent = true
 	b.dirty = b.dirty || changed
 	b.mu.Unlock()
+	select { // for a reader that waits for a note (a test): never blocks
+	case b.noted <- struct{}{}:
+	default:
+	}
 	if changed {
 		b.startWriter()
 		select {
@@ -181,11 +187,10 @@ func provimuxAnsweredAdd(items []provimuxAnsweredItem, item provimuxAnsweredItem
 	out = make([]provimuxAnsweredItem, 0, provimuxAnsweredMaxItems+1)
 	for _, old := range items {
 		if old.entry == item.entry {
+			// The item takes the newest note's time as it is: the day and time shown are the last answer's by
+			// sequence, also when the clock was set back between the two (the amendment of 2026-11-27 (2), part 3).
 			found = true
 			changed = changed || provimuxAnsweredDay(old.at) != provimuxAnsweredDay(item.at)
-			if old.at.After(item.at) {
-				item.at = old.at
-			}
 			continue
 		}
 		if now.Sub(old.at) > provimuxAnsweredKept {
@@ -296,6 +301,20 @@ func (b *provimuxAnsweredBook) setPlace(dir string) {
 	b.place, b.owner, b.foreign, b.seen, b.lock = place, owner, foreign, seen, lock
 	b.rows, b.seq = rows, seq
 	b.dirty, b.unsent = false, false
+}
+
+// drop puts the record out of use without reading or writing any file: what is pending is dropped, memory is emptied,
+// and the place's lock is given up. Switching models.answered-by off, or to Home mode, does this (the amendment of
+// 2026-11-27 (2), part 3).
+func (b *provimuxAnsweredBook) drop() {
+	b.writing.Lock()
+	defer b.writing.Unlock()
+	b.mu.Lock()
+	b.place, b.foreign, b.seen = "", false, provimuxAnsweredSeen{}
+	b.rows = map[provimuxAnsweredRow]map[string][]provimuxAnsweredItem{}
+	b.dirty, b.unsent = false, false
+	b.mu.Unlock()
+	b.release()
 }
 
 // release gives up the place's lock. The caller holds b.writing.
@@ -549,31 +568,74 @@ func provimuxAnsweredLoad(place string, now time.Time) (rows map[provimuxAnswere
 	return rows, seq, seen, nil
 }
 
-// provimuxAnsweredParse reads raw as this record's file, strictly: one JSON object with the record's mark and version
-// and nothing else, every row with its four strings and its items, every item with a time, a positive sequence and an
-// entry or null. Anything else is not this record's.
+// provimuxAnsweredStrictRow and provimuxAnsweredStrictItem are a row and an item as the file must hold them: every
+// field present (a pointer that stays nil is a field that is missing), with its own type. A file with a row or an item
+// short of any of them, or with any field this record does not write, is not this record's (the amendment of
+// 2026-11-27 (2), part 3): a missing `client` must never read as the keyless caller's, nor a missing `entry` as null.
+type provimuxAnsweredStrictRow struct {
+	Credential *string                       `json:"credential"`
+	Marker     *string                       `json:"marker"`
+	Name       *string                       `json:"name"`
+	Client     *string                       `json:"client"`
+	Items      *[]provimuxAnsweredStrictItem `json:"items"`
+}
+
+type provimuxAnsweredStrictItem struct {
+	Entry stdjson.RawMessage `json:"entry"` // empty when missing; "null" when null
+	At    *string            `json:"at"`
+	Seq   *uint64            `json:"seq"`
+}
+
+type provimuxAnsweredStrict struct {
+	Format  *string                      `json:"format"`
+	Version *int                         `json:"version"`
+	Rows    *[]provimuxAnsweredStrictRow `json:"rows"`
+}
+
+// provimuxAnsweredParse reads raw as this record's file, strictly: one JSON object with the record's mark and version 1
+// and nothing else; every row with its four strings (credential, marker and name not empty; client may be "", the
+// keyless caller, but must be there) and at least one item; every item with its entry (a string or null), its time and
+// a positive sequence. A field this record does not write, at any level, makes the file not this record's: a later
+// version is told by its version number and is not read by this one either way. Anything else is not this record's.
 func provimuxAnsweredParse(raw []byte) (provimuxAnsweredStored, bool) {
 	var stored provimuxAnsweredStored
+	var strict provimuxAnsweredStrict
 	decoder := stdjson.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
-	if errDecode := decoder.Decode(&stored); errDecode != nil {
+	if errDecode := decoder.Decode(&strict); errDecode != nil {
 		return stored, false
 	}
 	if _, errMore := decoder.Token(); !errors.Is(errMore, io.EOF) {
 		return stored, false
 	}
-	if stored.Format != provimuxAnsweredFormat || stored.Version != 1 || stored.Rows == nil {
+	if strict.Format == nil || *strict.Format != provimuxAnsweredFormat || strict.Version == nil || *strict.Version != 1 || strict.Rows == nil {
 		return stored, false
 	}
-	for _, row := range stored.Rows {
-		if row.Credential == "" || row.Marker == "" || row.Name == "" || len(row.Items) == 0 {
-			return stored, false
+	stored = provimuxAnsweredStored{Format: *strict.Format, Version: *strict.Version, Rows: make([]provimuxAnsweredStoredRow, 0, len(*strict.Rows))}
+	for _, row := range *strict.Rows {
+		if row.Credential == nil || row.Marker == nil || row.Name == nil || row.Client == nil || row.Items == nil ||
+			*row.Credential == "" || *row.Marker == "" || *row.Name == "" || len(*row.Items) == 0 {
+			return provimuxAnsweredStored{}, false
 		}
-		for _, item := range row.Items {
-			if _, errAt := time.Parse(time.RFC3339Nano, item.At); errAt != nil || item.Seq == 0 {
-				return stored, false
+		kept := provimuxAnsweredStoredRow{Credential: *row.Credential, Marker: *row.Marker, Name: *row.Name, Client: *row.Client}
+		for _, item := range *row.Items {
+			if len(item.Entry) == 0 || item.At == nil || item.Seq == nil || *item.Seq == 0 {
+				return provimuxAnsweredStored{}, false
 			}
+			if _, errAt := time.Parse(time.RFC3339Nano, *item.At); errAt != nil {
+				return provimuxAnsweredStored{}, false
+			}
+			var entry *string
+			if string(bytes.TrimSpace(item.Entry)) != "null" {
+				var text string
+				if errEntry := stdjson.Unmarshal(item.Entry, &text); errEntry != nil {
+					return provimuxAnsweredStored{}, false
+				}
+				entry = &text
+			}
+			kept.Items = append(kept.Items, provimuxAnsweredStoredItem{Entry: entry, At: *item.At, Seq: *item.Seq})
 		}
+		stored.Rows = append(stored.Rows, kept)
 	}
 	return stored, true
 }
@@ -597,11 +659,13 @@ func (b *provimuxAnsweredBook) logForeign(place string, why error) {
 // config's switch in force before it applies the config's store), and in Home mode, it has no place, and the file is
 // not read.
 func provimuxAnsweredPlace(cfg *config.Config) {
+	if cfg == nil || !coreauth.ProvimuxRecordOn() || provimuxHomeMode(cfg) {
+		provimuxAnswered.drop()
+		return
+	}
 	dir := ""
-	if cfg != nil && logging.ProvimuxAnsweredBy() && !provimuxHomeMode(cfg) {
-		if resolved, errDir := util.ResolveAuthDir(cfg.AuthDir); errDir == nil {
-			dir = resolved
-		}
+	if resolved, errDir := util.ResolveAuthDir(cfg.AuthDir); errDir == nil {
+		dir = resolved
 	}
 	provimuxAnswered.setPlace(dir)
 }

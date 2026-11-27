@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/provimux/origin"
 	"testing"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 // record only, the day only, null for none, empty when nothing is recorded (another key's record included), left out
 // without a marker; and the entries the rows name, for include=figures. Invented values.
 func TestProvimuxAnsweredDays(t *testing.T) {
+	t.Cleanup(origin.ShippedGatewayForTests(true)) // the gateway as shipped (the process mark)
 	was := logging.SetProvimuxAnsweredBy(true)
 	t.Cleanup(func() { logging.SetProvimuxAnsweredBy(was); coreauth.SetProvimuxAnswered(nil, nil) })
 	at := time.Date(2030, 1, 2, 23, 59, 59, 0, time.FixedZone("provimux-test", 3600)) // date-safe: a fixed value of a pure function

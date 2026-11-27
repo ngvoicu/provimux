@@ -96,3 +96,26 @@ func MarkLoadedForTests(credentials ...any) {
 		MarkLoaded(credentials...)
 	}
 }
+
+// shippedGateway is the process mark (the lead's amendment of 2026-11-27 (2), part 3): set once, by the gateway's own
+// main, before anything else runs. Without it no answer names an entry, nothing is recorded, the record's file is
+// neither read nor written, and the lists carry no `answered`.
+var shippedGateway atomic.Bool
+
+// MarkShippedGateway marks this process as one Provimux's own main started. Only cmd/server/main.go calls it (through
+// logging.ProvimuxShippedGateway, the package that main already imports): a program in another Go module cannot import
+// this package or that one.
+func MarkShippedGateway() { shippedGateway.Store(true) }
+
+// ShippedGateway reports whether Provimux's own main started this process.
+func ShippedGateway() bool { return shippedGateway.Load() }
+
+// ShippedGatewayForTests sets the process mark to on, in a test binary only (a test that stands for the gateway as
+// shipped), and returns what restores it. Outside a test binary it does nothing.
+func ShippedGatewayForTests(on bool) (restore func()) {
+	if !testing.Testing() {
+		return func() {}
+	}
+	was := shippedGateway.Swap(on)
+	return func() { shippedGateway.Store(was) }
+}

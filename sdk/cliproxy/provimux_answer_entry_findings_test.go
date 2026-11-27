@@ -123,9 +123,11 @@ func TestProvimuxFinding14APluginsCredentialHasNoEntry(t *testing.T) {
 	}
 
 	h.stand.reset()
-	sent := h.checkSent(h.post("/v1/chat/completions", chatBody(model, false, ""), nil), changed, "api.meta.ai", "")
-	if sent.Model != model {
-		t.Fatalf("fixture: the Meta executor sent %q", sent.Model)
+	// Ported (the amendment of 2026-11-27 (2), A: the sent model goes with the entry, and a credential a plugin made
+	// or changed is not vouched for): the answer names the account and none of the model headers.
+	h.checkNoModel(h.post("/v1/chat/completions", chatBody(model, false, ""), nil), changed)
+	if sent := h.stand.answered(); len(sent) != 1 || sent[0].Host != "api.meta.ai" || sent[0].Model != model {
+		t.Fatalf("fixture: the Meta executor sent %+v", sent)
 	}
 
 	// The account's own executor refreshes the credential, and the manager stores what it returns, as its refresh
@@ -147,7 +149,7 @@ func TestProvimuxFinding14APluginsCredentialHasNoEntry(t *testing.T) {
 		t.Fatalf("after the account's own refresh the credential is no longer the plugin's (%s)", after.Provider)
 	}
 	h.stand.reset()
-	h.checkSent(h.post("/v1/chat/completions", chatBody(model, false, ""), nil), after, "api.meta.ai", "")
+	h.checkNoModel(h.post("/v1/chat/completions", chatBody(model, false, ""), nil), after) // Ported, as above
 
 	// The plugin's change was written to the account's file, as a Meta login's. At the next start the native loader
 	// reads that file, with no plugin storage: the mark the change left in it still says whose it is.

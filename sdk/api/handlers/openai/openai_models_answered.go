@@ -39,9 +39,10 @@ func provimuxCallerRef(c *gin.Context) string {
 	return ""
 }
 
-// provimuxAnsweredDays is the row's `answered`: empty when nothing is recorded, nil (left out) without a marker.
+// provimuxAnsweredDays is the row's `answered`: empty when nothing is recorded, nil (left out) without a marker or
+// without a record (off, or a process Provimux's own main did not start).
 func provimuxAnsweredDays(client, credential, marker, model string) *[]modelAnswered {
-	if marker == "" {
+	if marker == "" || !coreauth.ProvimuxRecordOn() {
 		return nil
 	}
 	items := coreauth.ProvimuxAnswered(client, credential, marker, model)

@@ -121,7 +121,7 @@ func TestProvimuxBuiltinExecutorOnTheWire(t *testing.T) {
 
 // The entry's hooks are set once, by this package, while the program initialises: a later call changes nothing.
 func TestProvimuxAnswerEntryHooksAreSetOnce(t *testing.T) {
-	coreauth.SetProvimuxAnswerEntry(func(*coreauth.Manager, coreauth.ProviderExecutor, uint64) string { return "claude" },
+	coreauth.SetProvimuxAnswerEntry(func(*coreauth.Manager, coreauth.ProviderExecutor, uint64) string { return "claude" }, func(*coreauth.Auth) bool { return true },
 		func(*coreauth.Auth, cliproxyexecutor.ProvimuxSentRequest) string { return "provimux-test/replaced" })
 	h := newSentHarness(t, reviewRouter)
 	useAnsweredBook(t, newSentClock())

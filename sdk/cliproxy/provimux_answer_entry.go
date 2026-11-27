@@ -13,7 +13,15 @@ import (
 // 6.1). The conductor has the attempt's sent request (step 2, cliproxyexecutor.ProvimuxSent); this gives its entry for
 // the credential that answered, or none. It is the one function that gives an entry: nothing predicts one.
 
-func init() { coreauth.SetProvimuxAnswerEntry(provimuxBuiltinExecutor, provimuxEntryOfAnswer) }
+func init() {
+	coreauth.SetProvimuxAnswerEntry(provimuxBuiltinExecutor, provimuxVouches, provimuxEntryOfAnswer)
+}
+
+// provimuxVouches reports whether the gateway's own loader made auth (for its id) and no plugin made or changed it
+// (rule A.3 of the lead's amendment of 2026-11-27 (2)).
+func provimuxVouches(auth *coreauth.Auth) bool {
+	return auth.ProvimuxLoaded() && !pluginhost.ProvimuxPluginCredential(auth)
+}
 
 // provimuxEntryOfAnswer returns the entry of an answer of auth whose attempt sent sent, or "": "" for a credential the
 // gateway's own loader did not make (rule A.3 of the lead's amendment of 2026-11-27 (2)), for one a plugin made or

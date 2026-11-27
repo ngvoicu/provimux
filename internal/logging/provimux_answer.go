@@ -220,7 +220,7 @@ func ProvimuxNoteWritten(request *http.Request, statement AuthStatement) {
 
 func provimuxRecordWritten(statement AuthStatement) {
 	intake := provimuxAnsweredWritten.Load()
-	if intake == nil || !ProvimuxAnsweredBy() {
+	if intake == nil || !provimuxRecording() {
 		return
 	}
 	statement = statement.OnTheWire()
