@@ -278,7 +278,7 @@ routing:
   session-affinity-rebind-on: "any"
   # Provimux: keep the bindings across a restart (written beside the KV store, as <kv path>.affinity, when the
   # process stops and every 5 minutes; put back once at the next start, only to the same account). On whenever
-  # session-affinity is true; false turns it off and removes its files. Not in Home mode or with the KV store disabled.
+  # session-affinity is true; false turns it off and removes its files. Not in Home mode or with server.kv-store.disabled.
   # session-affinity-persist: false
 
   # When true, unprefixed model requests only use credentials without a prefix (except when prefix == model name).

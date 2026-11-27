@@ -556,16 +556,29 @@ func TestProvimuxAccountIdentity(t *testing.T) {
 		{"claude", &Auth{ID: "c.json", Provider: "claude", Attributes: map[string]string{"auth_kind": "oauth"}, Metadata: map[string]any{"account_uuid": "acc", "organization_uuid": "org"}}, true},
 		{"codex", &Auth{ID: "x.json", Provider: "codex", Attributes: map[string]string{"auth_kind": "oauth"}, Metadata: map[string]any{"account_id": "ws", "id_token": pmxJWT(`{"https://api.openai.com/auth":{"chatgpt_user_id":"user-9"}}`)}}, true},
 		{"codex without account", &Auth{ID: "x.json", Provider: "codex", Attributes: map[string]string{"auth_kind": "oauth"}, Metadata: map[string]any{"email": "x@example.invalid"}}, false},
-		{"meta login (no stable id)", &Auth{ID: "m.json", Provider: "meta", Attributes: map[string]string{"auth_kind": "oauth"}, Metadata: map[string]any{"email": "x@example.invalid"}}, false},
+		{"meta login (the e-mail Meta names)", &Auth{ID: "m.json", Provider: "meta", Attributes: map[string]string{"auth_kind": "oauth"}, Metadata: map[string]any{"email": "x@example.invalid"}}, true},
 		{"api key", &Auth{ID: "openai-compatibility:x:1", Provider: "openai-compatibility", Attributes: map[string]string{"auth_kind": "apikey", "api_key": "k", "base_url": "https://Host.example/v1"}}, true},
+		{"claude without any id (before its first request)", &Auth{ID: "c.json", Provider: "claude", Attributes: map[string]string{"auth_kind": "oauth"}, Metadata: map[string]any{"email": "x@example.invalid"}}, false},
+		{"claude with an account id the gateway made up", &Auth{ID: "c.json", Provider: "claude", Attributes: map[string]string{"auth_kind": "oauth"}, Metadata: map[string]any{"account_uuid": "6ba7b810-9dad-51d1-80b4-00c04fd430c8", "organization_uuid": "org"}}, false},
+		{"kimi (a device id made at each login)", &Auth{ID: "k.json", Provider: "kimi", Attributes: map[string]string{"auth_kind": "oauth"}, Metadata: map[string]any{"device_id": "dev"}}, false},
+		{"xai", &Auth{ID: "x.json", Provider: "xai", Attributes: map[string]string{"auth_kind": "oauth"}, Metadata: map[string]any{"sub": "user-x"}}, true},
+		{"xai without sub", &Auth{ID: "x.json", Provider: "xai", Attributes: map[string]string{"auth_kind": "oauth"}, Metadata: map[string]any{"email": "x@example.invalid"}}, false},
+		{"copilot", &Auth{ID: "g.json", Provider: "copilot", Attributes: map[string]string{"auth_kind": "oauth"}, Metadata: map[string]any{"account_id": "gh-1"}}, true},
+		{"antigravity", &Auth{ID: "a.json", Provider: "antigravity", Attributes: map[string]string{"auth_kind": "oauth"}, Metadata: map[string]any{"email": "x@example.invalid"}}, true},
+		{"vertex service account", &Auth{ID: "v.json", Provider: "vertex", Attributes: map[string]string{"auth_kind": "oauth"}, Metadata: map[string]any{"service_account": map[string]any{"client_email": "sa@example.invalid"}}}, true},
+		{"a credential held only in memory", &Auth{ID: "r", Provider: "claude", Attributes: map[string]string{"auth_kind": "oauth", "runtime_only": "true"}, Metadata: map[string]any{"account_uuid": "acc", "organization_uuid": "org"}}, false},
 	}
 	for _, tc := range cases {
 		identity, ok := ProvimuxAccountIdentity(tc.auth)
 		if ok != tc.ok {
 			t.Errorf("%s: identity %q ok=%v, want ok=%v", tc.name, identity, ok, tc.ok)
 		}
-		if ok && (strings.Contains(identity, tc.auth.ID) || strings.Contains(identity, "@")) {
-			t.Errorf("%s: identity %q holds the file name or an e-mail", tc.name, identity)
+		if ok && strings.Contains(identity, tc.auth.ID) {
+			t.Errorf("%s: identity %q holds the file name", tc.name, identity)
+		}
+		// One rule with the account marker: an identity exactly where the marker begins with "a.".
+		if basis, _ := provimuxAccountIdentity(tc.auth); (basis == provimuxBasisAccount) != ok {
+			t.Errorf("%s: identity ok=%v, marker basis %q", tc.name, ok, basis)
 		}
 	}
 	one, _ := ProvimuxAccountIdentity(devin("same-path.json", "user-1", "shared@example.invalid"))

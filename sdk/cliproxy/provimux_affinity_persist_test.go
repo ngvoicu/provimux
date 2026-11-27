@@ -267,7 +267,7 @@ func TestProvimuxAffinityFilesBelongToTheirStore(t *testing.T) {
 	}
 	pmxStart(t, one)
 	pmxStart(t, two)
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for !(pmxExists(oneSnapshot) && pmxExists(twoSnapshot)) {
 		if time.Now().After(deadline) {
 			t.Fatal("no periodic snapshots")
@@ -278,9 +278,15 @@ func TestProvimuxAffinityFilesBelongToTheirStore(t *testing.T) {
 	one.provimuxAffinityStop()
 	twoRT, _ := provimuxAffinityRuntimes.Load(two)
 	before := twoRT.(*provimuxAffinityRuntime).currentStatus().LastWrittenAt
-	time.Sleep(200 * time.Millisecond)
-	if after := twoRT.(*provimuxAffinityRuntime).currentStatus().LastWrittenAt; after == nil || before == nil || !after.After(*before) {
-		t.Fatal("stopping one service stopped the other's writer")
+	// Two's next periodic write is an event: wait for it, with a bound only a stopped writer reaches (a fixed
+	// sleep failed 2 times in 50 on a loaded machine).
+	for limit := time.Now().Add(30 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		if after := twoRT.(*provimuxAffinityRuntime).currentStatus().LastWrittenAt; after != nil && before != nil && after.After(*before) {
+			break
+		}
+		if time.Now().After(limit) {
+			t.Fatal("stopping one service stopped the other's writer")
+		}
 	}
 	two.provimuxAffinityStop()
 	for _, path := range []string{oneSnapshot, oneKey, twoSnapshot, twoKey} {
@@ -1082,7 +1088,7 @@ func TestProvimuxAffinitySwitch(t *testing.T) {
 	snapshot, key := pmxPaths(t, s)
 	waitFor := func(what string, cond func() bool) {
 		t.Helper()
-		deadline := time.Now().Add(3 * time.Second)
+		deadline := time.Now().Add(30 * time.Second)
 		for !cond() {
 			if time.Now().After(deadline) {
 				t.Fatalf("timed out waiting for %s", what)

@@ -15,13 +15,22 @@ whoever changes the code or reviews it. Code: `sdk/cliproxy/provimux_affinity_pe
 - **Only the session cache is kept**, never the LCP matcher. Its groups are copied under the cache's read lock in the
   cache's eviction order, encrypted and written after the lock is released: when the process is told to stop (just
   before upstream's `StopAutoRefresh`, before the HTTP drain), and every 5 minutes. Nothing runs on a request.
+- **The stop: the write, then the drain.** `Service.Shutdown` writes (at most 1.5 s, see 3) before `api.Server.Stop`
+  drains the answers in flight (`server.restart-drain-seconds`, 25 s by default). The write does not wait for the
+  drain, and the drain's timer starts after the write; both run inside upstream's 30 s bound on the whole stop
+  (`Service.Run`'s shutdown context), so with a drain of 30 s a stalled disk's 1.5 s comes out of the drain. A
+  conversation whose answer is in flight was bound at its `Pick`, so it is in the file
+  (`TestProvimuxAffinityStopWithAnswersInFlight`).
 - **Restored once at start**, before the server exists, in the same order, with the selection sequence kept. Each entry
   lives until the earlier of its own expiry and its last use plus the TTL configured now, and never past the
   snapshot's time plus that TTL. The file is not deleted after a restore: it stays until the next write replaces it.
-- **Off means gone**: whenever it is not in effect (setting false, session affinity off, Home mode, KV store
-  disabled), our files are removed at the start, at every check (5 s) and at the stop, and none is written. Removal
-  needs our key and the store's lock (see 3); files that do not authenticate, and a store another running Provimux
-  holds, are left.
+  The start's disk work (the checks, the read, the removal of our temporary files) has the stop's deadline, 1.5 s:
+  past it the gateway starts without restoring, `start_note` says why, and a read that returns later is not used
+  (`TestProvimuxAffinityStartDeadline`).
+- **Off means gone**: whenever it is not in effect (setting false, session affinity off, Home mode,
+  `server.kv-store.disabled: true`), our files are removed at the start, at every check (5 s) and at the stop, and
+  none is written. Removal needs our key and the store's lock (see 3); files that do not authenticate, and a store
+  another running Provimux holds, are left.
 
 ## 2. Files and what "ours" means
 
@@ -29,7 +38,7 @@ whoever changes the code or reviews it. Code: `sdk/cliproxy/provimux_affinity_pe
 |---|---|
 | `<kv path>.affinity-key` | `PMXAFFKEY2\n`, 32 random bytes, 16-byte check value = HMAC-SHA256(secret, "provimux affinity key check v2")[:16]. Created with `O_EXCL`, mode 0600. |
 | `<kv path>.affinity` | `PMXAFF2\n`, 12-byte nonce, AES-256-GCM of the JSON state under HMAC-SHA256(secret, "provimux affinity snapshot v2"), the header as associated data. |
-| `.<snapshot name>.tmp-*` | a snapshot being written; renamed over the snapshot, or removed. |
+| `.<snapshot name>.tmp-*` | a snapshot being written; renamed over the snapshot, or removed. One a process left when it ended mid-write is removed at the next start that holds the store's lock, when it authenticates (`TestProvimuxAffinityStartRemovesCutShortWrite`). |
 | `.<snapshot name>.probe-*` | created and removed at once to see that the directory can be written. |
 
 **Ours means it authenticates.** A key file is ours only when it is a regular file with exactly that format, length
@@ -53,6 +62,15 @@ service of the same store, in this process or another, writes nothing while the 
 the lock on a later check. The snapshot can be read without the lock: a restarted process restores even while an old
 one lingers.
 
+**The lock belongs to the path.** When the store's path changes while running, the old path's lock is let go at the
+next check, and nothing is written or removed at the new path before its own lock is held: held by another gateway, the
+state says `in-use` and that gateway's files are not touched, whether the setting is on or `false`
+(`TestProvimuxAffinityStoreMovedWhileRunning`).
+
+**One line per state.** A blocked state (`foreign-file`, `in-use`, `key-not-private`, `directory-not-writable`,
+`path-unusable`) is logged as a warning when it or its detail changes, not at every check, and once at info level when it
+clears (`TestProvimuxAffinityWarnsOnce`).
+
 A stop waits at most 1.5 s for its final write. When it gives up, the runtime is marked cancelled. Just before the
 rename, the writer checks that it still holds the lock and was not cancelled; otherwise it removes its temporary file
 and stops. The lock is released only when that write has returned. So a write that was given up never lands, in the same
@@ -61,13 +79,19 @@ process (`TestProvimuxAffinityGivenUpWriteNeverLands`, `TestProvimuxAffinityOneW
 
 ## 4. The same account, or nothing
 
-Accounts are named in the file by an HMAC, under the installation key, of a stable vendor identity: API key and host;
-Claude account and organization ids; Codex workspace and user ids; Devin user id. Without one (Meta), nothing is
-written. A restored entry goes only to the auth whose identity has that HMAC now; two auths with the same identity get
-none.
+Accounts are named in the file by an HMAC, under the installation key, of the account's identity as its vendor names
+it: the account marker's rule (`provimux_account_marker.go`, answered-by.md 2.2), the identities whose marker basis is
+`a`. An API key (its base URL or provider, and the key); a Claude login's organisation and account ids (not an account
+id the gateway made up); a Codex login's workspace and user; Copilot's account id; Devin's user (and organisation);
+xAI's `sub`; a Vertex service account's e-mail; Meta's and Antigravity's e-mail. A credential with basis `s` (Kimi, AI
+Studio, a plugin's or a runtime-only credential, a login missing its vendor's ids) has none: its bindings are not
+written, and the write counts them (`left_out_no_account_identity`). A restored entry goes only to the auth whose
+identity has that HMAC now; two auths with the same identity get none.
 
 While running, every auth ID is read at every check (5 s) and twice around each write's copy. An auth ID first seen
-after the start is trusted only from that moment; one whose identity changes, becomes unreadable, or is missing at any
+after the start is trusted only from that moment, and so is one seen first without an identity and then with one
+(upstream fills a Claude login's ids in memory at its first request, and saves them to the login file, so this lasts
+one run: `TestProvimuxAffinityIdentityAfterStart`); one whose identity changes, becomes unreadable, or is missing at any
 check is **tainted for the rest of the run**: none of its bindings is written again, those made after the change
 included. A binding is written only when its auth ID was watched, untainted, from the binding's last use to the write.
 This closes the three paths the third review found (`TestProvimuxAffinityLoginRotationGaps`): a replacement between
@@ -81,7 +105,9 @@ left out.
 Each file carries a pin: sample requests (`provimuxAffinityPinSamples`) and what the writing build's selector made of
 them, run through `session.Enrich` and `Pick` on a fresh selector: the keys, the binding, the eviction order, the
 lifetime left after a hit, a result, an expiry and an eviction, and the default capacity. The reading build runs the
-same samples and compares.
+same samples and compares. The samples' selectors log nowhere (a context the selector's log entry recognises): the
+process's log level is never changed, so no other goroutine's line is lost while they run
+(`TestProvimuxAffinityPinKeepsOtherLines`).
 
 - A sample of a **rule** every entry follows (`Rule: true`: model key, recency, refresh, expiry to the millisecond,
   failure, capacity and its default) that differs, a different entry layout, or a step the reader does not know:
@@ -117,7 +143,8 @@ conversation goes to another account once after the upgrade, where its cache is 
   "key_note": "",               // the key's mode was set back to 0600
   "last_written_at": "2026-11-26T21:00:00Z",
   "last_bindings": 0,
-  "left_out_account_unverified": 0,
+  "left_out_account_unverified": 0,   // the last write: account not the same throughout (section 4)
+  "left_out_no_account_identity": 0,  // the last write: account without an identity (marker basis s)
   "last_error": "",
   "restored_at_start": {"sessions": 0, "expired": 0, "unknown_accounts": 0, "other_build": 0, "other_build_kinds": []},
   "start_note": ""
@@ -131,8 +158,8 @@ shows the one started last.
 
 ## 7. Known limits, kept on purpose
 
-- A KV path moved while running: the new path is used from the next check; files at the old path stay until removed by
-  hand or the path is moved back.
+- A KV path moved while running: the new path is used from the next check, once its lock is held (section 3); files
+  at the old path stay until removed by hand or the path is moved back.
 - A TTL lengthened and then shortened across two restarts can leave out an entry that had lifetime left (the last use
   is taken as expiry minus the TTL of the snapshot that carried it). It leaves out, never misroutes.
 - In a directory that cannot be written nothing is restored, because the file could never be replaced.

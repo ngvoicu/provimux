@@ -2110,6 +2110,9 @@ func selectorLogEntry(ctx context.Context) *log.Entry {
 	if ctx == nil {
 		return log.NewEntry(log.StandardLogger())
 	}
+	if quiet := provimuxQuietSelectorLog(ctx); quiet != nil { // Provimux: the pin's samples log nowhere
+		return quiet
+	}
 	if reqID := logging.GetRequestID(ctx); reqID != "" {
 		return log.WithField("request_id", reqID)
 	}

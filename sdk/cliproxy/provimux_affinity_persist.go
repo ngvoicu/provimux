@@ -83,6 +83,11 @@ var (
 	provimuxAffinityInterval   = provimuxAffinityPeriod
 	// provimuxAffinityStopDeadline bounds what the stop adds to the exit on a stalled disk.
 	provimuxAffinityStopDeadline = 1500 * time.Millisecond
+	// provimuxAffinityStartDeadline bounds what the start's disk work adds to the start.
+	provimuxAffinityStartDeadline = 1500 * time.Millisecond
+	// provimuxAffinityBeforeRead, when set, runs before the start's disk work. For tests that stall
+	// the disk.
+	provimuxAffinityBeforeRead atomic.Pointer[func()]
 	// provimuxAffinityBeforeWrite, when set, runs before each snapshot's temporary file is
 	// written (SetProvimuxAffinityBeforeWrite). For tests.
 	provimuxAffinityBeforeWrite atomic.Pointer[func()]
@@ -97,6 +102,15 @@ func SetProvimuxAffinitySnapshotInterval(interval time.Duration) {
 		interval = provimuxAffinityPeriod
 	}
 	provimuxAffinityInterval = interval
+}
+
+// SetProvimuxAffinityStartDeadline sets the start's deadline (0: 1.5 s). For tests on a loaded machine, which are
+// not about it.
+func SetProvimuxAffinityStartDeadline(deadline time.Duration) {
+	if deadline <= 0 {
+		deadline = 1500 * time.Millisecond
+	}
+	provimuxAffinityStartDeadline = deadline
 }
 
 // SetProvimuxAffinityBeforeWrite runs hook before each snapshot write (nil: none). For tests that
@@ -138,10 +152,13 @@ type ProvimuxAffinityPersistStatus struct {
 	LastBindings  int        `json:"last_bindings"`
 	// LeftOut counts bindings the last write left out because their account's identity was not
 	// the same throughout, from their last use to the write.
-	LeftOut         int                                `json:"left_out_account_unverified"`
-	LastError       string                             `json:"last_error,omitempty"`
-	RestoredAtStart *coreauth.ProvimuxAffinityRestored `json:"restored_at_start,omitempty"`
-	StartNote       string                             `json:"start_note,omitempty"`
+	LeftOut int `json:"left_out_account_unverified"`
+	// LeftOutNoIdentity counts bindings the last write left out because their account has no identity
+	// Provimux can recognise after a restart (its account marker begins with "s.").
+	LeftOutNoIdentity int                                `json:"left_out_no_account_identity"`
+	LastError         string                             `json:"last_error,omitempty"`
+	RestoredAtStart   *coreauth.ProvimuxAffinityRestored `json:"restored_at_start,omitempty"`
+	StartNote         string                             `json:"start_note,omitempty"`
 }
 
 // provimuxAffinityIdentity is what an auth ID was seen to be during this run: a hash of its stable
@@ -159,6 +176,8 @@ type provimuxAffinityRuntime struct {
 	writeMu    sync.Mutex
 	identities map[string]provimuxAffinityIdentity // under writeMu
 	lock       *os.File                            // the held lock on the key file; under writeMu
+	lockPath   string                              // the key file lock holds; under writeMu
+	warned     string                              // the blocked state last logged ("" when none); under writeMu
 	verified   fs.FileInfo                         // the snapshot as last authenticated; under writeMu
 	cancelled  atomic.Bool                         // a stop gave up: no write may land any more
 	statusMu   sync.Mutex
@@ -404,9 +423,11 @@ func (rt *provimuxAffinityRuntime) checkSnapshot(snapshot string, secret []byte)
 
 // takeLock holds the store's lock (on the key file) for this service, or says who holds it.
 func (rt *provimuxAffinityRuntime) takeLock(key string) error {
-	if rt.lock != nil {
+	if rt.lock != nil && rt.lockPath == key {
 		return nil
 	}
+	// The lock belongs to the path: a store that moved lets the old one go first.
+	rt.releaseLock()
 	file, errOpen := os.OpenFile(key, os.O_RDONLY, 0)
 	if errOpen != nil {
 		return &provimuxAffinityBlocked{provimuxReasonPathUnusable, errOpen.Error()}
@@ -418,7 +439,7 @@ func (rt *provimuxAffinityRuntime) takeLock(key string) error {
 		}
 		return &provimuxAffinityBlocked{provimuxReasonPathUnusable, errLock.Error()}
 	}
-	rt.lock = file
+	rt.lock, rt.lockPath = file, key
 	return nil
 }
 
@@ -426,7 +447,7 @@ func (rt *provimuxAffinityRuntime) takeLock(key string) error {
 func (rt *provimuxAffinityRuntime) releaseLock() {
 	if rt.lock != nil {
 		_ = rt.lock.Close()
-		rt.lock = nil
+		rt.lock, rt.lockPath = nil, ""
 	}
 }
 
@@ -525,23 +546,32 @@ func (rt *provimuxAffinityRuntime) removeOurs(snapshot, key string) error {
 		errs = append(errs, provimuxAffinityNotOurs(snapshot, "snapshot"))
 	}
 	rt.verified = nil
-	prefix := "." + filepath.Base(snapshot) + ".tmp-"
-	if entries, errDir := os.ReadDir(filepath.Dir(snapshot)); errDir == nil {
-		for _, entry := range entries {
-			if !strings.HasPrefix(entry.Name(), prefix) {
-				continue
-			}
-			leftover := filepath.Join(filepath.Dir(snapshot), entry.Name())
-			if _, ours, _ := provimuxAffinityAuthenticates(leftover, secret); ours {
-				_ = os.Remove(leftover)
-			}
-		}
-	}
+	provimuxAffinityRemoveTemps(snapshot, secret)
 	rt.releaseLock()
 	if errRemove := os.Remove(key); errRemove != nil && !errors.Is(errRemove, fs.ErrNotExist) {
 		errs = append(errs, errRemove)
 	}
 	return errors.Join(errs...)
+}
+
+// provimuxAffinityRemoveTemps removes the temporary files of ours beside snapshot (found by name in
+// its own directory, removed only when they authenticate under secret): what a process that ended
+// in the middle of a write left. The caller holds the store's lock, so no live writer owns them.
+func provimuxAffinityRemoveTemps(snapshot string, secret []byte) {
+	prefix := "." + filepath.Base(snapshot) + ".tmp-"
+	entries, errDir := os.ReadDir(filepath.Dir(snapshot))
+	if errDir != nil {
+		return
+	}
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), prefix) {
+			continue
+		}
+		leftover := filepath.Join(filepath.Dir(snapshot), entry.Name())
+		if _, ours, _ := provimuxAffinityAuthenticates(leftover, secret); ours {
+			_ = os.Remove(leftover)
+		}
+	}
 }
 
 // provimuxAffinityAccount names an account on disk: an HMAC of its stable identity.
@@ -581,7 +611,13 @@ func (rt *provimuxAffinityRuntime) observe(identities map[string]string, now tim
 				since = time.Time{}
 			}
 			rt.identities[authID] = provimuxAffinityIdentity{identity: sum, since: since}
+		case previous.identity == "" && sum != "" && !previous.tainted:
+			// No identity, then one (upstream fills a Claude login's ids at its first request): the
+			// login is first seen with an identity now, and trusted from now on, as one added now is.
+			// Its earlier bindings had no identity and were never written.
+			rt.identities[authID] = provimuxAffinityIdentity{identity: sum, since: now}
 		case previous.identity != sum:
+			// One identity, then another or none: a changed login, left out for the rest of the run.
 			previous.identity, previous.tainted = sum, true
 			rt.identities[authID] = previous
 		}
@@ -604,19 +640,72 @@ func (s *Service) provimuxAffinityStart(ctx context.Context) {
 	management.SetProvimuxAffinityPersistSource(func() any { return rt.currentStatus() })
 	cfg := s.currentConfig()
 	now := time.Now()
-	rt.writeMu.Lock()
-	rt.observe(s.provimuxAffinityAccountIdentities(), now, true)
-	if snapshot, secret, ok := s.provimuxAffinityApply(rt, cfg, true); ok {
-		restored, note := s.provimuxAffinityRestore(snapshot, secret, now)
+	// The disk work of the start (the checks, the read, the removal of what a write cut short left)
+	// gets a deadline like the stop's write: on a disk that does not answer, the gateway starts
+	// without restoring, and a read that returns later is not used.
+	var (
+		startMu    sync.Mutex
+		abandoned  bool // the start went on without this read
+		restoredIn bool // the bindings were put back before the deadline
+	)
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		rt.writeMu.Lock()
+		defer rt.writeMu.Unlock()
+		if hook := provimuxAffinityBeforeRead.Load(); hook != nil {
+			(*hook)()
+		}
+		rt.observe(s.provimuxAffinityAccountIdentities(), now, true)
+		snapshot, secret, ok := s.provimuxAffinityApply(rt, cfg, true)
+		if !ok {
+			startMu.Lock()
+			defer startMu.Unlock()
+			if !abandoned {
+				restoredIn = true
+				rt.update(func(status *ProvimuxAffinityPersistStatus) {
+					status.StartNote = "nothing restored: " + status.Reason
+				})
+			}
+			rt.settleWarning()
+			return
+		}
+		if secret != nil && rt.lock != nil {
+			provimuxAffinityRemoveTemps(snapshot, secret)
+		}
+		state, note := s.provimuxAffinityReadSnapshot(snapshot, secret)
+		startMu.Lock()
+		defer startMu.Unlock()
+		if abandoned {
+			return
+		}
+		restoredIn = true
+		var restored *coreauth.ProvimuxAffinityRestored
+		if state != nil {
+			restored, note = s.provimuxAffinityRestore(state, secret, now)
+		}
 		rt.update(func(status *ProvimuxAffinityPersistStatus) {
 			status.RestoredAtStart, status.StartNote = restored, note
 		})
-	} else {
-		rt.update(func(status *ProvimuxAffinityPersistStatus) {
-			status.StartNote = "nothing restored: " + status.Reason
-		})
+		rt.settleWarning()
+	}()
+	deadline := time.NewTimer(provimuxAffinityStartDeadline)
+	select {
+	case <-finished:
+	case <-deadline.C:
+		startMu.Lock()
+		if restoredIn {
+			startMu.Unlock()
+			<-finished
+			break
+		}
+		abandoned = true
+		startMu.Unlock()
+		note := fmt.Sprintf("nothing restored: the disk did not answer within %s", provimuxAffinityStartDeadline)
+		rt.update(func(status *ProvimuxAffinityPersistStatus) { status.StartNote = note })
+		log.Warnf("session affinity: %s; the gateway starts without the last run's bindings", note)
 	}
-	rt.writeMu.Unlock()
+	deadline.Stop()
 
 	stop, done := make(chan struct{}), make(chan struct{})
 	rt.statusMu.Lock()
@@ -639,6 +728,12 @@ func (s *Service) provimuxAffinityApply(rt *provimuxAffinityRuntime, cfg *config
 		status.Setting, status.Set, status.InEffect, status.Reason, status.Detail = setting, set, inEffect, reason, ""
 		status.Snapshot, status.Key = snapshot, key
 	})
+	if rt.lock != nil && rt.lockPath != key {
+		// The store moved: the old path's lock goes now, so another gateway of that store may write
+		// it; this one touches the new path only once it holds the new path's lock.
+		rt.releaseLock()
+		rt.verified = nil
+	}
 	if errPaths != nil {
 		rt.update(func(status *ProvimuxAffinityPersistStatus) {
 			status.InEffect, status.Detail = false, errPaths.Error()
@@ -694,13 +789,39 @@ func (rt *provimuxAffinityRuntime) block(err error) bool {
 	rt.update(func(status *ProvimuxAffinityPersistStatus) {
 		status.InEffect, status.Reason, status.Detail = false, blocked.reason, blocked.detail
 	})
-	log.Warnf("session affinity: bindings not kept across restarts: %s", blocked.Error())
+	// Logged when the reason or its detail changes, not at every check. Under writeMu.
+	if warning := blocked.Error(); warning != rt.warned {
+		rt.warned = warning
+		log.Warnf("session affinity: bindings not kept across restarts: %s", warning)
+	}
 	return true
 }
 
-// provimuxAffinityRestore reads the snapshot (authenticated by provimuxAffinityApply) and puts its
-// bindings back. The snapshot stays: the next write replaces it.
-func (s *Service) provimuxAffinityRestore(snapshot string, secret []byte, now time.Time) (*coreauth.ProvimuxAffinityRestored, string) {
+// provimuxAffinityFileReasons are the reasons block records (the files, not the configuration).
+var provimuxAffinityFileReasons = map[string]bool{provimuxReasonForeignFile: true, provimuxReasonKeyPrivate: true,
+	provimuxReasonNotWritable: true, provimuxReasonPathUnusable: true, provimuxReasonInUse: true}
+
+// settleWarning logs once that a blocked state logged before has cleared. Under writeMu, after a
+// check.
+func (rt *provimuxAffinityRuntime) settleWarning() {
+	if rt.warned == "" {
+		return
+	}
+	status := rt.currentStatus()
+	if provimuxAffinityFileReasons[status.Reason] {
+		return
+	}
+	now := "bindings are kept across restarts again"
+	if !status.InEffect {
+		now = "not in effect: " + status.Reason
+	}
+	log.Infof("session affinity: cleared (%s); %s", rt.warned, now)
+	rt.warned = ""
+}
+
+// provimuxAffinityReadSnapshot reads the snapshot (authenticated by provimuxAffinityApply): nil and
+// why when there is nothing to restore. The snapshot stays: the next write replaces it.
+func (s *Service) provimuxAffinityReadSnapshot(snapshot string, secret []byte) (*coreauth.ProvimuxAffinityState, string) {
 	data, errRead := os.ReadFile(snapshot)
 	if errRead != nil {
 		if errors.Is(errRead, fs.ErrNotExist) {
@@ -713,6 +834,12 @@ func (s *Service) provimuxAffinityRestore(snapshot string, secret []byte, now ti
 		log.Warnf("session affinity: last run's bindings not restored: %v", errOpen)
 		return nil, errOpen.Error()
 	}
+	return state, ""
+}
+
+// provimuxAffinityRestore puts the bindings of a snapshot back, each to the auth whose identity it
+// names now. Memory only: the disk was read before.
+func (s *Service) provimuxAffinityRestore(state *coreauth.ProvimuxAffinityState, secret []byte, now time.Time) (*coreauth.ProvimuxAffinityRestored, string) {
 	accounts := make(map[string]string)
 	ambiguous := make(map[string]bool)
 	for authID, identity := range s.provimuxAffinityAccountIdentities() {
@@ -773,6 +900,7 @@ func (s *Service) provimuxAffinityTick(rt *provimuxAffinityRuntime, write bool) 
 		_, key, _ := provimuxAffinityPaths(cfg)
 		s.provimuxAffinityWriteLocked(rt, snapshot, key, secret)
 	}
+	rt.settleWarning()
 }
 
 // provimuxAffinityStop ends the loop and writes the bindings once more (or removes our files when
@@ -822,7 +950,7 @@ func (s *Service) provimuxAffinityStop() {
 // was the same at every check from the binding's last use to this write. The copy is taken under
 // the session cache's read lock; encryption and the write happen after it is released.
 func (s *Service) provimuxAffinityWriteLocked(rt *provimuxAffinityRuntime, snapshot, key string, secret []byte) {
-	leftOut := 0
+	leftOut, noIdentity := 0, 0
 	errWrite := func() error {
 		if secret == nil {
 			made, errMake := provimuxAffinityMakeKey(key)
@@ -842,9 +970,16 @@ func (s *Service) provimuxAffinityWriteLocked(rt *provimuxAffinityRuntime, snaps
 		now := time.Now()
 		owner := map[string]string{} // token -> auth ID
 		state, errCapture := coreauth.ProvimuxAffinityCapture(s.coreManager.Selector(), func(authID string, lastUse time.Time) (string, bool) {
-			identity := before[authID]
+			identity, present := before[authID]
 			seen, watched := rt.identities[authID]
-			if identity == "" {
+			if present && identity == "" {
+				// An account the gateway cannot name as its vendor does: nothing to find it by after a
+				// restart.
+				noIdentity++
+				return "", false
+			}
+			if !present {
+				leftOut++
 				return "", false
 			}
 			if !watched || seen.tainted || lastUse.Before(seen.since) {
@@ -877,7 +1012,7 @@ func (s *Service) provimuxAffinityWriteLocked(rt *provimuxAffinityRuntime, snaps
 		}
 		written := now
 		rt.update(func(status *ProvimuxAffinityPersistStatus) {
-			status.LastWrittenAt, status.LastBindings, status.LeftOut = &written, len(state.Sessions), leftOut
+			status.LastWrittenAt, status.LastBindings, status.LeftOut, status.LeftOutNoIdentity = &written, len(state.Sessions), leftOut, noIdentity
 		})
 		return nil
 	}()
