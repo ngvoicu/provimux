@@ -61,23 +61,26 @@ info:
       where the account was named and no entry. Where the record keeps it, it is the newest
       item of `answered` on that caller's row of that account under the model that was called,
       until a later answer of that account for that model to that caller says otherwise. The
-      record does not keep it, and promises nothing, for an answer written by a server or a
-      writer an embedding of the SDK put in place, around a change of the auth folder, after the
-      gateway began to stop, and beyond a restart on a gateway that does not own its auth
-      folder's record (amended 2026-11-27 (2), decided by the lead). No row says more than
-      that: `answered` is what answers said, never what the next one will say.
+      record does not keep it, and promises nothing, for an answer around a change of the auth
+      folder, after the gateway began to stop, and beyond a restart on a gateway that does not own
+      its auth folder's record (amended 2026-11-27 (2), decided by the lead). No row says more
+      than that: `answered` is what answers said, never what the next one will say.
     - A caller is a caller as the gateway authenticates it: with the client keys of its
-      configuration, one key. An access provider of an embedding that maps several keys to one
-      subject makes them one caller, with one record (amended 2026-11-27 (2)).
-    - An answer names an entry only in the gateway as shipped, where it made every part itself
-      (amended 2026-11-27 (2), decided by the lead): the executor that answered is one of its
-      built-in executors, registered by its own service; the HTTP client is one it built over
-      transports it made itself; its own loader made the credential, from the auth folder, a
-      store record or the configuration, and no plugin made or changed it; and the attempt sent
-      exactly one request that could have produced the answer, whose model was read from the
-      bytes handed to the transport, to the host the entry is priced at, with no connection the
-      gateway did not see. Everywhere else it names none: in particular an answer of an executor,
-      a transport or a credential an embedding of the SDK supplies.
+      configuration, one key (amended 2026-11-27 (2)).
+    - The entry and the record exist only in the gateway as shipped: a process Provimux's own
+      program started, which the gateway checks (amended 2026-11-27 (2), part 3, decided by the
+      lead). A program that embeds Provimux's code gets no `X-Provimux-Entry`, no
+      `X-Provimux-Model-Sent`, `X-Provimux-Model` or `X-Provimux-Model-Basis`, and no
+      `answered`; `X-Provimux-Account` and `account` are unchanged.
+    - In the gateway as shipped, an answer names an entry, and the model it sent, only where its
+      own parts made it: one of its built-in executors, registered by its own service, with no
+      other registration while the call ran; an HTTP client built over transports it made
+      itself; a credential its own loader read, for that credential's id, from the auth folder,
+      a store record or the configuration, that no plugin made or changed; and exactly one
+      request that could have produced the answer, whose model was read from the bytes handed to
+      the transport, to the host the entry is priced at, with no connection the gateway did not
+      see. Otherwise it names neither; where all of this holds and providers.dev has no entry
+      for what was sent, it names the model and no entry.
     - A marker is the same on every answer of one account and in every list, for as long as the
       gateway keeps its key; another account never has it. It is compared, never parsed, except
       for its first character.
@@ -306,9 +309,9 @@ components:
           description: |
             What this account's answers for this model to the caller said of themselves, as the
             gateway's own output route wrote them (amended 2026-11-27, decided by the lead: per
-            client key; callers without a key share one record; and 2026-11-27 (2): a caller is a
-            caller as the gateway authenticates it, so the keys an embedding's access provider maps
-            to one subject share one record): the distinct values of `X-Provimux-Entry` on the answers written
+            client key; callers without a key share one record; and 2026-11-27 (2): only in the
+            gateway as shipped, a process Provimux's own program started; elsewhere the row has
+            no `answered`): the distinct values of `X-Provimux-Entry` on the answers written
             to this key for this exact model name, newest first, each with the day of the last
             answer that carried it. An answer that named the account and no entry is an item whose
             `entry` is null. At most four: an older one gives way to a newer.

@@ -47,6 +47,35 @@ The review of that amendment's build (`provimux-answered-entry` at `d21428393`, 
 
 **Upstream lines.** Against W3's `516b99486`, in files of upstream v8.1.7: 30 added and 1 changed in 18 files (was 19 in 11). New: `internal/api/server.go` +1, `internal/watcher/synthesizer/config.go` +1, `file.go` +1, `sdk/auth/filestore.go` +1 (now +2), `internal/store/gitstore.go`, `objectstore.go`, `postgresstore.go` +1 each (now +2), `sdk/cliproxy/auth/conductor_execution.go` +1, `sdk/cliproxy/auth/types.go` +1, `sdk/cliproxy/service_executors.go` +1, `sdk/cliproxy/builder.go` 1 changed. None in a protected path.
 
+### (3) Decided by the lead on 2026-11-27, after the check of `d1e4853b2` (findings 44 to 49)
+
+The check found the three marks of A set only where this section says, and three more ways an embedding mixed a foreign part with marked ones (45: an SDK executor credited after two reloads; 46: a decorator of its own around the real transport; 47: a clone of a loaded credential under another id). Rather than one more detection each:
+
+**The process mark.** The entry and the record exist only in a process that Provimux's own `main` started. `cmd/server/main.go` calls `logging.ProvimuxShippedGateway()` as the first thing `main` does (one line); it sets one mark for the whole process in `internal/provimux/origin`. Both packages are internal: a program in another Go module cannot import them, so no embedding can set the mark, and `TestProvimuxOriginCallers` fails when any product file but those two calls the setter. Where the mark is not set: no answer names an entry, nor `X-Provimux-Model-Sent`, `-Model` or `-Model-Basis` (A's own condition); nothing is noted; the record has no place, so its file is neither read nor written; and neither list carries `answered`. The account marker (`X-Provimux-Account`, `account` on the rows) does not depend on it. Tests that stand for the gateway as shipped set the mark through `origin.ShippedGatewayForTests`, which does nothing outside a test binary; a test that stands for an embedding does not (`asEmbedding`) and expects none of it. The three marks of A stay: inside the shipped gateway they keep a plugin's parts out.
+
+**Inside the gateway as shipped.**
+- *45.* The answer is credited to the registration that was in force for the whole call: the call's first attempt context counts the manager's executor registrations and unregistrations (all providers), and an entry is named only if the count at publication is the same. Any registration while the call runs (a reload, a plugin's executor) gives that answer none. This is earlier than the brief's "when the request is handed to the transport": in the reviewer's case the request is handed over after both re-registrations, so a revision noted then would have matched.
+- *47.* The loader's mark holds the credential's id when the loader made it, and holds only for that id: a copy registered under another id has none.
+- *46.* The gateway as shipped installs no HTTP decorator on a context but Provimux's own (`provimuxObserveSent`); Antigravity's client removes the decorator for an inner client and applies it once itself. A decorator of another program exists only in an embedding, which the process mark excludes.
+
+**The record.**
+- *44.* A row or an item without every field the record writes makes the whole file not the record's own: not loaded, not shown, never written over, a warning in the log. Every field is required (`credential`, `marker`, `name`, `client` (which may be the empty string, the keyless caller, but must be there), `items`; and per item `entry` (a string or null), `at`, `seq`), and any field the record does not write, at any level, is refused too. A later version is told by its `version` and is not read by this one either way, so refusing unknown fields costs no later reading.
+- *48.* An item's day and time are those of the last answer that named it by sequence, as the clock gave them for that answer, also when the clock was set back in between.
+- *49.* Switching to off or to Home mode (or a process without the mark) drops what is pending and empties memory without reading or writing the file.
+
+**The copy of the request body.** A body is copied only for a call whose caller asked for the statement (the handlers say so on the call's context where they install the statement's callback; no other call's answer is stated or recorded, since both need that callback), and the copy is let go as soon as ProvimuxSent has read the models. The JSON reader reads a view of the copy rather than a second copy of it. A body larger than the 64 MiB the reader reads is not copied at all. Reading the model as the bytes pass, keeping nothing, would need an incremental reader for each form (JSON top-level keys with escapes, duplicates and whole-document validity; a zstd stream; Devin's Connect frame; a form), proven equal to the present reader by a differential test over every body shape the built-in executors send and a fuzzed corpus; not built.
+
+**The three model headers.** A (above) says: "An answer names an entry (and `X-Provimux-Model-Sent`, `-Model`, `-Model-Basis`) only when all of this holds". The code now matches it: where a rule of A fails (the credential included), none of the four is sent; where all hold and only the map has no row for what was sent, the three model headers are sent and the entry is not (section 4).
+
+| Finding | Mend | Test (the reviewer's; before at `d1e4853b2` → now) |
+|---|---|---|
+| 44 | the strict reading above | `TestFinalIncompleteRecord`: FAIL → PASS |
+| 45 | the registration count; the process mark | `TestFinalInFlightWatcherReload`, `TestFinalInFlightExecutor` (shipped and embedding): FAIL → PASS |
+| 46 | the process mark | `TestFinalMetricsDecorator`, ported to an embedding: FAIL → PASS |
+| 47 | the mark per id; the process mark | `TestFinalCredentialCopy` (shipped and embedding): FAIL → PASS |
+| 48 | the time by sequence | `TestFinalLastWrittenTime`: FAIL → PASS |
+| 49 | drop on disable | `TestFinalDisablePendingWrite`: FAIL → PASS |
+
 ## Amended 2026-11-27: decided by the lead (the entry only when certain; the record per client key)
 
 Review B of W6a and W6b (`provimux-answered-entry` at `2ec324bf2`, findings 18 to 31) found answers that named an entry the vendor did not receive, and a record that told one client key about another's answers. The lead decided how each finding is answered while the architect is away; this section is that decision as built, to be read against the rest. Where it and a later section disagree, this one holds.
