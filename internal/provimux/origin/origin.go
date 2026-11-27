@@ -104,7 +104,8 @@ var shippedGateway atomic.Bool
 
 // MarkShippedGateway marks this process as one Provimux's own main started. Only cmd/server/main.go calls it (through
 // logging.ProvimuxShippedGateway, the package that main already imports): a program in another Go module cannot import
-// this package or that one.
+// this package or that one, unless it gives its module a path inside this module's, as a fork that edits main could
+// (written limit 50, answered-by.md part (5)).
 func MarkShippedGateway() { shippedGateway.Store(true) }
 
 // ShippedGateway reports whether Provimux's own main started this process.
