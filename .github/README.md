@@ -62,6 +62,9 @@ server's address, see [For a team](#for-a-team)). Docker, release archives and b
 - **[Which account serves each model, and which one answered](#which-account-serves-each-model-and-which-one-answered).**
   The model list names, per model, the API keys (`apikey`) and logins (`oauth`) behind it, by priority, and every
   response says which one answered.
+- **[Which model entry answered](#which-model-entry-answered).** Every answer names the providers.dev entry of the
+  model the account received, read from the request Provimux sent, so a tool can know the price and the cache
+  lifetime of what really answered.
 - **[Its own console pages](#the-console-provimux-ui)** in provimux-ui: **Accounts**, **Models** (every name you can
   send and the accounts behind it, by priority, with the cooldown recorded and its reason) and **Savings**, read from
   [Provimux's own endpoints](#model-routes-and-live-list-status-for-the-console).
@@ -339,6 +342,44 @@ models:
   file (`server.kv-store`, on by default). If that file is lost or deleted, every account gets a new marker. With
   the store turned off, the markers change at every restart.
 - In Home mode nothing is sent: no header, no WebSocket field and no `account` in the list, whatever the switch.
+
+### Which model entry answered
+
+A tool behind Provimux can know the price and the cache lifetime of what really answered. Every answer names the
+providers.dev entry of the model the account received, for example `anthropic/claude-opus-5-5`. The tool looks the
+entry up and has the figures that apply, without knowing the provider and without guessing from the model's name.
+
+One name can reach a subscription, an API key or OpenRouter, and an alias or a rule can change the model on the way.
+So Provimux reads the entry from the request it sent; it never predicts it.
+
+- **On each answer**, next to `X-Provimux-Account`: `X-Provimux-Entry` (`<provider>/<model>`),
+  `X-Provimux-Model-Sent` (the model id Provimux sent), and `X-Provimux-Model` with `X-Provimux-Model-Basis:
+  not-confirmed` (the vendor's answer has not confirmed it). On the Responses WebSocket the same values are fields
+  of each turn's `response.created` (`provimux_entry`, `provimux_model_sent`, `provimux_model`,
+  `provimux_model_basis`). A turn the gateway itself sends upstream over a WebSocket (a Codex login with
+  `websockets: true`) names the account and no entry.
+- **Before an answer**, `GET /v1/models?include=accounts` gives each account row `answered`: the entries that
+  account's answers for that model to your key named, newest first, each with the day of the last one, at most
+  four. `"entry": null` means those answers named no entry; `[]` means none is recorded yet. Another key's answers
+  are not on your rows. It is a record, not a promise: take the answer's own `X-Provimux-Entry` as soon as there is
+  one. Provimux keeps it in `provimux-answered.v1` in the auth folder, so it survives a restart, and drops an item
+  after 90 days.
+- **No entry** is a normal answer: Provimux's own map has no row for where the request went, or Provimux could not
+  be certain which request answered. The account is still named. Show no price rather than a guess. A named entry
+  says where the model would be on providers.dev, not that providers.dev lists it.
+- **Plugins.** Once a plugin serves a provider, that provider's answers name the account and no entry until
+  Provimux restarts. A login a plugin made names no entry either.
+- **Only in Provimux as shipped.** A program built from Provimux's code gets the account marker and nothing more.
+
+**Known limits.**
+
+- An answer can come without its entry if, while it runs, you load a plugin for its provider and add a login of
+  that provider. The entry is missing, never wrong; the next answer names it.
+- A record file Provimux cannot read is replaced at the next answer; what it held is lost.
+- Two Provimux on one auth folder share that file: after a restart, each reads the one written last.
+
+**How to turn it off.** `models.answered-by: false` turns the entry and `answered` off with the account marker. In
+Home mode nothing is sent.
 
 ### Live model lists for each login
 
