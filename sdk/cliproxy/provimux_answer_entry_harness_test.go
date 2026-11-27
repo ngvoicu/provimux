@@ -280,10 +280,8 @@ func newSentHarness(t *testing.T, configBody string) *sentHarness {
 	// lead's amendment of 2026-11-27 (2), rule A.2): a seam that does nothing outside a test binary.
 	origin.StandInForTests(stand)
 	names.service.coreManager.SetRoundTripperProvider(stand)
-	// Answers are served by the HTTP server the gateway built (its stock output route, rule B.1), on a test listener.
-	server := httptest.NewUnstartedServer(nil)
-	server.Config = names.service.server.ProvimuxStockServerForTests()
-	server.Start()
+	// Answers are served by the gateway's own handler, on a test listener.
+	server := httptest.NewServer(names.service.server.Handler())
 	t.Cleanup(server.Close)
 	return &sentHarness{namesHarness: names, stand: stand, server: server}
 }

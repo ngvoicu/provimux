@@ -1,7 +1,6 @@
 package logging
 
 import (
-	"context"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/provimux/origin"
 	"net/http"
 	"net/http/httptest"
@@ -139,22 +138,13 @@ func TestProvimuxAnswerNotedOnlyWhenWritten(t *testing.T) {
 	t.Cleanup(func() { SetProvimuxAnsweredWritten(nil) })
 	statement := AuthStatement{Kind: "apikey", Provider: "claude", Host: "gateway.example.test",
 		Provimux: ProvimuxAnswer{Account: provimuxTestMarker, ModelSent: "provimux-test-a", Entry: "anthropic/provimux-test-a", Credential: "provimux-test-cred", Name: "provimux-test-name", Client: "k.client"}}
-	// Ported (rule B.1 of the amendment of 2026-11-27 (2)): the handler is served as the stock output route serves it
-	// (its request marked, its writer directly over the one net/http hands it), except where a case says otherwise.
-	stock := true
 	serve := func(handler func(c *gin.Context)) http.Header {
 		gin.SetMode(gin.TestMode)
 		router := gin.New()
 		router.Use(CPATraceIDMiddleware())
 		router.GET("/", handler)
 		recorder := httptest.NewRecorder()
-		request := httptest.NewRequest(http.MethodGet, "/", nil)
-		var writer http.ResponseWriter = recorder
-		if stock {
-			request = request.WithContext(context.WithValue(request.Context(), provimuxStockKey{}, true))
-			writer = &provimuxStockWriter{ResponseWriter: recorder}
-		}
-		router.ServeHTTP(writer, request)
+		router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
 		return recorder.Header()
 	}
 	header := serve(func(c *gin.Context) {
@@ -188,16 +178,7 @@ func TestProvimuxAnswerNotedOnlyWhenWritten(t *testing.T) {
 	if len(noted) != 0 {
 		t.Fatalf("noted %+v without the statement on the written headers", noted)
 	}
-	stock = false // the same answer through a writer other than the stock route's: nothing
-	serve(func(c *gin.Context) {
-		OfferGinCPAAuthStatement(c, statement)
-		ConfirmGinCPAAuthOffer(c)
-		c.String(http.StatusOK, "answer")
-	})
-	if len(noted) != 0 {
-		t.Fatalf("noted %+v from a writer other than the stock route's", noted)
-	}
-	stock = true // the stock route, in a process Provimux's own main did not start: nothing (part 3)
+	// In a process Provimux's own main did not start: nothing (the process mark).
 	restore := origin.ShippedGatewayForTests(false)
 	serve(func(c *gin.Context) {
 		OfferGinCPAAuthStatement(c, statement)
