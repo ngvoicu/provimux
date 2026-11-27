@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
@@ -12,8 +13,8 @@ import (
 // Provimux: the closed list of built-in executors (.github/provimux/design/answered-by.md, the lead's amendment of
 // 2026-11-27 (2), rule A.1). An answer names an entry only when the executor that answers is one the gateway's own
 // service registered (Service.registerExecutor, for the credentials of its own configuration and auth folder), of a type
-// on the list below, not wrapped by an embedding's ExecutorWrapper, and no other registration for that provider came
-// between it and the one before it, nor after it. The record is kept here, per manager, in memory; only
+// on the list below, not wrapped by an embedding's ExecutorWrapper, and no registration for that provider put another
+// kind of executor in place while the call ran (the amendment of 2026-11-27 (2), part 4). The record is kept here, per manager, in memory; only
 // Service.registerExecutor writes it. An executor another program registers (Manager.RegisterExecutor) is never on it,
 // and from the moment one is registered for a provider until the service registers its own again with nothing in
 // between, the provider's answers name no entry.
@@ -23,12 +24,23 @@ type provimuxExecutorRecord struct {
 	exec     coreauth.ProviderExecutor // what the service registered
 	revision uint64                    // the manager's revision of that registration
 	kind     string                    // its kind on the closed list; "" = not on it
+	// changed is the event number of the last registration for the provider that put another kind of executor in
+	// place than the service's built-in one before it: another program's (seen as a gap in the revisions), an
+	// unregistration, or the service's own of another kind. 0 = none.
+	changed uint64
 }
 
 var provimuxExecutors struct {
 	mu   sync.Mutex
 	byMg map[*coreauth.Manager]map[string]provimuxExecutorRecord
 }
+
+// provimuxExecutorEvents numbers the changes of kind recorded above, in the order they were seen. A call notes the
+// number at its first attempt; its answer names an entry only if no change for its provider came after it.
+var provimuxExecutorEvents atomic.Uint64
+
+// provimuxExecutorSequence is the number a call notes at its first attempt.
+func provimuxExecutorSequence() uint64 { return provimuxExecutorEvents.Load() }
 
 // provimuxBuiltinKind is the closed list: the executors the gateway's service makes for its own credentials, by type.
 // The types are in an internal package, so no program outside this module can make one. AI Studio (a socket a browser
@@ -82,17 +94,24 @@ func provimuxNoteExecutor(m *coreauth.Manager, provider string, exec, owned core
 		records = map[string]provimuxExecutorRecord{}
 		provimuxExecutors.byMg[m] = records
 	}
-	// Another registration for the provider came between the service's previous one and this one (an embedding's
-	// executor, a plugin's, an unregistration): an attempt that started before this one may have run on it.
-	if revision != records[provider].revision+1 {
-		kind = ""
+	// The service putting its own built-in executor back, with nothing between, is no change: a reload, a login
+	// added or refreshed, a model-list refresh all do it. Another registration for the provider between the service's
+	// previous one and this one (an embedding's executor, a plugin's, an unregistration), or the service's own of
+	// another kind, is: a call that started before this one may have run on what was in place.
+	previous, known := records[provider]
+	changed := previous.changed
+	if !known || revision != previous.revision+1 || kind != previous.kind {
+		if known || revision != 1 {
+			changed = provimuxExecutorEvents.Add(1)
+		}
 	}
-	records[provider] = provimuxExecutorRecord{exec: exec, revision: revision, kind: kind}
+	records[provider] = provimuxExecutorRecord{exec: exec, revision: revision, kind: kind, changed: changed}
 }
 
 // provimuxBuiltinExecutor returns the closed-list kind of exec, the executor m publishes for an answering credential
-// at revision, when the service registered exactly it at exactly that revision; "" else.
-func provimuxBuiltinExecutor(m *coreauth.Manager, exec coreauth.ProviderExecutor, revision uint64) string {
+// at revision, when the service registered exactly it at exactly that revision, and no registration for the provider
+// put another kind of executor in place after the call noted since (its first attempt); "" else.
+func provimuxBuiltinExecutor(m *coreauth.Manager, exec coreauth.ProviderExecutor, revision, since uint64) string {
 	if m == nil || exec == nil {
 		return ""
 	}
@@ -100,7 +119,7 @@ func provimuxBuiltinExecutor(m *coreauth.Manager, exec coreauth.ProviderExecutor
 	provimuxExecutors.mu.Lock()
 	record, ok := provimuxExecutors.byMg[m][provider]
 	provimuxExecutors.mu.Unlock()
-	if !ok || record.kind == "" || record.revision != revision || !provimuxSameExecutor(record.exec, exec) {
+	if !ok || record.kind == "" || record.revision != revision || !provimuxSameExecutor(record.exec, exec) || record.changed > since {
 		return ""
 	}
 	return record.kind

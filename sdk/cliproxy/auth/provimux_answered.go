@@ -53,9 +53,10 @@ func ProvimuxLoginClearsPluginMark(ctx context.Context, auth *Auth) {
 // own loader made the credential and no plugin made or changed it (A.3); entry gives the entry of what that
 // credential's attempt sent (answered-by.md 4.3, steps 4 and 5). Without them no answer names an entry.
 type provimuxEntryHooks struct {
-	builtin func(m *Manager, exec ProviderExecutor, revision uint64) string
-	vouch   func(auth *Auth) bool
-	entry   func(auth *Auth, sent cliproxyexecutor.ProvimuxSentRequest) string
+	builtin  func(m *Manager, exec ProviderExecutor, revision, since uint64) string
+	sequence func() uint64
+	vouch    func(auth *Auth) bool
+	entry    func(auth *Auth, sent cliproxyexecutor.ProvimuxSentRequest) string
 }
 
 var provimuxAnswerEntry atomic.Pointer[provimuxEntryHooks]
@@ -63,45 +64,34 @@ var provimuxAnswerEntry atomic.Pointer[provimuxEntryHooks]
 // SetProvimuxAnswerEntry sets the three functions that decide an answer's entry. The first call holds and later calls
 // do nothing: sdk/cliproxy makes it while the program initialises, before any code that imports the gateway runs, so
 // no embedding can replace them.
-func SetProvimuxAnswerEntry(builtin func(m *Manager, exec ProviderExecutor, revision uint64) string, vouch func(auth *Auth) bool, entry func(auth *Auth, sent cliproxyexecutor.ProvimuxSentRequest) string) {
-	if builtin == nil || vouch == nil || entry == nil {
+func SetProvimuxAnswerEntry(builtin func(m *Manager, exec ProviderExecutor, revision, since uint64) string, sequence func() uint64, vouch func(auth *Auth) bool, entry func(auth *Auth, sent cliproxyexecutor.ProvimuxSentRequest) string) {
+	if builtin == nil || sequence == nil || vouch == nil || entry == nil {
 		return
 	}
-	provimuxAnswerEntry.CompareAndSwap(nil, &provimuxEntryHooks{builtin: builtin, vouch: vouch, entry: entry})
+	provimuxAnswerEntry.CompareAndSwap(nil, &provimuxEntryHooks{builtin: builtin, sequence: sequence, vouch: vouch, entry: entry})
 }
 
 type provimuxAttemptKey struct{}
 
-// provimuxAttempt is what an attempt's context says for its entry: which manager runs it, and how many executor
-// registrations that manager had made when the earliest attempt context of the call was made.
+// provimuxAttempt is what an attempt's context says for its entry: which manager runs it, and the number of the last
+// change of executor kind the service's record had seen when the call's first attempt context was made.
 type provimuxAttempt struct {
-	m             *Manager
-	registrations uint64
+	m     *Manager
+	since uint64
 }
 
-// provimuxWithManager says, on an attempt's context, which manager runs it and the manager's count of executor
-// registrations at the first attempt context of the call (an inner one keeps it). Only newUpstreamAttemptContext
+// provimuxWithManager says, on an attempt's context, which manager runs it and the number of the last change of
+// executor kind when the call's first attempt context was made (an inner one keeps it). Only newUpstreamAttemptContext
 // calls it. Outside the gateway as shipped it adds nothing.
 func provimuxWithManager(ctx context.Context, m *Manager) context.Context {
-	if ctx == nil || m == nil || !logging.ProvimuxAnsweredBy() || !origin.ShippedGateway() {
+	hooks := provimuxAnswerEntry.Load()
+	if ctx == nil || m == nil || hooks == nil || !logging.ProvimuxAnsweredBy() || !origin.ShippedGateway() {
 		return ctx
 	}
 	if earlier, ok := ctx.Value(provimuxAttemptKey{}).(provimuxAttempt); ok && earlier.m == m {
 		return ctx
 	}
-	return context.WithValue(ctx, provimuxAttemptKey{}, provimuxAttempt{m: m, registrations: m.provimuxRegistrations()})
-}
-
-// provimuxRegistrations is the number of executor registrations and unregistrations m has made, for every provider:
-// it moves with each one, and only forward.
-func (m *Manager) provimuxRegistrations() uint64 {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	var n uint64
-	for _, revision := range m.executorRevisions {
-		n += revision
-	}
-	return n
+	return context.WithValue(ctx, provimuxAttemptKey{}, provimuxAttempt{m: m, since: hooks.sequence()})
 }
 
 // provimuxAnsweringExecutor returns the executor m publishes for auth, the way the conductor picks it, with the
@@ -245,7 +235,8 @@ func publishProvimuxAnswer(attemptCtx context.Context, meta map[string]any, auth
 
 // provimuxSentByBuiltin returns what the attempt sent when every part is the gateway's own as shipped: the process is
 // one Provimux's own main started (part 3), the executor answering for auth is one of the built-in executors its own
-// service registered and no executor was registered anywhere in the manager while the call ran (rule A.1), the
+// service registered and no registration for its provider put another kind of executor in place while the call ran
+// (rule A.1, as narrowed in part 4), the
 // gateway's loader made the credential (A.3), and the attempt's one candidate request is certain.
 func provimuxSentByBuiltin(attemptCtx context.Context, auth *Auth) (cliproxyexecutor.ProvimuxSentRequest, bool) {
 	hooks := provimuxAnswerEntry.Load()
@@ -253,7 +244,7 @@ func provimuxSentByBuiltin(attemptCtx context.Context, auth *Auth) (cliproxyexec
 		return cliproxyexecutor.ProvimuxSentRequest{}, false
 	}
 	attempt, ok := attemptCtx.Value(provimuxAttemptKey{}).(provimuxAttempt)
-	if !ok || attempt.m.provimuxRegistrations() != attempt.registrations {
+	if !ok {
 		return cliproxyexecutor.ProvimuxSentRequest{}, false
 	}
 	m := attempt.m
@@ -261,7 +252,7 @@ func provimuxSentByBuiltin(attemptCtx context.Context, auth *Auth) (cliproxyexec
 	if exec == nil {
 		return cliproxyexecutor.ProvimuxSentRequest{}, false
 	}
-	kind := hooks.builtin(m, exec, revision)
+	kind := hooks.builtin(m, exec, revision, attempt.since)
 	if kind == "" {
 		return cliproxyexecutor.ProvimuxSentRequest{}, false
 	}
