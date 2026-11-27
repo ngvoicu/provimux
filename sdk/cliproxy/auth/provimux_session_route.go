@@ -710,7 +710,7 @@ func (b *ProvimuxSessionBook) show(r provimuxResolved, asked, routed string, now
 
 	route := provimuxRouteOf(r.auth, name)
 	bound := &ProvimuxSessionBound{Route: route, Origin: "not-known"}
-	if r.entry.Current == r.binding.AuthID && !r.entry.Since.IsZero() {
+	if r.entry.Current == r.binding.AuthID && !r.entry.Since.IsZero() && r.entry.lifeReturned == r.binding.Returned {
 		bound.Since = provimuxTimePtr(r.entry.Since)
 		bound.Origin = "first"
 		if r.entry.Previous != "" {

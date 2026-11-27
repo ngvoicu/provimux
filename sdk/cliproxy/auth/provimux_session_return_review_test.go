@@ -181,7 +181,7 @@ func TestProvimuxSessionReturnFinding11(t *testing.T) {
 		}
 	}
 	sort.Strings(globals)
-	if want := "provimuxReturnCurrent,provimuxReturnSince,provimuxReturned,provimuxReturnedLast"; strings.Join(globals, ",") != want {
-		t.Fatalf("package-level state of the rule: %v, want only the setting and the count (%s)", globals, want)
+	if want := "provimuxReturnCurrent,provimuxReturnGeneration,provimuxReturnSince,provimuxReturned,provimuxReturnedLast"; strings.Join(globals, ",") != want {
+		t.Fatalf("package-level state of the rule: %v, want only the setting, its generation and the count (%s)", globals, want)
 	}
 }

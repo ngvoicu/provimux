@@ -129,7 +129,7 @@ func TestProvimuxSessionReturnShowRule(t *testing.T) {
 // through the build's own type unchanged.
 func TestProvimuxSessionReturnContractExamples(t *testing.T) {
 	contract := loadSRContract(t)
-	for _, name := range []string{"ReturnInEffect", "ReturnNotSet", "ReturnNotBelowTTL"} {
+	for _, name := range []string{"ReturnInEffect", "ReturnAsInstalled", "ReturnNotSet", "ReturnNotBelowTTL"} {
 		example := contract.example(t, name)
 		contract.check(t, "SessionReturnState", http.StatusOK, http.StatusOK, example)
 		var state auth.ProvimuxSessionReturnState

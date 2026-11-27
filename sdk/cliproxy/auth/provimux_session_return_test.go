@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -93,7 +94,7 @@ func (f *provimuxSRFixture) fellBack(header http.Header, body string) string {
 func (f *provimuxSRFixture) notes() int {
 	f.affinity.cache.mu.RLock()
 	defer f.affinity.cache.mu.RUnlock()
-	return len(f.affinity.provimux.notes)
+	return len(f.affinity.provimux.seen)
 }
 
 // entryOf is upstream's entry under key now.
@@ -103,11 +104,11 @@ func (f *provimuxSRFixture) entryOf(key string) sessionEntry {
 	return f.affinity.cache.entries[key]
 }
 
-// noteAt sets the rule's note of key to seen.
-func (f *provimuxSRFixture) noteAt(key string, seen time.Time) {
-	f.affinity.cache.mu.Lock()
-	defer f.affinity.cache.mu.Unlock()
-	f.affinity.provimux.seenLocked(key, seen)
+// noteOf is the rule's note of key: when a request of it last came to selection.
+func (f *provimuxSRFixture) noteOf(key string) time.Time {
+	f.affinity.cache.mu.RLock()
+	defer f.affinity.cache.mu.RUnlock()
+	return f.affinity.provimux.seen[key]
 }
 
 // auths is the two accounts, as the conductor hands them to Pick.
@@ -115,34 +116,24 @@ func (f *provimuxSRFixture) auths() []*Auth {
 	return []*Auth{mustAuth(f.t, f.m, f.high), mustAuth(f.t, f.m, f.low)}
 }
 
-// replaceExpiry rewrites the group of key with expiry (keeping everything else).
-func (f *provimuxSRFixture) replaceExpiry(key string, expiry time.Time) {
-	cache := f.affinity.cache
-	cache.mu.Lock()
-	defer cache.mu.Unlock()
-	entry := cache.entries[key]
-	cache.replaceAliasGroupsLocked(entry.authID, expiry, entry.aliases, entry.binding, entry)
-}
-
 // TestProvimuxSessionReturnSevenThings is the table of 15.3: each of K1 to K7, and the comparison, with what it must
-// know and its "not certain: nothing". The rule's function is called with a time chosen from the entry upstream made.
-// Each row starts from a conversation bound below a free higher-priority account, last used at lastUse.
+// know and its "not certain: nothing". The rule's function is called with a time chosen from the conversation's note.
+// Each row starts from a conversation bound below a free higher-priority account, whose last message was at sent.
 func TestProvimuxSessionReturnSevenThings(t *testing.T) {
 	header := http.Header{"X-Session-Affinity": {"pi-seven"}}
 	type setup struct {
-		f       *provimuxSRFixture
-		key     string
-		lastUse time.Time
+		f    *provimuxSRFixture
+		key  string
+		sent time.Time // the conversation's last message, as the rule noted it
 	}
 	start := func(t *testing.T) setup {
 		f := newProvimuxSRFixture(t, "round-robin", false, nil)
 		f.withTTL(provimuxRTTTL)
 		f.rule(provimuxRTCold)
 		key := f.fellBack(header, "")
-		entry := f.entryOf(key)
-		return setup{f: f, key: key, lastUse: entry.expiresAt.Add(-provimuxRTTTL)}
+		return setup{f: f, key: key, sent: f.noteOf(key)}
 	}
-	cold := func(s setup) time.Time { return s.lastUse.Add(provimuxRTCold) }
+	cold := func(s setup) time.Time { return s.sent.Add(provimuxRTCold) }
 	rows := []struct {
 		name    string
 		prepare func(t *testing.T, s setup) (named bool, fallbackKey string, available []*Auth, now time.Time)
@@ -163,15 +154,15 @@ func TestProvimuxSessionReturnSevenThings(t *testing.T) {
 		{name: "K1: not below the binding lifetime: nothing",
 			prepare: func(t *testing.T, s setup) (bool, string, []*Auth, time.Time) {
 				t.Cleanup(SetProvimuxSessionReturnForTest(s.f.m, ProvimuxSessionReturnSetting{ColdAfter: provimuxRTTTL, ColdAfterSet: true, Affinity: true, TTL: provimuxRTTTL}))
-				return true, "", s.f.auths(), s.lastUse.Add(provimuxRTTTL - time.Nanosecond)
+				return true, "", s.f.auths(), s.sent.Add(provimuxRTTTL - time.Nanosecond)
 			}},
-		{name: "K1: rebind-on never: nothing",
+		{name: "K1: rebind-on never: nothing, the message noted", noted: true,
 			prepare: func(t *testing.T, s setup) (bool, string, []*Auth, time.Time) {
 				s.f.affinity.rebindOnNever = true
 				t.Cleanup(func() { s.f.affinity.rebindOnNever = false })
 				return true, "", s.f.auths(), cold(s)
 			}},
-		{name: "K1: Home mode: nothing",
+		{name: "K1: Home mode: nothing, the message noted", noted: true,
 			prepare: func(t *testing.T, s setup) (bool, string, []*Auth, time.Time) {
 				cfg := &internalconfig.Config{}
 				cfg.Home.Enabled = true
@@ -179,7 +170,7 @@ func TestProvimuxSessionReturnSevenThings(t *testing.T) {
 				t.Cleanup(func() { s.f.m.SetConfig(&internalconfig.Config{}) })
 				return true, "", s.f.auths(), cold(s)
 			}},
-		{name: "K1: a plugin scheduler: nothing",
+		{name: "K1: a plugin scheduler: nothing, the message noted", noted: true,
 			prepare: func(t *testing.T, s setup) (bool, string, []*Auth, time.Time) {
 				s.f.m.SetPluginScheduler(provimuxSRScheduler{})
 				t.Cleanup(func() { s.f.m.SetPluginScheduler(nil) })
@@ -208,7 +199,7 @@ func TestProvimuxSessionReturnSevenThings(t *testing.T) {
 			}},
 		{name: "K3: an expired binding: nothing", noted: true,
 			prepare: func(t *testing.T, s setup) (bool, string, []*Auth, time.Time) {
-				return true, "", s.f.auths(), s.lastUse.Add(provimuxRTTTL)
+				return true, "", s.f.auths(), s.f.entryOf(s.key).expiresAt
 			}},
 		{name: "K4: the second key is another binding's: nothing", noted: true,
 			prepare: func(t *testing.T, s setup) (bool, string, []*Auth, time.Time) {
@@ -237,23 +228,27 @@ func TestProvimuxSessionReturnSevenThings(t *testing.T) {
 		{name: "K6: no note of this key in this process: nothing", noted: true,
 			prepare: func(t *testing.T, s setup) (bool, string, []*Auth, time.Time) {
 				s.f.affinity.cache.mu.Lock()
-				delete(s.f.affinity.provimux.notes, s.key)
+				delete(s.f.affinity.provimux.seen, s.key)
 				s.f.affinity.cache.mu.Unlock()
 				return true, "", s.f.auths(), cold(s)
 			}},
-		{name: "K6: an expiry without the monotonic reading (written from a file): nothing", noted: true,
+		{name: "K6: the binding's expiry plays no part (refreshed just now by a result): dropped", removed: true, noted: true,
 			prepare: func(t *testing.T, s setup) (bool, string, []*Auth, time.Time) {
-				s.f.replaceExpiry(s.key, s.f.entryOf(s.key).expiresAt.Round(0))
+				cache := s.f.affinity.cache
+				cache.mu.Lock()
+				entry := cache.entries[s.key]
+				cache.replaceAliasGroupsLocked(entry.authID, cold(s).Add(provimuxRTTTL), entry.aliases, entry.binding, entry)
+				cache.mu.Unlock()
 				return true, "", s.f.auths(), cold(s)
 			}},
-		{name: "K6: an expiry older than the note (written by something else): nothing", noted: true,
+		{name: "K6: a new observation after the setting changed (off, then on): nothing", noted: true,
 			prepare: func(t *testing.T, s setup) (bool, string, []*Auth, time.Time) {
-				s.f.noteAt(s.key, s.lastUse.Add(time.Nanosecond))
+				setting := ProvimuxSessionReturnSetting{ColdAfter: provimuxRTCold, ColdAfterSet: true, Affinity: true, TTL: provimuxRTTTL}
+				off := setting
+				off.ColdAfter, off.ColdAfterSet = 0, false
+				t.Cleanup(SetProvimuxSessionReturnForTest(s.f.m, off))
+				t.Cleanup(SetProvimuxSessionReturnForTest(s.f.m, setting))
 				return true, "", s.f.auths(), cold(s)
-			}},
-		{name: "K6: a time without the monotonic reading: nothing", noted: true,
-			prepare: func(t *testing.T, s setup) (bool, string, []*Auth, time.Time) {
-				return true, "", s.f.auths(), cold(s).Round(0)
 			}},
 	}
 	for _, row := range rows {
@@ -262,7 +257,7 @@ func TestProvimuxSessionReturnSevenThings(t *testing.T) {
 			named, fallbackKey, available, now := row.prepare(t, s)
 			before := provimuxReturned.Load()
 			s.f.affinity.cache.mu.RLock()
-			noteBefore := s.f.affinity.provimux.notes[s.key]
+			noteBefore := s.f.affinity.provimux.seen[s.key]
 			s.f.affinity.cache.mu.RUnlock()
 			s.f.affinity.provimuxReturn(named, s.key, fallbackKey, available, now)
 			_, bound := s.f.binding(s.key)
@@ -277,9 +272,9 @@ func TestProvimuxSessionReturnSevenThings(t *testing.T) {
 				t.Fatal("want nothing; the binding is gone")
 			}
 			s.f.affinity.cache.mu.RLock()
-			noteAfter := s.f.affinity.provimux.notes[s.key]
+			noteAfter := s.f.affinity.provimux.seen[s.key]
 			s.f.affinity.cache.mu.RUnlock()
-			if noted := !noteAfter.seen.Equal(noteBefore.seen) && noteAfter.seen.Equal(now); noted != row.noted {
+			if noted := !noteAfter.Equal(noteBefore) && noteAfter.Equal(now); noted != row.noted {
 				t.Fatalf("note written %v, want %v", noted, row.noted)
 			}
 		})
@@ -287,33 +282,41 @@ func TestProvimuxSessionReturnSevenThings(t *testing.T) {
 }
 
 // TestProvimuxSessionReturnNoteTable is K7's table: written under the cache's lock, on the selector, emptied when it
-// reaches its size, and after that the first request of a key is not judged (it has no note).
+// reaches its size, and after that the first request of a key is not judged (it has no note). Finding 3 of the
+// second review: the emptying does not touch the binding's life, so the show still gives the token it gave, and that
+// token still releases the binding.
 func TestProvimuxSessionReturnNoteTable(t *testing.T) {
 	f := newProvimuxSRFixture(t, "round-robin", false, nil)
 	f.withTTL(provimuxRTTTL)
 	f.rule(provimuxRTCold)
-	key := f.fellBack(http.Header{"X-Session-Affinity": {"pi-table"}}, "")
-	if n := f.notes(); n != 1 {
-		t.Fatalf("notes %d, want 1", n)
-	}
-	f.affinity.cache.mu.Lock()
-	for i := 0; len(f.affinity.provimux.notes) < provimuxReturnNoteLimit; i++ {
-		f.affinity.provimux.seenLocked("filler-"+string(rune('a'+i%26))+strings.Repeat("x", i/26), time.Now())
-	}
-	f.affinity.provimux.seenLocked("one-more", time.Now())
-	_, kept := f.affinity.provimux.notes[key]
-	size := len(f.affinity.provimux.notes)
-	f.affinity.cache.mu.Unlock()
-	if kept || size != 1 {
-		t.Fatalf("after the table filled: %d notes, the conversation's kept %v; want it emptied", size, kept)
-	}
-	before := provimuxReturned.Load()
+	scope := provimuxSRScope("sk-client-one")
+	header := http.Header{"X-Session-Affinity": {"pi-table"}}
+	key := f.fellBack(header, "")
 	f.age(provimuxRTCold + time.Hour)
-	if err := f.turn(http.Header{"X-Session-Affinity": {"pi-table"}}, "", "", nil); err != nil {
+	if err := f.turn(header, "", scope, nil); err != nil { // returned: the high account now, with a return mark
 		t.Fatal(err)
 	}
-	if authID, _ := f.binding(key); authID != f.low || provimuxReturned.Load() != before {
-		t.Fatalf("a key whose note was emptied was judged: bound %q", authID)
+	shown := f.book.Show(scope, header, nil, provimuxSRModel)
+	if authID, _ := f.binding(key); authID != f.high || shown.Binding == nil {
+		t.Fatalf("after the return: bound %q, show %s", authID, mustJSON(t, shown))
+	}
+	f.affinity.cache.mu.Lock()
+	for i := 0; len(f.affinity.provimux.seen) < provimuxReturnNoteLimit; i++ {
+		f.affinity.provimux.seen["filler-"+strconv.Itoa(i)] = time.Now()
+	}
+	f.affinity.cache.mu.Unlock()
+	if err := f.turn(http.Header{"X-Session-Affinity": {"pi-other"}}, "", scope, nil); err != nil { // empties the table
+		t.Fatal(err)
+	}
+	if n := f.notes(); n != 1 {
+		t.Fatalf("notes %d after the table filled; want it emptied and one new note", n)
+	}
+	again := f.book.Show(scope, header, nil, provimuxSRModel)
+	if again.Binding == nil || *again.Binding != *shown.Binding {
+		t.Fatalf("the show lost the binding's token after the table emptied: %s", mustJSON(t, again))
+	}
+	if released, conflict := f.book.Release(scope, header, nil, provimuxSRModel, *shown.Binding); conflict != nil || !released.Released {
+		t.Fatalf("the token just shown did not release: %s %v", mustJSON(t, released), conflict != nil)
 	}
 }
 
@@ -488,12 +491,11 @@ func TestProvimuxSessionReturnAliases(t *testing.T) {
 	}
 }
 
-// TestProvimuxSessionReturnRestored is row 6, second half (finding 7): a binding this process did not write (an expiry
-// without the monotonic reading, as a restore from a file makes it), or written before this selector existed (a new
-// selector after a change of the routing settings, a restart), is not judged at its first request, whatever its
-// times say; from its second request on it is, because upstream wrote its expiry anew at the first.
+// TestProvimuxSessionReturnRestored is row 6, second half (finding 7): a binding written before this selector existed
+// (a new selector after a change of the routing settings, a restore after a restart) has no note, so it is not
+// judged at its first request, whatever its times say; from its second request on it is.
 func TestProvimuxSessionReturnRestored(t *testing.T) {
-	for _, which := range []string{"expiry from a file", "new selector, longer lifetime", "new selector, shorter lifetime"} {
+	for _, which := range []string{"new selector, longer lifetime", "new selector, shorter lifetime"} {
 		t.Run(which, func(t *testing.T) {
 			calls := &provimuxRTCalls{}
 			f := newProvimuxSRFixture(t, "round-robin", false, calls.call)
@@ -502,21 +504,16 @@ func TestProvimuxSessionReturnRestored(t *testing.T) {
 			header := http.Header{"X-Session-Affinity": {"pi-restored"}}
 			key := f.fellBack(header, "")
 			entry := f.entryOf(key)
-			switch which {
-			case "expiry from a file":
-				f.replaceExpiry(key, time.Unix(0, entry.expiresAt.Add(-(provimuxRTCold+time.Hour)).UnixNano()))
-			default:
-				ttl := 2 * provimuxRTTTL
-				if strings.HasSuffix(which, "shorter lifetime") {
-					ttl = provimuxRTTTL - time.Hour
-				}
-				f.withTTL(ttl)
-				f.rule(provimuxRTCold)
-				f.affinity.cache.mu.Lock()
-				f.affinity.cache.ensureInitializedLocked()
-				f.affinity.cache.replaceAliasGroupsLocked(entry.authID, entry.expiresAt.Add(-(provimuxRTCold + time.Hour)), entry.aliases, entry.binding)
-				f.affinity.cache.mu.Unlock()
+			ttl := 2 * provimuxRTTTL
+			if strings.HasSuffix(which, "shorter lifetime") {
+				ttl = provimuxRTTTL - time.Hour
 			}
+			f.withTTL(ttl) // the binding is carried into the new selector, which has no note of it
+			f.rule(provimuxRTCold)
+			f.affinity.cache.mu.Lock()
+			f.affinity.cache.ensureInitializedLocked()
+			f.affinity.cache.replaceAliasGroupsLocked(entry.authID, entry.expiresAt.Add(-(provimuxRTCold + time.Hour)), entry.aliases, entry.binding)
+			f.affinity.cache.mu.Unlock()
 			calls.take()
 			before := provimuxReturned.Load()
 			if err := f.turn(header, "", "", nil); err != nil {
@@ -538,7 +535,7 @@ func TestProvimuxSessionReturnRestored(t *testing.T) {
 
 // TestProvimuxSessionReturnBounds is row 7 (finding 8): cold-after at 1m0.9s and at a duration of a hundred thousand
 // hours is dropped exactly from that time on, never before; the largest duration is never below any binding lifetime,
-// so the rule is not in effect with it, and a lifetime that large makes expiries the rule does not judge.
+// so it is accepted and reported not-below-ttl, and the rule does nothing with it.
 func TestProvimuxSessionReturnBounds(t *testing.T) {
 	for _, row := range []struct {
 		cold, ttl time.Duration
@@ -552,7 +549,7 @@ func TestProvimuxSessionReturnBounds(t *testing.T) {
 				f.withTTL(row.ttl)
 				f.rule(row.cold)
 				key := f.fellBack(http.Header{"X-Session-Affinity": {"pi-bounds"}}, "")
-				lastUse := f.entryOf(key).expiresAt.Add(-row.ttl)
+				lastUse := f.noteOf(key)
 				now := lastUse.Add(row.cold)
 				if early {
 					now = now.Add(-time.Nanosecond)
@@ -880,7 +877,7 @@ func TestProvimuxSessionReturnState(t *testing.T) {
 				t.Fatalf("the show's rule %+v disagrees with the state", rule)
 			}
 			before := provimuxReturned.Load()
-			f.affinity.provimuxReturn(true, key, "", f.auths(), f.entryOf(key).expiresAt.Add(-provimuxRTTTL+provimuxRTCold+time.Minute))
+			f.affinity.provimuxReturn(true, key, "", f.auths(), f.noteOf(key).Add(provimuxRTCold+time.Minute))
 			if dropped := provimuxReturned.Load() - before; (dropped == 1) != state.InEffect {
 				t.Fatalf("in effect %v, dropped %d", state.InEffect, dropped)
 			}
@@ -896,7 +893,7 @@ func TestProvimuxSessionReturnStateCounts(t *testing.T) {
 	f.rule(time.Minute + 900*time.Millisecond)
 	key := f.fellBack(http.Header{"X-Session-Affinity": {"pi-counts"}}, "")
 	before := ProvimuxSessionReturnStateOf(f.m, time.Now())
-	at := f.entryOf(key).expiresAt.Add(-provimuxRTTTL + time.Hour)
+	at := f.noteOf(key).Add(time.Hour)
 	f.affinity.provimuxReturn(true, key, "", f.auths(), at)
 	after := ProvimuxSessionReturnStateOf(f.m, time.Now())
 	if after.Counts.Returned != before.Counts.Returned+1 || after.Counts.LastReturnedAt == nil || *after.Counts.LastReturnedAt != provimuxTime(at) {
@@ -909,56 +906,6 @@ func TestProvimuxSessionReturnStateCounts(t *testing.T) {
 	if !strings.Contains(string(raw), `"cold_after_s":60.9`) {
 		t.Fatalf("state %s", raw)
 	}
-}
-
-// TestProvimuxSessionReturnMonotonic settles J2 of 15.13: the helper finds the monotonic reading exactly where Go
-// keeps one, on the Go version in use.
-func TestProvimuxSessionReturnMonotonic(t *testing.T) {
-	now := time.Now()
-	stripped := map[string]time.Time{
-		"Round(0)":        now.Round(0),
-		"Truncate(0)":     now.Truncate(0),
-		"UTC()":           now.UTC(),
-		"Local()":         now.Local(),
-		"In(UTC)":         now.In(time.UTC),
-		"time.Unix of it": time.Unix(0, now.UnixNano()),
-		"time.Date":       time.Date(2001, 2, 3, 4, 5, 6, 7, time.UTC), // date-safe: a constant, never compared with today
-		"zero":            {},
-		"JSON round trip": func() time.Time {
-			var back time.Time
-			raw, _ := json.Marshal(now)
-			_ = json.Unmarshal(raw, &back)
-			return back
-		}(),
-		"Round(0) then Add": now.Round(0).Add(time.Hour),
-	}
-	for name, value := range stripped {
-		if provimuxMonotonic(value) {
-			t.Errorf("%s: found a monotonic reading where Go keeps none", name)
-		}
-	}
-	kept := map[string]time.Time{
-		"time.Now()":          now,
-		"Add(1h)":             now.Add(time.Hour),
-		"Add(-1h)":            now.Add(-time.Hour),
-		"a cache's expiry":    NewSessionCache(time.Hour).provimuxExpiryForTest(),
-		"Add(-ttl) of that":   now.Add(time.Hour).Add(-time.Hour),
-		"a second time.Now()": time.Now(),
-	}
-	for name, value := range kept {
-		if !provimuxMonotonic(value) {
-			t.Errorf("%s: no monotonic reading found where Go keeps one", name)
-		}
-	}
-}
-
-// provimuxExpiryForTest is the expiry the cache writes for a binding made now.
-func (c *SessionCache) provimuxExpiryForTest() time.Time {
-	defer c.Stop()
-	c.Set("provimux-monotonic", "a")
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.entries["provimux-monotonic"].expiresAt
 }
 
 // BenchmarkProvimuxSessionReturnPick is the cost of a selection of a named, bound conversation through a real Pick,

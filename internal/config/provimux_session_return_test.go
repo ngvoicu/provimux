@@ -54,6 +54,7 @@ func TestProvimuxSessionReturnSettingAbsent(t *testing.T) {
 		"config-version: 8\nrouting:\n  session-affinity: true\n",
 		"config-version: 8\nrouting:\n  session-affinity: true\n  session-affinity-return: {}\n",
 		"config-version: 8\nrouting:\n  session-affinity: true\n  session-affinity-return:\n",
+		"config-version: 8\nrouting:\n  session-affinity: true\n  session-affinity-return:\n    cold-after: null\n", // null is off
 	} {
 		cfg, err := ParseConfigBytes([]byte(raw))
 		if err != nil {
@@ -79,9 +80,13 @@ func TestProvimuxSessionReturnSettingJSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"cold-after":"6m"}`), &setting); err != nil || setting.ColdAfter != "6m" {
 		t.Fatalf("%v %q", err, setting.ColdAfter)
 	}
-	for _, raw := range []string{`{"cold-after":"30s"}`, `{"cold-after":360}`, `{"cold-after":null}`} {
+	var off ProvimuxSessionReturn
+	if err := json.Unmarshal([]byte(`{"cold-after":null}`), &off); err != nil || off.ColdAfter != "" {
+		t.Fatalf("null: %v %q; want off", err, off.ColdAfter)
+	}
+	for _, raw := range []string{`{"cold-after":"30s"}`, `{"cold-after":360}`, `{"cold-after":""}`} {
 		var refused ProvimuxSessionReturn
-		if err := json.Unmarshal([]byte(raw), &refused); err == nil && refused.ColdAfter != "" {
+		if err := json.Unmarshal([]byte(raw), &refused); err == nil {
 			t.Fatalf("%s accepted as %q", raw, refused.ColdAfter)
 		}
 	}
