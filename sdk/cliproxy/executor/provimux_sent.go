@@ -373,7 +373,7 @@ func provimuxPathModel(u *url.URL) (model string, unread bool) {
 			return "", true
 		}
 	}
-	return id, false
+	return strings.Clone(id), false
 }
 
 // provimuxBodyModel reads the model of a body sent to path with mediaType.
@@ -437,8 +437,9 @@ type provimuxBodyCapture struct {
 // provimuxBodyStream is what the transport read from one body.
 type provimuxBodyStream struct {
 	data   bytes.Buffer
-	whole  bool // read to its end without an error
-	failed bool // a read failed, or it outgrew the limit
+	length int64 // the length the request declares, -1 or 0 where it declares none
+	whole  bool  // read to its end without an error: to EOF, or to exactly the length it declares
+	failed bool  // a read failed, it outgrew the limit, or it outgrew the length it declares
 }
 
 // provimuxCaptureBody returns req, as its transport is to be handed it, with a body (and a GetBody) that copy what the
@@ -467,7 +468,7 @@ func provimuxCaptureBody(req *http.Request) (*http.Request, *provimuxBodyCapture
 
 // tee returns body copying what is read from it into a stream of c, sized for length where it is known.
 func (c *provimuxBodyCapture) tee(body io.ReadCloser, length int64) io.ReadCloser {
-	stream := &provimuxBodyStream{}
+	stream := &provimuxBodyStream{length: length}
 	switch {
 	case length > provimuxSentBodyLimit:
 		stream.failed = true // larger than the reader reads: nothing is copied, and the model is not read
@@ -535,8 +536,8 @@ func (t *provimuxTeeBody) Read(p []byte) (int, error) {
 	n, err := t.body.Read(p)
 	t.capture.mu.Lock()
 	if n > 0 && !t.stream.failed {
-		if t.stream.data.Len()+n > provimuxSentBodyLimit {
-			t.stream.failed = true
+		if t.stream.data.Len()+n > provimuxSentBodyLimit || (t.stream.length > 0 && int64(t.stream.data.Len()+n) > t.stream.length) {
+			t.stream.failed, t.stream.whole = true, false
 			t.stream.data = bytes.Buffer{}
 		} else {
 			t.stream.data.Write(p[:n])
@@ -546,7 +547,12 @@ func (t *provimuxTeeBody) Read(p []byte) (int, error) {
 	case err == io.EOF:
 		t.stream.whole = !t.stream.failed
 	case err != nil:
-		t.stream.failed = true
+		t.stream.failed, t.stream.whole = true, false
+	case t.stream.length > 0 && int64(t.stream.data.Len()) == t.stream.length && !t.stream.failed:
+		// Every byte the request declares: what a transport sends of it (Go's sends no more than the declared length
+		// and fails a request whose body holds more). Its last read, the one that meets the end, may come after the
+		// answer is back (finding 55): the body is whole without waiting for it.
+		t.stream.whole = true
 	}
 	t.capture.mu.Unlock()
 	return n, err
@@ -599,7 +605,9 @@ func provimuxFormModel(body []byte) (model string, unread bool) {
 			return "", true
 		}
 	}
-	return models[0], false
+	// A copy of its own: the parsed value may be a part of the string the whole form was read into, which it would keep
+	// alive after the copy of the body is let go (answered-by.md, part (5)).
+	return strings.Clone(models[0]), false
 }
 
 // provimuxDevinChatMethod is the path of Devin's chat method (helps.DevinChatPath), whose message carries the model
