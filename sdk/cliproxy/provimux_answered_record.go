@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -568,76 +569,124 @@ func provimuxAnsweredLoad(place string, now time.Time) (rows map[provimuxAnswere
 	return rows, seq, seen, nil
 }
 
-// provimuxAnsweredStrictRow and provimuxAnsweredStrictItem are a row and an item as the file must hold them: every
-// field present (a pointer that stays nil is a field that is missing), with its own type. A file with a row or an item
-// short of any of them, or with any field this record does not write, is not this record's (the amendment of
-// 2026-11-27 (2), part 3): a missing `client` must never read as the keyless caller's, nor a missing `entry` as null.
-type provimuxAnsweredStrictRow struct {
-	Credential *string                       `json:"credential"`
-	Marker     *string                       `json:"marker"`
-	Name       *string                       `json:"name"`
-	Client     *string                       `json:"client"`
-	Items      *[]provimuxAnsweredStrictItem `json:"items"`
-}
-
-type provimuxAnsweredStrictItem struct {
-	Entry stdjson.RawMessage `json:"entry"` // empty when missing; "null" when null
-	At    *string            `json:"at"`
-	Seq   *uint64            `json:"seq"`
-}
-
-type provimuxAnsweredStrict struct {
-	Format  *string                      `json:"format"`
-	Version *int                         `json:"version"`
-	Rows    *[]provimuxAnsweredStrictRow `json:"rows"`
-}
-
 // provimuxAnsweredParse reads raw as this record's file, strictly: one JSON object with the record's mark and version 1
 // and nothing else; every row with its four strings (credential, marker and name not empty; client may be "", the
 // keyless caller, but must be there) and at least one item; every item with its entry (a string or null), its time and
-// a positive sequence. A field this record does not write, at any level, makes the file not this record's: a later
-// version is told by its version number and is not read by this one either way. Anything else is not this record's.
+// a positive sequence. Every field name at every level is the one the record writes, byte for byte: Go's decoder
+// matches names without regard to letter case, so the reading is done here, name by name. A name in another case or
+// spelling, a name twice, a field this record does not write, a value of another type: the file is not this record's
+// (the amendment of 2026-11-27 (2), parts 3 and 5). A later version is told by its version number and is not read by
+// this one either way.
 func provimuxAnsweredParse(raw []byte) (provimuxAnsweredStored, bool) {
-	var stored provimuxAnsweredStored
-	var strict provimuxAnsweredStrict
-	decoder := stdjson.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	if errDecode := decoder.Decode(&strict); errDecode != nil {
-		return stored, false
+	document, ok := provimuxStrictObject(raw, "format", "version", "rows")
+	if !ok || string(document["format"]) != `"`+provimuxAnsweredFormat+`"` || string(document["version"]) != "1" {
+		return provimuxAnsweredStored{}, false
 	}
-	if _, errMore := decoder.Token(); !errors.Is(errMore, io.EOF) {
-		return stored, false
+	rows, ok := provimuxStrictArray(document["rows"])
+	if !ok {
+		return provimuxAnsweredStored{}, false
 	}
-	if strict.Format == nil || *strict.Format != provimuxAnsweredFormat || strict.Version == nil || *strict.Version != 1 || strict.Rows == nil {
-		return stored, false
-	}
-	stored = provimuxAnsweredStored{Format: *strict.Format, Version: *strict.Version, Rows: make([]provimuxAnsweredStoredRow, 0, len(*strict.Rows))}
-	for _, row := range *strict.Rows {
-		if row.Credential == nil || row.Marker == nil || row.Name == nil || row.Client == nil || row.Items == nil ||
-			*row.Credential == "" || *row.Marker == "" || *row.Name == "" || len(*row.Items) == 0 {
+	stored := provimuxAnsweredStored{Format: provimuxAnsweredFormat, Version: 1, Rows: make([]provimuxAnsweredStoredRow, 0, len(rows))}
+	for _, rawRow := range rows {
+		row, okRow := provimuxStrictObject(rawRow, "credential", "marker", "name", "client", "items")
+		if !okRow {
 			return provimuxAnsweredStored{}, false
 		}
-		kept := provimuxAnsweredStoredRow{Credential: *row.Credential, Marker: *row.Marker, Name: *row.Name, Client: *row.Client}
-		for _, item := range *row.Items {
-			if len(item.Entry) == 0 || item.At == nil || item.Seq == nil || *item.Seq == 0 {
+		var kept provimuxAnsweredStoredRow
+		for _, field := range []struct {
+			name  string
+			value *string
+		}{{"credential", &kept.Credential}, {"marker", &kept.Marker}, {"name", &kept.Name}, {"client", &kept.Client}} {
+			if !provimuxStrictString(row[field.name], field.value) || (*field.value == "" && field.name != "client") {
 				return provimuxAnsweredStored{}, false
 			}
-			if _, errAt := time.Parse(time.RFC3339Nano, *item.At); errAt != nil {
+		}
+		items, okItems := provimuxStrictArray(row["items"])
+		if !okItems || len(items) == 0 {
+			return provimuxAnsweredStored{}, false
+		}
+		for _, rawItem := range items {
+			item, okItem := provimuxStrictObject(rawItem, "entry", "at", "seq")
+			if !okItem {
+				return provimuxAnsweredStored{}, false
+			}
+			var at string
+			var seq uint64
+			if !provimuxStrictString(item["at"], &at) || stdjson.Unmarshal(item["seq"], &seq) != nil || seq == 0 {
+				return provimuxAnsweredStored{}, false
+			}
+			if _, errAt := time.Parse(time.RFC3339Nano, at); errAt != nil {
 				return provimuxAnsweredStored{}, false
 			}
 			var entry *string
-			if string(bytes.TrimSpace(item.Entry)) != "null" {
+			if string(item["entry"]) != "null" {
 				var text string
-				if errEntry := stdjson.Unmarshal(item.Entry, &text); errEntry != nil {
+				if !provimuxStrictString(item["entry"], &text) {
 					return provimuxAnsweredStored{}, false
 				}
 				entry = &text
 			}
-			kept.Items = append(kept.Items, provimuxAnsweredStoredItem{Entry: entry, At: *item.At, Seq: *item.Seq})
+			kept.Items = append(kept.Items, provimuxAnsweredStoredItem{Entry: entry, At: at, Seq: seq})
 		}
 		stored.Rows = append(stored.Rows, kept)
 	}
 	return stored, true
+}
+
+// provimuxStrictObject reads raw as one JSON object holding exactly the fields named, each once, each name written
+// exactly so (no other case, no escape), and nothing after it. It returns each field's value as written.
+func provimuxStrictObject(raw []byte, names ...string) (map[string]stdjson.RawMessage, bool) {
+	decoder := stdjson.NewDecoder(bytes.NewReader(raw))
+	if token, err := decoder.Token(); err != nil || token != stdjson.Delim('{') {
+		return nil, false
+	}
+	fields := make(map[string]stdjson.RawMessage, len(names))
+	for decoder.More() {
+		before := decoder.InputOffset()
+		token, err := decoder.Token()
+		if err != nil {
+			return nil, false
+		}
+		name, _ := token.(string)
+		// The name as written: what lies between the end of the previous value and the end of this name, less the
+		// comma and the white space.
+		written := bytes.Trim(raw[before:decoder.InputOffset()], " \t\r\n,")
+		if !slices.Contains(names, name) || string(written) != `"`+name+`"` {
+			return nil, false
+		}
+		if _, twice := fields[name]; twice {
+			return nil, false
+		}
+		var value stdjson.RawMessage
+		if err = decoder.Decode(&value); err != nil {
+			return nil, false
+		}
+		fields[name] = value
+	}
+	if token, err := decoder.Token(); err != nil || token != stdjson.Delim('}') {
+		return nil, false
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		return nil, false
+	}
+	if len(fields) != len(names) {
+		return nil, false
+	}
+	return fields, true
+}
+
+// provimuxStrictArray reads raw as a JSON array (never null) and returns its elements as written.
+func provimuxStrictArray(raw stdjson.RawMessage) ([]stdjson.RawMessage, bool) {
+	var elements []stdjson.RawMessage
+	if len(raw) == 0 || raw[0] != '[' || stdjson.Unmarshal(raw, &elements) != nil {
+		return nil, false
+	}
+	return elements, true
+}
+
+// provimuxStrictString reads raw as a JSON string (never null) into value.
+func provimuxStrictString(raw stdjson.RawMessage, value *string) bool {
+	return len(raw) > 0 && raw[0] == '"' && stdjson.Unmarshal(raw, value) == nil
 }
 
 // logNotKept says once why the record is not kept beyond this run.
