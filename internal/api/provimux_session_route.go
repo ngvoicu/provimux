@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/provimux/onlymynames"
@@ -58,6 +59,9 @@ func provimuxSessionRouteError(c *gin.Context, status int, message string) {
 func provimuxParseSessionRouteBody(raw []byte, release bool) (provimuxSessionRouteRequest, error) {
 	var request provimuxSessionRouteRequest
 	notObject := errors.New("the body must be one JSON object, with nothing after it")
+	if !utf8.Valid(raw) {
+		return request, errors.New("the body must be UTF-8")
+	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	open, errOpen := decoder.Token()
 	if errOpen != nil || open != json.Delim('{') {
@@ -89,6 +93,9 @@ func provimuxParseSessionRouteBody(raw []byte, release bool) (provimuxSessionRou
 			if len(trimmed) == 0 || trimmed[0] != '{' {
 				return request, errors.New("identity must be an object")
 			}
+			if errDuplicate := provimuxNoRepeatedMember(trimmed); errDuplicate != nil {
+				return request, errDuplicate
+			}
 			request.Identity = append([]byte(nil), trimmed...)
 		case key == "expect" && release:
 			if isNull || json.Unmarshal(trimmed, &request.Expect) != nil || request.Expect == "" {
@@ -111,6 +118,49 @@ func provimuxParseSessionRouteBody(raw []byte, release bool) (provimuxSessionRou
 		return request, errors.New("model is required")
 	}
 	return request, nil
+}
+
+// provimuxNoRepeatedMember refuses a JSON value in which any object, at any depth, names a member twice: the
+// extraction would read one of them and the caller could not tell which.
+func provimuxNoRepeatedMember(raw []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	var walk func() error
+	walk = func() error {
+		token, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		switch token {
+		case json.Delim('{'):
+			seen := map[string]bool{}
+			for decoder.More() {
+				keyToken, errKey := decoder.Token()
+				if errKey != nil {
+					return errKey
+				}
+				key, _ := keyToken.(string)
+				if seen[key] {
+					return fmt.Errorf("identity names %s twice", key)
+				}
+				seen[key] = true
+				if errValue := walk(); errValue != nil {
+					return errValue
+				}
+			}
+			_, err = decoder.Token()
+			return err
+		case json.Delim('['):
+			for decoder.More() {
+				if errValue := walk(); errValue != nil {
+					return errValue
+				}
+			}
+			_, err = decoder.Token()
+			return err
+		}
+		return nil
+	}
+	return walk()
 }
 
 // provimuxRoutedName resolves the name the client sent as the request path does before it chooses an account: with
