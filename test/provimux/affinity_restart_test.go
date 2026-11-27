@@ -82,6 +82,7 @@ func TestProvimuxAffinityGatewayProcess(t *testing.T) {
 	if stall := os.Getenv(affinityStall); stall != "" {
 		cliproxy.SetProvimuxAffinityBeforeWrite(func() { affinityWaitWhile(stall) })
 	}
+	togetherGatewayHooks() // a second try held in its wait (retry_route_restart_test.go)
 	if linger := os.Getenv(affinityLinger); linger != "" {
 		defer affinityWaitWhile(linger)
 	}
