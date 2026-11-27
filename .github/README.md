@@ -50,6 +50,9 @@ server's address, see [For a team](#for-a-team)). Docker, release archives and b
 - **[Conversations keep their account across a restart](#conversations-keep-their-account-across-a-restart)**: with
   session affinity on, a conversation that sends its session id goes back to the account whose cache holds it after an
   upgrade or a restart.
+- **[An overloaded provider does not cost you your first account](#an-overloaded-provider-does-not-cost-you-your-first-account).**
+  When Anthropic's or OpenAI's own API refuses a request because it is overloaded, Provimux sends it once more to the
+  same account before it moves on down your list.
 
 **Clarity: you see which account has which models, which one answered, and why a route is paused.**
 
@@ -894,6 +897,81 @@ after 1.5 seconds on one that does not respond; the wait for the answers starts 
 and the wait keeps its own length after the write. CLIProxyAPI bounds the whole stop at 30 seconds, so with a wait of
 30 the 1.5 seconds of a stalled disk come out of the wait. A conversation whose answer is still being written at the
 stop is in the file, because it was bound when its answer started; what that answer changes afterwards is not.
+
+### An overloaded provider does not cost you your first account
+
+**What you get.** Sometimes Anthropic or OpenAI refuses a request for a moment because it is overloaded. Anthropic,
+for example, answers `overloaded_error`. Without this, the gateway moves the request straight to the next account by
+priority, which can be a paid API key. With session affinity, the conversation can then stay on that account. Now
+the gateway waits about a second and sends the request once more to the account it had chosen. If that second try
+works, you get your answer from that account, the refusal leaves no pause on it, and the conversation stays where it
+was. If the second try fails too, where the conversation goes next is decided by CLIProxyAPI's
+`session-affinity-rebind-on` setting, as without this.
+
+**How to use it.** Nothing to turn on: it is on by default. To turn it off and keep CLIProxyAPI's own behaviour:
+
+```yaml
+routing:
+  retry:
+    same-account-retry: false
+```
+
+**What gets a second try.** Only a refusal from the vendor's own API that says, in a documented error field, that it is
+overloaded, under a status the vendor documents for it. The vendor must have sent its whole error answer.
+
+| Account | Sent to | The vendor's answer that gets a second try |
+|---|---|---|
+| Claude (subscription login or API key) | `api.anthropic.com` | status 529, 503 or 502, with `"error": {"type": "overloaded_error"}` in the body |
+| Codex (ChatGPT login or OpenAI API key) | `api.openai.com` or `chatgpt.com` | status 503, with `"type": "service_unavailable_error"` and `"code": "server_is_overloaded"` in the body |
+
+Nothing else gets a second try. That includes:
+
+- a Claude or Codex account with another base address (a gateway, a compatible service);
+- every other vendor and account type: Gemini, Vertex, AI Studio, Antigravity, Kimi, xAI, Meta, GitHub Copilot,
+  Devin, and every OpenAI-compatible entry, OpenRouter included;
+- any 429, and any other status;
+- any answer that names a spend, quota, billing or rate limit;
+- a refusal with the header `x-should-retry: false`;
+- a refusal that one of your `request-scoped-errors` rules matches: your rule decides it, as without this;
+- a plain 502, 503 or 504;
+- a connection that was refused, reset or closed, or that timed out;
+- anything after the vendor began to answer;
+- a request that offers the image-generation tool, however its `tool_choice` is written.
+
+**How long it waits.** Without a `Retry-After` header, the wait is between 0.5 and 1 second. A `Retry-After` of 0 also
+means that wait. A `Retry-After` of 1 or 2 seconds is waited exactly. A longer one means no second try: the request
+goes on at once, as it does without this. A stop or restart during the wait lets the second try go and its answer
+finish, within the [restart wait](#restarts-and-upgrades).
+
+**One second try per request.** Provimux makes at most one second try for a request sent to it, however many
+accounts, rounds (`request-retry`) or refreshes the request goes through. The answer to that second try is then
+handled by CLIProxyAPI like any answer. So it can lead to further calls that would not have happened without it; for
+example, a 529, then a 429 on the second try, then a later round that succeeds. The wait before the second try is at
+most 2 seconds.
+
+**What you see.** Each second try writes one line to the log, for example:
+
+```
+same-account retry: status 529 overloaded refusal on provider=claude auth_file=…; called the executor a second time after 812ms: it returned without an error
+```
+
+The answer carries the headers of the account that gave it (`X-Provimux-Account`, see
+[Which account answered](#which-account-answered)). If keep-alive comments before the first token are turned on, the
+response's headers may already have been sent before the second try, and then that answer carries no account headers. Savings counts the
+refused request and the answered one as two requests; only the answered one has tokens.
+`GET /v8/management/provimux/same-account-retry` gives the value in use, whether your config sets it, and the counts
+since the start: how often the executor was called a second time, with and without an error, and how often the
+client left during the wait.
+
+**Limits.**
+
+- A fault that arrives after the vendor has begun answering is never retried. That includes an "Overloaded" sent
+  inside a stream that has started, even as its first event. You get it as today.
+- Requests that create something when sent are never sent twice: images (and any request that offers the image tool),
+  videos, speech, and Gemini interactions.
+- A WebSocket turn is never sent twice.
+- A gateway connected to CLIProxyAPI Home does not do this; Home chooses the accounts there.
+- Token counting (`count_tokens`) does not do this.
 
 ### Works with Pi
 
