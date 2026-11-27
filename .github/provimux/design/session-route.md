@@ -175,7 +175,7 @@ Nothing else happens. No request is sent, no account's state changes, no credit 
 
 A request that arrives between two sweeps after (b) became true is served by the bound account once more, and its binding is fresh again. That errs towards staying, which loses nothing. One sweep asks for each name's routes once, whatever the number of conversations.
 
-**Why a sweep and not a test where the binding is read.** The test in `Pick` is exact to the request and costs an inserted block in the file upstream changes most (13 times between v8.0.60 and v8.1.3, `prices-and-cache.md` 11 A), at three places a binding is honoured (`selector.go:1738`, `:1797`, `:1851`). The sweep is exact to 15 seconds in the harmless direction and costs no line there.
+**Why a sweep and not a test where the binding is read.** The test in `Pick` is exact to the request and costs an inserted block in the file upstream changes most (13 times between v8.0.60 and v8.1.3), at three places a binding is honoured (`selector.go:1738`, `:1797`, `:1851`). The sweep is exact to 15 seconds in the harmless direction and costs no line there.
 
 ## 6. The three things the gateway must know (the rule's; not in this release)
 
