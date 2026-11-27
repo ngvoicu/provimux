@@ -849,7 +849,7 @@ components:
             dropped). Null without a list in use, and for a plugin's model.
     SameAccountRetryResponse:
       type: object
-      required: [observed_at, enabled, set_in_file, default, applies, wait_min_ms, wait_max_ms, retry_after_max_ms, since, second_tries_sent, second_tries_answered, second_tries_failed, left_during_wait]
+      required: [observed_at, enabled, set_in_file, default, applies, wait_min_ms, wait_max_ms, retry_after_max_ms, since, second_calls, second_calls_without_error, second_calls_with_error, left_during_wait]
       properties:
         observed_at:
           $ref: "#/components/schemas/Timestamp"
@@ -876,24 +876,27 @@ components:
           description: The longest vendor Retry-After still waited (1 or 2 seconds are waited exactly, 0 means the jittered wait); a longer one means no second try.
         since:
           $ref: "#/components/schemas/Timestamp"
-        second_tries_sent:
-          type: integer
-          minimum: 0
-          description: Second tries sent to the vendor since `since` (the process start), counted as each is sent. In memory only.
-        second_tries_answered:
+        second_calls:
           type: integer
           minimum: 0
           description: |
-            Of the second tries sent, those the vendor answered: a complete answer, or for a stream an answer that
-            began. Whether such a stream then completed is not counted here.
-        second_tries_failed:
+            Since `since` (the process start): how often the gateway called the executor a second time on the same
+            account after an overload refusal. This counts the gateway's call, not a request the vendor received (a
+            second connection can be refused). In memory only.
+        second_calls_without_error:
           type: integer
           minimum: 0
-          description: Of the second tries sent, those that failed before any answer; the gateway then went on as without the rule.
+          description: |
+            Of the second calls, those that returned without an error: a complete answer, or a stream handed on. Not
+            that the answer was complete or had content: an empty stream can still go on to another account.
+        second_calls_with_error:
+          type: integer
+          minimum: 0
+          description: Of the second calls, those that returned an error; the gateway then went on as without the rule.
         left_during_wait:
           type: integer
           minimum: 0
-          description: Refusals after which the client went away during the wait; no second try was sent for them.
+          description: Refusals after which the client went away during the wait; the executor was not called a second time.
     NamesResponse:
       type: object
       required: [observed_at, only_my_names, applied, names, keep_ignored, others, refused]

@@ -44,7 +44,7 @@ func TestProvimuxOverloadRefusalTable(t *testing.T) {
 		{"Anthropic 502 overloaded_error (the owner's case)", "claude", 502, anthropicOverloaded, true},
 		{"Anthropic 503 overloaded_error", "claude", 503, anthropicOverloaded, true},
 		{"Anthropic 529 overloaded_error, any message", "claude", 529, anthropicCapacity, true},
-		{"Anthropic 500 overloaded_error: the error status carries it", "claude", 500, anthropicOverloaded, true},
+		{"Anthropic 500 overloaded_error: not a status the page names", "claude", 500, anthropicOverloaded, false},
 		{"Anthropic 429 overloaded_error: never a 429", "claude", 429, anthropicOverloaded, false},
 		{"Anthropic 200 overloaded_error: never a non-error status", "claude", 200, anthropicOverloaded, false},
 		{"Anthropic api_error saying Overloaded", "claude", 529, anthropicAPIError, false},
@@ -59,6 +59,8 @@ func TestProvimuxOverloadRefusalTable(t *testing.T) {
 		{"OpenAI spend limit under 503", "codex", 503, openAISpend, false},
 		{"OpenAI quota type with the overload code", "codex", 503, openAIQuotaType, false},
 		{"OpenAI 429 server_is_overloaded", "codex", 429, openAIOverloaded, false},
+		{"OpenAI 502 server_is_overloaded: only 503 is named", "codex", 502, openAIOverloaded, false},
+		{"OpenAI 529 server_is_overloaded", "codex", 529, openAIOverloaded, false},
 		{"OpenAI plain 504", "codex", 504, plain, false},
 		{"Anthropic body to a Codex account", "codex", 529, anthropicOverloaded, false},
 		{"OpenAI body to a Claude account", "claude", 503, openAIOverloaded, false},
@@ -77,6 +79,33 @@ func TestProvimuxOverloadRefusalTable(t *testing.T) {
 	for _, c := range cases {
 		if got := ProvimuxOverloadRefusal(c.provider, c.status, []byte(c.body)); got != c.want {
 			t.Errorf("%s: %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// The allow-list applies only to the vendor's own API hosts, over https on the default port.
+func TestProvimuxVendorHosts(t *testing.T) {
+	cases := []struct {
+		provider, scheme, host, port string
+		want                         bool
+	}{
+		{"claude", "https", "api.anthropic.com", "", true},
+		{"claude", "https", "API.Anthropic.com", "443", true},
+		{"claude", "http", "api.anthropic.com", "", false},
+		{"claude", "https", "api.anthropic.com", "8443", false},
+		{"claude", "https", "api.kimi.com", "", false},
+		{"claude", "https", "gateway.example.test", "", false},
+		{"claude", "https", "chatgpt.com", "", false},
+		{"codex", "https", "api.openai.com", "", true},
+		{"codex", "https", "chatgpt.com", "", true},
+		{"codex", "https", "api.anthropic.com", "", false},
+		{"codex", "https", "openrouter.ai", "", false},
+		{"codex", "http", "127.0.0.1", "8080", false},
+		{"gemini", "https", "generativelanguage.googleapis.com", "", false},
+	}
+	for _, c := range cases {
+		if got := provimuxVendorHost(c.provider, c.scheme, c.host, c.port); got != c.want {
+			t.Errorf("%s %s://%s:%s: %v, want %v", c.provider, c.scheme, c.host, c.port, got, c.want)
 		}
 	}
 }
@@ -148,9 +177,21 @@ func TestProvimuxRepeatable(t *testing.T) {
 			t.Errorf("%s: %v, want %v", format, got, want)
 		}
 	}
-	forced := cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai-response"), OriginalRequest: []byte(`{"tool_choice":{"type":"image_generation"}}`)}
-	if provimuxRepeatable(forced) {
-		t.Error("a request forcing image_generation is repeatable")
+	for _, body := range []string{
+		`{"tool_choice":{"type":"image_generation"}}`,
+		`{"tools":[{"type":"image_generation"}],"tool_choice":{"type":"image_generation"}}`,
+		`{"tools":[{"type":"image_generation"}],"tool_choice":"required"}`,
+		`{"tools":[{"type":"function","name":"f"},{"type":"image_generation"}],"tool_choice":"auto"}`,
+		`{"tools":[{"type":"image_generation"}]}`,
+	} {
+		opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai-response"), OriginalRequest: []byte(body)}
+		if provimuxRepeatable(opts) {
+			t.Errorf("a request offering the image tool is repeatable: %s", body)
+		}
+	}
+	plain := cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai-response"), OriginalRequest: []byte(`{"tools":[{"type":"function","name":"f"}],"tool_choice":"required"}`)}
+	if !provimuxRepeatable(plain) {
+		t.Error("a request with only a function tool is not repeatable")
 	}
 }
 
