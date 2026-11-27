@@ -514,6 +514,49 @@ func TestProvimuxSessionReturnRestored(t *testing.T) {
 	}
 }
 
+// TestProvimuxSessionReturnRestoredFromSnapshot: a binding put back after a restart by session-affinity-persist's own
+// capture and restore has no note in the new selector, so its first message is not judged, however long ago its last
+// use was; from its second message on it is.
+func TestProvimuxSessionReturnRestoredFromSnapshot(t *testing.T) {
+	calls := &provimuxRTCalls{}
+	f := newProvimuxSRFixture(t, "round-robin", false, calls.call)
+	f.withTTL(provimuxRTTTL)
+	f.rule(provimuxRTCold)
+	header := http.Header{"X-Session-Affinity": {"pi-snapshot"}}
+	key := f.fellBack(header, "")
+	token := func(authID string, _ time.Time) (string, bool) { return "token-" + authID, true }
+	state, err := ProvimuxAffinityCapture(f.affinity, token, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{Fallback: &RoundRobinSelector{}, TTL: provimuxRTTTL})
+	t.Cleanup(restored.Stop)
+	accounts := map[string]string{"token-" + f.low: f.low, "token-" + f.high: f.high}
+	if counts, errRestore := ProvimuxAffinityRestore(restored, state, accounts, time.Now()); errRestore != nil || counts.Sessions == 0 {
+		t.Fatalf("restore: %+v %v", counts, errRestore)
+	}
+	f.m.SetSelector(restored)
+	f.affinity = restored
+	if authID, ok := f.binding(key); !ok || authID != f.low {
+		t.Fatalf("restored binding %q (%v), want the low account", authID, ok)
+	}
+	calls.take()
+	before := provimuxReturned.Load()
+	if err := f.turn(header, "", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := calls.take(); len(got) != 1 || got[0] != f.low || provimuxReturned.Load() != before {
+		t.Fatalf("first message after the restore: called %v; want it left on the low account", got)
+	}
+	f.age(provimuxRTCold + time.Minute)
+	if err := f.turn(header, "", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := calls.take(); len(got) != 1 || got[0] != f.high || provimuxReturned.Load()-before != 1 {
+		t.Fatalf("second message, unused for cold-after: called %v; want the high account", got)
+	}
+}
+
 // TestProvimuxSessionReturnBounds is row 7 (finding 8): cold-after at 1m0.9s is kept to the nanosecond: dropped
 // exactly from that time on, never before.
 func TestProvimuxSessionReturnBounds(t *testing.T) {
