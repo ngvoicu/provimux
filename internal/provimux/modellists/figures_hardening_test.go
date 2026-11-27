@@ -87,7 +87,7 @@ func TestFiguresGeneratedFarAheadOfTheClockIsRefused(t *testing.T) {
 	server := newFiguresStandIn(t, figuresVolume(t, 450), fixture.Version, fixture.Generated)
 	tooEarly, inTime := generated.Add(-FiguresMaxAhead-time.Second), generated.Add(-FiguresMaxAhead)
 	fetch := func(now time.Time) (FiguresResult, error) {
-		return FetchFigures(context.Background(), server.Client(), server.EntriesURL(), nil, "provimux/test", now, 5*time.Second, nil)
+		return FetchFigures(context.Background(), server.Client(), server.EntriesURL(), nil, "provimux/test", now, 5*time.Second)
 	}
 	result, err := fetch(tooEarly)
 	figuresRefusal(t, err, FailureResponse, 0)
@@ -133,7 +133,7 @@ func TestFiguresRedirectOnlyToTheSameHostOverHTTPS(t *testing.T) {
 		http.Redirect(w, r, other.EntriesURL()+"?"+r.URL.RawQuery, http.StatusFound)
 	}))
 	t.Cleanup(elsewhere.Close)
-	_, err := FetchFigures(context.Background(), elsewhere.Client(), elsewhere.URL+pdentries.Path, nil, "provimux/test", figuresTestNow, 5*time.Second, nil)
+	_, err := FetchFigures(context.Background(), elsewhere.Client(), elsewhere.URL+pdentries.Path, nil, "provimux/test", figuresTestNow, 5*time.Second)
 	figuresRefusal(t, err, FailureHTTP, http.StatusFound)
 	if n := len(other.Requests()); n != 0 {
 		t.Fatalf("the other origin was asked %d times", n)
@@ -149,12 +149,12 @@ func TestFiguresRedirectOnlyToTheSameHostOverHTTPS(t *testing.T) {
 	}
 	plain := httptest.NewServer(http.HandlerFunc(moved))
 	t.Cleanup(plain.Close)
-	_, err = FetchFigures(context.Background(), plain.Client(), plain.URL+pdentries.Path, nil, "provimux/test", figuresTestNow, 5*time.Second, nil)
+	_, err = FetchFigures(context.Background(), plain.Client(), plain.URL+pdentries.Path, nil, "provimux/test", figuresTestNow, 5*time.Second)
 	figuresRefusal(t, err, FailureHTTP, http.StatusFound)
 
 	secure := httptest.NewTLSServer(http.HandlerFunc(moved))
 	t.Cleanup(secure.Close)
-	result, err := FetchFigures(context.Background(), secure.Client(), secure.URL+pdentries.Path, nil, "provimux/test", figuresTestNow, 5*time.Second, nil)
+	result, err := FetchFigures(context.Background(), secure.Client(), secure.URL+pdentries.Path, nil, "provimux/test", figuresTestNow, 5*time.Second)
 	if err != nil || len(result.Document.Entries) != len(fixture.Entries) {
 		t.Fatalf("the same host over https: %v", err)
 	}
@@ -171,7 +171,7 @@ func TestFiguresRedirectOnlyToTheSameHostOverHTTPS(t *testing.T) {
 		http.Redirect(w, r, otherSecure.URL+pdentries.Path+"?"+r.URL.RawQuery, http.StatusFound)
 	}))
 	t.Cleanup(away.Close)
-	_, err = FetchFigures(context.Background(), away.Client(), away.URL+pdentries.Path, nil, "provimux/test", figuresTestNow, 5*time.Second, nil)
+	_, err = FetchFigures(context.Background(), away.Client(), away.URL+pdentries.Path, nil, "provimux/test", figuresTestNow, 5*time.Second)
 	figuresRefusal(t, err, FailureHTTP, http.StatusFound)
 	if n := asked.Load(); n != 0 {
 		t.Fatalf("another origin over https was asked %d times", n)
@@ -320,7 +320,7 @@ func TestFiguresPageOfEightMegabytes(t *testing.T) {
 	for _, size := range []int{maxFiguresPageBytes, maxFiguresPageBytes + 1} {
 		body := append(append([]byte(nil), page...), bytes.Repeat([]byte(" "), size-len(page))...)
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(body) }))
-		result, err := FetchFigures(context.Background(), server.Client(), server.URL+pdentries.Path, nil, "provimux/test", figuresTestNow, 10*time.Second, nil)
+		result, err := FetchFigures(context.Background(), server.Client(), server.URL+pdentries.Path, nil, "provimux/test", figuresTestNow, 10*time.Second)
 		server.Close()
 		if size == maxFiguresPageBytes {
 			if err != nil || len(result.Document.Entries) != len(fixture.Entries) {
