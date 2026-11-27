@@ -163,6 +163,25 @@ provimux answered-by record 2 sha256:c77ac38097bcfeb1b21fcdcf0789e7b425a57a9ec9d
 
 **Upstream lines.** Unchanged: +34 −4 in 21 files against `516b99486`, in files of upstream v8.1.7.
 
+### (7) Known limits, accepted by the owner on 2026-11-27
+
+The check of `37c88be68` left three findings (58, 59, 60). Everything a user meets in ordinary use passed: the twelve kinds of account, the everyday events, the plugin rule from both sides, the digest on the record file. Each of the three needs a timing forced to the instant or a file prepared for it. The owner decided they are not worth more work. They are written limits, the code is not changed for them, and the feature is finished as it stands.
+
+- **58. An answer can come without its entry.** Between the gateway choosing an account and starting the request, there is an instant before the attempt records which connectors (executors) are in place (part (6)). If that provider's connector is taken out of the table in that instant, the answer names no entry, and `null` is recorded for it. This needs a plugin loaded for the same provider and a login added at that same instant: adding the login is what makes the gateway take its own connector out. The entry is missing, never wrong. The next answer names it again.
+- **59. Another program's file can be written over.** A record file that failed its check is left as it is (part (6)). Once someone removes it by hand, the gateway writes its own at that path. If another program puts a file there in the instant between the gateway's last look at the path and its write, that file is written over. The look and the write are two steps for the file system; Go's portable file calls cannot make them one.
+- **60. A link that points nowhere is replaced.** A symbolic link at the record file's path whose target does not exist counts as no file. The gateway writes its record there, in place of the link, and says nothing in its log. The link's target is not created.
+- **Removing a refused file is not enough by itself.** The gateway does not write a new file when the old one is removed. It writes one at the next answer that changes the record: an entry, an account, a model name or a caller not in it yet, or one already there on a new day (UTC). An answer that only repeats what the record holds for that day is written when the gateway stops. Until then the record lives in memory, and a gateway stopped without such an answer leaves no file.
+
+| Finding | What a user can see | How to meet it |
+|---|---|---|
+| 58 | one answer without `X-Provimux-Entry`; `null` in `answered` for it | a plugin for the provider loaded, and a login of that provider added in the same instant an answer starts |
+| 59 | a file someone else put at `provimux-answered.v1` replaced by the record | the refused file removed by hand, and another file put there in the instant before the gateway writes |
+| 60 | a dangling symbolic link at `provimux-answered.v1` replaced by the record | the link made by hand |
+
+**One function for a later step.** The same-account retry (a branch not merged here) sends a request a second time on the same account, in the same attempt, after the vendor refused the first as overloaded. A first try refused with an error status is not a candidate, so the entry is still named. A first try whose response began with a 200 and then failed inside its body is a candidate, and with the second try's 200 there are two: no entry. `executor.ProvimuxSupersedeSent(ctx)` marks everything the attempt of `ctx` has logged so far as superseded: `ProvimuxSent` leaves it out of the count of candidates, and its copy of the body is let go at once. A request handed to the transport after the call counts as before. No product code calls it here; the retry calls it right before its second try. Its tests: `TestProvimuxSupersedeSent` (a 200 then the same again: none without the mark, the entry with it; the second try's own model; marked too late; a second try refused), `TestProvimuxSupersedeSentScope`, `TestProvimuxSupersedeSentOff`.
+
+**Upstream lines.** Unchanged: the function is in `sdk/cliproxy/executor/provimux_sent.go`, a layer file, and its tests in a new file.
+
 ## Amended 2026-11-27: decided by the lead (the entry only when certain; the record per client key)
 
 Review B of W6a and W6b (`provimux-answered-entry` at `2ec324bf2`, findings 18 to 31) found answers that named an entry the vendor did not receive, and a record that told one client key about another's answers. The lead decided how each finding is answered while the architect is away; this section is that decision as built, to be read against the rest. Where it and a later section disagree, this one holds.
