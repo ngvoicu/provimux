@@ -9,7 +9,7 @@ import (
 )
 
 // Provimux: GET /v1/models?include=figures, contract 1 (.github/provimux/design/prices-and-cache/openapi.yaml;
-// prices-and-cache.md 5; step F3). Each model gains `accounts` as with include=accounts, and the answer gains the
+// prices-and-cache.md 5). Each model gains `accounts` as with include=accounts, and the answer gains the
 // `figures` object: the held figures of the entries the listed rows' `answered` items name. Without the value
 // the list is what it was, byte for byte.
 

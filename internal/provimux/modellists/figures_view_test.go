@@ -8,7 +8,7 @@ import (
 	"github.com/MoeForge/moego/json"
 )
 
-// Step F3: the one builder of the figures object (prices-and-cache/openapi.yaml, Figures), shared by
+// The one builder of the figures object (prices-and-cache/openapi.yaml, Figures), shared by
 // /v1/models?include=figures and GET /v8/management/provimux/figures.
 func TestBuildFiguresView(t *testing.T) {
 	// date-safe: the document's dates are written as they are; no clock compares them.

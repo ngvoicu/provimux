@@ -12,7 +12,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/provimux/modellists"
 )
 
-// GET /v8/management/provimux/figures (prices-and-cache.md 6.3, step F2) against a stand-in source.
+// GET /v8/management/provimux/figures (prices-and-cache.md 6.3) against a stand-in source.
 
 func provimuxFiguresServe(t *testing.T, cfg *config.Config, query string) map[string]any {
 	t.Helper()

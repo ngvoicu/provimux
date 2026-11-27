@@ -8,7 +8,7 @@ import (
 )
 
 // Every row of prices-and-cache.md 6.1, each "none" row included, keyed by what was sent: the provider of the
-// credential that sent the request, its kind, the host the request went to and its signer. F1's matrix (50 cases,
+// credential that sent the request, its kind, the host the request went to and its signer. The matrix (50 cases,
 // 19 providers), with each "no base URL" case now the host the executor sends to by default.
 func TestEntryProviderEveryRowOfTheMap(t *testing.T) {
 	const a, k, both = SignerAuthorization, SignerAPIKey, SignerBoth

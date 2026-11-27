@@ -7,7 +7,7 @@ import (
 )
 
 // Provimux: the `figures` object of contract 1 (.github/provimux/design/prices-and-cache/openapi.yaml,
-// components/schemas/Figures; prices-and-cache.md 5 and 6.3; step F3). One builder for both paths that give it:
+// components/schemas/Figures; prices-and-cache.md 5 and 6.3). One builder for both paths that give it:
 // GET /v1/models?include=figures (sdk/api/handlers/openai) and GET /v8/management/provimux/figures
 // (internal/api/handlers/management). The two differ only in which entries they select, and each selects from
 // the `answered` items of the rows it gives itself: an entry no answer named is never given, and nothing is

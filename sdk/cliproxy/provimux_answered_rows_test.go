@@ -49,7 +49,7 @@ const rowConfig = `api-keys:
         - api-key: fixture-groq-key
 `
 
-func TestReview21AliasesAndPrivacy(t *testing.T) {
+func TestProvimuxAnsweredAliasesAndPrivacy(t *testing.T) {
 	for _, only := range []bool{false, true} {
 		t.Run(fmt.Sprint(only), func(t *testing.T) {
 			cfg := rowConfig + fmt.Sprintf("models:\n  only-my-names:\n    enabled: %v\n", only)
@@ -91,7 +91,7 @@ func TestReview21AliasesAndPrivacy(t *testing.T) {
 					}
 				}
 				expected[tag], times[tag] = lst, ts
-				// Ported (finding 30, the lead's decision of 2026-11-27, per client key): key B's list and the management
+				// Per client key: key B's list and the management
 				// list give B's answers; reader A's list does not change at all.
 				h.wantAnswered(sentOtherClientKey, row, a.get(logging.ProvimuxAccountHeader), ts, lst...)
 				after := reviewGet(t, h, "/v1/models?include=accounts", sentClientKey)
@@ -117,7 +117,7 @@ func TestReview21AliasesAndPrivacy(t *testing.T) {
 		})
 	}
 }
-func TestReview21HiddenOldName(t *testing.T) {
+func TestProvimuxAnsweredHiddenOldName(t *testing.T) {
 	cfg := strings.Replace(reviewRouter, "      keys:", "        - name: hidden-before-switch\n      keys:", 1) + "models:\n  answered-by: true\n"
 	h := newSentHarness(t, cfg)
 	clock := newSentClock()
@@ -151,7 +151,7 @@ func TestReview21HiddenOldName(t *testing.T) {
 		t.Fatal("hidden name was served")
 	}
 }
-func TestReview21CaseDistinctRows(t *testing.T) {
+func TestProvimuxAnsweredCaseDistinctRows(t *testing.T) {
 	h := newSentHarness(t, `api-keys:
   openai-compatibility:
     - name: case-fixture
@@ -180,7 +180,7 @@ func TestReview21CaseDistinctRows(t *testing.T) {
 		}
 	}
 }
-func TestReview21SameMarkerRows(t *testing.T) {
+func TestProvimuxAnsweredSameMarkerRows(t *testing.T) {
 	h := newSentHarness(t, "")
 	useAnsweredBook(t, newSentClock())
 	add := func(id, base, priority string) *ca.Auth {
@@ -220,7 +220,7 @@ func TestReview21SameMarkerRows(t *testing.T) {
 		}
 	}
 }
-func TestReview21PluginOriginsAndNativeReplacement(t *testing.T) {
+func TestProvimuxAnsweredPluginOriginsAndNativeReplacement(t *testing.T) {
 	h := newSentHarness(t, "")
 	useAnsweredBook(t, newSentClock())
 	dir := t.TempDir()
@@ -269,7 +269,7 @@ func TestReview21PluginOriginsAndNativeReplacement(t *testing.T) {
 			a := mk(provider, f)
 			path, _ := store.Save(ca.WithAuthCreationIntent(t.Context()), a)
 			before, _ := os.ReadFile(path)
-			// Ported (rule 4 of the lead's 2026-11-27 amendment): a plugin's credential carries its mark from the moment
+			// A plugin's credential carries its mark from the moment
 			// it is made, so the first save has it, and marking again changes no byte.
 			if ojson.GetBytes(before, ca.ProvimuxPluginCredentialMark).Bool() != true {
 				t.Fatal("a plugin-made credential's first save lacks the mark")
@@ -342,7 +342,7 @@ func TestReview21PluginOriginsAndNativeReplacement(t *testing.T) {
 	}
 }
 
-func TestReview21ExpiryAndOrder(t *testing.T) {
+func TestProvimuxAnsweredExpiryAndOrder(t *testing.T) {
 	c := newSentClock()
 	b := newProvimuxAnsweredBook(c.Now)
 	const k, cr, m = "k.client", "c.credential", "a.aaaaaaaaaaaaaaaaaaaa"
@@ -387,7 +387,7 @@ func TestReview21ExpiryAndOrder(t *testing.T) {
 	}
 }
 
-func TestReview21OffHomeBytes(t *testing.T) {
+func TestProvimuxAnsweredOffHomeBytes(t *testing.T) {
 	h := newSentHarness(t, reviewRouter)
 	useAnsweredBook(t, newSentClock())
 	a := h.post("/v1/chat/completions", chatBody("review-public", false, ""), nil)
@@ -436,7 +436,7 @@ func TestReview21OffHomeBytes(t *testing.T) {
 var _ = http.MethodGet
 var _ = config.Config{}
 
-func TestReview21HiddenCaseTwin(t *testing.T) {
+func TestProvimuxAnsweredHiddenCaseTwin(t *testing.T) {
 	h := newSentHarness(t, strings.Replace(reviewRouter, "      keys:", "        - name: Lab/Model\n        - name: lab/model\n      keys:", 1)+"models:\n  answered-by: true\n")
 	useAnsweredBook(t, newSentClock())
 	a := h.post("/v1/chat/completions", chatBody("Lab/Model", false, ""), sentHeader("Authorization", "Bearer "+sentOtherClientKey))

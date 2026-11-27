@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// The review's note, unchanged: with the switch off, or in Home mode, the file is not read at all.
+// With the switch off, or in Home mode, the file is not read at all.
 func TestFollowRecordOff(t *testing.T) {
 	h := newSentHarness(t, reviewRouter)
 	b := useAnsweredBook(t, newSentClock())

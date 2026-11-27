@@ -13,9 +13,9 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
-// Provimux: the closed list of built-in executors and the standing rule (answered-by.md, rule A.1 as decided in part
-// (5)). An answer names an entry only when the executor that answers is of a type on the list, and no executor that is
-// not one of the gateway's own was ever put in place for its provider in this process.
+// Provimux: the closed list of built-in executors and the standing rule (answered-by.md). An answer names an entry only
+// when the executor that answers is of a type on the list, and no executor that is not one of the gateway's own was
+// ever put in place for its provider in this process.
 
 // provimuxTestExecutor is an executor of a type not on the list.
 type provimuxTestExecutor struct{ coreauth.ProviderExecutor }

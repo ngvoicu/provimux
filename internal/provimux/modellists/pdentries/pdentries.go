@@ -1,5 +1,5 @@
 // Package pdentries is a stand-in of providers.dev's GET /api/v1/entries on loopback, for Provimux's tests
-// of the figures (prices-and-cache.md 6.2, step F2). It follows the contract of providers.dev's API (OpenAPI
+// of the figures (prices-and-cache.md 6.2). It follows the contract of providers.dev's API (OpenAPI
 // 1.6.3, the site's src/core/openapi.ts and query.ts): the parameters provider (comma-separated), limit (1 to
 // 200, default 50) and offset; any other parameter is a 400 invalid_parameters; the envelope { meta, total,
 // limit, offset, next_offset, data }; entries ordered by provider id, then model id; an opaque ETag per

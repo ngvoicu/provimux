@@ -63,8 +63,8 @@ func assertProvimuxCommit(t *testing.T, r *firstCommitRecorder, credentials []pr
 		Host:     r.snapshot.Get(internallogging.CPAAuthHostHeader),
 	}
 	account := r.snapshot.Get(internallogging.ProvimuxAccountHeader)
-	// What the attempt sent (W6a): with the marker only, and then the model, its basis and the sent model together.
-	// The upstreams here are loopback over http, which the map has no row for: never an entry. No effort (W5).
+	// What the attempt sent: with the marker only, and then the model, its basis and the sent model together.
+	// The upstreams here are loopback over http, which the map has no row for: never an entry. No X-Provimux-Effort.
 	sent := r.snapshot.Values(internallogging.ProvimuxModelSentHeader)
 	for _, name := range internallogging.ProvimuxFieldNames()[1:] {
 		values := r.snapshot.Values(name.Header)
@@ -424,8 +424,7 @@ func provimuxServeForeign(t *testing.T, on, passthrough, stream bool, fail map[s
 
 // An upstream gateway's X-Provimux-* headers, on an answer, a stream and an error, and a client's own X-Provimux-*
 // request headers, never reach the client, switch on or off and passthrough-headers on or off: on, the answer carries
-// exactly this gateway's marker of the key that answered (after a failover the second's); off, none. (After the
-// review's own test of answered-by.)
+// exactly this gateway's marker of the key that answered (after a failover the second's); off, none.
 func TestProvimuxForeignNamesNeverPass(t *testing.T) {
 	for _, on := range []bool{false, true} {
 		for _, passthrough := range []bool{false, true} {

@@ -12,9 +12,9 @@ import (
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
 
-// Provimux: the review's cases of session-route G1, each as a test (findings 1, 3, 4 and the book's growth). They use
-// only the fixture of provimux_session_route_test.go as it was before the review, so that the same file runs on the
-// reviewed commit, where they fail, and here, where they pass. Every account, key and session is invented.
+// Provimux: session-route's edge cases, each as a test: two conversations whose parts join to one key, a release that
+// races a new binding, a failure after a release, and the book's growth. They use only the fixture of
+// provimux_session_route_test.go. Every account, key and session is invented.
 
 // turnModel sends one turn of the conversation for model, with the client key's caller scope.
 func (f *provimuxSRFixture) turnModel(model string, headers http.Header, scope string, extra map[string]any) error {
@@ -42,7 +42,7 @@ func (f *provimuxSRFixture) serve(models ...string) {
 	}
 }
 
-// TestProvimuxSessionRouteDelimiterOwnership is finding 1: upstream joins provider, session and model into one string
+// TestProvimuxSessionRouteDelimiterOwnership: upstream joins provider, session and model into one string
 // with "::", which a session id and a configured name may hold, so two different (session, name) pairs can make one
 // string, and upstream holds one binding for both. Key A uses (x, "sr::m"); key B uses ("x::sr", "m"). The book cannot
 // tell whose that binding is, so it is "not-seen" in both directions (design section 3), and nothing is released.
@@ -84,7 +84,7 @@ func TestProvimuxSessionRouteDelimiterOwnership(t *testing.T) {
 	}
 }
 
-// TestProvimuxSessionRouteExpectUnderLock is finding 3 (a): between the check and the removal the binding is released
+// TestProvimuxSessionRouteExpectUnderLock: between the check and the removal the binding is released
 // and made again on the same login (a pinned turn); its token is another. The older token must not remove it: the
 // answer is the conflict, with the state now, and the new binding stays.
 func TestProvimuxSessionRouteExpectUnderLock(t *testing.T) {
@@ -121,7 +121,7 @@ func TestProvimuxSessionRouteExpectUnderLock(t *testing.T) {
 	}
 }
 
-// TestProvimuxSessionRouteSameLoginFailureRemovesNewer pins finding 4 as upstream's behaviour (decided by the lead):
+// TestProvimuxSessionRouteSameLoginFailureRemovesNewer pins upstream's behaviour:
 // a request still running when its conversation was released and bound again to the same login, which then fails
 // with a fault of that login, removes the newer binding (upstream removes a binding to a login that just failed). The
 // conversation is bound afresh at its next message. A binding to another login is untouched
@@ -172,7 +172,7 @@ func TestProvimuxSessionRouteSameLoginFailureRemovesNewer(t *testing.T) {
 	}
 }
 
-// TestProvimuxSessionRouteBookForgetsExpired is the review's growth finding: an entry leaves the book once its
+// TestProvimuxSessionRouteBookForgetsExpired: an entry leaves the book once its
 // binding is gone upstream (expired, released or removed) and the binding's lifetime since its last answer has passed;
 // an entry whose binding upstream still holds stays.
 func TestProvimuxSessionRouteBookForgetsExpired(t *testing.T) {
@@ -207,7 +207,7 @@ func TestProvimuxSessionRouteBookForgetsExpired(t *testing.T) {
 }
 
 // TestProvimuxSessionRouteForkIsNotSubagent: a Codex fork names its source as its parent; it is a fork, not a
-// sub-agent (the review's seam cases).
+// sub-agent.
 func TestProvimuxSessionRouteForkIsNotSubagent(t *testing.T) {
 	f := newProvimuxSRFixture(t, "round-robin", false, nil)
 	scope := provimuxSRScope("sk-client-one")

@@ -16,9 +16,8 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/provimux/modellists/pdentries"
 )
 
-// The rules decided by the lead on 2026-11-27 after the review of F2 and F3 (prices-and-cache.md, the note of
-// that day): what a fetch and the disk copy refuse, and the values a broken summary carries that are left out.
-// Every fetch goes to a stand-in on loopback; none reaches the real site.
+// The rules of prices-and-cache.md on what a fetch and the disk copy refuse, and the values a broken summary carries
+// that are left out. Every fetch goes to a stand-in on loopback; none reaches the real site.
 
 // figuresRefusal is the fetch's failure, or the test fails.
 func figuresRefusal(t *testing.T, err error, category string, status int) *FetchError {

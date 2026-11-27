@@ -13,7 +13,7 @@ import (
 	ca "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
-func TestReview21SpeechNames(t *testing.T) {
+func TestProvimuxAnsweredSpeechNames(t *testing.T) {
 	h := newSentHarness(t, "")
 	useAnsweredBook(t, newSentClock())
 	a := h.register(&ca.Auth{ID: "speech-fixture", FileName: "speech-fixture.json", Provider: "xai", Status: ca.StatusActive, Attributes: map[string]string{"auth_kind": "apikey", "base_url": "https://api.x.ai/v1", "api_key": "media-key"}}, "grok-tts", "tts-1")
@@ -33,10 +33,10 @@ func TestReview21SpeechNames(t *testing.T) {
 	}
 }
 
-// Ported (finding 31; the record is one file): an item past 90 days is not shown, and is gone from the file at the
+// The record is one file: an item past 90 days is not shown, and is gone from the file at the
 // next write (the documented promise: "not shown after 90 days, removed at the next write"). The next write here is
 // the one a later answer brings.
-func TestReview21StoredExpiry(t *testing.T) {
+func TestProvimuxAnsweredStoredExpiry(t *testing.T) {
 	now := newSentClock()
 	dir := t.TempDir()
 	b := newProvimuxAnsweredBook(now.Now)
@@ -67,9 +67,9 @@ func TestReview21StoredExpiry(t *testing.T) {
 	}
 }
 
-// Ported (the record is one file): a write that fails (the file's place is taken by a directory) is kept as pending
+// The record is one file: a write that fails (the file's place is taken by a directory) is kept as pending
 // and done at the next write once the place is usable; no note is lost.
-func TestReview21WriteRecovery(t *testing.T) {
+func TestProvimuxAnsweredWriteRecovery(t *testing.T) {
 	now := newSentClock()
 	dir := t.TempDir()
 	blocked := filepath.Join(dir, provimuxAnsweredFile)

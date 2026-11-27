@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestReview21HomeGolden(t *testing.T) {
+func TestProvimuxAnsweredHomeGolden(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.Config{}
 	cfg.AuthDir = dir

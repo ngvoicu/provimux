@@ -16,7 +16,7 @@ import (
 	"testing"
 )
 
-func TestReview21PayloadMatrix(t *testing.T) {
+func TestProvimuxEntryPayloadMatrix(t *testing.T) {
 	cfg := sentMatrixConfig + `  interactions:
     - name: provimux-test-interactions
       models:
@@ -119,8 +119,8 @@ func (p *reviewCatalogErr) KVGet(c context.Context, k string) ([]byte, bool, err
 	}
 	return p.KVClient.KVGet(c, k)
 }
-func TestReview21EarlierTransientAndCatalog(t *testing.T) {
-	t.Run("16", func(t *testing.T) {
+func TestProvimuxEntryAntigravityCatalogAndXAIHosts(t *testing.T) {
+	t.Run("antigravity-catalog-read-fails", func(t *testing.T) {
 		h := newSentHarness(t, "")
 		useAnsweredBook(t, newSentClock())
 		path := filepath.Join(t.TempDir(), "synthetic.db")
@@ -161,7 +161,7 @@ func TestReview21EarlierTransientAndCatalog(t *testing.T) {
 			t.Logf("failure=%v read errors=%d receipt=%q header=%q", bad, proxy.n, r[len(r)-1].Model, ans.get(logging.ProvimuxEntryHeader))
 		}
 	})
-	t.Run("17", func(t *testing.T) {
+	t.Run("xai-key-hosts", func(t *testing.T) {
 		for _, tc := range []struct {
 			attr, meta, host string
 			paid             bool

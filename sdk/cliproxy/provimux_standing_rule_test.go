@@ -18,18 +18,18 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
-// Provimux: one standing rule per provider in place of watching each call (answered-by.md, part (5)). Findings 52 (the
-// gateway's own re-registration at the moment an answer is published cost it its entry) and 53 (a plugin's executor put
-// in place during a first attempt, the call failing over to a second credential, and the answer naming an entry).
+// Provimux: one standing rule per provider in place of watching each call (answered-by.md). Two cases: the
+// gateway's own re-registration at the moment an answer is published, which cost it its entry, and a plugin's executor
+// put in place during a first attempt, the call failing over to a second credential, and the answer naming an entry.
 
-// provimuxOpenRouterTwoKeys is the review's OpenRouter key with a second key of the same provider, for a failover.
+// provimuxOpenRouterTwoKeys is these tests' OpenRouter key with a second key of the same provider, for a failover.
 const provimuxOpenRouterTwoKeys = reviewRouter + "        - api-key: review-synthetic-second\n"
 
-// Finding 52, the moment itself: an answer held at the vendor; while it is held the manager publishes the gateway's own
-// built-in executor for the provider, the first thing the service's registration does (at 494df49e3 the review held the
-// service right there, before it recorded the registration: the answer lost its entry 25 of 25). Nothing is recorded
-// afterwards any more, so this state is the whole registration. Then the vendor answers: the entry is named, and both
-// lists record it. The same with a whole configuration save while the answer is held.
+// The re-registration, the moment itself: an answer held at the vendor; while it is held the manager publishes the
+// gateway's own built-in executor for the provider, the first thing the service's registration does (an earlier build,
+// held right there before it recorded the registration, lost the entry 25 times of 25). Nothing is recorded afterwards
+// any more, so this state is the whole registration. Then the vendor answers: the entry is named, and both lists record
+// it. The same with a whole configuration save while the answer is held.
 func TestProvimuxReregistrationAtPublication(t *testing.T) {
 	cases := []struct {
 		name, config, model, entry string
@@ -109,9 +109,9 @@ func TestProvimuxReregistrationAtPublication(t *testing.T) {
 	}
 }
 
-// Finding 52, continuously: the gateway's own executor put back without pause beside 300 streaming answers, by the
-// service as a save, a login change or a model-list refresh does ("service"; at 494df49e3 the review saw 62 of 300 lose
-// their entry), and by the service and directly at the manager in turn ("service-and-manager"). All 300 name it.
+// The re-registration, continuously: the gateway's own executor put back without pause beside 300 streaming answers, by
+// the service as a save, a login change or a model-list refresh does ("service"; an earlier build lost the entry of 62
+// of 300), and by the service and directly at the manager in turn ("service-and-manager"). All 300 name it.
 func TestProvimuxReregistrationsBesideStreams(t *testing.T) {
 	for _, who := range []string{"service", "service-and-manager"} {
 		t.Run(who, func(t *testing.T) {
@@ -169,12 +169,13 @@ type provimuxAuthCapability struct {
 
 func (c provimuxAuthCapability) Identifier() string { return c.id }
 
-// Finding 53 and the like: two keys of one OpenRouter provider; the first is answered 429, the call fails over to the
-// second. An executor that is not the gateway's own (the real plugin host's plugin-refresh executor, or a plugin's own
-// executor) is put in place for the answering provider, and the service's built-in one put back, at a moment relative
-// to the call: before it, while its first attempt is at the vendor, while its second is. No answer of the provider names
-// an entry from then on (this call's, before or after its failover, and every later one), and both lists record null;
-// a provider for which nothing foreign was registered keeps its entry (the control "other", and "none").
+// A plugin's executor during a failover: two keys of one OpenRouter provider; the first is answered 429, the call fails
+// over to the second. An executor that is not the gateway's own (the real plugin host's plugin-refresh executor, or a
+// plugin's own executor) is put in place for the answering provider, and the service's built-in one put back, at a
+// moment relative to the call: before it, while its first attempt is at the vendor, while its second is. No answer of
+// the provider names an entry from then on (this call's, before or after its failover, and every later one), and both
+// lists record null; a provider for which nothing foreign was registered keeps its entry (the control "other", and
+// "none").
 func TestProvimuxForeignExecutorAtAnyMoment(t *testing.T) {
 	for _, foreign := range []string{"plugin-refresh", "plugin-executor"} {
 		for _, moment := range []string{"none", "other", "before", "first-attempt", "second-attempt"} {

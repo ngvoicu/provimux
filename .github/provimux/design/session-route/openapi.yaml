@@ -245,7 +245,7 @@ components:
   responses:
     BadRequest:
       description: |
-        The body is read strictly (after the review): one JSON object and nothing after it, each
+        The body is read strictly: one JSON object and nothing after it, each
         field at most once, no field the schema does not name. `400` for: a body that does not parse,
         is not an object, or has anything after the object; a field given twice or unknown; `model`
         absent, not a string, `null`, or empty or blank; `identity` present and not an object
@@ -360,8 +360,7 @@ components:
       additionalProperties: false
       description: |
         The account a binding names, where `GET /v1/models?include=accounts` does not show it now for
-        this name (disabled, or no longer serving the name): nothing of it is given (added after
-        the review).
+        this name (disabled, or no longer serving the name): nothing of it is given.
       required: [listed]
       properties:
         listed:
@@ -438,7 +437,7 @@ components:
               format: date-time
         position:
           type: [object, "null"]
-          description: "`null` unless `bound` to an account the list shows (after the review: nothing is said of an unlisted account's place)."
+          description: "`null` unless `bound` to an account the list shows (nothing is said of an unlisted account's place)."
           required: [below_first, higher_priority_free, higher_priority_free_at]
           properties:
             below_first:
@@ -537,10 +536,10 @@ components:
           enum: [not-bound, not-seen]
         model:
           type: string
-          description: As in a show. Added after the review.
+          description: As in a show.
         routed_model:
           type: [string, "null"]
-          description: As in a show. Added after the review.
+          description: As in a show.
         was:
           description: "The route the binding named (or `{listed: false}`). `null` when nothing was released."
           oneOf:

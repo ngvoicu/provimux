@@ -2,7 +2,7 @@ package registry
 
 import "testing"
 
-// Step F3: the client list's switch is the policy the service last put in force, off in Home mode.
+// The client list's switch is the policy the service last put in force, off in Home mode.
 func TestProvimuxPublishedListsInForce(t *testing.T) {
 	catalogRuntime.Lock()
 	previous, previousHome := catalogRuntime.sources, catalogRuntime.home

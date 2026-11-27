@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-func TestReview21MediaAndCompaction(t *testing.T) {
+func TestProvimuxEntryMediaAndCompaction(t *testing.T) {
 	cfg := strings.Replace(sentMatrixConfig, "        - name: provimux-test-codex-sent", "        - name: deepseek-v4.1-flash\n          is-compat: true\n        - name: provimux-test-codex-sent", 1)
 	h := newSentHarness(t, cfg)
 	useAnsweredBook(t, newSentClock())
@@ -86,7 +86,7 @@ func TestReview21MediaAndCompaction(t *testing.T) {
 		})
 	}
 }
-func TestReview21Failover(t *testing.T) {
+func TestProvimuxEntryFailover(t *testing.T) {
 	h := newSentHarness(t, `api-keys:
   claude:
     - name: first-claude
@@ -139,7 +139,7 @@ func TestReview21Failover(t *testing.T) {
 		}
 	}
 }
-func TestReview21Refresh(t *testing.T) {
+func TestProvimuxEntryRefresh(t *testing.T) {
 	h := newSentHarness(t, "")
 	useAnsweredBook(t, newSentClock())
 	a := h.register(&ca.Auth{ID: "refresh-fixture", FileName: "refresh-fixture.json", Provider: "meta", Status: ca.StatusActive, Attributes: map[string]string{"auth_kind": "oauth", "path": filepath.Join(t.TempDir(), "refresh-fixture.json")}, Metadata: map[string]any{"type": "meta", "access_token": "before", "api_key": "fixture-key", "refresh_token": "fixture-refresh", "email": "refresh@fixture.invalid", "expired": sentFar()}}, "review-refresh")
@@ -186,7 +186,7 @@ func TestReview21Refresh(t *testing.T) {
 	if ans.status != 200 || strings.Join(seen, " ") != "refused refresh-side actual" {
 		t.Fatalf("fixture %s", ans.body)
 	}
-	// Ported (rule A.1 of the amendment of 2026-11-27 (2)): this executor is registered through the SDK, so its answer
+	// This executor is registered through the SDK, so its answer
 	// names no entry at all; that a refresh's requests stay off the answering attempt is pinned with a built-in
 	// executor in the subtest below.
 	if ans.get(logging.ProvimuxEntryHeader) != "" {
@@ -226,7 +226,7 @@ func TestReview21Refresh(t *testing.T) {
 		}
 	})
 }
-func TestReview21ZstdRetry(t *testing.T) {
+func TestProvimuxEntryZstdRetry(t *testing.T) {
 	h := newSentHarness(t, `upstream:
   codex:
     upstream-request-compression: true
@@ -254,7 +254,7 @@ func TestReview21ZstdRetry(t *testing.T) {
 		t.Fatalf("fixture or attribution: %s", a.body)
 	}
 }
-func TestReview21ClaudeSigner(t *testing.T) {
+func TestProvimuxEntryClaudeSigner(t *testing.T) {
 	// The bytes reported by the receiving HTTP transport are decisive, regardless of kind.
 	for _, both := range []bool{false, true} {
 		cfg := answeredClaudeConfig

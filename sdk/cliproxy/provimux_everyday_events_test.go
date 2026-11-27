@@ -16,13 +16,13 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
-// Provimux: does an everyday event in the gateway as shipped cost an answer in flight its entry? (The lead's question
-// on rule A.1 after the amendment of 2026-11-27 (2), part 3.) A Claude login's streaming answer is held at the stand-in
-// vendor, after the request was handed to the transport and before the answer is stated; the event happens; the vendor
-// answers. The event is made through the service's own entry points, as the watcher, a configuration save, the plugin
-// host and the model-list refresh make it. Since part (5) (one standing rule per provider): every event keeps the entry,
-// for the answer in flight and for the answers after it; the control (another kind of executor put in place for the
-// answering provider) costs it, and every later answer of that provider, while another provider keeps its own.
+// Provimux: does an everyday event in the gateway as shipped cost an answer in flight its entry? A Claude login's
+// streaming answer is held at the stand-in vendor, after the request was handed to the transport and before the answer
+// is stated; the event happens; the vendor answers. The event is made through the service's own entry points, as the
+// watcher, a configuration save, the plugin host and the model-list refresh make it. With one standing rule per
+// provider: every event keeps the entry, for the answer in flight and for the answers after it; the control (another
+// kind of executor put in place for the answering provider) costs it, and every later answer of that provider, while
+// another provider keeps its own.
 
 // provimuxGate holds every Claude model request at the vendor until it is released.
 type provimuxGate struct {

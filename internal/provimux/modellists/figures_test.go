@@ -18,7 +18,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/provimux/modellists/pdentries"
 )
 
-// Step F2 (prices-and-cache.md 4 and 6.2): the entries request, the kept record and the rule of 4.2. Every
+// prices-and-cache.md 4 and 6.2: the entries request, the kept record and the rule of 4.2. Every
 // fetch goes to pdentries, a stand-in of providers.dev's API on loopback; none reaches the real site.
 
 // figuresFixture is testdata/figures-summaries.json: real entry summaries of providers.dev's dataset
@@ -165,7 +165,7 @@ func TestFiguresExampleRecordsFromTheirSummaries(t *testing.T) {
 	}
 }
 
-// The rule of 4.2, row by row, on real entries (the six of finding 2 and the table "What the rule gives
+// The rule of 4.2, row by row, on real entries (six real entries and the table "What the rule gives
 // today"), with the plain probe never giving row 1 and always listed with counts false.
 func TestFiguresRelyOnRowByRowFromFixtures(t *testing.T) {
 	_, byRef := loadFiguresFixture(t)

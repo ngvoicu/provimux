@@ -21,8 +21,8 @@ import (
 
 // The response headers of the statement, in the contract's order (prices-and-cache/openapi.yaml, components/headers).
 // This build writes X-Provimux-Account, and where the gateway read what the attempt sent, X-Provimux-Model,
-// X-Provimux-Model-Basis, X-Provimux-Model-Sent and X-Provimux-Entry; X-Provimux-Effort is a later step's (W5). Each
-// is removed from a response where the statement has no value for it, so that an answer never carries another
+// X-Provimux-Model-Basis, X-Provimux-Model-Sent and X-Provimux-Entry; X-Provimux-Effort is not written by this build.
+// Each is removed from a response where the statement has no value for it, so that an answer never carries another
 // gateway's.
 const (
 	ProvimuxAccountHeader    = "X-Provimux-Account"
@@ -68,9 +68,9 @@ func ProvimuxFieldNames() []ProvimuxField { return append([]ProvimuxField(nil), 
 var provimuxMarkerOnTheWire = regexp.MustCompile(`^[as]\.[a-z2-7]{20}$`)
 
 // ProvimuxAnswer is what Provimux adds to the statement of the credential that produced a response: the account's
-// marker, and what the attempt sent (answered-by.md 3.1 and 4, step W6a): the model id read from the request the
+// marker, and what the attempt sent (answered-by.md 3.1 and 4): the model id read from the request the
 // gateway sent, and the providers.dev entry worked out from that request. (The model the vendor named and the effort
-// are a later step's: W5.)
+// are not read by this build.)
 type ProvimuxAnswer struct {
 	Account   string // "a." or "s." and 20 characters; "" names nobody and sends nothing
 	ModelSent string // the model id read from the request the gateway sent to the vendor; "" = not read

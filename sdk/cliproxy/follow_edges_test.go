@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// Finding 40, the reviewer's synchronised reproduction, unchanged: the newest note is first (rule B.3).
+// Two notes racing on one clock, synchronised: the newest note is first.
 func TestFollowClockInterleave(t *testing.T) {
 	first, second, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	var n atomic.Int32
