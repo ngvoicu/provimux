@@ -52,9 +52,11 @@ paths:
         `model` is the name the client sends on its turns. The gateway resolves it as a turn's name is
         resolved before an account is chosen: `auto` becomes the model it routes to (with "serve only
         my names", the first of the owner's served names; else upstream's first available model; in
-        Home mode it stays `auto`), and the answer gives that model as `routed_model`. A name a plugin's
-        model router rewrote, which depends on the turn's body, is not resolved: ask under the name the
-        router chose.
+        Home mode it stays `auto`), and the answer gives that model as `routed_model`. Asking under the
+        name sent finds the turn for a plain name, and for `auto` while the catalog's first model is
+        the one it was when the turn was sent. After the catalog changed, or where a plugin's model
+        router rewrote the name (it reads the turn's body, so a show cannot), ask under the model the
+        turn was routed to: the `routed_model` an earlier answer named, or the router's target.
 
         A conversation another client key used and a conversation that does not exist get the same
         answer: `conversation: "not-seen"`. So does a conversation whose binding has expired: the
@@ -117,10 +119,12 @@ paths:
         available route by priority, among the accounts that request may use. Nothing is sent to any
         account by this request.
 
-        An answer in flight finishes where it started. If, before it ends, the conversation is bound
-        again to the same login and that answer then fails with a fault of that login, upstream removes
-        the newer binding too (it removes a binding to a login that just failed); the conversation is
-        bound afresh at its next message. A binding to another login is left alone.
+        An answer in flight finishes where it started. Under the default rebind policy, if before it
+        ends the conversation is bound again to the same login and that answer then fails with a fault
+        of that login, upstream removes the newer binding too (it removes a binding to a login that just
+        failed), and the conversation is bound afresh at its next message; with
+        `session-affinity-rebind-on: never` the newer binding stays. A binding to another login is left
+        alone.
 
         On a Codex WebSocket (decided by the lead on 2026-11-27): a release holds only if that
         connection is closed **before its next turn**. A turn on the open connection is pinned to the
@@ -128,9 +132,10 @@ paths:
         connection afterwards does not undo that: release again, then close. `websocket_may_hold` says
         when this applies.
 
-        A sub-agent keeps its own binding. One started after a release inherits its parent's binding
-        as upstream does: if the parent has been bound again on the lower login by then, the child
-        goes there too.
+        A sub-agent keeps its own binding. With sub-agent inheritance on (upstream's default), a
+        released sub-agent's next turn takes its parent's binding again, even where the show named a
+        higher account as first, and a sub-agent started after a release takes its parent's binding
+        as it is then. With inheritance off, a new sub-agent is routed on its own.
 
         With `expect`, only the life of the binding that token names is released (`expect`, below);
         else `409`. Releasing what is not bound is not an error: `released: false`.
@@ -350,7 +355,7 @@ components:
             of this conversation from this key since it started, or has forgotten it (its binding
             expired), or cannot name a conversation from what was sent. A turn is seen once its
             result is recorded, right after its last byte: a show sent the instant a streamed turn
-            ends may come just before, and answers as if the turn had not been sent yet.
+            ends can come just before, and then answers as if the turn had not been sent yet.
           enum: [bound, not-bound, not-seen]
         model:
           type: string
@@ -460,9 +465,9 @@ components:
           type: boolean
           description: |
             The conversation is a sub-agent's: it has a parent conversation (a fork is not a sub-agent).
-            A parent's release does not move it. A sub-agent started after the parent's release inherits
-            the parent's binding as upstream does: where the parent was bound again on the lower login,
-            the child goes there too.
+            A parent's release does not move it. With sub-agent inheritance on (upstream's default), its
+            next turn after its own release takes its parent's binding again, even where the show named
+            a higher account as first; with inheritance off, a new sub-agent is routed on its own.
 
     Release:
       type: object

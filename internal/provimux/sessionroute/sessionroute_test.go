@@ -160,3 +160,24 @@ func TestProvimuxSessionRouteAffinityOffSubscribesNothing(t *testing.T) {
 		t.Fatalf("affinity off: %d observers subscribed to every result", n)
 	}
 }
+
+// TestProvimuxSessionRouteShowSubscribesAgain pins the review's case of a reload: a result that arrives after the
+// config turned affinity on but before the service installed its selector stops the book; once affinity runs nothing
+// is subscribed, and the next show subscribes the book again (it observes from the next result on).
+func TestProvimuxSessionRouteShowSubscribesAgain(t *testing.T) {
+	t.Cleanup(EnableInTests())
+	m := coreauth.NewManager(nil, &coreauth.RoundRobinSelector{}, nil)
+	Follow(m, srConfig(true, false)) // committed: affinity on; the selector comes after
+	Start(m)
+	m.MarkResult(context.Background(), srResult()) // a result before the selector is installed
+	m.SetSelector(srAffinity(t))                   // installed
+	if mode := coreauth.ProvimuxSessionAffinityMode(m); mode != "on" {
+		t.Fatalf("affinity %q", mode)
+	}
+	if n := coreauth.ProvimuxResultObservers(m); n != 0 {
+		t.Fatalf("before a show: %d observers", n)
+	}
+	if !Book(m).Subscribed() || coreauth.ProvimuxResultObservers(m) != 1 {
+		t.Fatal("the show did not subscribe the book again")
+	}
+}

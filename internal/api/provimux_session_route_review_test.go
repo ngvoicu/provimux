@@ -152,3 +152,30 @@ func TestProvimuxSessionRouteAuto(t *testing.T) {
 		t.Fatalf("routed to %q, which GET /v1/models does not list", *v.RoutedModel)
 	}
 }
+
+// TestProvimuxSessionRouteIdentityStrict: an identity that names a member twice, at any depth, and a body that is not
+// valid UTF-8 are refused (400) on both paths, like the other malformed bodies, and a release refused so releases
+// nothing.
+func TestProvimuxSessionRouteIdentityStrict(t *testing.T) {
+	f := newSRAPIFixture(t)
+	header := http.Header{"X-Session-Affinity": {"strict-identity"}}
+	f.turn("sk-sr-one", header)
+	for _, body := range []string{
+		`{"model":"` + srAPIModel + `","identity":{"prompt_cache_key":"a","prompt_cache_key":"b"}}`,
+		`{"model":"` + srAPIModel + `","identity":{"metadata":{"user_id":"a","user_id":"b"}}}`,
+		`{"model":"` + srAPIModel + `","identity":{"list":[{"k":1,"k":2}]}}`,
+		"{\"model\":\"" + srAPIModel + "\",\"identity\":{\"prompt_cache_key\":\"\xff\xfe\"}}",
+	} {
+		for _, path := range []string{"/v1/provimux/session-route", "/v1/provimux/session-route/release"} {
+			if code, got := f.do(http.MethodPost, path, "sk-sr-one", header, body); code != http.StatusBadRequest {
+				t.Fatalf("%s %q: HTTP %d, want 400: %s", path, body, code, got)
+			}
+		}
+	}
+	if !f.srBound("sk-sr-one", header) {
+		t.Fatal("a refused release released")
+	}
+	if code, _ := f.show("sk-sr-one", header, `{"model":"`+srAPIModel+`","identity":{"metadata":{"user_id":"a"},"list":[{"k":1},{"k":1}]}}`); code != http.StatusOK {
+		t.Fatalf("a well-formed identity is refused: %d", code)
+	}
+}
