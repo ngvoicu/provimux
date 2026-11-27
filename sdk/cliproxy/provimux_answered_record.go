@@ -1,28 +1,19 @@
 package cliproxy
 
 import (
-	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
-	stdjson "encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
-	"slices"
 	"sort"
-	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
-	"unicode/utf8"
 
 	"github.com/MoeForge/moego/json"
-	"github.com/gofrs/flock"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/provimux/modellists"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
@@ -30,36 +21,28 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// Provimux: what each credential's answers said to each client (.github/provimux/design/answered-by.md 4.4, as
-// amended by the lead on 2026-11-27, twice). A best-effort memory of what answers named, rebuilt by the next answer;
-// nothing a user owns. A statement is noted once the stock output route has written it to its client (the response's
-// headers as they were committed, a WebSocket turn's response.created), never when it is only offered: under the
-// client's key reference, the credential that answered, its marker, and the name called, exactly. Both lists read it
-// back: a client's list gives what answers to its own key said, by day; the management list gives every key's
-// together, with the time.
+// Provimux: what each credential's answers said to each client (.github/provimux/design/answered-by.md, "The record").
+// A cache of what answers named, rebuilt by the next answer; nothing a user owns. A statement is noted once it has been
+// written to its client (the response's headers, a WebSocket turn's response.created), never when it is only offered:
+// under the client's key reference, the credential that answered, its marker, and the name called, exactly. Both
+// lists read it back: a client's list gives what answers to its own key said, by day; the management list gives every
+// key's together, with the time.
 //
 //   - Per client, credential, marker and name, at most four distinct outcomes (an entry, or none), newest first. The
 //     order is the order the notes were accepted in (a sequence of the record's own, under its lock), never the
-//     clock's: the newest answer is always kept and always first, also when several share a clock tick. Each item
-//     keeps the time of the last answer that had it. A fifth drops the oldest. An item older than 90 days is not
-//     shown, and is dropped from the file at the next write.
+//     clock's. Each item keeps the time of the last answer that had it. A fifth drops the oldest. An item older than
+//     90 days is not shown, and is dropped from the file at the next write.
 //   - Under the name called where the credential registers exactly that id, else that id without its thinking suffix
 //     where it registers that; else nothing. No case folding.
 //   - A client key is kept as a keyed hash under the markers' key, the credential's id likewise; callers without a key
 //     share one record. Another account's login in the same file has another marker and starts empty.
-//   - Kept in one file of its own in the auth folder (provimux-answered.v1, not a login file: no .json). One gateway
-//     owns it, by a lock on provimux-answered.v1.lock held while it runs; a second gateway on the same folder keeps
-//     its record in memory only, never reads or writes the file, and says so once. The owner rewrites the file whole
-//     and atomically (a temporary file, then a rename), and only over a file that is its own (its first line carries
-//     the SHA-256 of the rest, checked before anything is parsed) and unchanged since it last read or wrote it:
-//     anything else at that name (another program's file, a damaged or truncated one, one that changed underneath,
-//     one of the earlier form without a digest) is left as it is, never written over or removed, the record stays in
-//     memory, and the log says so once; when that file is removed, the record writes a new one.
-//   - When the auth folder changes, memory is written to the old file and replaced by what the new one holds; a note
-//     that arrives around the change may be missed. The stop is final: the intake closes, the last write runs, and
-//     nothing opens the intake again in this process.
+//   - Kept in a cache file of its own in the auth folder (provimux-answered.v1, not a login file: no .json), JSON with
+//     a version, written whole and atomically after each change. A file that does not parse, or is of another version,
+//     is ignored (said once in the log) and replaced at the next write. When the auth folder changes, memory is written
+//     to the old file and replaced by what the new one holds. The stop is final: the last write runs, and no note is
+//     accepted after it.
 //   - With models.answered-by off, in Home mode, and in a process Provimux's own main did not start, nothing is noted
-//     and the file is neither read nor written; switching to off or Home drops what is pending, unread.
+//     and the file is neither read nor written; switching to off or Home drops what is in memory, unwritten.
 //
 // It holds markers, names, entries, times and keyed hashes: nothing of a request's content and no client key.
 
@@ -85,40 +68,25 @@ type provimuxAnsweredItem struct {
 	seq   uint64
 }
 
-// provimuxAnsweredBook is the record.
+// provimuxAnsweredBook is the record: memory, and the folder its file is kept in.
 type provimuxAnsweredBook struct {
 	now func() time.Time
 
-	mu      sync.Mutex
-	rows    map[provimuxAnsweredRow]map[string][]provimuxAnsweredItem // row, client -> items
-	seq     uint64                                                    // the last note's sequence
-	place   string                                                    // the file; "" = none
-	owner   bool                                                      // this gateway holds the place's lock
-	foreign bool                                                      // the file at place is not (or no longer) this record's: never written over
-	seen    provimuxAnsweredSeen                                      // the file as this record last read or wrote it
-	closed  bool                                                      // the stop has begun: no note is accepted, ever again
-	dirty   bool                                                      // the file must learn of a change
-	unsent  bool                                                      // anything changed since the last write
-
-	lock *flock.Flock // the place's lock, while held
+	mu     sync.Mutex
+	rows   map[provimuxAnsweredRow]map[string][]provimuxAnsweredItem // row, client -> items
+	seq    uint64                                                    // the last note's sequence
+	dir    string                                                    // the auth folder; "" = no file
+	closed bool                                                      // the stop has begun: no note is accepted, ever again
+	dirty  bool                                                      // memory differs from the file
 
 	wake       chan struct{}
-	noted      chan struct{} // a note was accepted (buffered, never waited on by the record itself)
 	writerOnce sync.Once
 	writing    sync.Mutex // one writer at a time
 	logged     atomic.Bool
-	sharedLog  atomic.Bool
-	foreignLog atomic.Bool
-}
-
-// provimuxAnsweredSeen is a file's fingerprint: whether it existed, and the hash of its bytes.
-type provimuxAnsweredSeen struct {
-	exists bool
-	sum    [sha256.Size]byte
 }
 
 func newProvimuxAnsweredBook(now func() time.Time) *provimuxAnsweredBook {
-	return &provimuxAnsweredBook{now: now, rows: map[provimuxAnsweredRow]map[string][]provimuxAnsweredItem{}, wake: make(chan struct{}, 1), noted: make(chan struct{}, 1)}
+	return &provimuxAnsweredBook{now: now, rows: map[provimuxAnsweredRow]map[string][]provimuxAnsweredItem{}, wake: make(chan struct{}, 1)}
 }
 
 // provimuxAnswered is the gateway's record.
@@ -149,16 +117,12 @@ func provimuxAnsweredName(authID, called string) string {
 	return ""
 }
 
-// note records one written answer's outcome for its client. Memory only; the writer is woken when the file must learn
-// of it.
+// note records one written answer's outcome for its client, in memory, and wakes the writer when what the lists
+// show changed.
 func (b *provimuxAnsweredBook) note(client, credential, marker, name, entry string) {
 	if credential == "" || marker == "" || name == "" {
 		return
 	}
-	// What is kept is what the file can hold and give back: valid UTF-8 (the writer's codec writes any other byte as
-	// U+FFFD, so memory would differ from the file). The gateway's own values already are.
-	client, credential, marker, name, entry = strings.ToValidUTF8(client, "\uFFFD"), strings.ToValidUTF8(credential, "\uFFFD"),
-		strings.ToValidUTF8(marker, "\uFFFD"), strings.ToValidUTF8(name, "\uFFFD"), strings.ToValidUTF8(entry, "\uFFFD")
 	row := provimuxAnsweredRow{credential: credential, marker: marker, name: name}
 	b.mu.Lock()
 	if b.closed {
@@ -174,15 +138,16 @@ func (b *provimuxAnsweredBook) note(client, credential, marker, name, entry stri
 	}
 	items, changed := provimuxAnsweredAdd(clients[client], provimuxAnsweredItem{entry: entry, at: now, seq: b.seq}, now)
 	clients[client] = items
-	b.unsent = true
-	b.dirty = b.dirty || changed
+	b.dirty = true
 	b.mu.Unlock()
-	select { // for a reader that waits for a note (a test): never blocks
-	case b.noted <- struct{}{}:
-	default:
-	}
-	if changed {
-		b.startWriter()
+	if changed { // a new outcome or a new day is written at once; a later time on the same day at the next write
+		b.writerOnce.Do(func() {
+			go func() {
+				for range b.wake {
+					b.flush()
+				}
+			}()
+		})
 		select {
 		case b.wake <- struct{}{}:
 		default:
@@ -256,152 +221,61 @@ func (b *provimuxAnsweredBook) read(client string, all bool, credential, marker,
 	return out
 }
 
-// setPlace puts the record in the file of dir: memory is written to the old file first (where this gateway owns it),
-// then replaced by what the new one holds. The new place is this gateway's when it gets the place's lock; else the
-// record is kept in memory only. The same place again changes nothing; after the stop nothing changes.
+// setPlace puts the record in the file of dir: memory is written to the old file first, then replaced by what the
+// new one holds. The same place again changes nothing; after the stop nothing changes.
 func (b *provimuxAnsweredBook) setPlace(dir string) {
 	b.writing.Lock()
 	defer b.writing.Unlock()
-	place := ""
-	if dir != "" {
-		place = filepath.Join(dir, provimuxAnsweredFile)
-	}
 	b.mu.Lock()
-	same, stopped, old := place == b.place, b.closed, b.place
+	same, stopped := dir == b.dir, b.closed
 	b.mu.Unlock()
 	if same || stopped {
 		return
 	}
-	if old != "" {
-		b.writeLocked(true)
-		b.release()
-	}
-	rows := map[provimuxAnsweredRow]map[string][]provimuxAnsweredItem{}
-	var seq uint64
-	owner, foreign := false, false
-	var seen provimuxAnsweredSeen
-	var lock *flock.Flock
-	if place != "" {
-		var errLock error
-		lock, errLock = provimuxAnsweredLock(place)
-		switch {
-		case errLock != nil:
-			b.logNotKept(errLock)
-		case lock == nil:
-			if b.sharedLog.CompareAndSwap(false, true) {
-				log.Warnf("answered-by: another gateway keeps the record of what each account last answered as in %s; this one keeps its own in memory only, until it stops", filepath.Dir(place))
-			}
-		default:
-			owner = true
-			var errLoad error
-			rows, seq, seen, errLoad = provimuxAnsweredLoad(place, b.now().UTC())
-			if errLoad != nil {
-				foreign = true
-				b.logForeign(place, errLoad)
-			}
+	b.writeLocked()
+	rows, seq := map[provimuxAnsweredRow]map[string][]provimuxAnsweredItem{}, uint64(0)
+	if dir != "" {
+		var errLoad error
+		rows, seq, errLoad = provimuxAnsweredLoad(filepath.Join(dir, provimuxAnsweredFile), b.now().UTC())
+		if errLoad != nil {
+			log.Warnf("answered-by: %s is ignored (%v); the next answer writes a new one", filepath.Join(dir, provimuxAnsweredFile), errLoad)
 		}
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.closed { // the stop came while the place changed: it is final, and the move is not made
-		if lock != nil {
-			_ = lock.Unlock()
-		}
-		return
-	}
-	b.place, b.owner, b.foreign, b.seen, b.lock = place, owner, foreign, seen, lock
-	b.rows, b.seq = rows, seq
-	b.dirty, b.unsent = false, false
+	b.dir, b.rows, b.seq, b.dirty = dir, rows, seq, false
 }
 
-// drop puts the record out of use without reading or writing any file: what is pending is dropped, memory is emptied,
-// and the place's lock is given up. Switching models.answered-by off, or to Home mode, does this (the amendment of
-// 2026-11-27 (2), part 3).
+// drop puts the record out of use without reading or writing any file: memory is emptied. Switching
+// models.answered-by off, or to Home mode, does this.
 func (b *provimuxAnsweredBook) drop() {
 	b.writing.Lock()
 	defer b.writing.Unlock()
 	b.mu.Lock()
-	b.place, b.foreign, b.seen = "", false, provimuxAnsweredSeen{}
-	b.rows = map[provimuxAnsweredRow]map[string][]provimuxAnsweredItem{}
-	b.dirty, b.unsent = false, false
-	b.mu.Unlock()
-	b.release()
+	defer b.mu.Unlock()
+	b.dir, b.rows, b.dirty = "", map[provimuxAnsweredRow]map[string][]provimuxAnsweredItem{}, false
 }
 
-// release gives up the place's lock. The caller holds b.writing.
-func (b *provimuxAnsweredBook) release() {
-	b.mu.Lock()
-	lock := b.lock
-	b.lock, b.owner = nil, false
-	b.mu.Unlock()
-	if lock != nil {
-		_ = lock.Unlock()
-	}
-}
-
-// provimuxAnsweredLock takes the lock of place's record, for as long as this gateway runs: nil without an error when
-// another process (or another record in this one) holds it.
-func provimuxAnsweredLock(place string) (*flock.Flock, error) {
-	if errDir := os.MkdirAll(filepath.Dir(place), 0o700); errDir != nil {
-		return nil, fmt.Errorf("the auth folder could not be made: %w", errDir)
-	}
-	lock := flock.New(place+".lock", flock.SetPermissions(0o600))
-	locked, errLock := lock.TryLock()
-	if errLock != nil {
-		return nil, fmt.Errorf("the record's lock could not be taken: %w", errLock)
-	}
-	if !locked {
-		return nil, nil
-	}
-	return lock, nil
-}
-
-// close stops the intake for good, then writes, and gives up the place: a note that comes after the stop began is not
-// accepted, and nothing opens the intake again.
+// close stops the intake for good, then writes: a note that comes after the stop began is not accepted.
 func (b *provimuxAnsweredBook) close() {
 	b.mu.Lock()
 	b.closed = true
 	b.mu.Unlock()
-	b.writing.Lock()
-	defer b.writing.Unlock()
-	b.writeLocked(true)
-	b.release()
+	b.flush()
 }
 
 // flush writes what changed.
 func (b *provimuxAnsweredBook) flush() {
 	b.writing.Lock()
 	defer b.writing.Unlock()
-	b.writeLocked(true)
+	b.writeLocked()
 }
 
-// startWriter starts the writer: it writes what the file must learn each time it is woken.
-func (b *provimuxAnsweredBook) startWriter() {
-	b.writerOnce.Do(func() {
-		go func() {
-			for range b.wake {
-				b.writing.Lock()
-				b.writeLocked(false)
-				b.writing.Unlock()
-			}
-		}()
-	})
-}
-
-// provimuxAnsweredFormat is the record's mark inside its content.
-const provimuxAnsweredFormat = "provimux answered-by record"
-
-// provimuxAnsweredVersion is the form of the file this build writes and reads: version 2 is a first line with the
-// mark, the version and the SHA-256 of every byte after that line, then the content (the amendment of 2026-11-27 (2),
-// part (6)). A file of version 1 (no digest, written only by builds that were never released) is not this record's.
-const provimuxAnsweredVersion = 2
-
-// provimuxAnsweredHeader is the first line's text before the digest's 64 hex digits and the newline.
-const provimuxAnsweredHeader = "provimux answered-by record 2 sha256:"
+// provimuxAnsweredVersion is the version of the file's form this build writes and reads.
+const provimuxAnsweredVersion = 1
 
 // provimuxAnsweredStored is the file's form.
 type provimuxAnsweredStored struct {
-	Format  string                      `json:"format"`
 	Version int                         `json:"version"`
 	Rows    []provimuxAnsweredStoredRow `json:"rows"`
 }
@@ -415,41 +289,22 @@ type provimuxAnsweredStoredRow struct {
 }
 
 type provimuxAnsweredStoredItem struct {
-	Entry *string `json:"entry"`
-	At    string  `json:"at"`
-	Seq   uint64  `json:"seq"`
+	Entry *string   `json:"entry"`
+	At    time.Time `json:"at"`
+	Seq   uint64    `json:"seq"`
 }
 
-// writeLocked writes the whole record to its file, atomically, when it changed (anything with all, else only what
-// the file must learn), and only where this gateway owns the place and the file there is still the one it last read
-// or wrote. Items past the kept time are left out. The caller holds b.writing.
-func (b *provimuxAnsweredBook) writeLocked(all bool) {
+// writeLocked writes the whole record to its file, atomically, when memory changed since the last write. Items past
+// the kept time are left out. The caller holds b.writing.
+func (b *provimuxAnsweredBook) writeLocked() {
 	b.mu.Lock()
-	if !(b.dirty || (all && b.unsent)) {
+	if !b.dirty || b.dir == "" {
+		b.dirty = false
 		b.mu.Unlock()
 		return
 	}
-	place, owner, foreign, seen := b.place, b.owner, b.foreign, b.seen
-	if foreign && owner && place != "" {
-		// A file that was not this record's is never written over or removed; once it is gone (removed by hand), the
-		// place is free again and the record writes a new one. Should another such file appear, that is a new state,
-		// with its own warning.
-		if _, errStat := os.Lstat(place); errors.Is(errStat, os.ErrNotExist) {
-			foreign, seen = false, provimuxAnsweredSeen{}
-			b.foreign, b.seen = false, seen
-			b.foreignLog.Store(false)
-		}
-	}
-	if place == "" || !owner || foreign {
-		b.dirty, b.unsent = false, false
-		b.mu.Unlock()
-		if place == "" {
-			b.logNotKept(errors.New("no auth folder to keep it in"))
-		}
-		return
-	}
-	now := b.now().UTC()
-	stored := provimuxAnsweredStored{Format: provimuxAnsweredFormat, Version: provimuxAnsweredVersion, Rows: []provimuxAnsweredStoredRow{}}
+	dir, now := b.dir, b.now().UTC()
+	stored := provimuxAnsweredStored{Version: provimuxAnsweredVersion, Rows: []provimuxAnsweredStoredRow{}}
 	for row, clients := range b.rows {
 		for client, items := range clients {
 			out := provimuxAnsweredStoredRow{Credential: row.credential, Marker: row.marker, Name: row.name, Client: client}
@@ -457,7 +312,7 @@ func (b *provimuxAnsweredBook) writeLocked(all bool) {
 				if now.Sub(item.at) > provimuxAnsweredKept {
 					continue
 				}
-				kept := provimuxAnsweredStoredItem{At: item.at.Format(time.RFC3339Nano), Seq: item.seq}
+				kept := provimuxAnsweredStoredItem{At: item.at, Seq: item.seq}
 				if item.entry != "" {
 					entry := item.entry
 					kept.Entry = &entry
@@ -469,325 +324,65 @@ func (b *provimuxAnsweredBook) writeLocked(all bool) {
 			}
 		}
 	}
-	b.dirty, b.unsent = false, false
+	b.dirty = false
 	b.mu.Unlock()
-	sort.Slice(stored.Rows, func(i, j int) bool {
-		a, c := stored.Rows[i], stored.Rows[j]
-		if a.Credential != c.Credential {
-			return a.Credential < c.Credential
-		}
-		if a.Marker != c.Marker {
-			return a.Marker < c.Marker
-		}
-		if a.Name != c.Name {
-			return a.Name < c.Name
-		}
-		return a.Client < c.Client
-	})
-	written, errWrite := provimuxAnsweredWrite(place, stored, seen)
-	b.mu.Lock()
-	switch {
-	case errors.Is(errWrite, errProvimuxAnsweredNotOurs):
-		b.foreign = true
-	case errWrite != nil:
-		b.dirty, b.unsent = true, true
-	default:
-		b.seen = written
+	data, err := json.Marshal(stored)
+	if err == nil {
+		err = modellists.WriteFileAtomic(dir, provimuxAnsweredFile, data)
 	}
-	b.mu.Unlock()
-	switch {
-	case errors.Is(errWrite, errProvimuxAnsweredNotOurs):
-		b.logForeign(place, errWrite)
-	case errWrite != nil:
-		b.logNotKept(errWrite)
+	if err != nil {
+		b.mu.Lock()
+		b.dirty = true
+		b.mu.Unlock()
+		if b.logged.CompareAndSwap(false, true) {
+			log.Warnf("answered-by: what each account last answered as is not kept: %v; it holds until this process ends", err)
+		}
 	}
 }
 
-// errProvimuxAnsweredNotOurs: the file at the record's place is not the one the record last read or wrote.
-var errProvimuxAnsweredNotOurs = errors.New("the file there is not the one this gateway last read or wrote")
-
-// provimuxAnsweredWrite writes stored to place whole and atomically (a temporary file, then a rename), when the file
-// at place is still seen (or there is none). It returns what it wrote.
-func provimuxAnsweredWrite(place string, stored provimuxAnsweredStored, seen provimuxAnsweredSeen) (provimuxAnsweredSeen, error) {
-	raw, errMarshal := provimuxAnsweredEncode(stored)
-	if errMarshal != nil {
-		return seen, errMarshal
+// provimuxAnsweredLoad reads the record's file, items past the kept time left out. A missing file is an empty
+// record; a file that cannot be read or parsed, or is of another version, is an error (and an empty record).
+func provimuxAnsweredLoad(place string, now time.Time) (map[provimuxAnsweredRow]map[string][]provimuxAnsweredItem, uint64, error) {
+	rows := map[provimuxAnsweredRow]map[string][]provimuxAnsweredItem{}
+	raw, err := os.ReadFile(place)
+	if errors.Is(err, os.ErrNotExist) {
+		return rows, 0, nil
 	}
-	if errDir := os.MkdirAll(filepath.Dir(place), 0o700); errDir != nil {
-		return seen, fmt.Errorf("the auth folder could not be made: %w", errDir)
+	var stored provimuxAnsweredStored
+	if err == nil {
+		err = json.Unmarshal(raw, &stored)
 	}
-	tmp, errTmp := os.CreateTemp(filepath.Dir(place), "."+provimuxAnsweredFile+".*")
-	if errTmp != nil {
-		return seen, fmt.Errorf("the record could not be written: %w", errTmp)
+	if err == nil && stored.Version != provimuxAnsweredVersion {
+		err = fmt.Errorf("version %d", stored.Version)
 	}
-	name := tmp.Name()
-	_, errWrite := tmp.Write(raw)
-	errSync := tmp.Sync()
-	errClose := tmp.Close()
-	if errWrite != nil || errSync != nil || errClose != nil {
-		_ = os.Remove(name)
-		return seen, fmt.Errorf("the record could not be written: %v", errors.Join(errWrite, errSync, errClose))
+	if err != nil {
+		return rows, 0, err
 	}
-	// What is at place now must be what this record last read or wrote there, or nothing: checked right before the
-	// rename, so another program's file, or one changed underneath, is left as it is.
-	current, errRead := os.ReadFile(place)
-	switch {
-	case errors.Is(errRead, os.ErrNotExist):
-	case errRead != nil:
-		_ = os.Remove(name)
-		return seen, fmt.Errorf("the record's file could not be read (it is left as it is): %w", errRead)
-	case !seen.exists || sha256.Sum256(current) != seen.sum:
-		_ = os.Remove(name)
-		return seen, errProvimuxAnsweredNotOurs
-	}
-	if errRename := os.Rename(name, place); errRename != nil {
-		_ = os.Remove(name)
-		return seen, fmt.Errorf("the record could not be written: %w", errRename)
-	}
-	return provimuxAnsweredSeen{exists: true, sum: sha256.Sum256(raw)}, nil
-}
-
-// provimuxAnsweredLoad reads the record of place, items past the kept time left out. A missing file is an empty
-// record. A file that cannot be read, or is not this record's own (provimuxAnsweredDecode), is an error: it is never
-// written over or removed.
-func provimuxAnsweredLoad(place string, now time.Time) (rows map[provimuxAnsweredRow]map[string][]provimuxAnsweredItem, seq uint64, seen provimuxAnsweredSeen, err error) {
-	rows = map[provimuxAnsweredRow]map[string][]provimuxAnsweredItem{}
-	raw, errRead := os.ReadFile(place)
-	if errors.Is(errRead, os.ErrNotExist) {
-		return rows, 0, seen, nil
-	}
-	if errRead != nil {
-		return rows, 0, seen, fmt.Errorf("the record's file could not be read: %w", errRead)
-	}
-	stored, errDecode := provimuxAnsweredDecode(raw)
-	if errDecode != nil {
-		return rows, 0, seen, errDecode
-	}
-	seen = provimuxAnsweredSeen{exists: true, sum: sha256.Sum256(raw)}
+	var seq uint64
 	for _, kept := range stored.Rows {
 		row := provimuxAnsweredRow{credential: kept.Credential, marker: kept.Marker, name: kept.Name}
 		var items []provimuxAnsweredItem
 		for _, item := range kept.Items {
-			at, _ := time.Parse(time.RFC3339Nano, item.At)
-			if item.Seq > seq {
-				seq = item.Seq
-			}
-			if now.Sub(at) > provimuxAnsweredKept {
+			seq = max(seq, item.Seq)
+			if now.Sub(item.At) > provimuxAnsweredKept {
 				continue
 			}
 			entry := ""
 			if item.Entry != nil {
 				entry = *item.Entry
 			}
-			items = append(items, provimuxAnsweredItem{entry: entry, at: at.UTC(), seq: item.Seq})
+			items = append(items, provimuxAnsweredItem{entry: entry, at: item.At.UTC(), seq: item.Seq})
 		}
-		if len(items) == 0 {
+		if len(items) == 0 || row.credential == "" || row.marker == "" || row.name == "" {
 			continue
 		}
 		sort.SliceStable(items, func(i, j int) bool { return items[i].seq > items[j].seq })
-		if len(items) > provimuxAnsweredMaxItems {
-			items = items[:provimuxAnsweredMaxItems]
-		}
 		if rows[row] == nil {
 			rows[row] = map[string][]provimuxAnsweredItem{}
 		}
-		rows[row][kept.Client] = items
+		rows[row][kept.Client] = items[:min(len(items), provimuxAnsweredMaxItems)]
 	}
-	return rows, seq, seen, nil
-}
-
-// provimuxAnsweredEncode is the file's bytes for stored: the first line, provimuxAnsweredHeader and the SHA-256 of the
-// content in lower-case hex, then the content. The digest is on the first line so that a reader finds it before it
-// reads anything else and without parsing the content; it covers every byte after that line to the end of the file,
-// so nothing can follow the covered content, and a truncated or extended file fails. The writer's JSON codec writes
-// valid UTF-8 only.
-func provimuxAnsweredEncode(stored provimuxAnsweredStored) ([]byte, error) {
-	content, err := json.Marshal(stored)
-	if err != nil {
-		return nil, err
-	}
-	sum := sha256.Sum256(content)
-	out := make([]byte, 0, len(provimuxAnsweredHeader)+hex.EncodedLen(len(sum))+1+len(content))
-	out = append(out, provimuxAnsweredHeader...)
-	out = hex.AppendEncode(out, sum[:])
-	out = append(out, '\n')
-	return append(out, content...), nil
-}
-
-// provimuxAnsweredDecode reads raw as this record's own file, or says why it is not: the first line must be exactly
-// provimuxAnsweredHeader and 64 lower-case hex digits; the SHA-256 of every byte after it must be those digits; those
-// bytes must be valid UTF-8; and only then is the content parsed, strictly (provimuxAnsweredParse). A file without the
-// mark, of another version (version 1 included), whose digest does not match, with bytes after the covered content
-// (they change the digest), or that the parsing refuses, is not this record's own. The digest is unkeyed: it is
-// against damage and other programs' files, not against a person who edits the file and computes it again.
-func provimuxAnsweredDecode(raw []byte) (provimuxAnsweredStored, error) {
-	notOurs := func(why string) (provimuxAnsweredStored, error) {
-		return provimuxAnsweredStored{}, fmt.Errorf("the file there is not one this gateway writes: %s", why)
-	}
-	line, content, found := bytes.Cut(raw, []byte{'\n'})
-	switch {
-	case found && bytes.HasPrefix(line, []byte(provimuxAnsweredHeader)):
-	case bytes.HasPrefix(raw, []byte(provimuxAnsweredFormat+" ")):
-		return notOurs("another version of the record's form")
-	case bytes.HasPrefix(bytes.TrimLeft(raw, " \t\r\n"), []byte("{")):
-		return notOurs("the earlier form, without a digest")
-	default:
-		return notOurs("no mark")
-	}
-	digest := line[len(provimuxAnsweredHeader):]
-	want := make([]byte, sha256.Size)
-	if len(digest) != hex.EncodedLen(sha256.Size) || bytes.ContainsFunc(digest, func(r rune) bool { return !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f') }) {
-		return notOurs("a malformed digest")
-	}
-	if _, err := hex.Decode(want, digest); err != nil {
-		return notOurs("a malformed digest")
-	}
-	if sum := sha256.Sum256(content); !bytes.Equal(sum[:], want) {
-		return notOurs("its digest does not match its content")
-	}
-	if !utf8.Valid(content) {
-		return notOurs("its content is not valid UTF-8")
-	}
-	stored, ok := provimuxAnsweredParse(content)
-	if !ok {
-		return notOurs("its content is not the record's")
-	}
-	return stored, nil
-}
-
-// provimuxAnsweredParse reads raw, the content under a digest that matched, strictly: one JSON object with the record's
-// mark and version 2
-// and nothing else; every row with its four strings (credential, marker and name not empty; client may be "", the
-// keyless caller, but must be there) and at least one item; every item with its entry (a string or null), its time and
-// a positive sequence. Every field name at every level is the one the record writes, byte for byte: Go's decoder
-// matches names without regard to letter case, so the reading is done here, name by name. A name in another case or
-// spelling, a name twice, a field this record does not write, a value of another type: the file is not this record's
-// (the amendment of 2026-11-27 (2), parts 3 and 5). A later version is told by its version number and is not read by
-// this one either way.
-func provimuxAnsweredParse(raw []byte) (provimuxAnsweredStored, bool) {
-	document, ok := provimuxStrictObject(raw, "format", "version", "rows")
-	if !ok || string(document["format"]) != `"`+provimuxAnsweredFormat+`"` || string(document["version"]) != strconv.Itoa(provimuxAnsweredVersion) {
-		return provimuxAnsweredStored{}, false
-	}
-	rows, ok := provimuxStrictArray(document["rows"])
-	if !ok {
-		return provimuxAnsweredStored{}, false
-	}
-	stored := provimuxAnsweredStored{Format: provimuxAnsweredFormat, Version: provimuxAnsweredVersion, Rows: make([]provimuxAnsweredStoredRow, 0, len(rows))}
-	for _, rawRow := range rows {
-		row, okRow := provimuxStrictObject(rawRow, "credential", "marker", "name", "client", "items")
-		if !okRow {
-			return provimuxAnsweredStored{}, false
-		}
-		var kept provimuxAnsweredStoredRow
-		for _, field := range []struct {
-			name  string
-			value *string
-		}{{"credential", &kept.Credential}, {"marker", &kept.Marker}, {"name", &kept.Name}, {"client", &kept.Client}} {
-			if !provimuxStrictString(row[field.name], field.value) || (*field.value == "" && field.name != "client") {
-				return provimuxAnsweredStored{}, false
-			}
-		}
-		items, okItems := provimuxStrictArray(row["items"])
-		if !okItems || len(items) == 0 {
-			return provimuxAnsweredStored{}, false
-		}
-		for _, rawItem := range items {
-			item, okItem := provimuxStrictObject(rawItem, "entry", "at", "seq")
-			if !okItem {
-				return provimuxAnsweredStored{}, false
-			}
-			var at string
-			var seq uint64
-			if !provimuxStrictString(item["at"], &at) || stdjson.Unmarshal(item["seq"], &seq) != nil || seq == 0 {
-				return provimuxAnsweredStored{}, false
-			}
-			if _, errAt := time.Parse(time.RFC3339Nano, at); errAt != nil {
-				return provimuxAnsweredStored{}, false
-			}
-			var entry *string
-			if string(item["entry"]) != "null" {
-				var text string
-				if !provimuxStrictString(item["entry"], &text) {
-					return provimuxAnsweredStored{}, false
-				}
-				entry = &text
-			}
-			kept.Items = append(kept.Items, provimuxAnsweredStoredItem{Entry: entry, At: at, Seq: seq})
-		}
-		stored.Rows = append(stored.Rows, kept)
-	}
-	return stored, true
-}
-
-// provimuxStrictObject reads raw as one JSON object holding exactly the fields named, each once, each name written
-// exactly so (no other case, no escape), and nothing after it. It returns each field's value as written.
-func provimuxStrictObject(raw []byte, names ...string) (map[string]stdjson.RawMessage, bool) {
-	decoder := stdjson.NewDecoder(bytes.NewReader(raw))
-	if token, err := decoder.Token(); err != nil || token != stdjson.Delim('{') {
-		return nil, false
-	}
-	fields := make(map[string]stdjson.RawMessage, len(names))
-	for decoder.More() {
-		before := decoder.InputOffset()
-		token, err := decoder.Token()
-		if err != nil {
-			return nil, false
-		}
-		name, _ := token.(string)
-		// The name as written: what lies between the end of the previous value and the end of this name, less the
-		// comma and the white space.
-		written := bytes.Trim(raw[before:decoder.InputOffset()], " \t\r\n,")
-		if !slices.Contains(names, name) || string(written) != `"`+name+`"` {
-			return nil, false
-		}
-		if _, twice := fields[name]; twice {
-			return nil, false
-		}
-		var value stdjson.RawMessage
-		if err = decoder.Decode(&value); err != nil {
-			return nil, false
-		}
-		fields[name] = value
-	}
-	if token, err := decoder.Token(); err != nil || token != stdjson.Delim('}') {
-		return nil, false
-	}
-	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
-		return nil, false
-	}
-	if len(fields) != len(names) {
-		return nil, false
-	}
-	return fields, true
-}
-
-// provimuxStrictArray reads raw as a JSON array (never null) and returns its elements as written.
-func provimuxStrictArray(raw stdjson.RawMessage) ([]stdjson.RawMessage, bool) {
-	var elements []stdjson.RawMessage
-	if len(raw) == 0 || raw[0] != '[' || stdjson.Unmarshal(raw, &elements) != nil {
-		return nil, false
-	}
-	return elements, true
-}
-
-// provimuxStrictString reads raw as a JSON string (never null) into value.
-func provimuxStrictString(raw stdjson.RawMessage, value *string) bool {
-	return len(raw) > 0 && raw[0] == '"' && stdjson.Unmarshal(raw, value) == nil
-}
-
-// logNotKept says once why the record is not kept beyond this run.
-func (b *provimuxAnsweredBook) logNotKept(why error) {
-	if b.logged.CompareAndSwap(false, true) {
-		log.Warnf("answered-by: what each account last answered as is not kept: %v; it holds until this process ends", why)
-	}
-}
-
-// logForeign says once that the file at the record's place is left as it is.
-func (b *provimuxAnsweredBook) logForeign(place string, why error) {
-	if b.foreignLog.CompareAndSwap(false, true) {
-		log.Warnf("answered-by: %s is left as it is (%v); what each account last answered as is kept in memory only, until this process ends", place, why)
-	}
+	return rows, seq, nil
 }
 
 // provimuxAnsweredPlace puts the record in the auth folder of cfg, where the service applies a config (the start and

@@ -390,7 +390,7 @@ func (s *Store) WritePublished(doc *Document) error {
 	}
 	data, err := json.Marshal(doc)
 	if err == nil {
-		err = writeFileAtomic(s.dir, PublishedFileName, data)
+		err = WriteFileAtomic(s.dir, PublishedFileName, data)
 	}
 	if err != nil {
 		s.warnOnce("write", "model lists cache: cannot write to %s (%v); lists stay in memory only", s.dir, err)
