@@ -299,7 +299,6 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		Handler:           wrapUnconsumedRequestBodyHandler(engine),
 		ReadHeaderTimeout: muxSniffDeadline,
 	}
-	logging.ProvimuxStockServer(s.server, provimuxStockOptions(optionState)) // Provimux: the stock output route (answered-by.md, rule B.1)
 
 	return s
 }

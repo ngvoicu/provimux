@@ -29,15 +29,12 @@ func TestProvimuxOriginCallers(t *testing.T) {
 		"provimuxRegistering(":              {"sdk/cliproxy/auth/conductor_lifecycle.go", "sdk/cliproxy/auth/provimux_answered.go"},
 		"provimuxNoteExecutor(":             {}, // the per-call record removed in part (5): in no product file
 		"provimuxExecutorSequence(":         {}, // the same
-		"logging.ProvimuxStockServer(":      {"internal/api/server.go"},
 		"StandInForTests(":                  {"internal/provimux/origin/origin.go"},
 		"MarkLoadedForTests(":               {"internal/provimux/origin/origin.go"},
-		"ProvimuxStockServerForTests(":      {"internal/api/provimux_stock_testseam.go"},
 		"coreauth.SetProvimuxAnswerEntry(":  {"sdk/cliproxy/provimux_answer_entry.go"},
 		"provimuxWithManager(":              {"sdk/cliproxy/auth/conductor_execution.go", "sdk/cliproxy/auth/provimux_answered.go"},
 		"origin.DefaultTransportUnchanged(": {"sdk/cliproxy/executor/provimux_sent.go"},
 		"origin.GatewayTransport(":          {"sdk/cliproxy/executor/provimux_sent.go"},
-		"provimuxStockOptions(":             {"internal/api/server.go", "internal/api/provimux_stock.go"},
 		"origin.MarkShippedGateway(":        {"internal/logging/provimux_shipped.go"},
 		"logging.ProvimuxShippedGateway(":   {"cmd/server/main.go"},
 		"ShippedGatewayForTests(":           {"internal/provimux/origin/origin.go"},

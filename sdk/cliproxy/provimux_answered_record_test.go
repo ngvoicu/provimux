@@ -490,7 +490,7 @@ func TestProvimuxAnsweredOffAndHomeMode(t *testing.T) {
 		if logging.ProvimuxAnsweredBy() {
 			t.Fatalf("%s: the switch is on", mode)
 		}
-		logging.ProvimuxNoteWritten(nil, logging.AuthStatement{Kind: "apikey", Provider: "claude", Provimux: logging.ProvimuxAnswer{Account: marker, Credential: key.ID, Name: "provimux-test-claude-key", Entry: "p/noted-while-off", Client: ref}})
+		logging.ProvimuxNoteWritten(logging.AuthStatement{Kind: "apikey", Provider: "claude", Provimux: logging.ProvimuxAnswer{Account: marker, Credential: key.ID, Name: "provimux-test-claude-key", Entry: "p/noted-while-off", Client: ref}})
 		h.post("/v1/chat/completions", chatBody("provimux-test-claude-key", false, ""), nil)
 		if items := coreauth.ProvimuxAnswered(ref, key.ID, marker, "provimux-test-claude-key"); items != nil {
 			t.Fatalf("%s: read %+v", mode, items)
@@ -567,7 +567,7 @@ func BenchmarkProvimuxAnsweredNote(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		name := provimuxAnsweredName(auth.ID, "provimux-bench-199")
-		// What the record's intake does with a statement the stock output route wrote (logging.provimuxRecordWritten).
+		// What the record's intake does with a statement written to its client (logging.ProvimuxNoteWritten).
 		provimuxAnswered.note(client, coreauth.ProvimuxCredentialRef(auth.ID), "a.cccccccccccccccccccc", name, "p/bench")
 	}
 }
@@ -581,7 +581,7 @@ func TestProvimuxAnsweredNoteCost(t *testing.T) {
 var _ = json.Marshal
 
 // waitAnswered waits until ok holds, waking on each note the record accepts, for at most ten seconds: a test that
-// reads the record right after a client got its answer waits for the note the stock route makes after writing it.
+// reads the record right after a client got its answer waits for the note made after writing it.
 func waitAnswered(t *testing.T, ok func() bool) {
 	t.Helper()
 	book := provimuxAnswered

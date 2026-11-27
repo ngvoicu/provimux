@@ -207,18 +207,10 @@ func SetProvimuxAnsweredWritten(intake func(AuthStatement)) {
 	provimuxAnsweredWritten.Store(&intake)
 }
 
-// ProvimuxNoteWritten hands the record a WebSocket turn's statement once its response.created, carrying the
-// statement's marker, has been written to the client. Only a turn of a connection the stock output route accepted
-// (request, the connection's upgrade request, ProvimuxStockRequest) is recorded. A statement that named nobody, and one
-// written with models.answered-by off, is not handed on.
-func ProvimuxNoteWritten(request *http.Request, statement AuthStatement) {
-	if request == nil || !ProvimuxStockRequest(request.Context()) {
-		return
-	}
-	provimuxRecordWritten(statement)
-}
-
-func provimuxRecordWritten(statement AuthStatement) {
+// ProvimuxNoteWritten hands the record a statement once it has been written to its client: the headers of an HTTP
+// answer (cpaTraceResponseWriter), a WebSocket turn's response.created. A statement that named nobody, and one written
+// with models.answered-by off, is not handed on.
+func ProvimuxNoteWritten(statement AuthStatement) {
 	intake := provimuxAnsweredWritten.Load()
 	if intake == nil || !provimuxRecording() {
 		return
@@ -237,35 +229,10 @@ type provimuxWritten struct {
 	noted   atomic.Bool
 }
 
-// provimuxNote hands the record, once, what the stock output route committed (the lead's amendment of 2026-11-27 (2),
-// rule B.1): the marker and an entry, the marker and no entry (null), or nothing, as the headers that went out said,
-// read at the moment they went out (provimuxStockWriter). A response that did not go out through the stock route, or
-// whose committed headers are not the statement's (another marker, another entry), records nothing.
+// provimuxNote hands the record, once, the statement the response's headers were set from, after they were written.
 func (w *cpaTraceResponseWriter) provimuxNote() {
 	if w == nil || w.ResponseWriter == nil || !w.ResponseWriter.Written() || w.provimux.noted.Swap(true) {
 		return
 	}
-	stock := provimuxStockOf(w.ResponseWriter)
-	if stock == nil {
-		return
-	}
-	account, entries, committed := stock.written()
-	statement := w.provimux.applied.OnTheWire()
-	if !committed || account == "" || account != statement.Provimux.Account {
-		return
-	}
-	wireEntry := ""
-	for _, field := range statement.Provimux.Fields() {
-		if field.Header == ProvimuxEntryHeader {
-			wireEntry = field.Value
-		}
-	}
-	switch {
-	case len(entries) == 0:
-		statement.Provimux.Entry = ""
-	case len(entries) == 1 && entries[0] == wireEntry && wireEntry != "":
-	default:
-		return
-	}
-	provimuxRecordWritten(statement)
+	ProvimuxNoteWritten(w.provimux.applied)
 }
