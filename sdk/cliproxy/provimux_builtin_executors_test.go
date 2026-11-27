@@ -3,9 +3,9 @@ package cliproxy
 import (
 	"net/http"
 	"os"
-	"regexp"
 	"testing"
 
+	"github.com/MoeForge/moego/regexp"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
