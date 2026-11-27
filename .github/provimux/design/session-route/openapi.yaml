@@ -7,6 +7,12 @@ info:
     Contract 1 of `session-route.md` (beside this file). Four requests of Provimux's own. Stock
     CLIProxyAPI has none of them: a 404 means "not this build".
 
+    **This release has the two client requests only** (decided by the lead on 2026-11-27). The
+    operator's two requests (`/v8/management/provimux/session-routes`), the automatic return (the
+    rule) and its setting are **not in this release**: they are described here for a later one and
+    answer 404 now. In this release `rule` is always `{in_effect: false, will: stay}` and a cache's
+    `basis` is always `setting`.
+
     With `routing.session-affinity: true` the gateway binds a conversation to the account that served
     it. These requests show that binding and remove it. Removing it sends nothing: the conversation's
     next request is routed as a new conversation's, to the first available route by priority.
@@ -26,7 +32,7 @@ tags:
   - name: client
     description: For any configured client key. A key sees and releases only conversations it has used.
   - name: operator
-    description: Behind the management key. Every binding.
+    description: Behind the management key. Every binding. Not in this release.
 
 paths:
   /v1/provimux/session-route:
@@ -40,8 +46,16 @@ paths:
         ...), or put the body fields your turns carry their session in under `identity`. The gateway
         reads them with the function every turn goes through, so the identity is the binding's own.
 
+        `model` is the name the client sends on its turns. The gateway resolves it as a turn's name is
+        resolved before an account is chosen: `auto` becomes the model it routes to (with "serve only
+        my names", the first of the owner's served names; else upstream's first available model; in
+        Home mode it stays `auto`), and the answer gives that model as `routed_model`. A name a plugin's
+        model router rewrote, which depends on the turn's body, is not resolved: ask under the name the
+        router chose.
+
         A conversation another client key used and a conversation that does not exist get the same
-        answer: `conversation: "not-seen"`.
+        answer: `conversation: "not-seen"`. So does a conversation whose binding has expired: the
+        gateway forgets it once its binding is gone and the binding's lifetime has passed.
 
         Nothing is changed by this request: no binding is made, moved or refreshed. Every call answers
         from the gateway's state at that moment, so calling it again is the way to check whether a
@@ -79,6 +93,8 @@ paths:
                   $ref: "#/components/examples/FellBackFirstRouteCooling"
                 on-first-route:
                   $ref: "#/components/examples/OnFirstRoute"
+                bound-to-unlisted:
+                  $ref: "#/components/examples/BoundToUnlisted"
                 not-seen:
                   $ref: "#/components/examples/NotSeen"
                 affinity-off:
@@ -94,14 +110,26 @@ paths:
       operationId: releaseSessionRoute
       summary: Remove this conversation's binding for a name.
       description: |
-        The conversation's next request for the name goes to the first available route by priority.
-        Nothing is sent to any account by this request. An answer in flight finishes where it started.
+        The conversation's next request for the name is routed as a new conversation's: to the first
+        available route by priority, among the accounts that request may use. Nothing is sent to any
+        account by this request.
 
-        A Codex WebSocket that is still open undoes the release (decided by the lead on 2026-11-27):
-        its next turn is pinned to the login that served the connection, and upstream binds the
-        conversation to that login again. A release holds only once that connection is closed; then
-        the next connection's first turn goes to the first route (`websocket_may_hold`).
+        An answer in flight finishes where it started. If, before it ends, the conversation is bound
+        again to the same login and that answer then fails with a fault of that login, upstream removes
+        the newer binding too (it removes a binding to a login that just failed); the conversation is
+        bound afresh at its next message. A binding to another login is left alone.
 
+        On a Codex WebSocket (decided by the lead on 2026-11-27): a release holds only if that
+        connection is closed **before its next turn**. A turn on the open connection is pinned to the
+        login that served it and binds the conversation to that login again, and closing the
+        connection afterwards does not undo that: release again, then close. `websocket_may_hold` says
+        when this applies.
+
+        A sub-agent keeps its own binding. One started after a release inherits its parent's binding
+        as upstream does: if the parent has been bound again on the lower login by then, the child
+        goes there too.
+
+        With `expect`, only exactly the binding that token stands for is released; else `409`.
         Releasing what is not bound is not an error: `released: false`.
       security:
         - clientKey: []
@@ -138,8 +166,9 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "409":
           description: |
-            `expect` was given and the binding is no longer the one it stands for (the conversation
-            moved, or was released and bound again). Nothing was released. The body is the state now.
+            `expect` was given and the binding is no longer the one it stands for: the conversation was
+            routed again since the show (a turn, even on the same account), moved, or was released and
+            bound again. Nothing was released. The body is the state now, with the current token.
           content:
             application/json:
               schema:
@@ -149,9 +178,9 @@ paths:
     get:
       tags: [operator]
       operationId: listSessionRoutes
-      summary: The rule's setting, the value in use, and every binding.
+      summary: The rule's setting, the value in use, and every binding. Not in this release.
       description: |
-        Read-only, from memory. `setting` is what is set; `in_effect` and `reason` are what holds.
+        **Not in this release** (404). Read-only, from memory. `setting` is what is set; `in_effect` and `reason` are what holds.
         `conversations` lists the bindings of the session cache and the conversations the gateway
         recognises by their content, newest answer first, at most `limit`.
       security:
@@ -183,7 +212,8 @@ paths:
     post:
       tags: [operator]
       operationId: releaseSessionRouteByHandle
-      summary: Remove one binding, by its handle from the list.
+      summary: Remove one binding, by its handle from the list. Not in this release.
+      description: "**Not in this release** (404)."
       security:
         - managementKey: []
       requestBody:
@@ -241,8 +271,14 @@ components:
   responses:
     BadRequest:
       description: |
-        No `model`; a body that is not the schema's; or a name this gateway does not serve to this
-        key (with "serve only my names", the setting's own message, as a turn for the name gets).
+        The body is read strictly (G1, after the review): one JSON object and nothing after it, each
+        field at most once, no field the schema does not name. `400` for: a body that does not parse,
+        is not an object, or has anything after the object; a field given twice or unknown; `model`
+        absent, not a string, `null`, or empty or blank; `identity` present and not an object
+        (`null` included); `expect` on a show; on a release, `expect` present and not a well-formed
+        token (empty, blank, `null`, not a string, or not `b.` and 16 characters); a body over 64 KiB.
+        Also a name this gateway does not serve to this key (with "serve only my names", the
+        setting's own message, as a turn for the name gets). A refused request changes nothing.
       content:
         application/json:
           schema:
@@ -286,9 +322,13 @@ components:
           $ref: "#/components/schemas/Identity"
         expect:
           type: string
+          pattern: "^b\\.[a-z2-7]{16}$"
           description: |
-            `binding` from a show. With it, the release happens only while the binding is still that
-            one; else `409`. Without it, whatever is bound is released.
+            `binding` from a show. With it, the release happens only while the binding is still exactly
+            that one: the token is computed again from the binding as it is and compared at the moment
+            of the removal; else `409` and nothing is released. Without it, whatever is bound is
+            released. Present, it must be a well-formed token: an empty, blank or `null` `expect` is
+            `400`, never taken as absent.
 
     Identity:
       type: object
@@ -332,6 +372,19 @@ components:
             The account marker (`answered-by.md`): the value of `X-Provimux-Account` on this account's
             answers. Absent where the build has no marker or `models.answered-by` is off.
 
+    UnlistedRoute:
+      type: object
+      additionalProperties: false
+      description: |
+        The account a binding names, where `GET /v1/models?include=accounts` does not show it now for
+        this name (disabled, or no longer serving the name): nothing of it is given (added in G1, after
+        the review).
+      required: [listed]
+      properties:
+        listed:
+          type: boolean
+          enum: [false]
+
     OperatorRoute:
       description: A route as the operator sees it, with what `model-routes` already shows him.
       allOf:
@@ -366,11 +419,12 @@ components:
           description: |
             `answers`: what this conversation's own answers on the bound account reported writing
             (3,600 or 300). `figures`: the largest lifetime providers.dev's figures state for the entry
-            the account last answered this name as. `setting`: `cold-after`.
+            the account last answered this name as. `setting`: `cold-after`. In this release always
+            `setting`, with its default hour: the other sources are not in this release.
           enum: [answers, figures, setting]
         entry:
           type: [string, "null"]
-          description: With `figures`, the providers.dev entry, `<provider>/<model>`. Else `null`.
+          description: With `figures`, the providers.dev entry, `<provider>/<model>`. Else `null`. Always `null` in this release.
         last_use_at:
           type: string
           format: date-time
@@ -385,7 +439,7 @@ components:
 
     SessionRoute:
       type: object
-      required: [observed_at, affinity, conversation, model, binding, bound, position, first, cache, rule, websocket_may_hold, subagent]
+      required: [observed_at, affinity, conversation, model, routed_model, binding, bound, position, first, cache, rule, websocket_may_hold, subagent]
       properties:
         observed_at:
           type: string
@@ -402,22 +456,38 @@ components:
           description: |
             `bound`. `not-bound`: this key has used the conversation and it has no binding for the
             name now (released, expired, or never bound). `not-seen`: the gateway has seen no request
-            of this conversation from this key since it started, or cannot name a conversation from
-            what was sent.
+            of this conversation from this key since it started, or has forgotten it (its binding
+            expired), or cannot name a conversation from what was sent. A turn is seen once its
+            result is recorded, right after its last byte: a show sent the instant a streamed turn
+            ends may come just before, and answers as if the turn had not been sent yet.
           enum: [bound, not-bound, not-seen]
         model:
           type: string
           description: The name asked about, without a thinking suffix.
+        routed_model:
+          type: [string, "null"]
+          description: |
+            The model the name is routed to, without a thinking suffix, where the request path routes it
+            to another (`auto`): a model of `GET /v1/models`. `null` when the name is routed as it is.
+            Added in G1, after the review.
         binding:
           type: [string, "null"]
-          description: A token for this binding on this account, for `expect`. `null` unless `bound`.
+          pattern: "^b\\.[a-z2-7]{16}$"
+          description: |
+            A token for exactly this binding, for `expect`: the conversation, the account, and the
+            selection that made or last chose the binding. Every turn of the conversation is a new
+            selection, so after a turn the token is another (show again); so it is after a release and
+            a new binding, even on the same account. `null` unless `bound`.
         bound:
           type: [object, "null"]
           description: "`null` unless `bound`."
           required: [route, since, origin, fell_back_from, fell_back_at]
           properties:
             route:
-              $ref: "#/components/schemas/Route"
+              description: "The bound account as the list shows it, or `{listed: false}` where the list does not show it now."
+              oneOf:
+                - $ref: "#/components/schemas/Route"
+                - $ref: "#/components/schemas/UnlistedRoute"
             since:
               type: [string, "null"]
               format: date-time
@@ -429,16 +499,17 @@ components:
                 `fallback`: another account answered it before this one. `not-known`: after a restart.
               enum: [first, fallback, not-known]
             fell_back_from:
-              description: With `fallback`, the route that answered before. Else `null`.
+              description: "With `fallback`, the route that answered before (or `{listed: false}`). Else `null`."
               oneOf:
                 - $ref: "#/components/schemas/Route"
+                - $ref: "#/components/schemas/UnlistedRoute"
                 - type: "null"
             fell_back_at:
               type: [string, "null"]
               format: date-time
         position:
           type: [object, "null"]
-          description: "`null` unless `bound`."
+          description: "`null` unless `bound` to an account the list shows (G1, after the review: nothing is said of an unlisted account's place)."
           required: [below_first, higher_priority_free, higher_priority_free_at]
           properties:
             below_first:
@@ -461,8 +532,11 @@ components:
         first:
           type: array
           description: |
-            The first routes now: the accounts of the highest available priority, where a release
-            leads. Which of several is chosen is the strategy's. Empty unless `bound`.
+            The first routes now, as the list shows them: the accounts of the highest available priority
+            for the name. A released conversation's next request goes to one of them unless that request
+            may not use it (a request that may not use a free account, a provider the request does not
+            reach) or it cools in between; which of several is chosen is the strategy's. Empty unless
+            `bound`.
           items:
             $ref: "#/components/schemas/Route"
         cache:
@@ -472,7 +546,7 @@ components:
             - type: "null"
         rule:
           type: object
-          description: What the gateway does by itself with this binding.
+          description: "What the gateway does by itself with this binding. Not in this release: always `{in_effect: false, will: stay}`."
           required: [in_effect, will]
           properties:
             in_effect:
@@ -489,16 +563,22 @@ components:
         websocket_may_hold:
           type: boolean
           description: |
-            The conversation is named by Codex headers. A turn on a WebSocket that is still open is
-            pinned to its login, and upstream binds the conversation to that login again: a release
-            holds only once the connection is closed (decided by the lead on 2026-11-27).
+            A turn of this conversation came on a connection pinned to its login (a Codex WebSocket), or
+            it is named by Codex headers; whatever header names it. On such a connection a release
+            holds only if the connection is closed before its next turn: a turn on the open connection
+            binds the conversation to the old login again, and closing afterwards does not undo that
+            (release again, then close). Decided by the lead on 2026-11-27.
         subagent:
           type: boolean
-          description: The conversation has a parent conversation. A parent's release does not move it.
+          description: |
+            The conversation is a sub-agent's: it has a parent conversation (a fork is not a sub-agent).
+            A parent's release does not move it. A sub-agent started after the parent's release inherits
+            the parent's binding as upstream does: where the parent was bound again on the lower login,
+            the child goes there too.
 
     Release:
       type: object
-      required: [observed_at, affinity, released, conversation, was, next, websocket_may_hold]
+      required: [observed_at, affinity, released, conversation, model, routed_model, was, next, websocket_may_hold]
       properties:
         observed_at:
           type: string
@@ -515,18 +595,26 @@ components:
           type: string
           description: The state after the request. `not-bound` after a release; else as in a show.
           enum: [not-bound, not-seen]
+        model:
+          type: string
+          description: As in a show. Added in G1, after the review.
+        routed_model:
+          type: [string, "null"]
+          description: As in a show. Added in G1, after the review.
         was:
-          description: The route the binding named. `null` when nothing was released.
+          description: "The route the binding named (or `{listed: false}`). `null` when nothing was released."
           oneOf:
             - $ref: "#/components/schemas/Route"
+            - $ref: "#/components/schemas/UnlistedRoute"
             - type: "null"
         next:
           type: array
-          description: "The first routes now: where the next request goes while they stay available."
+          description: "The first routes now, as in a show's `first`: where the next request goes while they stay available and it may use them."
           items:
             $ref: "#/components/schemas/Route"
         websocket_may_hold:
           type: boolean
+          description: As in a show. With `true`, close the connection before its next turn, or the release is undone.
 
     SessionRoutesState:
       type: object
@@ -660,12 +748,13 @@ components:
 
   examples:
     FellBackCacheCold:
-      summary: Fell back to a paid key 40 minutes ago, quiet for 9 minutes, the first route is free
+      summary: "With the rule, not in this release: fell back to a paid key 40 minutes ago, quiet for 9 minutes, the first route is free"
       value:
         observed_at: "2026-11-27T10:15:00Z"
         affinity: "on"
         conversation: bound
         model: opus
+        routed_model: null
         binding: "b.k3v7q2mfx4ardn5w"
         bound:
           route: { provider: claude, kind: apikey, priority: 5, host: api.anthropic.com, account: "a.f6zq3m2hx7kd4vwn5tyb" }
@@ -693,6 +782,7 @@ components:
         affinity: "on"
         conversation: bound
         model: opus
+        routed_model: null
         binding: "b.k3v7q2mfx4ardn5w"
         bound:
           route: { provider: claude, kind: apikey, priority: 5, host: api.anthropic.com, account: "a.f6zq3m2hx7kd4vwn5tyb" }
@@ -713,14 +803,43 @@ components:
         rule: { in_effect: false, will: stay }
         websocket_may_hold: false
         subagent: false
+    BoundToUnlisted:
+      summary: Bound to an account the list no longer shows (disabled since); asked as auto
+      value:
+        observed_at: "2026-11-27T10:15:00Z"
+        affinity: "on"
+        conversation: bound
+        model: auto
+        routed_model: opus
+        binding: "b.p4nq7tz2wk5xmh3d"
+        bound:
+          route: { listed: false }
+          since: "2026-11-27T09:02:44Z"
+          origin: first
+          fell_back_from: null
+          fell_back_at: null
+        position: null
+        first:
+          - { provider: claude, kind: apikey, priority: 5, host: api.anthropic.com, account: "a.f6zq3m2hx7kd4vwn5tyb" }
+        cache:
+          lifetime_s: 3600
+          basis: setting
+          entry: null
+          last_use_at: "2026-11-27T10:14:10Z"
+          cold: false
+          cold_at: "2026-11-27T11:15:10Z"
+        rule: { in_effect: false, will: stay }
+        websocket_may_hold: false
+        subagent: false
     OnFirstRoute:
-      summary: On a first route; two accounts share the top priority
+      summary: On a first route; two accounts share the top priority (the rule's value is not in this release)
       value:
         observed_at: "2026-11-27T10:15:00Z"
         affinity: "on"
         conversation: bound
         model: opus
-        binding: "b.w8n2tq5hz3xkm7vd"
+        routed_model: null
+        binding: "b.w6n2tq5hz3xkm7vd"
         bound:
           route: { provider: claude, kind: oauth, priority: 10, account: "a.b2hw7ynq4rkx6mdz3tcv" }
           since: "2026-11-27T09:02:44Z"
@@ -748,6 +867,7 @@ components:
         affinity: "on"
         conversation: not-seen
         model: opus
+        routed_model: null
         binding: null
         bound: null
         position: null
@@ -763,6 +883,7 @@ components:
         affinity: "off"
         conversation: not-bound
         model: opus
+        routed_model: null
         binding: null
         bound: null
         position: null
@@ -777,6 +898,8 @@ components:
         affinity: "on"
         released: true
         conversation: not-bound
+        model: opus
+        routed_model: null
         was: { provider: claude, kind: apikey, priority: 5, host: api.anthropic.com, account: "a.f6zq3m2hx7kd4vwn5tyb" }
         next:
           - { provider: claude, kind: oauth, priority: 10, account: "a.b2hw7ynq4rkx6mdz3tcv" }
@@ -787,6 +910,8 @@ components:
         affinity: "on"
         released: false
         conversation: not-bound
+        model: opus
+        routed_model: null
         was: null
         next: []
         websocket_may_hold: false
@@ -797,6 +922,8 @@ components:
         affinity: "on"
         released: false
         conversation: not-seen
+        model: opus
+        routed_model: null
         was: null
         next: []
         websocket_may_hold: false
@@ -807,6 +934,8 @@ components:
         affinity: "off"
         released: false
         conversation: not-bound
+        model: opus
+        routed_model: null
         was: null
         next: []
         websocket_may_hold: false
