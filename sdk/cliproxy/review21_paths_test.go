@@ -185,8 +185,11 @@ func TestReview21Refresh(t *testing.T) {
 	if ans.status != 200 || strings.Join(seen, " ") != "refused refresh-side actual" {
 		t.Fatalf("fixture %s", ans.body)
 	}
-	if ans.get(logging.ProvimuxEntryHeader) != "meta-subscription/actual" {
-		t.Fatal("refresh observation carried over")
+	// Ported (rule A.1 of the amendment of 2026-11-27 (2)): this executor is registered through the SDK, so its answer
+	// names no entry at all; that a refresh's requests stay off the answering attempt is pinned with a built-in
+	// executor in the subtest below.
+	if ans.get(logging.ProvimuxEntryHeader) != "" {
+		t.Fatal("an executor registered through the SDK named an entry")
 	}
 
 	t.Run("native-antigravity-token-near-expiry", func(t *testing.T) {

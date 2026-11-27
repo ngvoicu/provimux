@@ -19,6 +19,7 @@ import (
 	"github.com/MoeForge/moego/ojson"
 	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/provimux/origin"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
 	ca "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	ex "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
@@ -28,18 +29,24 @@ import (
 type reviewRT func(*http.Request) (*http.Response, error)
 
 func (f reviewRT) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// reviewSet puts rt on the manager as an embedding's per-credential transport (an SDK RoundTripperProvider): its
+// answers name no entry (the lead's amendment of 2026-11-27 (2), rule A.2).
 func reviewSet(h *sentHarness, rt http.RoundTripper) {
 	h.service.coreManager.SetRoundTripperProvider(copilotAccountTransport(func(*ca.Auth) http.RoundTripper { return rt }))
 }
 
-// reviewVendor is a test's in-memory vendor as the transport below the reader. Ported (rule 3 of the lead's 2026-11-27
-// amendment: a transport below the reader that is not the gateway's own gives no entry): a stand-in vendor declares
-// that it hands nothing on; a translating transport does not.
+// reviewVendor is a test's in-memory vendor as the transport below the reader.
 type reviewVendor struct{ http.RoundTripper }
 
-func (reviewVendor) ProvimuxPassesRequestsUnchanged() bool { return true }
-
-func reviewSetVendor(h *sentHarness, rt http.RoundTripper) { reviewSet(h, reviewVendor{rt}) }
+// reviewSetVendor puts rt on the manager as a stand-in vendor that goes through the recognition of the gateway's own
+// per-credential transports, by the seam that does nothing outside a test binary. Ported (rule A.2 of the amendment of
+// 2026-11-27 (2)): a stand-in is no longer recognised by declaring itself.
+func reviewSetVendor(h *sentHarness, rt http.RoundTripper) {
+	vendor := &reviewVendor{rt}
+	origin.StandInForTests(vendor)
+	reviewSet(h, vendor)
+}
 
 func reviewOK(req *http.Request, s, ct string) *http.Response {
 	return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {ct}}, Body: io.NopCloser(strings.NewReader(s)), Request: req}
@@ -120,7 +127,8 @@ func TestReview21AuthorityAndProxy(t *testing.T) {
 			tr.Proxy = http.ProxyURL(u)
 			tr.TLSClientConfig.ServerName = "example.com"
 			defer tr.CloseIdleConnections()
-			reviewSet(h, tr)
+			// Ported (rule A.2 of the second amendment of 2026-11-27): the stand-in network through the test seam.
+			reviewSetVendor(h, tr)
 			ans := h.post("/v1/chat/completions", chatBody("review-public", false, ""), nil)
 			if ans.status != 200 {
 				t.Fatalf("fixture HTTP %d %s", ans.status, ans.body)
@@ -270,10 +278,10 @@ func TestReview21MixedAndTwoRequests(t *testing.T) {
 			got := ans.get(logging.ProvimuxEntryHeader)
 			// Ported (rule 1 of the lead's 2026-11-27 amendment: exactly one request that could have produced the
 			// answer): two answered requests for the same model are two, and name nothing; a refused second is none.
+			// Ported again (rule A.1 of the amendment of 2026-11-27 (2)): this executor is registered through the SDK,
+			// not by the gateway's service, so no case names an entry; a refused request beside the answering one is
+			// pinned on the stock path (TestReview21Failover, TestReview21ZstdRetry) and in TestProvimuxSentTheRule.
 			want := ""
-			if kind == "status-fail" {
-				want = "openrouter/lab/first"
-			}
 			t.Logf("%s: accepted requests %v; entry=%q", kind, received, got)
 			if got != want {
 				t.Errorf("want %q, got %q", want, got)

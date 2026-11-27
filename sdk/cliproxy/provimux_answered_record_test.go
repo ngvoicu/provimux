@@ -53,7 +53,10 @@ func useAnsweredBook(t *testing.T, clock *sentClock) *provimuxAnsweredBook {
 	book := newProvimuxAnsweredBook(clock.Now)
 	was := provimuxAnswered
 	provimuxAnswered = book
-	t.Cleanup(func() { provimuxAnswered = was })
+	t.Cleanup(func() {
+		provimuxAnswered = was
+		book.close() // its place's lock, where it took one, is given up
+	})
 	return book
 }
 
@@ -481,7 +484,7 @@ func TestProvimuxAnsweredOffAndHomeMode(t *testing.T) {
 		if logging.ProvimuxAnsweredBy() {
 			t.Fatalf("%s: the switch is on", mode)
 		}
-		logging.ProvimuxNoteWritten(logging.AuthStatement{Kind: "apikey", Provider: "claude", Provimux: logging.ProvimuxAnswer{Account: marker, Credential: key.ID, Name: "provimux-test-claude-key", Entry: "p/noted-while-off", Client: ref}})
+		logging.ProvimuxNoteWritten(nil, logging.AuthStatement{Kind: "apikey", Provider: "claude", Provimux: logging.ProvimuxAnswer{Account: marker, Credential: key.ID, Name: "provimux-test-claude-key", Entry: "p/noted-while-off", Client: ref}})
 		h.post("/v1/chat/completions", chatBody("provimux-test-claude-key", false, ""), nil)
 		if items := coreauth.ProvimuxAnswered(ref, key.ID, marker, "provimux-test-claude-key"); items != nil {
 			t.Fatalf("%s: read %+v", mode, items)
@@ -558,7 +561,8 @@ func BenchmarkProvimuxAnsweredNote(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		name := provimuxAnsweredName(auth.ID, "provimux-bench-199")
-		logging.ProvimuxNoteWritten(logging.AuthStatement{Kind: "oauth", Provider: "claude", Provimux: logging.ProvimuxAnswer{Account: "a.cccccccccccccccccccc", Credential: auth.ID, Name: name, Entry: "p/bench", Client: client}})
+		// What the record's intake does with a statement the stock output route wrote (logging.provimuxRecordWritten).
+		provimuxAnswered.note(client, coreauth.ProvimuxCredentialRef(auth.ID), "a.cccccccccccccccccccc", name, "p/bench")
 	}
 }
 

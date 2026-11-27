@@ -3,6 +3,8 @@ package openai
 import (
 	"context"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
@@ -59,16 +61,17 @@ func setResponsesWebsocketProvimux(payload []byte, authStatement func() logging.
 }
 
 // provimuxNoteResponsesWebsocketTurn hands the record the turn's statement once its response.created, carrying that
-// statement's marker, has been written to the client (answered-by.md 4.4 as amended on 2026-11-27).
-func provimuxNoteResponsesWebsocketTurn(eventType string, payload []byte, authStatement func() logging.AuthStatement) {
-	if eventType != "response.created" || authStatement == nil || !logging.ProvimuxAnsweredBy() {
+// statement's marker, has been written to the client (answered-by.md 4.4 as amended on 2026-11-27), on a connection
+// the stock output route accepted (the amendment of 2026-11-27 (2), rule B.1).
+func provimuxNoteResponsesWebsocketTurn(c *gin.Context, eventType string, payload []byte, authStatement func() logging.AuthStatement) {
+	if c == nil || eventType != "response.created" || authStatement == nil || !logging.ProvimuxAnsweredBy() {
 		return
 	}
 	statement := authStatement()
 	if account := statement.OnTheWire().Provimux.Account; account == "" || ojson.GetBytesNoCopy(payload, logging.ProvimuxAccountField).String() != account {
 		return
 	}
-	logging.ProvimuxNoteWritten(statement)
+	logging.ProvimuxNoteWritten(c.Request, statement)
 }
 
 // provimuxCalledName says on a call's context the name its client called, where the route passes the manager another

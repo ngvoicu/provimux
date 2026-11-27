@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
-	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,47 +18,54 @@ import (
 	"github.com/MoeForge/moego/ojson"
 	"github.com/klauspost/compress/zstd"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/provimux/origin"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
 	"google.golang.org/protobuf/encoding/protowire"
 )
 
 // Provimux: what an attempt sent (.github/provimux/design/answered-by.md 4.2 and 4.3, step W6a, and the lead's
-// amendment of 2026-11-27: the entry only when it is certain). Every HTTP client an executor sends a model request with
-// is built by a helper that applies upstream's observation seam (sdk/httptransport) after the proxy, the pool and the
-// TLS profile are chosen. Provimux puts one decorator on that seam, in one place: the context an attempt gets its
-// tracker on (WithUpstreamAttemptTracker), together with a log of the attempt's own and a connection trace. The
-// decorator notes each request a client built for the attempt hands its transport: the scheme, host and port of the
-// URL, the model read from the request as its bytes are, the names of its credential headers, whether the request is
-// one of the attempt's known housekeeping requests, whether anything makes what was read differ from what leaves (a
-// Host other than the URL's, a transport below that is not one of the gateway's own, a request on another context
-// than the attempt's) and, when the response's headers arrive, the status. The trace counts every connection the
-// attempt's context asks for, so one the decorator did not see (an upstream WebSocket, a client no helper built) is
-// known. It delegates and changes no byte: the body is read through GetBody, never consumed. With models.answered-by
-// off nothing is attached.
+// amendments of 2026-11-27: the entry only where Provimux made every part). Every HTTP client a built-in executor sends
+// a model request with is built by a helper that applies upstream's observation seam (sdk/httptransport) after the
+// proxy, the pool and the TLS profile are chosen. Provimux puts one decorator on that seam, in one place: the context an
+// attempt gets its tracker on (WithUpstreamAttemptTracker), together with a log of the attempt's own and a connection
+// trace. The decorator notes each request a client built for the attempt hands its transport: the scheme, host and
+// port of the URL, the bytes of the body exactly as the transport reads them (a copy taken while it reads; nothing is
+// read ahead or twice), the names of its credential headers, and whether anything makes the request not wholly the
+// gateway's own (a Host other than the URL's, a per-credential transport the gateway did not build, a Go default
+// transport replaced, a decorator of another program on the context, a request on another context than the attempt's)
+// and, when the response's headers arrive, the status. The model is read from those bytes when the answer is stated
+// (ProvimuxSent), and housekeeping is matched then, against the executor that answered. The trace counts every
+// connection the attempt's context asks for, so one the decorator did not see (an upstream WebSocket, a client no
+// helper built) is known. It delegates and changes no byte. With models.answered-by off nothing is attached.
 
 // ProvimuxSentRequest is one request an attempt handed to its transport, as Provimux's decorator saw it.
 type ProvimuxSentRequest struct {
 	Scheme string // of the request's URL, lower case
 	Host   string // its host, lower case, without the port
 	Port   string // its port; "" = the scheme's default
-	Model  string // the model id read from the request (answered-by.md 4.2); "" = none was read
+	Model  string // the model id read from the bytes the transport was handed (answered-by.md 4.2); "" = none
 	Signer string // which credential headers the request carries, by name only: "x-api-key", "authorization", "both", ""
 	Status int    // the status of its response; 0 = no response arrived
 
-	// unread: the request has a body, or a model in its URL, in a form the reader does not know, or two models that
-	// differ.
+	// unread: the request has a body, or a model in its URL, in a form the reader does not know, two models that
+	// differ, or bytes the transport did not read whole.
 	unread bool
-	// untrusted: what was read may not be what left, to the host it names: a Host other than the URL's, a transport
-	// below the reader that is not one of the gateway's own, or a request on a context other than the attempt's.
+	// untrusted: the request is not wholly the gateway's own (see the package comment).
 	untrusted bool
-	// housekeeping: a request of the closed list of requests that cannot produce an answer (provimuxHousekeeping).
-	housekeeping bool
+	// detached: the request was made on another context than the attempt's own. It is not known to be the attempt's:
+	// it never names an entry, though it can still be the answering executor's housekeeping.
+	detached bool
+
+	method, path, mediaType string   // for the reader and the closed housekeeping list
+	encodings               []string // its Content-Encoding, in order, without identity
+	pathModel               string   // the model of its URL's path, "" for none
+	body                    *provimuxBodyCapture
 }
 
 // provimuxSentKept is how many requests an attempt's log keeps. An attempt that makes more names no model.
 const provimuxSentKept = 16
 
-// provimuxSentBodyLimit is the largest body the reader reads. A larger one is not read.
+// provimuxSentBodyLimit is the largest body the reader keeps. A larger one is not read.
 const provimuxSentBodyLimit = 64 << 20
 
 // provimuxSentLog is one attempt's observations.
@@ -69,6 +75,8 @@ type provimuxSentLog struct {
 	mu       sync.Mutex
 	requests []ProvimuxSentRequest
 	overflow bool
+	// foreign: when the attempt began, its context carried an HTTP decorator that is not Provimux's own.
+	foreign bool
 
 	conns    atomic.Int64 // connections the attempt's context asked for (the trace)
 	observed atomic.Int64 // of those, the ones asked for by a request the decorator saw
@@ -94,48 +102,55 @@ func provimuxSentLogOf(ctx context.Context) *provimuxSentLog {
 	return log
 }
 
-// ProvimuxSent returns what the attempt of ctx sent when the answer's entry can be certain (the lead's rule of
-// 2026-11-27): among its requests answered with a 2xx and not on the closed housekeeping list there is exactly one,
-// the reader read it whole and nothing makes what was read differ from what left; and no connection was made in the
-// attempt that the decorator did not see (an upstream WebSocket among them). ok is false in every other case.
-func ProvimuxSent(ctx context.Context) (sent ProvimuxSentRequest, ok bool) {
+// ProvimuxSent returns what the attempt of ctx sent, when the answer's entry can be certain (the lead's amendments of
+// 2026-11-27): among its requests answered with a 2xx, other than the closed housekeeping list of the executor that
+// answered (executor, a kind of the closed executor list), there is exactly one; it is wholly the gateway's own; its
+// model was read from the bytes its transport read, whole; and no connection was made in the attempt that the
+// decorator did not see (an upstream WebSocket among them). ok is false in every other case.
+func ProvimuxSent(ctx context.Context, executor string) (sent ProvimuxSentRequest, ok bool) {
 	log := provimuxSentLogOf(ctx)
-	if log == nil || log.conns.Load() > log.observed.Load() {
+	if log == nil || executor == "" || log.conns.Load() > log.observed.Load() {
 		return ProvimuxSentRequest{}, false
 	}
 	log.mu.Lock()
-	defer log.mu.Unlock()
-	if log.overflow {
+	requests := append([]ProvimuxSentRequest(nil), log.requests...)
+	overflow, foreign := log.overflow, log.foreign
+	log.mu.Unlock()
+	if overflow || foreign {
 		return ProvimuxSentRequest{}, false
 	}
 	candidates := 0
-	for _, request := range log.requests {
-		if request.Status < 200 || request.Status > 299 || request.housekeeping {
+	for _, request := range requests {
+		if request.Status < 200 || request.Status > 299 {
+			continue
+		}
+		request.Model, request.unread = provimuxModelOf(request)
+		if provimuxHousekeeping(executor, request) {
 			continue
 		}
 		candidates++
 		sent = request
 	}
-	if candidates != 1 || sent.unread || sent.untrusted || sent.Model == "" {
+	if candidates != 1 || sent.unread || sent.untrusted || sent.detached || sent.Model == "" {
 		return ProvimuxSentRequest{}, false
 	}
 	return sent, true
 }
 
-// provimuxObserveSent returns ctx with the attempt's log, its connection trace and Provimux's decorator on it, around
-// any decorator ctx already carries. Only WithUpstreamAttemptTracker calls it. With models.answered-by off it adds
-// nothing.
+// provimuxObserveSent returns ctx with the attempt's log, its connection trace and Provimux's decorator on it. A
+// decorator ctx already carried (another program's) still runs, inside ours, and the attempt names no entry. Only
+// WithUpstreamAttemptTracker calls it. With models.answered-by off it adds nothing.
 func provimuxObserveSent(ctx context.Context) context.Context {
 	if ctx == nil || !logging.ProvimuxAnsweredBy() {
 		return ctx
 	}
-	log := &provimuxSentLog{parent: provimuxSentLogOf(ctx)}
+	log := &provimuxSentLog{parent: provimuxSentLogOf(ctx), foreign: provimuxForeignDecorator(ctx)}
 	outer := ctx
 	ctx = context.WithValue(ctx, provimuxSentLogKey{}, log)
 	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{GetConn: func(string) { log.conns.Add(1) }})
 	return httptransport.WithDecorator(ctx, func(next http.RoundTripper) http.RoundTripper {
-		// The decorator ctx carried before ours (an embedder's), applied first, inside ours. A decorator of an
-		// enclosing attempt is replaced by this one: a client built for this attempt notes on this attempt's log.
+		// The decorator ctx carried before ours, applied first, inside ours. A decorator of an enclosing attempt is
+		// replaced by this one: a client built for this attempt notes on this attempt's log.
 		inner := next
 		if decorated := httptransport.Decorate(outer, &http.Client{Transport: next}); decorated != nil && decorated.Transport != nil {
 			inner = decorated.Transport
@@ -145,6 +160,25 @@ func provimuxObserveSent(ctx context.Context) context.Context {
 		}
 		return &provimuxSentObserver{next: inner, log: log}
 	})
+}
+
+// provimuxForeignDecorator reports whether ctx carries an HTTP decorator other than an enclosing attempt's Provimux
+// decorator, applied as it is.
+func provimuxForeignDecorator(ctx context.Context) bool {
+	probe := provimuxProbeTransport{}
+	decorated := httptransport.Decorate(ctx, &http.Client{Transport: probe})
+	if decorated == nil || decorated.Transport == nil || decorated.Transport == http.RoundTripper(probe) {
+		return false
+	}
+	ours, ok := decorated.Transport.(*provimuxSentObserver)
+	return !ok || ours.next != http.RoundTripper(probe)
+}
+
+// provimuxProbeTransport is a transport no request is sent on: it only shows what a decorator does to a transport.
+type provimuxProbeTransport struct{}
+
+func (provimuxProbeTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, http.ErrNotSupported
 }
 
 // provimuxSentObserver is the decorator's transport: it notes each request of the client built for log's attempt,
@@ -157,23 +191,25 @@ type provimuxSentObserver struct {
 func (o *provimuxSentObserver) RoundTrip(req *http.Request) (*http.Response, error) {
 	own := provimuxSentLogOf(req.Context())
 	observed := provimuxObserveRequest(req)
-	if !provimuxStockTransport(o.next) || !provimuxStockTransport(req.Context().Value("cliproxy.roundtripper")) {
+	if !provimuxGatewayParts(req.Context()) {
 		observed.untrusted = true
 	}
 	if own != o.log {
 		// A request on another context than the attempt's (a detached one): it is not known to be the attempt's
-		// own, and no entry is named for either.
-		observed.untrusted = true
+		// own, and no entry is named for it.
+		observed.detached = true
 	}
+	sent := req
 	if own != nil {
 		// The connection this request asks for is a seen one, for its attempt and every attempt it runs inside.
-		req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{GetConn: func(string) {
+		sent = sent.WithContext(httptrace.WithClientTrace(sent.Context(), &httptrace.ClientTrace{GetConn: func(string) {
 			for log := own; log != nil; log = log.parent {
 				log.observed.Add(1)
 			}
 		}}))
 	}
-	resp, err := o.next.RoundTrip(req)
+	sent, observed.body = provimuxCaptureBody(sent)
+	resp, err := o.next.RoundTrip(sent)
 	if err == nil && resp != nil {
 		observed.Status = resp.StatusCode
 	}
@@ -191,38 +227,17 @@ func (o *provimuxSentObserver) CloseIdleConnections() {
 	}
 }
 
-// ProvimuxStockTransport is implemented by a transport that hands every request on as it receives it, to the host its
-// URL names: a stand-in of a test, or a transport an embedder vouches for. A transport below the reader that is
-// neither one of the gateway's own nor this gives no entry.
-type ProvimuxStockTransport interface {
-	ProvimuxPassesRequestsUnchanged() bool
+// provimuxGatewayParts reports whether what the gateway's client helpers build a transport from is the gateway's own:
+// the per-credential transport on ctx is none or one the gateway's own provider built (recognised by identity), and Go's
+// default transport has not been replaced. A transport of another program, or one it replaced, gives no entry.
+func provimuxGatewayParts(ctx context.Context) bool {
+	if rt := ctx.Value("cliproxy.roundtripper"); rt != nil && !origin.GatewayTransport(rt) {
+		return false
+	}
+	return origin.DefaultTransportUnchanged()
 }
 
-// provimuxStockTransport reports whether rt (nil included) is one of the gateway's own transports: Go's, or one the
-// gateway's own packages build, or one that vouches for itself.
-func provimuxStockTransport(rt any) bool {
-	if rt == nil {
-		return true
-	}
-	if stock, ok := rt.(ProvimuxStockTransport); ok {
-		return stock.ProvimuxPassesRequestsUnchanged()
-	}
-	t := reflect.TypeOf(rt)
-	for t.Kind() == reflect.Pointer {
-		t = t.Elem()
-	}
-	path := t.PkgPath()
-	switch {
-	case path == "net/http", path == "golang.org/x/net/http2":
-		return true
-	case strings.HasPrefix(path, "github.com/router-for-me/CLIProxyAPI/v8/internal/"),
-		path == "github.com/router-for-me/CLIProxyAPI/v8/sdk/proxyutil":
-		return true
-	}
-	return false
-}
-
-// provimuxObserveRequest notes what req sends, without the status.
+// provimuxObserveRequest notes what req sends, without the body and the status.
 func provimuxObserveRequest(req *http.Request) ProvimuxSentRequest {
 	var observed ProvimuxSentRequest
 	if req == nil || req.URL == nil {
@@ -236,11 +251,16 @@ func provimuxObserveRequest(req *http.Request) ProvimuxSentRequest {
 		observed.Port = ""
 	}
 	observed.Signer = provimuxSigner(req.Header)
-	observed.Model, observed.unread = provimuxReadModel(req)
+	observed.method, observed.path = req.Method, req.URL.Path
+	observed.mediaType, _, _ = mime.ParseMediaType(req.Header.Get("Content-Type"))
+	observed.mediaType = strings.ToLower(observed.mediaType)
 	if host := strings.TrimSpace(req.Host); host != "" && !provimuxSameAuthority(host, observed) {
 		observed.untrusted = true
 	}
-	observed.housekeeping = provimuxHousekeeping(req, observed)
+	var pathUnread bool
+	observed.pathModel, pathUnread = provimuxPathModel(req.URL)
+	observed.unread = pathUnread
+	observed.encodings = provimuxEncodings(req.Header)
 	return observed
 }
 
@@ -282,34 +302,31 @@ func provimuxSigner(header http.Header) string {
 	return ""
 }
 
-// provimuxSentModel reads the model id of an outgoing request without consuming its body (GetBody): the top-level
-// "model" of a JSON body (or of a form), zstd decoded where Content-Encoding says so; the <id> of a URL path
-// .../models/<id>:<method>; field 21 of a Connect message to Devin's chat method. "" where the request has none, has
-// two that differ, or is in a form it does not know.
-func provimuxSentModel(req *http.Request) string {
-	model, unread := provimuxReadModel(req)
-	if unread {
-		return ""
-	}
-	return model
-}
-
-// provimuxReadModel reads the model of req; unread is true where the request carries a body or a model it cannot read
-// as one of the known forms, or two models that differ.
-func provimuxReadModel(req *http.Request) (model string, unread bool) {
-	pathModel, pathUnread := provimuxPathModel(req.URL)
-	if pathUnread {
+// provimuxModelOf reads the model of an observed request from what its transport was handed: the <id> of a URL path
+// .../models/<id>:<method>; from the body's bytes as the transport read them (zstd decoded where Content-Encoding says
+// so): the top-level "model" of a JSON body (or of a form), field 21 of a Connect message to Devin's chat method.
+// unread is true where the request carries a body the transport did not read whole, a body or a model in a form the
+// reader does not know, or two models that differ.
+func provimuxModelOf(request ProvimuxSentRequest) (model string, unread bool) {
+	if request.unread {
 		return "", true
 	}
-	bodyModel, bodyUnread := provimuxBodyModel(req)
-	if bodyUnread {
+	body, readable := request.body.bytes()
+	if !readable {
 		return "", true
 	}
+	body, readable = provimuxDecode(body, request.encodings)
+	if !readable {
+		return "", true
+	}
+	bodyModel, bodyUnread := provimuxBodyModel(request.path, request.mediaType, body)
 	switch {
-	case pathModel != "" && bodyModel != "" && pathModel != bodyModel:
+	case bodyUnread:
 		return "", true
-	case pathModel != "":
-		return pathModel, false
+	case request.pathModel != "" && bodyModel != "" && request.pathModel != bodyModel:
+		return "", true
+	case request.pathModel != "":
+		return request.pathModel, false
 	}
 	return bodyModel, false
 }
@@ -347,20 +364,14 @@ func provimuxPathModel(u *url.URL) (model string, unread bool) {
 	return id, false
 }
 
-// provimuxBodyModel reads the model of req's body.
-func provimuxBodyModel(req *http.Request) (model string, unread bool) {
-	body, readable := provimuxRequestBody(req)
-	if !readable {
-		return "", true
-	}
+// provimuxBodyModel reads the model of a body sent to path with mediaType.
+func provimuxBodyModel(path, mediaType string, body []byte) (model string, unread bool) {
 	if len(bytes.TrimSpace(body)) == 0 {
 		return "", false
 	}
-	mediaType, _, _ := mime.ParseMediaType(req.Header.Get("Content-Type"))
-	mediaType = strings.ToLower(mediaType)
 	switch {
 	case mediaType == "application/connect+proto":
-		return provimuxConnectModel(req.URL, body)
+		return provimuxConnectModel(path, body)
 	case mediaType == "application/x-www-form-urlencoded":
 		return provimuxFormModel(body)
 	case strings.Contains(mediaType, "json") || (mediaType == "" && bytes.HasPrefix(bytes.TrimSpace(body), []byte("{"))):
@@ -369,32 +380,21 @@ func provimuxBodyModel(req *http.Request) (model string, unread bool) {
 	return "", true
 }
 
-// provimuxRequestBody returns the bytes req sends, through GetBody, decoded where its Content-Encoding is zstd.
-// readable is false where they cannot be had without consuming the body, are too large, or are in another encoding.
-func provimuxRequestBody(req *http.Request) (body []byte, readable bool) {
-	if req.Body == nil || req.Body == http.NoBody {
-		return nil, true
-	}
-	if req.GetBody == nil {
-		return nil, false
-	}
-	reader, errBody := req.GetBody()
-	if errBody != nil || reader == nil {
-		return nil, false
-	}
-	defer func() { _ = reader.Close() }()
-	body, errRead := io.ReadAll(io.LimitReader(reader, provimuxSentBodyLimit+1))
-	if errRead != nil || len(body) > provimuxSentBodyLimit {
-		return nil, false
-	}
+// provimuxEncodings lists a request's content encodings, in order, without identity.
+func provimuxEncodings(header http.Header) []string {
 	var encodings []string
-	for _, value := range req.Header.Values("Content-Encoding") {
+	for _, value := range header.Values("Content-Encoding") {
 		for _, encoding := range strings.Split(value, ",") {
 			if encoding = strings.ToLower(strings.TrimSpace(encoding)); encoding != "" && encoding != "identity" {
 				encodings = append(encodings, encoding)
 			}
 		}
 	}
+	return encodings
+}
+
+// provimuxDecode decodes body for its encodings: none, or zstd alone. Any other is not read.
+func provimuxDecode(body []byte, encodings []string) ([]byte, bool) {
 	switch {
 	case len(encodings) == 0:
 		return body, true
@@ -412,6 +412,114 @@ func provimuxRequestBody(req *http.Request) (body []byte, readable bool) {
 	}
 	return nil, false
 }
+
+// provimuxBodyCapture is a copy of the bytes a request's transport read from its body, taken while it read them: from
+// the body itself and from each body a retry asked GetBody for. Nothing is read that the transport did not read.
+type provimuxBodyCapture struct {
+	mu      sync.Mutex
+	none    bool // the request had no body
+	streams []*provimuxBodyStream
+}
+
+// provimuxBodyStream is what the transport read from one body.
+type provimuxBodyStream struct {
+	data   bytes.Buffer
+	whole  bool // read to its end without an error
+	failed bool // a read failed, or it outgrew the limit
+}
+
+// provimuxCaptureBody returns req, as its transport is to be handed it, with a body (and a GetBody) that copy what the
+// transport reads, and the capture. The bytes, the length and the headers are those of req: nothing else changes.
+func provimuxCaptureBody(req *http.Request) (*http.Request, *provimuxBodyCapture) {
+	capture := &provimuxBodyCapture{}
+	if req.Body == nil || req.Body == http.NoBody {
+		capture.none = true
+		return req, capture
+	}
+	sent := new(http.Request)
+	*sent = *req
+	size := req.ContentLength
+	sent.Body = capture.tee(req.Body, size)
+	if getBody := req.GetBody; getBody != nil {
+		sent.GetBody = func() (io.ReadCloser, error) {
+			body, err := getBody()
+			if err != nil || body == nil || body == http.NoBody {
+				return body, err
+			}
+			return capture.tee(body, size), nil
+		}
+	}
+	return sent, capture
+}
+
+// tee returns body copying what is read from it into a stream of c, sized for length where it is known.
+func (c *provimuxBodyCapture) tee(body io.ReadCloser, length int64) io.ReadCloser {
+	stream := &provimuxBodyStream{}
+	if length > 0 && length <= provimuxSentBodyLimit {
+		stream.data.Grow(int(length))
+	}
+	c.mu.Lock()
+	c.streams = append(c.streams, stream)
+	c.mu.Unlock()
+	return &provimuxTeeBody{body: body, stream: stream, capture: c}
+}
+
+// bytes returns what the transport read, when it read one body whole, or every body it read whole the same; ok is
+// false where it read none whole, or two that differ.
+func (c *provimuxBodyCapture) bytes() (body []byte, ok bool) {
+	if c == nil {
+		return nil, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.none {
+		return nil, true
+	}
+	seen := false
+	for _, stream := range c.streams {
+		if stream.failed {
+			return nil, false
+		}
+		if !stream.whole {
+			continue
+		}
+		if seen && !bytes.Equal(body, stream.data.Bytes()) {
+			return nil, false
+		}
+		body, seen = stream.data.Bytes(), true
+	}
+	return body, seen
+}
+
+// provimuxTeeBody hands the transport the body's bytes and keeps a copy of each.
+type provimuxTeeBody struct {
+	body    io.ReadCloser
+	stream  *provimuxBodyStream
+	capture *provimuxBodyCapture
+}
+
+func (t *provimuxTeeBody) Read(p []byte) (int, error) {
+	n, err := t.body.Read(p)
+	t.capture.mu.Lock()
+	if n > 0 && !t.stream.failed {
+		if t.stream.data.Len()+n > provimuxSentBodyLimit {
+			t.stream.failed = true
+			t.stream.data = bytes.Buffer{}
+		} else {
+			t.stream.data.Write(p[:n])
+		}
+	}
+	switch {
+	case err == io.EOF:
+		t.stream.whole = !t.stream.failed
+	case err != nil:
+		t.stream.failed = true
+	}
+	t.capture.mu.Unlock()
+	return n, err
+}
+
+func (t *provimuxTeeBody) Close() error { return t.body.Close() }
 
 // provimuxJSONModel reads the top-level "model" of a JSON object: a string, once. A body that is not an object, a
 // "model" that is not a non-empty string, and two "model" keys are not read.
@@ -465,8 +573,8 @@ const provimuxDevinChatMethod = "/exa.api_server_pb.ApiServerService/GetChatMess
 
 // provimuxConnectModel reads field 21 of the one uncompressed Connect frame of a request to Devin's chat method. Any
 // other method carries no model; a chat request in another shape is not read.
-func provimuxConnectModel(u *url.URL, body []byte) (model string, unread bool) {
-	if u == nil || !strings.HasSuffix(u.Path, provimuxDevinChatMethod) {
+func provimuxConnectModel(path string, body []byte) (model string, unread bool) {
+	if !strings.HasSuffix(path, provimuxDevinChatMethod) {
 		return "", false
 	}
 	if len(body) < 5 || body[0] != 0 || int(binary.BigEndian.Uint32(body[1:5])) != len(body)-5 {
@@ -504,63 +612,80 @@ func provimuxConnectModel(u *url.URL, body []byte) (model string, unread bool) {
 	return model, false
 }
 
-// provimuxHousekeeping reports whether req is on the closed list of requests that cannot produce an answer, known by
-// destination and shape (the lead's rule of 2026-11-27): a token exchange or refresh, a model catalog, a project
-// discovery. Every other request counts as one that could have produced the answer. The list is closed: a request
-// upstream adds is a candidate until it is named here.
-func provimuxHousekeeping(req *http.Request, observed ProvimuxSentRequest) bool {
-	if observed.Model != "" || observed.unread || observed.Scheme != "https" || observed.Port != "" {
+// provimuxHousekeeping reports whether request is on the closed list of requests of executor (a kind of the closed
+// executor list) that cannot produce an answer (the lead's amendments of 2026-11-27): a token exchange or refresh, a
+// model catalog, a project discovery. A request is housekeeping only when the executor that answered is the one that
+// sends it, and its method, exact authority (https on the default port, the Host its URL's), exact path and shape are
+// those of the list; it carries no model and nothing else makes it doubtful. Every other request counts as one that
+// could have produced the answer. The list is closed: a request upstream adds is a candidate until it is named here.
+func provimuxHousekeeping(executor string, request ProvimuxSentRequest) bool {
+	if request.Model != "" || request.unread || request.untrusted || request.Scheme != "https" || request.Port != "" {
 		return false
 	}
-	method, host, path := req.Method, observed.Host, req.URL.Path
-	mediaType, _, _ := mime.ParseMediaType(req.Header.Get("Content-Type"))
-	form := method == http.MethodPost && strings.EqualFold(mediaType, "application/x-www-form-urlencoded")
+	body, _ := request.body.bytes()
 	for _, known := range provimuxHousekeepingList {
-		if known.method != method || (known.form && !form) {
+		if known.executor != executor || known.method != request.method || known.host != request.Host || known.path != request.path {
 			continue
 		}
-		if known.host != host && !(known.hostSuffix != "" && strings.HasSuffix(host, known.hostSuffix)) {
-			continue
-		}
-		if known.path == path || (known.pathSuffix != "" && strings.HasSuffix(path, known.pathSuffix)) {
-			return true
+		switch known.shape {
+		case provimuxShapeForm:
+			if request.mediaType == "application/x-www-form-urlencoded" {
+				return true
+			}
+		case provimuxShapeJSON:
+			if request.mediaType == "application/json" {
+				return true
+			}
+		case provimuxShapeEmpty:
+			if len(body) == 0 {
+				return true
+			}
 		}
 	}
 	return false
 }
 
-// provimuxHousekeepingRequest is one entry of the closed list: a method, a host (or a host suffix), a path (or a path
-// suffix) and, for a token endpoint, a form body.
+// The shapes of a housekeeping request's body.
+const (
+	provimuxShapeEmpty = iota // no body (a GET)
+	provimuxShapeForm         // a form (a token endpoint)
+	provimuxShapeJSON         // JSON without a model
+)
+
+// provimuxHousekeepingRequest is one entry of the closed list: the executor that sends it, a method, an exact host, an
+// exact path, and the shape of its body.
 type provimuxHousekeepingRequest struct {
-	executor         string // who sends it (documentation)
-	method           string
-	host, hostSuffix string
-	path, pathSuffix string
-	form             bool
+	executor   string
+	method     string
+	host, path string
+	shape      int
 }
 
-// provimuxHousekeepingList is the closed list, by executor. Claude, Codex, xAI, Meta, Devin, Kimi, Gemini keys and
-// OpenAI-compatible keys make no such request on an attempt's clients: their token refreshes and profile reads run on
-// clients of their own (a connection one of them makes on the attempt's context is unseen, and cancels), or in an
-// attempt of their own.
-var provimuxHousekeepingList = []provimuxHousekeepingRequest{
+// provimuxHousekeepingList is the closed list. Claude, Codex, xAI, Meta, Devin, Kimi and OpenAI-compatible keys make
+// no such request on an attempt's clients: their token refreshes and profile reads run on clients of their own (a
+// connection one of them makes on the attempt's context is unseen, and cancels), or in an attempt of their own.
+var provimuxHousekeepingList = provimuxHousekeepingEntries()
+
+func provimuxHousekeepingEntries() []provimuxHousekeepingRequest {
+	var list []provimuxHousekeepingRequest
 	// Google's OAuth token endpoint: a Vertex service account's token exchange, an Antigravity or Gemini login's
 	// refresh. A form POST.
-	{executor: "vertex, antigravity, gemini", method: http.MethodPost, host: "oauth2.googleapis.com", path: "/token", form: true},
-	{executor: "vertex, antigravity, gemini", method: http.MethodPost, host: "www.googleapis.com", path: "/oauth2/v4/token", form: true},
+	for _, executor := range []string{"vertex", "antigravity", "gemini"} {
+		list = append(list,
+			provimuxHousekeepingRequest{executor: executor, method: http.MethodPost, host: "oauth2.googleapis.com", path: "/token", shape: provimuxShapeForm},
+			provimuxHousekeepingRequest{executor: executor, method: http.MethodPost, host: "www.googleapis.com", path: "/oauth2/v4/token", shape: provimuxShapeForm})
+	}
 	// Antigravity: project discovery, onboarding and the user's information, before a first answer of a login. JSON
 	// without a model, to its three hosts.
-	{executor: "antigravity", method: http.MethodPost, host: "cloudcode-pa.googleapis.com", pathSuffix: "/v1internal:loadCodeAssist"},
-	{executor: "antigravity", method: http.MethodPost, host: "cloudcode-pa.googleapis.com", pathSuffix: "/v1internal:onboardUser"},
-	{executor: "antigravity", method: http.MethodPost, host: "cloudcode-pa.googleapis.com", pathSuffix: "/v1internal:fetchUserInfo"},
-	{executor: "antigravity", method: http.MethodPost, host: "daily-cloudcode-pa.googleapis.com", pathSuffix: "/v1internal:loadCodeAssist"},
-	{executor: "antigravity", method: http.MethodPost, host: "daily-cloudcode-pa.googleapis.com", pathSuffix: "/v1internal:onboardUser"},
-	{executor: "antigravity", method: http.MethodPost, host: "daily-cloudcode-pa.googleapis.com", pathSuffix: "/v1internal:fetchUserInfo"},
-	{executor: "antigravity", method: http.MethodPost, host: "daily-cloudcode-pa.sandbox.googleapis.com", pathSuffix: "/v1internal:loadCodeAssist"},
-	{executor: "antigravity", method: http.MethodPost, host: "daily-cloudcode-pa.sandbox.googleapis.com", pathSuffix: "/v1internal:onboardUser"},
-	{executor: "antigravity", method: http.MethodPost, host: "daily-cloudcode-pa.sandbox.googleapis.com", pathSuffix: "/v1internal:fetchUserInfo"},
-	// Copilot: the exchange of the GitHub token for Copilot's, and Copilot's model catalog.
-	{executor: "copilot", method: http.MethodGet, host: "api.github.com", path: "/copilot_internal/v2/token"},
-	{executor: "copilot", method: http.MethodGet, host: "api.githubcopilot.com", path: "/models"},
-	{executor: "copilot", method: http.MethodGet, hostSuffix: ".githubcopilot.com", path: "/models"},
+	for _, host := range []string{"cloudcode-pa.googleapis.com", "daily-cloudcode-pa.googleapis.com", "daily-cloudcode-pa.sandbox.googleapis.com"} {
+		for _, path := range []string{"/v1internal:loadCodeAssist", "/v1internal:onboardUser", "/v1internal:fetchUserInfo"} {
+			list = append(list, provimuxHousekeepingRequest{executor: "antigravity", method: http.MethodPost, host: host, path: path, shape: provimuxShapeJSON})
+		}
+	}
+	// Copilot: the exchange of the GitHub token for Copilot's, and Copilot's model catalog on its four API hosts.
+	list = append(list, provimuxHousekeepingRequest{executor: "copilot", method: http.MethodGet, host: "api.github.com", path: "/copilot_internal/v2/token", shape: provimuxShapeEmpty})
+	for _, host := range []string{"api.githubcopilot.com", "api.individual.githubcopilot.com", "api.business.githubcopilot.com", "api.enterprise.githubcopilot.com"} {
+		list = append(list, provimuxHousekeepingRequest{executor: "copilot", method: http.MethodGet, host: host, path: "/models", shape: provimuxShapeEmpty})
+	}
+	return list
 }

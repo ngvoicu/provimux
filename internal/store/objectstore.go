@@ -670,6 +670,7 @@ func (s *ObjectTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Aut
 		auth.Disabled = true
 		auth.Status = cliproxyauth.StatusDisabled
 	}
+	provimuxMarkLoaded(auth) // Provimux: the gateway's own loader made it (answered-by.md, rule A.3)
 	return auth, nil
 }
 

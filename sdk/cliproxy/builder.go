@@ -312,7 +312,7 @@ func (b *Builder) Build() (*Service, error) {
 		appliedRoutingState = &routingState
 	}
 	// Attach a default RoundTripper provider so providers can opt-in per-auth transports.
-	coreManager.SetRoundTripperProvider(newDefaultRoundTripperProvider())
+	coreManager.SetRoundTripperProvider(provimuxGatewayTransports(newDefaultRoundTripperProvider())) // Provimux: recognised by identity (answered-by.md, rule A.2)
 	coreManager.SetConfig(b.cfg)
 	coreManager.SetOAuthModelAlias(b.cfg.OAuthModelAlias)
 	provimuxSetNamesRule(b.cfg) // Provimux: only-my-names (the first config of a start is not committed)

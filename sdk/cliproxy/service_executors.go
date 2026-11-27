@@ -247,6 +247,7 @@ func (s *Service) registerExecutor(exec coreauth.ProviderExecutor) {
 		}
 	}
 	revision := s.coreManager.RegisterExecutorWithRevision(exec)
+	provimuxNoteExecutor(s.coreManager, provider, exec, owned, revision) // Provimux: a built-in, wired here (answered-by.md, rule A.1)
 	if provider != "" && revision != 0 {
 		s.ownedRevisions[provider] = revision
 	}

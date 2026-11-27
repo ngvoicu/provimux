@@ -396,7 +396,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 					cancel(errWrite)
 					return completedOutput, completedResponseID, sortedStringSet(pendingToolCallIDs), nil, errWrite
 				}
-				provimuxNoteResponsesWebsocketTurn(eventType, payloads[i], opts.authStatement) // Provimux: written; the record
+				provimuxNoteResponsesWebsocketTurn(c, eventType, payloads[i], opts.authStatement) // Provimux: written; the record
 			}
 		}
 	}
