@@ -85,6 +85,10 @@ func TestProvimuxSentDeclaredLengthIsWhole(t *testing.T) {
 		{"one byte short of the declared length", int64(len(body)), len(body) - 1, false},
 		{"no declared length, before the read that meets the end", -1, len(body), false},
 		{"more bytes than declared", int64(len(body) - 2), len(body), false},
+		// The length rule of part (6): with a declared length, exactly that many bytes; without one, the end.
+		{"fewer bytes than declared, read to the end", int64(len(body) + 3), -1, false},
+		{"exactly the declared bytes, read to the end", int64(len(body)), -1, true},
+		{"no declared length, read to the end", -1, -1, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			req, err := http.NewRequest(http.MethodPost, "https://api.anthropic.com/v1/messages", io.NopCloser(strings.NewReader(body)))
@@ -93,8 +97,11 @@ func TestProvimuxSentDeclaredLengthIsWhole(t *testing.T) {
 			}
 			req.ContentLength = tc.declared
 			sent, capture := provimuxCaptureBody(req)
-			buffer := make([]byte, tc.read)
-			if _, err = io.ReadFull(sent.Body, buffer); err != nil {
+			if tc.read < 0 { // to the end, as a transport that reads until EOF
+				if _, err = io.ReadAll(sent.Body); err != nil {
+					t.Fatal(err)
+				}
+			} else if _, err = io.ReadFull(sent.Body, make([]byte, tc.read)); err != nil {
 				t.Fatal(err)
 			}
 			got, ok := capture.bytes()
