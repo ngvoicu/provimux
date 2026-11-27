@@ -36,6 +36,10 @@ func TestProvimuxOriginCallers(t *testing.T) {
 		"origin.DefaultTransportUnchanged(": {"sdk/cliproxy/executor/provimux_sent.go"},
 		"origin.GatewayTransport(":          {"sdk/cliproxy/executor/provimux_sent.go"},
 		"provimuxStockOptions(":             {"internal/api/server.go", "internal/api/provimux_stock.go"},
+		"origin.MarkShippedGateway(":        {"internal/logging/provimux_shipped.go"},
+		"logging.ProvimuxShippedGateway(":   {"cmd/server/main.go"},
+		"ShippedGatewayForTests(":           {"internal/provimux/origin/origin.go"},
+		"WithProvimuxStatementAsked(":       {"sdk/api/handlers/handlers_execution.go", "sdk/api/handlers/handlers_stream.go", "sdk/cliproxy/executor/provimux_sent.go"},
 		"ProvimuxPassesRequestsUnchanged":   {}, // the declaration the earlier build read: in no product file
 		"ProvimuxStockTransport":            {}, // the same
 	}

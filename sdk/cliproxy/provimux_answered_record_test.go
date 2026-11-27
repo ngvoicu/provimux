@@ -14,6 +14,7 @@ import (
 	"github.com/MoeForge/moego/json"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/provimux/origin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
@@ -67,7 +68,9 @@ func answeredKeyOn(t *testing.T) {
 	t.Helper()
 	coreauth.SetProvimuxMarkerKey([]byte("provimux-test-sent-marker-key-32"))
 	was := logging.SetProvimuxAnsweredBy(true)
+	restoreShipped := origin.ShippedGatewayForTests(true)
 	t.Cleanup(func() {
+		restoreShipped()
 		logging.SetProvimuxAnsweredBy(was)
 		coreauth.SetProvimuxMarkerKey(nil)
 	})
@@ -573,3 +576,19 @@ func TestProvimuxAnsweredNoteCost(t *testing.T) {
 }
 
 var _ = json.Marshal
+
+// waitAnswered waits until ok holds, waking on each note the record accepts, for at most ten seconds: a test that
+// reads the record right after a client got its answer waits for the note the stock route makes after writing it.
+func waitAnswered(t *testing.T, ok func() bool) {
+	t.Helper()
+	book := provimuxAnswered
+	deadline := time.NewTimer(10 * time.Second)
+	defer deadline.Stop()
+	for !ok() {
+		select {
+		case <-book.noted:
+		case <-deadline.C:
+			return
+		}
+	}
+}

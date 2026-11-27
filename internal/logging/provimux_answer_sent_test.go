@@ -2,6 +2,7 @@ package logging
 
 import (
 	"context"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/provimux/origin"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -131,6 +132,7 @@ func TestProvimuxAnswerSentIsExposedToBrowsers(t *testing.T) {
 // headers committed first without a statement (a keep-alive) hand nothing on, whatever is confirmed after; a statement
 // only offered hands nothing on. The record's values are never on the wire.
 func TestProvimuxAnswerNotedOnlyWhenWritten(t *testing.T) {
+	t.Cleanup(origin.ShippedGatewayForTests(true)) // the gateway as shipped (the process mark)
 	withProvimuxAnsweredBy(t, true)
 	var noted []AuthStatement
 	SetProvimuxAnsweredWritten(func(s AuthStatement) { noted = append(noted, s) })
@@ -194,5 +196,16 @@ func TestProvimuxAnswerNotedOnlyWhenWritten(t *testing.T) {
 	})
 	if len(noted) != 0 {
 		t.Fatalf("noted %+v from a writer other than the stock route's", noted)
+	}
+	stock = true // the stock route, in a process Provimux's own main did not start: nothing (part 3)
+	restore := origin.ShippedGatewayForTests(false)
+	serve(func(c *gin.Context) {
+		OfferGinCPAAuthStatement(c, statement)
+		ConfirmGinCPAAuthOffer(c)
+		c.String(http.StatusOK, "answer")
+	})
+	restore()
+	if len(noted) != 0 {
+		t.Fatalf("noted %+v without the process mark", noted)
 	}
 }

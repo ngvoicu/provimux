@@ -70,6 +70,7 @@ func shouldEnableExampleAPIKeySafeMode(cfg *config.Config, commandMode, tuiMode,
 // It parses command-line flags, loads configuration, and starts the appropriate
 // service based on the provided flags (login, codex-login, or server mode).
 func main() {
+	logging.ProvimuxShippedGateway() // Provimux: this process is the gateway as shipped (answered-by.md, part 3 of 2026-11-27 (2))
 	os.Exit(run())
 }
 

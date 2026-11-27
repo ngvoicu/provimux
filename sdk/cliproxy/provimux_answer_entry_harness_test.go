@@ -267,7 +267,11 @@ func newSentHarness(t *testing.T, configBody string) *sentHarness {
 	// After the service is built: it puts the config's switch in force, off in a test binary.
 	coreauth.SetProvimuxMarkerKey([]byte("provimux-test-sent-marker-key-32"))
 	was := logging.SetProvimuxAnsweredBy(true)
+	// The harness stands for the gateway as shipped: the process mark, by a seam that does nothing outside a test
+	// binary (the amendment of 2026-11-27 (2), part 3). A test that stands for an embedding calls asEmbedding.
+	restoreShipped := origin.ShippedGatewayForTests(true)
 	t.Cleanup(func() {
+		restoreShipped()
 		logging.SetProvimuxAnsweredBy(was)
 		coreauth.SetProvimuxMarkerKey(nil)
 	})
@@ -395,4 +399,11 @@ func (h *sentHarness) checkNoModel(answer sentAnswer, account *coreauth.Auth) {
 			h.t.Fatalf("%s written: %v (stand-in received %+v)", name.Header, values, h.stand.all())
 		}
 	}
+}
+
+// asEmbedding makes the rest of the test a program that embeds the SDK: Provimux's own main did not start it, so no
+// answer names an entry and nothing is recorded (the amendment of 2026-11-27 (2), part 3).
+func asEmbedding(t *testing.T) {
+	t.Helper()
+	t.Cleanup(origin.ShippedGatewayForTests(false))
 }

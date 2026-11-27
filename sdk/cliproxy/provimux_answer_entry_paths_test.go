@@ -324,10 +324,18 @@ func TestProvimuxAnswerEntryUpstreamWebsocketHasNone(t *testing.T) {
 	}
 	// W6b: a WebSocket turn reaches the record with the name it asked for: the upstream WebSocket's answer as one
 	// that named no entry, the HTTP one with its entry.
-	if items := coreauth.ProvimuxAnswered(coreauth.ProvimuxClientRef(sentClientKey), overSocket.ID, overSocket.ProvimuxAccountMarker(), "provimux-test-codex-ws"); len(items) == 0 || items[0].Entry != "" {
+	// The record is written after the frame is: wait for the note, never for a fixed time.
+	overSocketItems := func() []coreauth.ProvimuxAnsweredItem {
+		return coreauth.ProvimuxAnswered(coreauth.ProvimuxClientRef(sentClientKey), overSocket.ID, overSocket.ProvimuxAccountMarker(), "provimux-test-codex-ws")
+	}
+	overHTTPItems := func() []coreauth.ProvimuxAnsweredItem {
+		return coreauth.ProvimuxAnswered(coreauth.ProvimuxClientRef(sentClientKey), overHTTP.ID, overHTTP.ProvimuxAccountMarker(), "provimux-test-codex-http")
+	}
+	waitAnswered(t, func() bool { return len(overSocketItems()) > 0 && len(overHTTPItems()) > 0 })
+	if items := overSocketItems(); len(items) == 0 || items[0].Entry != "" {
 		t.Fatalf("the record of the turn over the upstream WebSocket: %+v", items)
 	}
-	if items := coreauth.ProvimuxAnswered(coreauth.ProvimuxClientRef(sentClientKey), overHTTP.ID, overHTTP.ProvimuxAccountMarker(), "provimux-test-codex-http"); len(items) == 0 || items[0].Entry != "openai-codex/"+answered[0].Model {
+	if items := overHTTPItems(); len(items) == 0 || items[0].Entry != "openai-codex/"+answered[0].Model {
 		t.Fatalf("the record of the turn over HTTP: %+v", items)
 	}
 }

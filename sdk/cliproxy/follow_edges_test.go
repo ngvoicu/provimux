@@ -5,6 +5,7 @@ import (
 	"github.com/MoeForge/moego/ojson"
 	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+	ca "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -163,6 +164,10 @@ complete:
 	if entry != "openai-codex/"+model {
 		t.Fatalf("fixture received entry %q", entry)
 	}
+	// The record is written after the frame is: wait for the note, never for a fixed time.
+	waitAnswered(t, func() bool {
+		return len(ca.ProvimuxAnswered(ca.ProvimuxClientRef(sentOtherClientKey), auths["codex"].ID, auths["codex"].ProvimuxAccountMarker(), model)) > 0
+	})
 	a, m, _ := h.listsRow(sentClientKey, model, auths["codex"].ProvimuxAccountMarker())
 	b, _, _ := h.listsRow(sentOtherClientKey, model, auths["codex"].ProvimuxAccountMarker())
 	if a == nil || b == nil || m == nil {
