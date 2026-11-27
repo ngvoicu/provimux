@@ -11,7 +11,7 @@ import (
 )
 
 // Provimux: the second review of the rule (findings 1, 2, 4 and 7), each as the reviewer's own case, against the rule
-// as it now reads: it never moves a conversation that sent a message within cold-after. An answer that itself takes
+// as it now reads: it never moves a conversation that had a message routed to an account within cold-after. An answer that itself takes
 // longer than cold-after does not count as use while it streams. Every account and key is invented; the executors
 // are stand-ins in this process.
 
@@ -223,3 +223,35 @@ type provimuxRTPluginCheck struct {
 }
 
 func (p provimuxRTPluginCheck) HasScheduler() bool { close(p.entered); <-p.finish; return false }
+
+// TestProvimuxSessionReturnFinding8RefusedMessage is finding 8 of the third check, stated as intended: a message the
+// gateway refuses before choosing an account (every account that serves the name is cooling, so it answers 429
+// before the selector runs) reaches no provider and reads no cache, so it is not use. The retry after the cooldowns
+// end, more than cold-after after the last message routed to an account, goes back.
+func TestProvimuxSessionReturnFinding8RefusedMessage(t *testing.T) {
+	calls := &provimuxRTCalls{}
+	f := newProvimuxSRFixture(t, "fill-first", false, calls.call)
+	f.rule(time.Minute)
+	header := http.Header{"X-Session-Affinity": {"retry-after-cooldown"}}
+	key := f.fellBack(header, "")
+	calls.take()
+	f.age(90 * time.Second) // the last message routed to an account was 90 seconds ago
+	before, routed := provimuxReturned.Load(), f.noteOf(key)
+	retry := time.Minute
+	for _, id := range []string{f.low, f.high} {
+		f.m.MarkResult(t.Context(), Result{AuthID: id, Provider: f.providers[0], Model: provimuxSRModel,
+			Error: &Error{HTTPStatus: http.StatusTooManyRequests, Message: "synthetic quota"}, RetryAfter: &retry})
+	}
+	if err := f.turn(header, "", "", nil); err == nil || len(calls.take()) != 0 || !f.noteOf(key).Equal(routed) {
+		t.Fatalf("want a refusal before selection, no call, and no note: %v", err)
+	}
+	for _, id := range []string{f.low, f.high} {
+		expireSessionAffinityPriorityModelCooldown(t, f.m, id, provimuxSRModel)
+	}
+	if err := f.turn(header, "", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := f.binding(key); got != f.high || provimuxReturned.Load()-before != 1 {
+		t.Fatalf("the retry is bound %q, counted %d; want it returned (the refused message was not use)", got, provimuxReturned.Load()-before)
+	}
+}
