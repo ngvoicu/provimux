@@ -373,7 +373,9 @@ components:
             (amended 2026-11-27 (2) by the lead): it keeps only what the gateway's own output route wrote, an answer
             around a change of the auth folder may be missing, and a second gateway on the same auth folder keeps its
             record in memory only. It exists only in the gateway as shipped, a process Provimux's own program
-            started; elsewhere a route has no `answered`.
+            started; elsewhere a route has no `answered`. Once a plugin's executor (any executor that is not one of
+            the gateway's own) was put in place for a provider, that provider's answers name no entry until the
+            gateway restarts, and are recorded as null (answered-by.md, part (5)).
             Optional in this contract: a gateway from before answered-by W6, and one with models.answered-by off,
             leaves it out, and a reader treats missing and empty alike. No route carries a predicted `entry`.
           items:

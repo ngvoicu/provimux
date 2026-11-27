@@ -73,14 +73,18 @@ info:
       `X-Provimux-Model-Sent`, `X-Provimux-Model` or `X-Provimux-Model-Basis`, and no
       `answered`; `X-Provimux-Account` and `account` are unchanged.
     - In the gateway as shipped, an answer names an entry, and the model it sent, only where its
-      own parts made it: one of its built-in executors, registered by its own service, with no
-      other registration while the call ran; an HTTP client built over transports it made
-      itself; a credential its own loader read, for that credential's id, from the auth folder,
+      own parts made it: one of its built-in executors, for a provider for which no executor but
+      the gateway's own (a plugin's, for one) was put in place since the gateway started; an HTTP
+      client built over transports it made itself; a credential its own loader read, for that credential's id, from the auth folder,
       a store record or the configuration, that no plugin made or changed; and exactly one
       request that could have produced the answer, whose model was read from the bytes handed to
       the transport, to the host the entry is priced at, with no connection the gateway did not
       see. Otherwise it names neither; where all of this holds and providers.dev has no entry
       for what was sent, it names the model and no entry.
+    - Once a plugin's executor (any executor that is not one of the gateway's own) was put in
+      place for a provider, no answer of that provider names an entry or the model it sent until
+      the gateway restarts; its answers carry `X-Provimux-Account` and are recorded as null
+      (amended 2026-11-27 (2), part 5, decided by the lead with the owner's word).
     - A marker is the same on every answer of one account and in every list, for as long as the
       gateway keeps its key; another account never has it. It is compared, never parsed, except
       for its first character.
