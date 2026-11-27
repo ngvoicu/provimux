@@ -1,7 +1,6 @@
 package config
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -72,22 +71,5 @@ func TestProvimuxSessionReturnSettingAbsent(t *testing.T) {
 	built.Routing.SessionAffinityReturn = &ProvimuxSessionReturn{ColdAfter: "30s"} // built in code, never read
 	if _, set := built.ProvimuxSessionReturnColdAfter(); set {
 		t.Fatal("a value under a minute built in code is set")
-	}
-}
-
-func TestProvimuxSessionReturnSettingJSON(t *testing.T) {
-	var setting ProvimuxSessionReturn
-	if err := json.Unmarshal([]byte(`{"cold-after":"6m"}`), &setting); err != nil || setting.ColdAfter != "6m" {
-		t.Fatalf("%v %q", err, setting.ColdAfter)
-	}
-	var off ProvimuxSessionReturn
-	if err := json.Unmarshal([]byte(`{"cold-after":null}`), &off); err != nil || off.ColdAfter != "" {
-		t.Fatalf("null: %v %q; want off", err, off.ColdAfter)
-	}
-	for _, raw := range []string{`{"cold-after":"30s"}`, `{"cold-after":360}`, `{"cold-after":""}`} {
-		var refused ProvimuxSessionReturn
-		if err := json.Unmarshal([]byte(raw), &refused); err == nil {
-			t.Fatalf("%s accepted as %q", raw, refused.ColdAfter)
-		}
 	}
 }

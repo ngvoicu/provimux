@@ -1,7 +1,6 @@
 package config
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -59,26 +58,9 @@ func (d *ProvimuxColdAfter) UnmarshalYAML(node *yaml.Node) error {
 	return nil
 }
 
-// UnmarshalJSON holds a JSON copy of the configuration to the same rule.
-func (d *ProvimuxColdAfter) UnmarshalJSON(data []byte) error {
-	if string(data) == "null" { // null is off, as in YAML
-		*d = ""
-		return nil
-	}
-	var value string
-	if errJSON := json.Unmarshal(data, &value); errJSON != nil {
-		return provimuxColdAfterError(string(data))
-	}
-	if _, errParse := parseProvimuxColdAfter(value); errParse != nil {
-		return errParse
-	}
-	*d = ProvimuxColdAfter(strings.TrimSpace(value))
-	return nil
-}
-
 // ProvimuxSessionReturnColdAfter is cold-after as cfg sets it, and whether it sets it. A value that reached a Config
-// without being read from YAML or JSON (built in code) is held to the same rule: one that is not a duration of at
-// least a minute is not set.
+// without being read from YAML (built in code) is held to the same rule: one that is not a duration of at least a
+// minute is not set.
 func (cfg *Config) ProvimuxSessionReturnColdAfter() (time.Duration, bool) {
 	if cfg == nil || cfg.Routing.SessionAffinityReturn == nil {
 		return 0, false
