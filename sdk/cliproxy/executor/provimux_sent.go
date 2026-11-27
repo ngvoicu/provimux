@@ -333,7 +333,7 @@ func provimuxModelOf(request ProvimuxSentRequest) (model string, unread bool) {
 	}
 	bodyModel, bodyUnread := provimuxBodyModel(request.path, request.mediaType, body)
 	switch {
-	case bodyUnread:
+	case bodyUnread, !utf8.ValidString(bodyModel):
 		return "", true
 	case request.pathModel != "" && bodyModel != "" && request.pathModel != bodyModel:
 		return "", true
@@ -438,7 +438,7 @@ type provimuxBodyCapture struct {
 type provimuxBodyStream struct {
 	data   bytes.Buffer
 	length int64 // the length the request declares, -1 or 0 where it declares none
-	whole  bool  // read to its end without an error: to EOF, or to exactly the length it declares
+	whole  bool  // read whole: exactly the length it declares, or without one to its end
 	failed bool  // a read failed, it outgrew the limit, or it outgrew the length it declares
 }
 
@@ -543,15 +543,20 @@ func (t *provimuxTeeBody) Read(p []byte) (int, error) {
 			t.stream.data.Write(p[:n])
 		}
 	}
+	// With a declared length the body is whole only when exactly that many bytes were read: at that moment (the read
+	// that meets the end may come after the answer is back, finding 55), and not at an end that comes sooner; more
+	// bytes than declared fail above. Without a declared length, at the end of the body.
+	exact := t.stream.length > 0 && int64(t.stream.data.Len()) == t.stream.length
 	switch {
+	case t.stream.failed:
+		t.stream.whole = false
+	case err == io.EOF && t.stream.length > 0 && !exact:
+		t.stream.failed, t.stream.whole = true, false // fewer bytes than declared
 	case err == io.EOF:
-		t.stream.whole = !t.stream.failed
+		t.stream.whole = true
 	case err != nil:
 		t.stream.failed, t.stream.whole = true, false
-	case t.stream.length > 0 && int64(t.stream.data.Len()) == t.stream.length && !t.stream.failed:
-		// Every byte the request declares: what a transport sends of it (Go's sends no more than the declared length
-		// and fails a request whose body holds more). Its last read, the one that meets the end, may come after the
-		// answer is back (finding 55): the body is whole without waiting for it.
+	case exact:
 		t.stream.whole = true
 	}
 	t.capture.mu.Unlock()
