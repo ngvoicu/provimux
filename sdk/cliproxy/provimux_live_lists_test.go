@@ -132,6 +132,20 @@ func provimuxBody(body []byte) func(http.ResponseWriter, *http.Request) {
 func provimuxService(t *testing.T, cfg *config.Config, executor coreauth.ProviderExecutor, auth *coreauth.Auth) (*Service, *coreauth.Auth) {
 	t.Helper()
 	svc := &Service{cfg: cfg, coreManager: coreauth.NewManager(nil, nil, nil)}
+	// A fetch that succeeds refreshes its login's models, and that registers the service's own executor for the
+	// provider again (refreshModelRegistrationForAuth, ensureExecutorsForAuth). Without this, a second fetch running
+	// beside the first could find the real executor in place and send its request to the vendor. The service's
+	// wrapper hands the stand-in back for the stand-in's provider, so every executor the service puts in place is the
+	// stand-in, whatever the order the fetches finish in.
+	if executor != nil {
+		stand := executor
+		svc.executorWrapper = func(provider string, built coreauth.ProviderExecutor) coreauth.ProviderExecutor {
+			if strings.EqualFold(provider, stand.Identifier()) {
+				return stand
+			}
+			return built
+		}
+	}
 	svc.coreManager.RegisterExecutor(executor)
 	registered, err := svc.coreManager.Register(t.Context(), auth)
 	if err != nil {
