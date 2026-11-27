@@ -10,10 +10,10 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
-// Provimux: the second review of the rule (findings 1, 2 and 7), each as the reviewer's own case, against the rule
-// as it now reads: it never moves a conversation that had a message routed to an account within cold-after. An answer that itself takes
-// longer than cold-after does not count as use while it streams. Every account and key is invented; the executors
-// are stand-ins in this process.
+// Provimux: what counts as use (K6 and K7 of the rule, session-route.md 15.3). The rule never moves a conversation
+// that had a message routed to an account within cold-after, counted from the message, not from the end of its answer
+// or from a result; a message refused before selection is not use; switched off and on, the rule starts afresh. Every
+// account and key is invented; the executors are stand-ins in this process.
 
 // provimuxRTStream answers a streamed request with the chunks the test sends.
 type provimuxRTStream struct {
@@ -26,10 +26,10 @@ func (e provimuxRTStream) ExecuteStream(ctx context.Context, _ *Auth, _ cliproxy
 	return &cliproxyexecutor.StreamResult{Chunks: e.chunks}, nil
 }
 
-// TestProvimuxSessionReturnFinding1TerminalEvent is finding 1: a streamed answer of 90 seconds whose client leaves
-// right after the terminal event, so upstream never refreshes the binding from the result. With cold-after 3m the
+// TestProvimuxSessionReturnCountsFromTheMessage: a streamed answer of 90 seconds whose client leaves right after the
+// terminal event, so upstream never refreshes the binding from the result. With cold-after 3m the
 // follow-up stays; with cold-after 1m it goes back, as intended: the message was sent 90 seconds before.
-func TestProvimuxSessionReturnFinding1TerminalEvent(t *testing.T) {
+func TestProvimuxSessionReturnCountsFromTheMessage(t *testing.T) {
 	for _, row := range []struct {
 		cold     time.Duration
 		returned bool
@@ -70,10 +70,10 @@ func TestProvimuxSessionReturnFinding1TerminalEvent(t *testing.T) {
 	}
 }
 
-// TestProvimuxSessionReturnFinding2TokenRotated is finding 2: an OAuth access token rotated during a 90-second answer,
-// so upstream records the result under an older credential version and does not refresh the binding. With cold-after
+// TestProvimuxSessionReturnTokenRotatedDuringTheAnswer: an OAuth access token rotated during a 90-second answer, so
+// upstream records the result under an older credential version and does not refresh the binding. With cold-after
 // 3m the follow-up stays; with 1m it goes back, as intended.
-func TestProvimuxSessionReturnFinding2TokenRotated(t *testing.T) {
+func TestProvimuxSessionReturnTokenRotatedDuringTheAnswer(t *testing.T) {
 	for _, row := range []struct {
 		cold     time.Duration
 		returned bool
@@ -121,39 +121,37 @@ func TestProvimuxSessionReturnFinding2TokenRotated(t *testing.T) {
 	}
 }
 
-// TestProvimuxSessionReturnFinding7NewObservation is finding 7: the rule switched off and on again does not judge a
-// conversation's first message after that by a note from before.
-func TestProvimuxSessionReturnFinding7NewObservation(t *testing.T) {
-	t.Run("off, then on", func(t *testing.T) {
-		f := newProvimuxSRFixture(t, "fill-first", false, nil)
-		f.rule(time.Minute)
-		header := http.Header{"X-Session-Affinity": {"toggle"}}
-		key := f.fellBack(header, "")
-		ProvimuxSetSessionReturn(f.m, 0)
-		f.age(90 * time.Second)
-		f.rule(time.Minute)
-		before := provimuxReturned.Load()
-		if err := f.turn(header, "", "", nil); err != nil {
-			t.Fatal(err)
-		}
-		if got, _ := f.binding(key); got != f.low || provimuxReturned.Load() != before {
-			t.Fatalf("first request after switching on: bound %q; want it left alone", got)
-		}
-		f.age(90 * time.Second)
-		if err := f.turn(header, "", "", nil); err != nil {
-			t.Fatal(err)
-		}
-		if got, _ := f.binding(key); got != f.high || provimuxReturned.Load()-before != 1 {
-			t.Fatalf("second request, 90 s after the first: bound %q; want returned", got)
-		}
-	})
+// TestProvimuxSessionReturnOffAndOnStartsAfresh: the rule switched off and on again does not judge a conversation's
+// first message after that by a note from before.
+func TestProvimuxSessionReturnOffAndOnStartsAfresh(t *testing.T) {
+	f := newProvimuxSRFixture(t, "fill-first", false, nil)
+	f.rule(time.Minute)
+	header := http.Header{"X-Session-Affinity": {"toggle"}}
+	key := f.fellBack(header, "")
+	ProvimuxSetSessionReturn(f.m, 0)
+	f.age(90 * time.Second)
+	f.rule(time.Minute)
+	before := provimuxReturned.Load()
+	if err := f.turn(header, "", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := f.binding(key); got != f.low || provimuxReturned.Load() != before {
+		t.Fatalf("first request after switching on: bound %q; want it left alone", got)
+	}
+	f.age(90 * time.Second)
+	if err := f.turn(header, "", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := f.binding(key); got != f.high || provimuxReturned.Load()-before != 1 {
+		t.Fatalf("second request, 90 s after the first: bound %q; want returned", got)
+	}
 }
 
-// TestProvimuxSessionReturnFinding8RefusedMessage is finding 8 of the third check, stated as intended: a message the
-// gateway refuses before choosing an account (every account that serves the name is cooling, so it answers 429
-// before the selector runs) reaches no provider and reads no cache, so it is not use. The retry after the cooldowns
-// end, more than cold-after after the last message routed to an account, goes back.
-func TestProvimuxSessionReturnFinding8RefusedMessage(t *testing.T) {
+// TestProvimuxSessionReturnRefusedMessageIsNotUse, as intended: a message the gateway refuses before choosing an
+// account (every account that serves the name is cooling, so it answers 429 before the selector runs) reaches no
+// provider and reads no cache, so it is not use. The retry after the cooldowns end, more than cold-after after the
+// last message routed to an account, goes back.
+func TestProvimuxSessionReturnRefusedMessageIsNotUse(t *testing.T) {
 	calls := &provimuxRTCalls{}
 	f := newProvimuxSRFixture(t, "fill-first", false, calls.call)
 	f.rule(time.Minute)

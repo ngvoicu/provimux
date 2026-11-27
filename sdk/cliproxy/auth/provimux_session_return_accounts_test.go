@@ -10,16 +10,14 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
-// Provimux: the review of the rule's first build (a sweep), its findings 2, 5 and 11, each as the reviewer's own case
-// against the rule as built now. Findings 4, 6, 7, 8, 9 and 12 are the rows of provimux_session_return_test.go
-// (HeldRequest; Aliases and NoteTable; Restored; Bounds; LeftAlone; CountRacing, LeftAlone and the WebSocket test of
-// sdk/api/handlers/openai). Every account and key is invented; nothing is sent anywhere.
+// Provimux: only the accounts this request may use count as "higher" (K5 of the rule, session-route.md 15.3): an
+// account the request may not use, or one of a provider outside its set, never draws a conversation away. Every
+// account and key is invented; nothing is sent anywhere.
 
-// TestProvimuxSessionReturnFinding2Image is finding 2 as the reviewer made it: two paid Codex accounts of priority 10
-// and a free one of priority 20, and a request that may not use a free account (the image route's restriction). The
-// conversation is on a paid account, the first route for that request; unused for cold-after, its next request stays
-// there. The sweep moved it to the other paid account.
-func TestProvimuxSessionReturnFinding2Image(t *testing.T) {
+// TestProvimuxSessionReturnImageRouteStays: two paid Codex accounts of priority 10 and a free one of priority 20, and a
+// request that may not use a free account (the image route's restriction). The conversation is on a paid account, the
+// first route for that request; unused for cold-after, its next request stays there.
+func TestProvimuxSessionReturnImageRouteStays(t *testing.T) {
 	calls := &provimuxRTCalls{}
 	f := newProvimuxSRFixture(t, "round-robin", false, nil)
 	f.withTTL(provimuxRTTTL)
@@ -54,9 +52,9 @@ func TestProvimuxSessionReturnFinding2Image(t *testing.T) {
 	}
 }
 
-// TestProvimuxSessionReturnFinding2ProviderSet is finding 2's second case: a provider outside the request's set serves
-// the name at a higher priority. For this request the conversation is on its first route, and it stays.
-func TestProvimuxSessionReturnFinding2ProviderSet(t *testing.T) {
+// TestProvimuxSessionReturnOtherProviderIsNotHigher: a provider outside the request's set serves the name at a higher
+// priority. For this request the conversation is on its first route, and it stays.
+func TestProvimuxSessionReturnOtherProviderIsNotHigher(t *testing.T) {
 	calls := &provimuxRTCalls{}
 	f := newProvimuxSRFixture(t, "fill-first", true, calls.call)
 	f.withTTL(provimuxRTTTL)
