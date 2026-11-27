@@ -13,121 +13,82 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
 
-// Provimux: the closed list of built-in executors (the lead's amendment of 2026-11-27 (2), rule A.1). An answer names
-// an entry only when the executor that answers is one the gateway's own service registered, of a type on the list,
-// unwrapped, with no other registration for its provider between the service's previous one and it, nor after it.
+// Provimux: the closed list of built-in executors and the standing rule (answered-by.md, rule A.1 as decided in part
+// (5)). An answer names an entry only when the executor that answers is of a type on the list, and no executor that is
+// not one of the gateway's own was ever put in place for its provider in this process.
 
 // provimuxTestExecutor is an executor of a type not on the list.
 type provimuxTestExecutor struct{ coreauth.ProviderExecutor }
 
-func TestProvimuxBuiltinExecutorRecord(t *testing.T) {
-	m := coreauth.NewManager(nil, nil, nil)
-	cfg := &config.Config{}
-	service := &Service{coreManager: m}
-	builtin := func() coreauth.ProviderExecutor { return executor.NewOpenAICompatExecutor("provimux-test-compat", cfg) }
-	// kind is what a call that noted since at its first attempt is credited with, now.
-	kind := func(since uint64) string {
-		exec, _ := m.Executor("provimux-test-compat")
-		return provimuxBuiltinExecutor(m, exec, m.ExecutorRevision("provimux-test-compat"), since)
-	}
-
-	service.registerExecutor(builtin())
-	call := provimuxExecutorSequence()
-	if got := kind(call); got != "openai-compatibility" {
-		t.Fatalf("the service's own registration: %q", got)
-	}
-	// A reload, a login added or refreshed: the service puts its own back. No change for a call in flight.
-	service.registerExecutor(builtin())
-	service.registerExecutor(builtin())
-	if got := kind(call); got != "openai-compatibility" {
-		t.Fatalf("the service putting its own back: %q", got)
-	}
-
-	// Another program registers an executor, even one of a built-in type: none while it is in place.
-	m.RegisterExecutor(builtin())
-	if got := kind(provimuxExecutorSequence()); got != "" {
-		t.Fatalf("an executor another program registered: %q", got)
-	}
-	// The service registers its own again: a call that started before may have run on the other's, so none for it;
-	// a call that starts after is the service's own.
-	service.registerExecutor(builtin())
-	if got := kind(call); got != "" {
-		t.Fatalf("a call in flight across another's registration: %q", got)
-	}
-	after := provimuxExecutorSequence()
-	if got := kind(after); got != "openai-compatibility" {
-		t.Fatalf("a call after the service's registration: %q", got)
-	}
-	// Unregistered by other code and registered by the service: the same.
-	m.UnregisterExecutor("provimux-test-compat")
-	service.registerExecutor(builtin())
-	if got := kind(after); got != "" {
-		t.Fatalf("a call in flight across an unregistration: %q", got)
-	}
-	// The service's own of another kind (a type not on the list) is a change; back to the built-in one is one too.
-	since := provimuxExecutorSequence()
-	service.registerExecutor(&provimuxTestExecutor{executor.NewOpenAICompatExecutor("provimux-test-compat", cfg)})
-	if got := kind(since); got != "" {
-		t.Fatalf("a type not on the list: %q", got)
-	}
-	service.registerExecutor(builtin())
-	if got := kind(since); got != "" {
-		t.Fatalf("a call in flight across a change of kind: %q", got)
-	}
-	if got := kind(provimuxExecutorSequence()); got != "openai-compatibility" {
-		t.Fatalf("a call after the change of kind: %q", got)
-	}
-
-	// An embedding's ExecutorWrapper wraps the service's built-in executors: none.
-	wrapped := &Service{coreManager: coreauth.NewManager(nil, nil, nil), executorWrapper: func(_ string, exec coreauth.ProviderExecutor) coreauth.ProviderExecutor {
-		return &provimuxTestExecutor{exec}
-	}}
-	wrapped.registerExecutor(executor.NewClaudeExecutor(cfg))
-	exec, _ := wrapped.coreManager.Executor("claude")
-	if got := provimuxBuiltinExecutor(wrapped.coreManager, exec, wrapped.coreManager.ExecutorRevision("claude"), provimuxExecutorSequence()); got != "" {
-		t.Fatalf("a wrapped executor: %q", got)
-	}
-	// Another manager knows nothing of this one's registrations.
-	exec, _ = m.Executor("provimux-test-compat")
-	if got := provimuxBuiltinExecutor(coreauth.NewManager(nil, nil, nil), exec, 1, provimuxExecutorSequence()); got != "" {
-		t.Fatalf("another manager: %q", got)
-	}
-}
-
-// On the wire: an answer of the gateway's own executor names its entry; while another program's executor is in place
-// for the provider (here even one of the built-in type), none does; once the service registered its own, calls that
-// start after it do.
+// On the wire: an answer of the gateway's own executor names its entry, however often the service puts its own back;
+// once an executor that is not the gateway's own was put in place for the provider (here an embedding's wrapper of
+// the built-in one), none does, also after the service put its own back; another provider keeps its own.
 func TestProvimuxBuiltinExecutorOnTheWire(t *testing.T) {
-	h := newSentHarness(t, reviewRouter)
+	h := newSentHarness(t, sentMatrixConfig)
 	useAnsweredBook(t, newSentClock())
-	a := sentKeyFor(t, h, "review-public")
-	ask := func() string {
+	logins := sentLogins(t, h)
+	claude, codex := "provimux-test-claude-login", "provimux-test-codex-login"
+	ask := func(model string) string {
 		h.stand.reset()
-		ans := h.post("/v1/chat/completions", chatBody("review-public", false, ""), nil)
+		ans := h.post("/v1/chat/completions", chatBody(model, false, ""), nil)
 		if ans.status != http.StatusOK || ans.get(logging.ProvimuxAccountHeader) == "" || len(h.stand.answered()) != 1 {
 			t.Fatalf("fixture %d %v %s", ans.status, ans.header, ans.body)
 		}
 		return ans.get(logging.ProvimuxEntryHeader)
 	}
-	if got := ask(); got != "openrouter/lab/native" {
+	if got := ask(claude); got != "claude-subscription/"+claude {
 		t.Fatalf("the gateway's own executor: %q", got)
 	}
-	orig, _ := h.service.coreManager.Executor(a.Provider)
-	h.service.coreManager.RegisterExecutor(executor.NewOpenAICompatExecutor(orig.Identifier(), h.service.currentConfig()))
-	if got := ask(); got != "" {
-		t.Fatalf("an executor registered by another program: %q", got)
+	// The service, and other code of the gateway, putting a built-in executor back: no change.
+	for i := 0; i < 3; i++ {
+		h.service.registerExecutorForAuth(logins["claude"], true)
+		h.service.coreManager.RegisterExecutor(executor.NewClaudeExecutor(h.service.currentConfig()))
 	}
-	// The service registers its own again: a call that starts after it is the service's own (a call in flight
-	// across it is not: TestFinalInFlightWatcherReload, TestFinalInFlightExecutor).
-	h.service.registerExecutorForAuth(a, true)
-	if got := ask(); got != "openrouter/lab/native" {
-		t.Fatalf("a call after the service's registration: %q", got)
+	if got := ask(claude); got != "claude-subscription/"+claude {
+		t.Fatalf("after the gateway put its own executor back: %q", got)
+	}
+	// An executor that is not the gateway's own, for the answering provider (here a wrapper of the built-in one, which
+	// still sends the same request): none, now and after the service's own is back, for every later answer.
+	orig, _ := h.service.coreManager.Executor("claude")
+	h.service.coreManager.RegisterExecutor(&provimuxTestExecutor{orig})
+	if got := ask(claude); got != "" {
+		t.Fatalf("an executor that is not the gateway's own: %q", got)
+	}
+	h.service.registerExecutorForAuth(logins["claude"], true)
+	if exec, _ := h.service.coreManager.Executor("claude"); provimuxBuiltinKind(exec) == "" {
+		t.Fatalf("fixture: the service did not put its own back: %T", exec)
+	}
+	for i := 0; i < 3; i++ {
+		if got := ask(claude); got != "" {
+			t.Fatalf("answer %d after the service put its own back: %q", i, got)
+		}
+	}
+	// Another provider keeps its own.
+	if got := ask(codex); got != "openai-codex/"+codex {
+		t.Fatalf("another provider: %q", got)
+	}
+}
+
+// The rule looks at what is registered, never at counts: an embedding's ExecutorWrapper around the service's built-in
+// executors makes each a type not on the list; AI Studio's executor is the gateway's own and marks nothing.
+func TestProvimuxOwnExecutors(t *testing.T) {
+	cfg := &config.Config{}
+	for _, exec := range []coreauth.ProviderExecutor{executor.NewClaudeExecutor(cfg), executor.NewOpenAICompatExecutor("provimux-test", cfg), executor.NewAIStudioExecutor(cfg, "provimux-test", nil)} {
+		if !provimuxOwnExecutor(exec) {
+			t.Errorf("%T is not the gateway's own", exec)
+		}
+		if provimuxOwnExecutor(&provimuxTestExecutor{exec}) {
+			t.Errorf("a wrapper of %T is the gateway's own", exec)
+		}
+	}
+	if provimuxOwnExecutor(provimuxPluginExecutor{provider: "claude"}) {
+		t.Error("a plugin's executor is the gateway's own")
 	}
 }
 
 // The entry's hooks are set once, by this package, while the program initialises: a later call changes nothing.
 func TestProvimuxAnswerEntryHooksAreSetOnce(t *testing.T) {
-	coreauth.SetProvimuxAnswerEntry(func(*coreauth.Manager, coreauth.ProviderExecutor, uint64, uint64) string { return "claude" }, func() uint64 { return 0 }, func(*coreauth.Auth) bool { return true },
+	coreauth.SetProvimuxAnswerEntry(func(coreauth.ProviderExecutor) string { return "claude" }, func(coreauth.ProviderExecutor) bool { return true }, func(*coreauth.Auth) bool { return true },
 		func(*coreauth.Auth, cliproxyexecutor.ProvimuxSentRequest) string { return "provimux-test/replaced" })
 	h := newSentHarness(t, reviewRouter)
 	useAnsweredBook(t, newSentClock())
