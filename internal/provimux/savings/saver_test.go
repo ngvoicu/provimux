@@ -537,13 +537,19 @@ func TestConcurrent(t *testing.T) {
 	}
 }
 
+// startTwiceOptions sets the default recorder's options for TestStartTwice once per process: Start runs once per
+// process too, and a later run (go test -count=2) must not write them while the saver it started may read them.
+var startTwiceOptions sync.Once
+
 func TestStartTwice(t *testing.T) {
 	r := defaultRecorder
-	r.opts.store = func() (localStore, error) { return nil, nil }
-	r.opts.openRouter = func() (map[string]registry.ProvimuxOpenRouterPrice, time.Time, bool) { return nil, time.Time{}, true }
-	r.opts.openRouterKept = r.opts.openRouter
-	r.opts.now = func() time.Time { return testNow }
-	r.opts.location = bucharest
+	startTwiceOptions.Do(func() {
+		r.opts.store = func() (localStore, error) { return nil, nil }
+		r.opts.openRouter = func() (map[string]registry.ProvimuxOpenRouterPrice, time.Time, bool) { return nil, time.Time{}, true }
+		r.opts.openRouterKept = r.opts.openRouter
+		r.opts.now = func() time.Time { return testNow }
+		r.opts.location = bucharest
+	})
 	recorded := func() int64 {
 		var n int64
 		for _, d := range (&testEnv{r: r}).waiting() {
@@ -552,25 +558,30 @@ func TestStartTwice(t *testing.T) {
 		return n
 	}
 
-	// Before Start a published record is not recorded.
-	before := make(waiter, 16)
-	coreusage.RegisterNamedPlugin("provimux-savings-test-before", before)
-	coreusage.PublishRecord(context.Background(), claudeRecord("claude-opus-5-5", "", 1, 0, 0, 1))
-	<-before
-	if recorded() != 0 {
-		t.Fatal("a record published before Start was recorded")
+	// Before Start a published record is not recorded. Start runs once per process: a later run of this test in the
+	// same process (go test -count=2) finds it started and checks only what follows.
+	if !started.Load() {
+		before := make(waiter, 16)
+		coreusage.RegisterNamedPlugin("provimux-savings-test-before", before)
+		coreusage.PublishRecord(context.Background(), claudeRecord("claude-opus-5-5", "", 1, 0, 0, 1))
+		<-before
+		if recorded() != 0 {
+			t.Fatal("a record published before Start was recorded")
+		}
+		FlushNow() // a no-op before Start
 	}
-	FlushNow() // a no-op before Start
 
 	Start()
 	Start()
+	// Counted from here: what an earlier run in this process left waiting is not this run's.
+	base := recorded()
 	after := make(waiter, 16)
 	coreusage.RegisterNamedPlugin("provimux-savings-test-after", after) // after Savings'
 	coreusage.PublishRecord(context.Background(), claudeRecord("claude-opus-5-5", "", 1, 0, 0, 1))
 	coreusage.PublishRecord(context.Background(), claudeRecord("claude-opus-5-5", "", 1, 0, 0, 1))
 	<-after
 	<-after
-	if got := recorded(); got != 2 {
+	if got := recorded() - base; got != 2 {
 		t.Fatalf("one plugin: %d requests, want 2", got)
 	}
 	if r.savers.Load() != 1 {
