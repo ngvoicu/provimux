@@ -7,13 +7,13 @@ info:
     Contract 1 of `session-route.md` (beside this file). Three requests of Provimux's own. Stock
     CLIProxyAPI has none of them: a 404 means "not this build".
 
-    Amended 2026-11-27 with the second design of the rule (section 15 of the design): the operator's
+    Amended 2026-11-27 with the second design of the rule (not in this repository): the operator's
     list of bindings and its release are withdrawn, as is the object `cache` of the show; the rule's
     state is `GET /v8/management/provimux/session-return`. None of the withdrawn parts was released.
 
-    **This release has the two client requests only** (decided by the lead on 2026-11-27). The rule
+    **This release has the two client requests only** (decided on 2026-11-27). The rule
     and its state request are **not in this release** (the state request is described with the rule,
-    by its own work package, and answers 404 now): in this release the show's `rule` is always
+    in its own later step, and answers 404 now): in this release the show's `rule` is always
     `{in_effect: false, cold_after_s: null}`.
 
     With `routing.session-affinity: true` the gateway binds a conversation to the account that served
@@ -126,7 +126,7 @@ paths:
         `session-affinity-rebind-on: never` the newer binding stays. A binding to another login is left
         alone.
 
-        On a Codex WebSocket (decided by the lead on 2026-11-27): a release holds only if that
+        On a Codex WebSocket (decided on 2026-11-27): a release holds only if that
         connection is closed **before its next turn**. A turn on the open connection is pinned to the
         login that served it and binds the conversation to that login again, and closing the
         connection afterwards does not undo that: release again, then close. `websocket_may_hold` says
@@ -210,7 +210,7 @@ components:
   responses:
     BadRequest:
       description: |
-        The body is read strictly (G1, after the review): one JSON object and nothing after it, each
+        The body is read strictly (after the review): one JSON object and nothing after it, each
         field at most once, no field the schema does not name. `400` for: a body that does not parse,
         is not an object, or has anything after the object; a field given twice or unknown; `model`
         absent, not a string, `null`, or empty or blank; `identity` present and not an object
@@ -237,7 +237,7 @@ components:
       additionalProperties: true
       description: |
         In the shape of the route group the request was sent to: `/v1` puts an object under `error`;
-        `/v8/management` puts a code under `error` and the words under `message` (G2).
+        `/v8/management` puts a code under `error` and the words under `message`.
       properties:
         error:
           description: The gateway's error, in the shape of the route group it was sent to.
@@ -305,7 +305,7 @@ components:
           type: string
           description: |
             `oauth`: a subscription login. `apikey`: an API key. Empty where the gateway cannot tell (a
-            credential with neither a key nor a login's tokens), exactly as the list gives it (added in G1).
+            credential with neither a key nor a login's tokens), exactly as the list gives it.
           enum: [oauth, apikey, ""]
         priority:
           type: integer
@@ -325,7 +325,7 @@ components:
       additionalProperties: false
       description: |
         The account a binding names, where `GET /v1/models?include=accounts` does not show it now for
-        this name (disabled, or no longer serving the name): nothing of it is given (added in G1, after
+        this name (disabled, or no longer serving the name): nothing of it is given (added after
         the review).
       required: [listed]
       properties:
@@ -365,7 +365,6 @@ components:
           description: |
             The model the name is routed to, without a thinking suffix, where the request path routes it
             to another (`auto`): a model of `GET /v1/models`. `null` when the name is routed as it is.
-            Added in G1, after the review.
         binding:
           type: [string, "null"]
           description: |
@@ -404,7 +403,7 @@ components:
               format: date-time
         position:
           type: [object, "null"]
-          description: "`null` unless `bound` to an account the list shows (G1, after the review: nothing is said of an unlisted account's place)."
+          description: "`null` unless `bound` to an account the list shows (after the review: nothing is said of an unlisted account's place)."
           required: [below_first, higher_priority_free, higher_priority_free_at]
           properties:
             below_first:
@@ -419,7 +418,7 @@ components:
               type: [string, "null"]
               format: date-time
               description: |
-                Added by the lead on 2026-11-27. When a higher-priority route is expected free: the end of
+                Added on 2026-11-27. When a higher-priority route is expected free: the end of
                 the recorded cooldown that ends first among the accounts of a higher priority than the
                 bound one. One time for the name, never per account. `null` when one is free now
                 (`higher_priority_free`), when none of them has a recorded cooldown end (disabled, an
@@ -437,7 +436,7 @@ components:
         rule:
           type: object
           description: |
-            What the gateway does by itself (design section 15). With `in_effect`: at this
+            What the gateway does by itself (the second design of the rule). With `in_effect`: at this
             conversation's next request, if it is bound to an account below the highest-priority
             account that request may use, and it has not been used for `cold_after_s`, the binding is
             dropped and the request is routed as a new conversation's. It is decided at that request,
@@ -460,7 +459,7 @@ components:
             it is named by Codex headers; whatever header names it. On such a connection a release
             holds only if the connection is closed before its next turn: a turn on the open connection
             binds the conversation to the old login again, and closing afterwards does not undo that
-            (release again, then close). Decided by the lead on 2026-11-27.
+            (release again, then close). Decided on 2026-11-27.
         subagent:
           type: boolean
           description: |
@@ -480,7 +479,7 @@ components:
           type: string
           description: |
             Session affinity as it runs, as in a show. Anything but `on`: nothing is bound, nothing is
-            released, and this says why. Added in G1, so that the release says why as the show does.
+            released, and this says why. Added so that the release says why as the show does.
           enum: ["on", "off", home, not-supported]
         released:
           type: boolean
@@ -490,10 +489,10 @@ components:
           enum: [not-bound, not-seen]
         model:
           type: string
-          description: As in a show. Added in G1, after the review.
+          description: As in a show. Added after the review.
         routed_model:
           type: [string, "null"]
-          description: As in a show. Added in G1, after the review.
+          description: As in a show. Added after the review.
         was:
           description: "The route the binding named (or `{listed: false}`). `null` when nothing was released."
           oneOf:
