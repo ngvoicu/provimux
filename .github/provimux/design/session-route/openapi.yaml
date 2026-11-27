@@ -560,7 +560,7 @@ components:
 
     SessionReturnState:
       type: object
-      required: [observed_at, setting, in_effect, reason, affinity, counts]
+      required: [observed_at, setting, in_effect, reason, ttl_s, counts]
       properties:
         observed_at:
           type: string
@@ -590,20 +590,11 @@ components:
             (`session-affinity-rebind-on: never`), `not-below-ttl` (`cold-after` is not shorter than
             `session-affinity-ttl`: a binding ends by itself first).
           enum: [home-mode, plugin-scheduler, session-affinity-off, not-set, rebind-never, not-below-ttl, null]
-        affinity:
-          type: object
-          description: Upstream's settings the rule depends on, as they run.
-          required: [enabled, ttl_s, strategy, subagents, rebind_on]
-          properties:
-            enabled: { type: boolean }
-            ttl_s: { type: integer }
-            strategy:
-              type: string
-              enum: [round-robin, fill-first, weighted-round-robin]
-            subagents: { type: boolean }
-            rebind_on:
-              type: string
-              enum: [any, quota, never]
+        ttl_s:
+          type: [integer, "null"]
+          description: |
+            The binding lifetime in use (`session-affinity-ttl`), in seconds; `null` with session
+            affinity off. `cold-after` at or above it is `not-below-ttl`.
         counts:
           type: object
           required: [returned, last_returned_at, since]
@@ -791,7 +782,7 @@ components:
         setting: { cold_after_s: 360 }
         in_effect: true
         reason: null
-        affinity: { enabled: true, ttl_s: 3600, strategy: round-robin, subagents: true, rebind_on: any }
+        ttl_s: 3600
         counts: { returned: 12, last_returned_at: "2026-11-27T09:58:30Z", since: "2026-11-27T06:00:11Z" }
     ReturnAsInstalled:
       summary: As installed from the example configuration (session affinity off, no time set)
@@ -800,7 +791,7 @@ components:
         setting: { cold_after_s: null }
         in_effect: false
         reason: session-affinity-off
-        affinity: { enabled: false, ttl_s: 3600, strategy: round-robin, subagents: true, rebind_on: any }
+        ttl_s: null
         counts: { returned: 0, last_returned_at: null, since: "2026-11-27T06:00:11Z" }
     ReturnNotSet:
       summary: Session affinity on, no time set
@@ -809,7 +800,7 @@ components:
         setting: { cold_after_s: null }
         in_effect: false
         reason: not-set
-        affinity: { enabled: true, ttl_s: 3600, strategy: round-robin, subagents: true, rebind_on: any }
+        ttl_s: 3600
         counts: { returned: 0, last_returned_at: null, since: "2026-11-27T06:00:11Z" }
     ReturnNotBelowTTL:
       summary: Two hours set, against a binding lifetime of one
@@ -818,5 +809,5 @@ components:
         setting: { cold_after_s: 7200 }
         in_effect: false
         reason: not-below-ttl
-        affinity: { enabled: true, ttl_s: 3600, strategy: round-robin, subagents: true, rebind_on: any }
+        ttl_s: 3600
         counts: { returned: 0, last_returned_at: null, since: "2026-11-27T06:00:11Z" }
