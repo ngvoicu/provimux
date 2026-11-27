@@ -310,6 +310,36 @@ Priorities are CLIProxyAPI's: set `priority` on an API-key entry, or in a login'
 first. For example a Claude API key at `10` and a second Claude API key at `0`: the first is tried first, and the
 second takes over while the first has a cooldown recorded.
 
+### Which account answered
+
+Every answer now says which of your accounts gave it, even when you have two of the same kind, and says nothing
+about that account. Each account gets a marker: the same on every answer it gives, different from every other
+account's. Its e-mail, key, file name or the provider's id for it cannot be read from the marker.
+
+It is on, with nothing to edit. `models.answered-by: false` turns it off; the `X-CPA-AUTH-*` headers stay as they
+are either way.
+
+```yaml
+models:
+  answered-by: false
+```
+
+- A response served by an account carries an `X-Provimux-Account` header, next to `X-CPA-AUTH-KIND`. On the Codex
+  WebSocket, each turn's `response.created` event carries `provimux_account` beside `cpa_auth_kind`. An answer that
+  names no account, an error for example, carries neither.
+- `GET /v1/models?include=accounts` gives each account its marker as `account`, so you can find the row that
+  answered.
+- A marker is `a.` or `s.` followed by 20 lower-case letters and digits, for example `a.k3v7qz2m5xw4hn6tb2rc`.
+- `a.` means the marker is made from the account as its provider names it: two equal `a.` markers are one account.
+- `s.` means Provimux does not hold the provider's own name for the account (a Kimi login, an AI Studio connection,
+  a Claude login without an organisation id, for example), so the marker names this one login or key, and two
+  different `s.` markers may still be one account.
+- A browser on another site can read the header when the response already lets it read other headers.
+- Markers stay the same across restarts and upgrades: the key they are made with is kept in the gateway's store
+  file (`server.kv-store`, on by default). If that file is lost or deleted, every account gets a new marker. With
+  the store turned off, the markers change at every restart.
+- In Home mode nothing is sent: no header, no WebSocket field and no `account` in the list, whatever the switch.
+
 ### Live model lists for each login
 
 **What you get.** Each Claude, Codex, Meta and Devin login, and each Gemini API key, registers the models
