@@ -270,12 +270,12 @@ routing:
   # Ignored when routing.session-affinity is false.
   session-affinity-subagents: true
   # Provimux: at a conversation's next request, if it is bound to an account below the highest-priority
-  # account that request could use, and it has not been used for cold-after, the binding is dropped and
-  # the request is routed as a new conversation's. Off unless cold-after is set. Set it to the longest
-  # cache lifetime among the accounts your conversations can fall to, plus a margin: the gateway does
-  # not know any cache's lifetime, and a conversation used within cold-after is never moved. At least
-  # 1m; it must be shorter than session-affinity-ttl, or a binding ends by itself first. Needs
-  # session-affinity; nothing in Home mode, with a plugin scheduler, or with rebind-on "never".
+  # account that request could use, and it sent no message for cold-after, the binding is dropped and the
+  # request is routed as a new conversation's. Off unless cold-after is set (null is off). Set it to the
+  # longest cache lifetime among the accounts your conversations can fall to, plus a margin: the gateway
+  # knows no cache's lifetime, and a conversation that sent a message within cold-after is never moved.
+  # At least 1m; at or above session-affinity-ttl it does nothing (not-below-ttl). Needs session-affinity;
+  # nothing in Home mode, with a plugin scheduler, or with rebind-on "never".
   # session-affinity-return:
   #   cold-after: "6m"
   # Controls which credential failures rebind an established session to the failover credential:
