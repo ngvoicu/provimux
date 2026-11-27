@@ -627,9 +627,10 @@ func TestProvimuxSessionRouteStrict(t *testing.T) {
 	}
 }
 
-// TestProvimuxSessionRouteExpect: the token stands for this binding on this account. A turn on the same binding keeps
-// it; a binding released and made again is another binding, so a release with the old token is refused (409) and
-// releases nothing.
+// TestProvimuxSessionRouteExpect: the token stands for exactly this binding: the selection that made or last chose it,
+// on this account. A show twice with nothing in between gives one token; a turn is a new selection, so it gives
+// another, and the older token is refused (409) and releases nothing; so is a token of a binding released and made
+// again. The current token releases.
 func TestProvimuxSessionRouteExpect(t *testing.T) {
 	f := newProvimuxSRFixture(t, "round-robin", false, nil)
 	clock := time.Now()
@@ -641,13 +642,21 @@ func TestProvimuxSessionRouteExpect(t *testing.T) {
 		t.Fatal(err)
 	}
 	first := *f.book.Show(scope, header, nil, provimuxSRModel).Binding
+	if again := *f.book.Show(scope, header, nil, provimuxSRModel).Binding; again != first {
+		t.Fatalf("two shows with nothing in between gave two tokens: %s, %s", first, again)
+	}
 	clock = clock.Add(time.Minute)
 	SetProvimuxSessionRouteClockForTest(func() time.Time { return clock })
 	if err := f.turn(header, "", scope, nil); err != nil {
 		t.Fatal(err)
 	}
-	if again := *f.book.Show(scope, header, nil, provimuxSRModel).Binding; again != first {
-		t.Fatalf("a turn on the same binding changed its token: %s -> %s", first, again)
+	key := f.book.Entries()[0].Key
+	afterTurn := *f.book.Show(scope, header, nil, provimuxSRModel).Binding
+	if afterTurn == first {
+		t.Fatal("a turn (a new selection) kept the token")
+	}
+	if released, conflict := f.book.Release(scope, header, nil, provimuxSRModel, first); conflict == nil || released.Released {
+		t.Fatalf("token from before the turn: release %s conflict %s", mustJSON(t, released), mustJSON(t, conflict))
 	}
 	if released, _ := f.book.Release(scope, header, nil, provimuxSRModel, ""); !released.Released {
 		t.Fatal("release")
@@ -657,8 +666,7 @@ func TestProvimuxSessionRouteExpect(t *testing.T) {
 	if err := f.turn(header, "", scope, nil); err != nil {
 		t.Fatal(err)
 	}
-	key := f.book.Entries()[0].Key
-	released, conflict := f.book.Release(scope, header, nil, provimuxSRModel, first)
+	released, conflict := f.book.Release(scope, header, nil, provimuxSRModel, afterTurn)
 	if conflict == nil || conflict.Conversation != "bound" || released.Released {
 		t.Fatalf("stale token: release %s conflict %s", mustJSON(t, released), mustJSON(t, conflict))
 	}
@@ -696,7 +704,8 @@ func TestProvimuxSessionRouteReleaseComparesAccount(t *testing.T) {
 	if authID, _ := f.binding(key); authID != f.low {
 		t.Fatalf("the moved binding is %q, want it left on %q", authID, f.low)
 	}
-	if !provimuxSeamRelease(f.affinity, key, f.low, time.Time{}) || provimuxSeamRelease(f.affinity, key, f.low, time.Time{}) {
+	onLow := func(b provimuxSeamBinding) bool { return b.AuthID == f.low }
+	if !provimuxSeamRelease(f.affinity, key, onLow) || provimuxSeamRelease(f.affinity, key, onLow) {
 		t.Fatal("seam release: removes once, then nothing")
 	}
 }
@@ -744,10 +753,23 @@ func TestProvimuxSessionRouteNotRunning(t *testing.T) {
 // TestProvimuxSessionRouteRouteFields is row 6 at this level: a route holds exactly the fields of a row of
 // GET /v1/models?include=accounts (the handler's own test compares the JSON of the two answers).
 func TestProvimuxSessionRouteRouteFields(t *testing.T) {
-	route := provimuxRouteOf(&Auth{ID: "x", Provider: "claude", Status: StatusActive, Attributes: map[string]string{"priority": "3", "api_key": "sk-x", "base_url": "https://api.example.test:8443/v1?q=1"}})
-	raw := mustJSON(t, route)
-	if raw != `{"provider":"claude","kind":"apikey","priority":3,"host":"api.example.test"}` {
+	auth := &Auth{ID: "sr-route-fields", Provider: "claude", Status: StatusActive, Attributes: map[string]string{"priority": "3", "api_key": "sk-x", "base_url": "https://api.example.test:8443/v1?q=1"}}
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "sr-route-fields-model"}})
+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
+	if raw := mustJSON(t, provimuxRouteOf(auth, "sr-route-fields-model")); raw != `{"provider":"claude","kind":"apikey","priority":3,"host":"api.example.test"}` {
 		t.Fatalf("route: %s", raw)
+	}
+	// An account the list does not show for the name (it does not serve it, or it is disabled): nothing of it.
+	if raw := mustJSON(t, provimuxRouteOf(auth, "another-model")); raw != `{"listed":false}` {
+		t.Fatalf("unlisted route: %s", raw)
+	}
+	auth.Disabled = true
+	if raw := mustJSON(t, provimuxRouteOf(auth, "sr-route-fields-model")); raw != `{"listed":false}` {
+		t.Fatalf("disabled route: %s", raw)
+	}
+	var back ProvimuxRoute
+	if err := json.Unmarshal([]byte(`{"listed":false}`), &back); err != nil || !back.Unlisted {
+		t.Fatalf("read back: %+v %v", back, err)
 	}
 }
 

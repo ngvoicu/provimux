@@ -317,6 +317,7 @@ func (b *Builder) Build() (*Service, error) {
 	coreManager.SetOAuthModelAlias(b.cfg.OAuthModelAlias)
 	provimuxSetNamesRule(b.cfg) // Provimux: only-my-names (the first config of a start is not committed)
 	provimuxSetAnsweredBy(b.cfg)
+	provimuxFollowSessionRoute(coreManager, b.cfg) // Provimux: session-route
 	if pluginHost != nil {
 		coreManager.SetPluginScheduler(pluginHost)
 		coreManager.SetHomePluginExecutorResolver(pluginHost)

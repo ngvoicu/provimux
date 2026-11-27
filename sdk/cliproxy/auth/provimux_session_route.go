@@ -5,14 +5,18 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base32"
+	"encoding/binary"
+	"encoding/json"
 	"net/http"
+	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"weak"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 )
@@ -21,7 +25,8 @@ import (
 // session bindings, never their source: every reader asks upstream's cache first (through the seam). A client key sees
 // and releases only a conversation the book has seen that key use since the gateway started (decided by the lead on
 // 2026-11-27). Releasing removes the binding from upstream's cache and nothing else: nothing is sent, no account's
-// state changes. This file calls the seam and exported names only.
+// state changes. The automatic return (the rule) is not in this release. This file calls the seam and exported names
+// only.
 
 // provimuxSessionBookLimit is the number of conversations the book keeps; the least recently answered go first.
 const provimuxSessionBookLimit = 4096
@@ -31,6 +36,16 @@ const provimuxSessionScopeLimit = 4
 
 // provimuxColdMargin is the margin past a cache's lifetime after which it is taken as cold (session-route.md 5 b).
 const provimuxColdMargin = 60 * time.Second
+
+// provimuxSessionLifetime is the cache lifetime the show gives: the setting's default hour. The lifetime evidence of
+// the design's section 6.2 is not in this release.
+const provimuxSessionLifetime = 3600
+
+// provimuxBindingToken is the form of a binding token: "b." and 16 lower-case base32 characters.
+var provimuxBindingToken = regexp.MustCompile(`^b\.[a-z2-7]{16}$`)
+
+// ProvimuxValidBindingToken reports whether token has the form of a binding token.
+func ProvimuxValidBindingToken(token string) bool { return provimuxBindingToken.MatchString(token) }
 
 // provimuxSessionRouteClock is the clock of session-route: the book's times, the show's "now" and the availability it
 // judges. Tests set it (SetProvimuxSessionRouteClockForTest); nothing here sleeps or waits for it.
@@ -56,39 +71,77 @@ func SetProvimuxSessionRouteClockForTest(clock func() time.Time) (restore func()
 	return func() { provimuxSessionRouteClock.Store(previous) }
 }
 
-// provimuxSessionLifetime is the lifetime the gateway takes a binding's cache to have, and its basis
-// (session-route.md 6.2). Until the rule's package (G2) adds the conversation's own answers and the figures, it is
-// row 3 alone: cold-after, one hour unless set.
-var provimuxSessionLifetime = func(_ ProvimuxSessionBookEntry) (seconds int64, basis string, entry *string) {
-	return 3600, "setting", nil
-}
-
-// provimuxSessionRule is what the gateway does by itself with a binding (SessionRoute.rule). The rule is G2's: until
-// it exists it is not in effect and every binding stays.
-var provimuxSessionRule = func(_ ProvimuxSessionBookEntry, _ ProvimuxSessionPosition, _ bool) (inEffect bool, will string) {
-	return false, "stay"
-}
-
-// ProvimuxRoute is one account that serves a name, exactly as a row of GET /v1/models?include=accounts gives it.
+// ProvimuxRoute is one account that serves a name, exactly as a row of GET /v1/models?include=accounts gives it; or,
+// for an account that list does not show now (disabled, or no longer serving the name), only {"listed": false}.
 type ProvimuxRoute struct {
 	Provider string `json:"provider"`
 	Kind     string `json:"kind"`
 	Priority int    `json:"priority"`
 	Host     string `json:"host,omitempty"`
 	Account  string `json:"account,omitempty"`
+	// Unlisted: the list does not show this account now; nothing else of it is given.
+	Unlisted bool `json:"-"`
 }
 
-// provimuxRouteOf is auth's row: the fields of include=accounts, and nothing else.
-func provimuxRouteOf(auth *Auth) ProvimuxRoute {
+// MarshalJSON writes a listed route as the list's row and an unlisted one as {"listed":false}.
+func (r ProvimuxRoute) MarshalJSON() ([]byte, error) {
+	if r.Unlisted {
+		return []byte(`{"listed":false}`), nil
+	}
+	type row ProvimuxRoute
+	return json.Marshal(row(r))
+}
+
+// UnmarshalJSON reads either form.
+func (r *ProvimuxRoute) UnmarshalJSON(data []byte) error {
+	var probe struct {
+		Listed *bool `json:"listed"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return err
+	}
+	if probe.Listed != nil && !*probe.Listed {
+		*r = ProvimuxRoute{Unlisted: true}
+		return nil
+	}
+	type row ProvimuxRoute
+	var value row
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	*r = ProvimuxRoute(value)
+	return nil
+}
+
+// provimuxListed reports whether GET /v1/models?include=accounts shows auth for the model named model now: the list
+// gives every enabled credential under each model ID the registry holds for it.
+func provimuxListed(auth *Auth, model string) bool {
+	if auth == nil || auth.Disabled {
+		return false
+	}
+	model = strings.TrimSpace(model)
+	for _, info := range registry.GetGlobalRegistry().GetModelsForClient(auth.ID) {
+		if info != nil && info.ID == model {
+			return true
+		}
+	}
+	return false
+}
+
+// provimuxRouteOf is auth's row for model: the fields of include=accounts and nothing else, or {"listed":false}.
+func provimuxRouteOf(auth *Auth, model string) ProvimuxRoute {
+	if !provimuxListed(auth, model) {
+		return ProvimuxRoute{Unlisted: true}
+	}
 	return ProvimuxRoute{Provider: auth.Provider, Kind: auth.AuthKind(), Priority: auth.Priority(), Host: auth.BaseURLHost(), Account: auth.ProvimuxAccountMarker()}
 }
 
-// provimuxRoutesOf are the rows of auths in the order of include=accounts: highest priority first.
-func provimuxRoutesOf(auths []*Auth) []ProvimuxRoute {
+// provimuxRoutesOf are the listed rows of auths for model, in the order of include=accounts: highest priority first.
+func provimuxRoutesOf(auths []*Auth, model string) []ProvimuxRoute {
 	out := make([]ProvimuxRoute, 0, len(auths))
 	for _, auth := range auths {
-		if auth != nil {
-			out = append(out, provimuxRouteOf(auth))
+		if route := provimuxRouteOf(auth, model); !route.Unlisted {
+			out = append(out, route)
 		}
 	}
 	sort.SliceStable(out, func(i, j int) bool {
@@ -133,7 +186,7 @@ type ProvimuxSessionCache struct {
 	ColdAt    string  `json:"cold_at"`
 }
 
-// ProvimuxSessionRule is SessionRoute.rule.
+// ProvimuxSessionRule is SessionRoute.rule. The rule is not in this release: never in effect, every binding stays.
 type ProvimuxSessionRule struct {
 	InEffect bool   `json:"in_effect"`
 	Will     string `json:"will"`
@@ -145,6 +198,7 @@ type ProvimuxSessionRoute struct {
 	Affinity         string                   `json:"affinity"`
 	Conversation     string                   `json:"conversation"`
 	Model            string                   `json:"model"`
+	RoutedModel      *string                  `json:"routed_model"`
 	Binding          *string                  `json:"binding"`
 	Bound            *ProvimuxSessionBound    `json:"bound"`
 	Position         *ProvimuxSessionPosition `json:"position"`
@@ -161,19 +215,30 @@ type ProvimuxSessionRelease struct {
 	Affinity         string          `json:"affinity"`
 	Released         bool            `json:"released"`
 	Conversation     string          `json:"conversation"`
+	Model            string          `json:"model"`
+	RoutedModel      *string         `json:"routed_model"`
 	Was              *ProvimuxRoute  `json:"was"`
 	Next             []ProvimuxRoute `json:"next"`
 	WebsocketMayHold bool            `json:"websocket_may_hold"`
 }
 
+// provimuxConversation is what owns a book entry: the binding key's parts as received, kept apart. Upstream joins
+// them into one string with a delimiter a session may hold; the book never does (session-route G1, finding 1).
+type provimuxConversation struct {
+	Provider string
+	Session  string
+	ModelKey string
+}
+
 // ProvimuxSessionBookEntry is what the book knows of one conversation for one name. Readers get copies.
 type ProvimuxSessionBookEntry struct {
-	Key         string    // the binding's key in upstream's cache, as Pick made it
-	Provider    string    // its provider part ("mixed" for a name served by several providers)
+	Provider    string    // the provider part of the binding key ("mixed" for a name served by several providers)
 	Session     string    // the bounded session identity
 	ModelKey    string    // the name without a thinking suffix
+	Key         string    // upstream's key string, only ever handed to upstream's cache
 	RouteModel  string    // the name as Pick received it
 	Parent      string    // the parent conversation, for a sub-agent
+	Socket      bool      // a turn of it came on a connection pinned to its login (a Codex WebSocket)
 	Current     string    // the account the book last saw answer under the binding; "" when it has none
 	Since       time.Time // when Current first answered in this stretch
 	Previous    string    // the account that answered before Current, in this stretch
@@ -181,6 +246,12 @@ type ProvimuxSessionBookEntry struct {
 	LastSuccess time.Time // the last successful answer under the binding
 	Scopes      []string  // the caller scopes seen using it (at most provimuxSessionScopeLimit)
 	LastTouched time.Time // the last answer of any account for it
+	TTL         time.Duration
+	PruneAt     time.Time // from then on the entry leaves once upstream holds no binding for it
+}
+
+func (e *ProvimuxSessionBookEntry) owner() provimuxConversation {
+	return provimuxConversation{Provider: e.Provider, Session: e.Session, ModelKey: e.ModelKey}
 }
 
 func (e *ProvimuxSessionBookEntry) hasScope(scope string) bool {
@@ -210,43 +281,61 @@ func (e *ProvimuxSessionBookEntry) clearBinding() {
 	e.Current, e.Since, e.Previous, e.PreviousAt, e.LastSuccess = "", time.Time{}, "", time.Time{}, time.Time{}
 }
 
-// ProvimuxSessionBook is the book of one manager. It observes the manager's results through AddHook and never takes
-// part in a selection.
+// ProvimuxSessionBook is the book of one manager. It observes the manager's results through AddHook while
+// subscribed, never takes part in a selection, and holds its manager weakly: a manager nothing else holds is not kept
+// alive by its book.
 type ProvimuxSessionBook struct {
 	NoopHook
-	manager *Manager
+	manager weak.Pointer[Manager]
 
 	mu          sync.Mutex
-	entries     map[string]*ProvimuxSessionBookEntry
+	entries     map[provimuxConversation]*ProvimuxSessionBookEntry
+	nextPrune   time.Time
 	salt        [32]byte
 	unsubscribe func()
+	subscribed  atomic.Bool
+
+	cacheMu    sync.Mutex
+	cacheSeen  weak.Pointer[SessionCache]
+	cacheCount uint64
 
 	releasedByClient atomic.Int64
 }
 
 // NewProvimuxSessionBook makes an empty book for m. It observes nothing until Subscribe.
 func NewProvimuxSessionBook(m *Manager) *ProvimuxSessionBook {
-	b := &ProvimuxSessionBook{manager: m, entries: make(map[string]*ProvimuxSessionBookEntry)}
-	if _, errRand := rand.Read(b.salt[:]); errRand != nil {
-		// A binding token only needs to differ per binding; without randomness it still does.
-		b.salt = sha256.Sum256([]byte(strconv.FormatInt(time.Now().UnixNano(), 10)))
+	b := &ProvimuxSessionBook{entries: make(map[provimuxConversation]*ProvimuxSessionBookEntry)}
+	if m != nil {
+		b.manager = weak.Make(m)
 	}
+	// crypto/rand.Read never returns an error: it fills the buffer or ends the process.
+	_, _ = rand.Read(b.salt[:])
 	return b
+}
+
+// Manager is the manager the book observes, or nil once nothing else holds it.
+func (b *ProvimuxSessionBook) Manager() *Manager {
+	if b == nil {
+		return nil
+	}
+	return b.manager.Value()
 }
 
 // Subscribe adds the book to its manager's result hooks. Idempotent.
 func (b *ProvimuxSessionBook) Subscribe() {
-	if b == nil || b.manager == nil {
+	m := b.Manager()
+	if m == nil {
 		return
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.unsubscribe == nil {
-		b.unsubscribe = b.manager.AddHook(b)
+		b.unsubscribe = m.AddHook(b)
+		b.subscribed.Store(true)
 	}
 }
 
-// Unsubscribe removes the book from its manager's hooks.
+// Unsubscribe removes the book from its manager's hooks and forgets every entry: nothing is observed or kept.
 func (b *ProvimuxSessionBook) Unsubscribe() {
 	if b == nil {
 		return
@@ -254,19 +343,17 @@ func (b *ProvimuxSessionBook) Unsubscribe() {
 	b.mu.Lock()
 	unsubscribe := b.unsubscribe
 	b.unsubscribe = nil
+	b.subscribed.Store(false)
+	b.entries = make(map[provimuxConversation]*ProvimuxSessionBookEntry)
+	b.nextPrune = time.Time{}
 	b.mu.Unlock()
 	if unsubscribe != nil {
 		unsubscribe()
 	}
 }
 
-// Manager is the manager the book observes.
-func (b *ProvimuxSessionBook) Manager() *Manager {
-	if b == nil {
-		return nil
-	}
-	return b.manager
-}
+// Subscribed reports whether the book observes its manager's results now.
+func (b *ProvimuxSessionBook) Subscribed() bool { return b != nil && b.subscribed.Load() }
 
 // ReleasedByClient is the number of bindings client keys released since the book was made.
 func (b *ProvimuxSessionBook) ReleasedByClient() int64 {
@@ -279,13 +366,18 @@ func (b *ProvimuxSessionBook) ReleasedByClient() int64 {
 // OnResult notes a successful answer: the caller scope that used the conversation, and, when upstream's cache holds
 // the result's key bound to the account that answered, that account (session-route.md 3). A result whose key the
 // cache does not hold for its account (an answer in flight at a release, a transient failover that kept the binding,
-// a stale result) notes the caller only, never a binding.
+// a stale result) notes the caller only, never a binding. Where session affinity does not run, the book stops
+// observing and forgets what it held: nothing is kept there.
 func (b *ProvimuxSessionBook) OnResult(_ context.Context, res Result) {
-	if b == nil || !res.Success || res.AuthID == "" {
+	if b == nil {
 		return
 	}
-	affinity, mode := provimuxSeamAffinity(b.manager)
+	affinity, mode := provimuxSeamAffinity(b.Manager())
 	if mode != provimuxAffinityOn {
+		b.Unsubscribe()
+		return
+	}
+	if !res.Success || res.AuthID == "" {
 		return
 	}
 	key, ok := provimuxSeamResultKey(res)
@@ -293,7 +385,7 @@ func (b *ProvimuxSessionBook) OnResult(_ context.Context, res Result) {
 		return
 	}
 	binding, bound := provimuxSeamLookup(affinity, key.Key)
-	holds := bound && binding.AuthID == res.AuthID
+	holds := bound && binding.AuthID == res.AuthID && binding.Session == key.Session
 	scope := ""
 	if res.Options.Metadata != nil {
 		scope, _ = res.Options.Metadata[cliproxyexecutor.CallerScopeMetadataKey].(string)
@@ -302,20 +394,31 @@ func (b *ProvimuxSessionBook) OnResult(_ context.Context, res Result) {
 	if !holds && scope == "" {
 		return
 	}
+	ttl := provimuxSeamTTL(affinity)
 	now := provimuxSessionRouteNow()
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	entry := b.entries[key.Key]
+	b.pruneLocked(affinity, now)
+	owner := provimuxConversation{Provider: key.Provider, Session: key.Session, ModelKey: key.ModelKey}
+	entry := b.entries[owner]
 	if entry == nil {
 		b.evictLocked()
-		entry = &ProvimuxSessionBookEntry{Key: key.Key, Provider: key.Provider, Session: key.Session, ModelKey: key.ModelKey, RouteModel: key.RouteModel}
-		b.entries[key.Key] = entry
+		entry = &ProvimuxSessionBookEntry{Provider: key.Provider, Session: key.Session, ModelKey: key.ModelKey, Key: key.Key, RouteModel: key.RouteModel}
+		b.entries[owner] = entry
 	}
 	entry.LastTouched = now
+	entry.TTL = ttl
+	entry.PruneAt = now.Add(ttl)
+	if b.nextPrune.IsZero() || entry.PruneAt.Before(b.nextPrune) {
+		b.nextPrune = entry.PruneAt
+	}
 	entry.addScope(scope)
 	if key.Parent != "" {
 		entry.Parent = key.Parent
+	}
+	if key.Socket {
+		entry.Socket = true
 	}
 	if key.RouteModel != "" {
 		entry.RouteModel = key.RouteModel
@@ -326,7 +429,7 @@ func (b *ProvimuxSessionBook) OnResult(_ context.Context, res Result) {
 	switch {
 	case entry.Current == "":
 		entry.Current, entry.Since, entry.Previous, entry.PreviousAt = res.AuthID, now, "", time.Time{}
-	case !entry.LastSuccess.IsZero() && binding.TTL > 0 && !now.Before(entry.LastSuccess.Add(binding.TTL)):
+	case !entry.LastSuccess.IsZero() && !now.Before(entry.LastSuccess.Add(ttl)):
 		// The binding expired between the two answers: a new stretch, whatever account it is now.
 		entry.Current, entry.Since, entry.Previous, entry.PreviousAt = res.AuthID, now, "", time.Time{}
 	case entry.Current != res.AuthID:
@@ -336,22 +439,50 @@ func (b *ProvimuxSessionBook) OnResult(_ context.Context, res Result) {
 	entry.LastSuccess = now
 }
 
+// pruneLocked drops the entries whose binding expired: once their time is past (their last answer plus the cache's
+// TTL) and upstream's cache holds no binding for them. An entry whose binding upstream still holds (others refresh
+// it) gets another TTL. It runs only when the earliest such time is past, so it costs nothing in between.
+func (b *ProvimuxSessionBook) pruneLocked(affinity *SessionAffinitySelector, now time.Time) {
+	if b.nextPrune.IsZero() || now.Before(b.nextPrune) {
+		return
+	}
+	next := time.Time{}
+	for owner, entry := range b.entries {
+		if now.Before(entry.PruneAt) {
+			if next.IsZero() || entry.PruneAt.Before(next) {
+				next = entry.PruneAt
+			}
+			continue
+		}
+		if binding, ok := provimuxSeamLookup(affinity, entry.Key); ok && binding.Session == entry.Session {
+			entry.PruneAt = now.Add(entry.TTL)
+			if next.IsZero() || entry.PruneAt.Before(next) {
+				next = entry.PruneAt
+			}
+			continue
+		}
+		delete(b.entries, owner)
+	}
+	b.nextPrune = next
+}
+
 // evictLocked drops the least recently answered entry when the book is full.
 func (b *ProvimuxSessionBook) evictLocked() {
 	if len(b.entries) < provimuxSessionBookLimit {
 		return
 	}
-	var oldestKey string
+	var oldestOwner provimuxConversation
 	var oldest time.Time
-	for key, entry := range b.entries {
-		if oldestKey == "" || entry.LastTouched.Before(oldest) || (entry.LastTouched.Equal(oldest) && key < oldestKey) {
-			oldestKey, oldest = key, entry.LastTouched
+	found := false
+	for owner, entry := range b.entries {
+		if !found || entry.LastTouched.Before(oldest) {
+			oldestOwner, oldest, found = owner, entry.LastTouched, true
 		}
 	}
-	delete(b.entries, oldestKey)
+	delete(b.entries, oldestOwner)
 }
 
-// Entries returns a copy of every entry, in key order: for tests and the operator's list (G2).
+// Entries returns a copy of every entry, in a stable order: for tests.
 func (b *ProvimuxSessionBook) Entries() []ProvimuxSessionBookEntry {
 	if b == nil {
 		return nil
@@ -364,7 +495,15 @@ func (b *ProvimuxSessionBook) Entries() []ProvimuxSessionBookEntry {
 		copied.Scopes = append([]string(nil), entry.Scopes...)
 		out = append(out, copied)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Session != out[j].Session {
+			return out[i].Session < out[j].Session
+		}
+		if out[i].ModelKey != out[j].ModelKey {
+			return out[i].ModelKey < out[j].ModelKey
+		}
+		return out[i].Provider < out[j].Provider
+	})
 	return out
 }
 
@@ -381,15 +520,18 @@ type provimuxResolved struct {
 	clientType string
 }
 
-// resolve finds the conversation named by headers and body for model, among those scope was seen using.
-func (b *ProvimuxSessionBook) resolve(scope string, headers http.Header, body []byte, model string) provimuxResolved {
+// resolve finds the conversation named by headers and body for the routed name, among those scope was seen using.
+// The book's entries are found by the conversation's parts, never by upstream's joined string; the binding found is
+// shown only while it belongs to that conversation (upstream's binding was last chosen for that session).
+func (b *ProvimuxSessionBook) resolve(scope string, headers http.Header, body []byte, routed string) provimuxResolved {
 	var r provimuxResolved
-	r.affinity, r.mode = provimuxSeamAffinity(b.manager)
+	m := b.Manager()
+	r.affinity, r.mode = provimuxSeamAffinity(m)
 	if r.mode != provimuxAffinityOn {
 		return r
 	}
 	session, clientType := provimuxSeamNamedSession(headers, body)
-	modelKey := provimuxSeamModelKey(model)
+	modelKey := provimuxSeamModelKey(routed)
 	scope = strings.TrimSpace(scope)
 	if session == "" || modelKey == "" || scope == "" {
 		return r
@@ -397,8 +539,9 @@ func (b *ProvimuxSessionBook) resolve(scope string, headers http.Header, body []
 	r.clientType = clientType
 	var candidates []ProvimuxSessionBookEntry
 	b.mu.Lock()
-	for _, entry := range b.entries {
-		if entry.Session == session && entry.ModelKey == modelKey && entry.hasScope(scope) {
+	b.pruneLocked(r.affinity, provimuxSessionRouteNow())
+	for owner, entry := range b.entries {
+		if owner.Session == session && owner.ModelKey == modelKey && entry.hasScope(scope) {
 			copied := *entry
 			copied.Scopes = nil
 			candidates = append(candidates, copied)
@@ -413,15 +556,15 @@ func (b *ProvimuxSessionBook) resolve(scope string, headers http.Header, body []
 		if !candidates[i].LastTouched.Equal(candidates[j].LastTouched) {
 			return candidates[i].LastTouched.After(candidates[j].LastTouched)
 		}
-		return candidates[i].Key < candidates[j].Key
+		return candidates[i].Provider < candidates[j].Provider
 	})
 	r.entry = candidates[0]
 	for _, candidate := range candidates {
 		binding, ok := provimuxSeamLookup(r.affinity, candidate.Key)
-		if !ok {
+		if !ok || binding.Session != candidate.Session {
 			continue
 		}
-		auth, okAuth := b.manager.GetByID(binding.AuthID)
+		auth, okAuth := m.GetByID(binding.AuthID)
 		if !okAuth || auth == nil {
 			// An account no longer registered: upstream drops such a binding itself at the next request.
 			continue
@@ -432,23 +575,38 @@ func (b *ProvimuxSessionBook) resolve(scope string, headers http.Header, body []
 	return r
 }
 
-// bindingToken is the binding's token for expect: it stands for this binding (its key and its stretch) on this account.
-func (b *ProvimuxSessionBook) bindingToken(r provimuxResolved) string {
-	since := ""
-	if r.entry.Current == r.binding.AuthID && !r.entry.Since.IsZero() {
-		since = strconv.FormatInt(r.entry.Since.UnixNano(), 10)
+// cacheEpoch numbers the cache instances the book has met: a new selector (the routing settings changed) has a new
+// cache whose selection order starts again, so a token names the instance too.
+func (b *ProvimuxSessionBook) cacheEpoch(cache *SessionCache) uint64 {
+	b.cacheMu.Lock()
+	defer b.cacheMu.Unlock()
+	if b.cacheSeen.Value() != cache {
+		b.cacheSeen = weak.Make(cache)
+		b.cacheCount++
 	}
+	return b.cacheCount
+}
+
+// bindingToken is the token for expect: it stands for exactly this binding of this conversation, as the selection
+// that made or last chose it left it (upstream's sequence: a new one at every selection, at a release and a new
+// binding alike), on this account, in this cache instance.
+func (b *ProvimuxSessionBook) bindingToken(owner provimuxConversation, binding provimuxSeamBinding) string {
 	h := sha256.New()
 	h.Write(b.salt[:])
-	h.Write([]byte(r.entry.Key))
-	h.Write([]byte{0})
-	h.Write([]byte(r.binding.AuthID))
-	h.Write([]byte{0})
-	h.Write([]byte(since))
+	var number [8]byte
+	binary.BigEndian.PutUint64(number[:], b.cacheEpoch(binding.Cache))
+	h.Write(number[:])
+	binary.BigEndian.PutUint64(number[:], binding.Sequence)
+	h.Write(number[:])
+	for _, part := range []string{owner.Provider, owner.Session, owner.ModelKey, binding.AuthID} {
+		binary.BigEndian.PutUint64(number[:], uint64(len(part)))
+		h.Write(number[:])
+		h.Write([]byte(part))
+	}
 	return "b." + strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(h.Sum(nil)))[:16]
 }
 
-// ProvimuxSessionModelName is the name as the answers give it: the name asked about, without a thinking suffix.
+// ProvimuxSessionModelName is the name as the answers give it: the name, without a thinking suffix.
 func ProvimuxSessionModelName(model string) string {
 	model = strings.TrimSpace(model)
 	if parsed := thinking.ParseSuffix(model); strings.TrimSpace(parsed.ModelName) != "" {
@@ -469,19 +627,36 @@ func provimuxTimePtr(t time.Time) *string {
 	return &s
 }
 
-// Show answers POST /v1/provimux/session-route for a client key's caller scope. It changes nothing: no binding is
-// made, moved or refreshed, and the book is only read. Every call answers from the state at that moment.
-func (b *ProvimuxSessionBook) Show(scope string, headers http.Header, body []byte, model string) ProvimuxSessionRoute {
-	r := b.resolve(scope, headers, body, model)
-	return b.show(r, model, provimuxSessionRouteNow())
+// provimuxRoutedName is routed_model: the routed name when the request path routes the asked name to another, else
+// nil.
+func provimuxRoutedName(asked, routed string) *string {
+	asked, routed = ProvimuxSessionModelName(asked), ProvimuxSessionModelName(routed)
+	if routed == "" || routed == asked {
+		return nil
+	}
+	return &routed
 }
 
-func (b *ProvimuxSessionBook) show(r provimuxResolved, model string, now time.Time) ProvimuxSessionRoute {
+// Show answers POST /v1/provimux/session-route for a name the request path routes as it is.
+func (b *ProvimuxSessionBook) Show(scope string, headers http.Header, body []byte, model string) ProvimuxSessionRoute {
+	return b.ShowRouted(scope, headers, body, model, model)
+}
+
+// ShowRouted answers POST /v1/provimux/session-route for a client key's caller scope: asked is the name the client
+// sent, routed the name the request path routes it to (auto resolved). It changes nothing: no binding is made, moved
+// or refreshed. Every call answers from the state at that moment.
+func (b *ProvimuxSessionBook) ShowRouted(scope string, headers http.Header, body []byte, asked, routed string) ProvimuxSessionRoute {
+	r := b.resolve(scope, headers, body, routed)
+	return b.show(r, asked, routed, provimuxSessionRouteNow())
+}
+
+func (b *ProvimuxSessionBook) show(r provimuxResolved, asked, routed string, now time.Time) ProvimuxSessionRoute {
 	out := ProvimuxSessionRoute{
 		ObservedAt:   provimuxTime(now),
 		Affinity:     r.mode,
 		Conversation: "not-seen",
-		Model:        ProvimuxSessionModelName(model),
+		Model:        ProvimuxSessionModelName(asked),
+		RoutedModel:  provimuxRoutedName(asked, routed),
 		First:        []ProvimuxRoute{},
 		Rule:         ProvimuxSessionRule{InEffect: false, Will: "stay"},
 	}
@@ -493,72 +668,74 @@ func (b *ProvimuxSessionBook) show(r provimuxResolved, model string, now time.Ti
 		return out
 	}
 	out.Subagent = r.entry.Parent != ""
+	out.WebsocketMayHold = r.entry.Socket || r.clientType == "codex"
 	if !r.bound {
 		out.Conversation = "not-bound"
-		out.Rule.InEffect, _ = provimuxSessionRule(r.entry, ProvimuxSessionPosition{}, false)
 		return out
 	}
+	m := b.Manager()
+	name := ProvimuxSessionModelName(r.entry.RouteModel)
 	out.Conversation = "bound"
-	out.WebsocketMayHold = r.clientType == "codex"
-	token := b.bindingToken(r)
+	token := b.bindingToken(r.entry.owner(), r.binding)
 	out.Binding = &token
 
-	bound := &ProvimuxSessionBound{Route: provimuxRouteOf(r.auth), Origin: "not-known"}
+	route := provimuxRouteOf(r.auth, name)
+	bound := &ProvimuxSessionBound{Route: route, Origin: "not-known"}
 	if r.entry.Current == r.binding.AuthID && !r.entry.Since.IsZero() {
 		bound.Since = provimuxTimePtr(r.entry.Since)
 		bound.Origin = "first"
 		if r.entry.Previous != "" {
 			bound.Origin = "fallback"
 			bound.FellBackAt = provimuxTimePtr(r.entry.PreviousAt)
-			if previous, ok := b.manager.GetByID(r.entry.Previous); ok && previous != nil {
-				route := provimuxRouteOf(previous)
-				bound.FellBackFrom = &route
-			}
+			previous, _ := m.GetByID(r.entry.Previous)
+			fellBackFrom := provimuxRouteOf(previous, name)
+			bound.FellBackFrom = &fellBackFrom
 		}
 	}
 	out.Bound = bound
 
-	position, first := b.position(r, now)
-	out.Position = &position
-	out.First = first
+	_, available := provimuxSeamRoutes(m, r.entry.Provider, r.entry.RouteModel, now)
+	out.First = provimuxRoutesOf(provimuxSeamHighest(available), name)
+	if !route.Unlisted {
+		position := b.position(r, name, now)
+		out.Position = &position
+	}
 
-	lifetime, basis, entryName := provimuxSessionLifetime(r.entry)
 	lastUse := r.binding.ExpiresAt.Add(-r.binding.TTL)
 	if r.entry.Current == r.binding.AuthID && r.entry.LastSuccess.After(lastUse) {
 		lastUse = r.entry.LastSuccess
 	}
-	coldAt := lastUse.Add(time.Duration(lifetime)*time.Second + provimuxColdMargin)
-	cold := now.After(coldAt)
-	out.Cache = &ProvimuxSessionCache{LifetimeS: lifetime, Basis: basis, Entry: entryName, LastUseAt: provimuxTime(lastUse), Cold: cold, ColdAt: provimuxTime(coldAt)}
-	out.Rule.InEffect, out.Rule.Will = provimuxSessionRule(r.entry, position, cold)
+	coldAt := lastUse.Add(provimuxSessionLifetime*time.Second + provimuxColdMargin)
+	out.Cache = &ProvimuxSessionCache{LifetimeS: provimuxSessionLifetime, Basis: "setting", Entry: nil,
+		LastUseAt: provimuxTime(lastUse), Cold: now.After(coldAt), ColdAt: provimuxTime(coldAt)}
 	return out
 }
 
-// position judges the binding against the accounts that serve its name now (session-route.md 6.1): the first routes
-// (the highest available priority), whether an account of a higher priority than the bound one is free, and, when
-// none is, when the first recorded cooldown among the higher-priority accounts ends. Both are facts about the name,
-// never per account.
-func (b *ProvimuxSessionBook) position(r provimuxResolved, now time.Time) (ProvimuxSessionPosition, []ProvimuxRoute) {
-	serving, available := provimuxSeamRoutes(b.manager, r.entry.Provider, r.entry.RouteModel, now)
+// position judges the binding against the accounts the list shows for its name now (session-route.md 6.1): whether
+// one of a higher priority than the bound one serves it, whether such a one is free, and, when none is, when the first
+// recorded cooldown among them ends. Facts about the name, never per account.
+func (b *ProvimuxSessionBook) position(r provimuxResolved, name string, now time.Time) ProvimuxSessionPosition {
+	m := b.Manager()
+	serving, available := provimuxSeamRoutes(m, r.entry.Provider, r.entry.RouteModel, now)
 	boundPriority := r.auth.Priority()
 	var position ProvimuxSessionPosition
 	for _, auth := range serving {
-		if auth.Priority() > boundPriority {
+		if auth.Priority() > boundPriority && provimuxListed(auth, name) {
 			position.BelowFirst = true
 		}
 	}
 	for _, auth := range available {
-		if auth.Priority() > boundPriority {
+		if auth.Priority() > boundPriority && provimuxListed(auth, name) {
 			position.HigherPriorityFree = true
 		}
 	}
 	if !position.HigherPriorityFree {
 		var earliest time.Time
 		for _, auth := range serving {
-			if auth.Priority() <= boundPriority {
+			if auth.Priority() <= boundPriority || !provimuxListed(auth, name) {
 				continue
 			}
-			view, ok := b.manager.ProvimuxRouteCooldowns(auth, []string{r.entry.RouteModel}, now)[r.entry.RouteModel]
+			view, ok := m.ProvimuxRouteCooldowns(auth, []string{r.entry.RouteModel}, now)[r.entry.RouteModel]
 			if !ok || !view.RetryAt.After(now) {
 				continue
 			}
@@ -568,18 +745,26 @@ func (b *ProvimuxSessionBook) position(r provimuxResolved, now time.Time) (Provi
 		}
 		position.HigherPriorityFreeAt = provimuxTimePtr(earliest)
 	}
-	return position, provimuxRoutesOf(provimuxSeamHighest(available))
+	return position
 }
 
-// Release answers POST /v1/provimux/session-route/release for a client key's caller scope. With expect, it releases
-// only while the binding is still the one the token stands for; otherwise conflict is the state now (409). It removes
-// the binding and every alias of it from upstream's cache, compared with the account it judged, and nothing else.
+// Release answers POST /v1/provimux/session-route/release for a name the request path routes as it is.
 func (b *ProvimuxSessionBook) Release(scope string, headers http.Header, body []byte, model, expect string) (ProvimuxSessionRelease, *ProvimuxSessionRoute) {
+	return b.ReleaseRouted(scope, headers, body, model, model, expect)
+}
+
+// ReleaseRouted answers POST /v1/provimux/session-route/release for a client key's caller scope. With expect (a
+// well-formed token: the handler refuses any other), it releases only the exact binding the token stands for: the
+// token is computed again from the binding as it is under the cache's write lock and compared there, so a binding
+// released and made again, even on the same account, is not removed by an older token; the answer is then the state
+// now (conflict, 409). It removes the binding and every alias of it from upstream's cache, and nothing else.
+func (b *ProvimuxSessionBook) ReleaseRouted(scope string, headers http.Header, body []byte, asked, routed, expect string) (ProvimuxSessionRelease, *ProvimuxSessionRoute) {
 	expect = strings.TrimSpace(expect)
 	for attempt := 0; ; attempt++ {
-		r := b.resolve(scope, headers, body, model)
+		r := b.resolve(scope, headers, body, routed)
 		now := provimuxSessionRouteNow()
-		out := ProvimuxSessionRelease{ObservedAt: provimuxTime(now), Affinity: r.mode, Conversation: "not-bound", Next: []ProvimuxRoute{}}
+		out := ProvimuxSessionRelease{ObservedAt: provimuxTime(now), Affinity: r.mode, Conversation: "not-bound",
+			Model: ProvimuxSessionModelName(asked), RoutedModel: provimuxRoutedName(asked, routed), Next: []ProvimuxRoute{}}
 		if r.mode != provimuxAffinityOn {
 			return out, nil
 		}
@@ -587,22 +772,25 @@ func (b *ProvimuxSessionBook) Release(scope string, headers http.Header, body []
 			out.Conversation = "not-seen"
 			return out, nil
 		}
+		out.WebsocketMayHold = r.entry.Socket || r.clientType == "codex"
 		if !r.bound {
 			return out, nil
 		}
-		if expect != "" && expect != b.bindingToken(r) {
-			state := b.show(r, model, now)
-			return ProvimuxSessionRelease{}, &state
-		}
-		if !provimuxSeamRelease(r.affinity, r.entry.Key, r.binding.AuthID, time.Time{}) {
-			// The binding changed between the look and the removal: with expect that is a conflict; without, look
-			// again (at most three times, then answer the state as it is).
+		owner := r.entry.owner()
+		judged := r.binding
+		still := func(now provimuxSeamBinding) bool {
+			if now.Session != owner.Session {
+				return false
+			}
 			if expect != "" {
-				again := b.resolve(scope, headers, body, model)
-				if !again.bound {
-					return out, nil
-				}
-				state := b.show(again, model, provimuxSessionRouteNow())
+				return b.bindingToken(owner, now) == expect
+			}
+			return now.AuthID == judged.AuthID
+		}
+		if !provimuxSeamRelease(r.affinity, r.entry.Key, still) {
+			if expect != "" {
+				again := b.resolve(scope, headers, body, routed)
+				state := b.show(again, asked, routed, provimuxSessionRouteNow())
 				return ProvimuxSessionRelease{}, &state
 			}
 			if attempt >= 2 {
@@ -611,17 +799,17 @@ func (b *ProvimuxSessionBook) Release(scope string, headers http.Header, body []
 			continue
 		}
 		b.mu.Lock()
-		if entry := b.entries[r.entry.Key]; entry != nil {
+		if entry := b.entries[owner]; entry != nil {
 			entry.clearBinding()
 		}
 		b.mu.Unlock()
 		b.releasedByClient.Add(1)
-		was := provimuxRouteOf(r.auth)
-		_, available := provimuxSeamRoutes(b.manager, r.entry.Provider, r.entry.RouteModel, now)
+		name := ProvimuxSessionModelName(r.entry.RouteModel)
+		was := provimuxRouteOf(r.auth, name)
+		_, available := provimuxSeamRoutes(b.Manager(), r.entry.Provider, r.entry.RouteModel, now)
 		out.Released = true
 		out.Was = &was
-		out.Next = provimuxRoutesOf(provimuxSeamHighest(available))
-		out.WebsocketMayHold = r.clientType == "codex"
+		out.Next = provimuxRoutesOf(provimuxSeamHighest(available), name)
 		return out, nil
 	}
 }

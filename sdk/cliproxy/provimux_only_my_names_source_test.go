@@ -89,6 +89,7 @@ var namesRegistryReaders = map[string]string{
 	"sdk/api/handlers/gemini/gemini_handlers.go Models GetAvailableModels":                                                                                              "list",
 	"sdk/api/handlers/openai/openai_handlers.go Models GetAvailableModels":                                                                                              "list",
 	"sdk/api/handlers/openai/openai_images_handlers.go registeredXAIImagesModel GetModelProviders":                                                                      "after the door", // decides the image route's model; executes through the door
+	"sdk/cliproxy/auth/provimux_session_route.go provimuxListed GetModelsForClient":                                                                                     "after the door", // session-route: the name a show asks about passed the door first (internal/api/provimux_session_route.go)
 	"sdk/api/handlers/openai/openai_models_accounts.go modelAccounts GetModelsForClient":                                                                                "list",           // annotates the ids of the gated list
 	"sdk/api/handlers/openai/openai_responses_handlers.go Models GetAvailableModels":                                                                                    "list",
 	"sdk/api/handlers/openai/openai_responses_websocket_session.go responsesWebsocketAuthMatchesModel ClientSupportsModel":                                              "after the door",

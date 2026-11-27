@@ -417,7 +417,8 @@ func TestProvimuxSessionRouteContractExamples(t *testing.T) {
 	for name, schema := range map[string]any{
 		"FellBackCacheCold": &auth.ProvimuxSessionRoute{}, "FellBackFirstRouteCooling": &auth.ProvimuxSessionRoute{},
 		"OnFirstRoute": &auth.ProvimuxSessionRoute{}, "NotSeen": &auth.ProvimuxSessionRoute{}, "AffinityOff": &auth.ProvimuxSessionRoute{},
-		"Released": &auth.ProvimuxSessionRelease{}, "NothingBound": &auth.ProvimuxSessionRelease{},
+		"BoundToUnlisted": &auth.ProvimuxSessionRoute{},
+		"Released":        &auth.ProvimuxSessionRelease{}, "NothingBound": &auth.ProvimuxSessionRelease{},
 		"ReleaseNotSeen": &auth.ProvimuxSessionRelease{}, "ReleaseAffinityOff": &auth.ProvimuxSessionRelease{},
 	} {
 		example := contract.example(t, name)
