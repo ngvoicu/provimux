@@ -192,6 +192,11 @@ paths:
         Read-only, from memory. `setting` is what the configuration says; `in_effect` and `reason`
         are what holds. `counts.returned` is exact: it is raised in the same step that drops a
         binding. There is no list of bindings and no release here (design section 15.5).
+
+        A change of the setting takes effect for selections that read the configuration after the
+        commit; a selection already underway can finish using the previous value. Every change of
+        the value in use starts a new observation: a conversation's first message after it is not
+        judged.
       security:
         - managementKey: []
       responses:
@@ -204,6 +209,8 @@ paths:
               examples:
                 in-effect:
                   $ref: "#/components/examples/ReturnInEffect"
+                as-installed:
+                  $ref: "#/components/examples/ReturnAsInstalled"
                 not-set:
                   $ref: "#/components/examples/ReturnNotSet"
                 not-below-ttl:
@@ -467,12 +474,17 @@ components:
           description: |
             What the gateway does by itself (the second design of the rule). With `in_effect`: at this
             conversation's next request, if it is bound to an account below the highest-priority
-            account that request may use, and it has not been used for `cold_after_s`, the binding is
+            account that request may use, and it sent no message for `cold_after_s`, the binding is
             dropped and the request is routed as a new conversation's. It is decided at that request,
             from that request's own accounts, so no show can say beforehand that it will happen. Never
             for a sub-agent or a fork, a pinned turn, or a conversation the client did not name.
             The object `cache` of an earlier draft of this contract is withdrawn: the gateway states
-            no cache's lifetime. A conversation used within `cold_after_s` is never moved by the rule.
+            no cache's lifetime. The rule never moves a conversation that sent a message within
+            `cold_after_s`. An answer that itself takes longer than that does not count as use while
+            it streams, so the message after it can go back: a vendor's prompt cache is refreshed when
+            a request reads it, not while the answer is written. Any binding below a higher priority
+            this request may use can return, also after the operator adds a higher-priority account.
+            The rule sends no request to any provider.
           required: [in_effect, cold_after_s]
           properties:
             in_effect:
@@ -559,7 +571,9 @@ components:
               minimum: 60
               description: |
                 `cold-after` in seconds, with its fraction where it has one (`1m0.9s` is 60.9); `null`
-                when not set. The gateway compares the duration itself, never this number.
+                when not set. `null` for `cold-after` in the configuration is off, as removing the key
+                is. A duration at or above the TTL is accepted and reported `not-below-ttl`. The
+                gateway compares the duration itself, never this number.
         in_effect:
           type: boolean
           description: Whether the rule runs now. This is the value in use.
@@ -592,7 +606,8 @@ components:
           properties:
             returned:
               type: integer
-              description: Bindings the rule dropped at a request since the gateway started.
+              description: |
+                Bindings dropped since startup. One conversation can count more than once.
             last_returned_at:
               type: [string, "null"]
               format: date-time
@@ -774,8 +789,17 @@ components:
         reason: null
         affinity: { enabled: true, ttl_s: 3600, strategy: round-robin, subagents: true, rebind_on: any }
         counts: { returned: 12, last_returned_at: "2026-11-27T09:58:30Z", since: "2026-11-27T06:00:11Z" }
+    ReturnAsInstalled:
+      summary: As installed from the example configuration (session affinity off, no time set)
+      value:
+        observed_at: "2026-11-27T10:15:00Z"
+        setting: { cold_after_s: null }
+        in_effect: false
+        reason: session-affinity-off
+        affinity: { enabled: false, ttl_s: 3600, strategy: round-robin, subagents: true, rebind_on: any }
+        counts: { returned: 0, last_returned_at: null, since: "2026-11-27T06:00:11Z" }
     ReturnNotSet:
-      summary: No time is set (as installed)
+      summary: Session affinity on, no time set
       value:
         observed_at: "2026-11-27T10:15:00Z"
         setting: { cold_after_s: null }
