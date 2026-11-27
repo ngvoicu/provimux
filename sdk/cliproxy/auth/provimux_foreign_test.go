@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"maps"
 	"strings"
 	"sync"
 	"testing"
@@ -68,7 +69,7 @@ func TestProvimuxOwnRegistrationsNeverMark(t *testing.T) {
 	}
 	wg.Wait()
 	auth := &Auth{ID: "provimux-test", Provider: "claude"}
-	if provimuxMarked(m, "claude") || m.provimuxForeignTookPart(auth, m.provimuxAnsweringExecutor(auth)) {
+	if provimuxMarked(m, "claude") || m.provimuxForeignTookPart(auth, provimuxServingNow(m, auth)) {
 		t.Fatal("the gateway's own registrations marked the provider")
 	}
 }
@@ -116,13 +117,13 @@ func TestProvimuxForeignMarkStaysAndIsLoggedOnce(t *testing.T) {
 		m.RegisterExecutor(&provimuxOwnTestExecutor{provider: "claude"})
 	}
 	other.RegisterExecutor(&provimuxOwnTestExecutor{provider: "claude"})
-	if !m.provimuxForeignTookPart(claude, m.provimuxAnsweringExecutor(claude)) {
+	if !m.provimuxForeignTookPart(claude, provimuxServingNow(m, claude)) {
 		t.Error("the provider's mark was cleared by the gateway putting its own back")
 	}
-	if m.provimuxForeignTookPart(codex, m.provimuxAnsweringExecutor(codex)) {
+	if m.provimuxForeignTookPart(codex, provimuxServingNow(m, codex)) {
 		t.Error("another provider was marked")
 	}
-	if other.provimuxForeignTookPart(claude, other.provimuxAnsweringExecutor(claude)) {
+	if other.provimuxForeignTookPart(claude, provimuxServingNow(other, claude)) {
 		t.Error("another manager was marked")
 	}
 	logged := 0
@@ -137,4 +138,12 @@ func TestProvimuxForeignMarkStaysAndIsLoggedOnce(t *testing.T) {
 	if logged != 1 {
 		t.Errorf("logged %d times, want once", logged)
 	}
+}
+
+// provimuxServingNow is the executor an attempt handed over now would be served by, for auth.
+func provimuxServingNow(m *Manager, auth *Auth) ProviderExecutor {
+	m.mu.RLock()
+	in := &Manager{executors: maps.Clone(m.executors)}
+	m.mu.RUnlock()
+	return provimuxAttempt{m: m, in: in}.provimuxServingExecutor(auth)
 }
