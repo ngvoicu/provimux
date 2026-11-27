@@ -26,6 +26,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -50,6 +51,11 @@ const (
 	affinityStall = "PROVIMUX_TEST_AFFINITY_STALL"
 	// affinityLinger: while the file it names exists, the gateway process stays after its stop.
 	affinityLinger = "PROVIMUX_TEST_AFFINITY_LINGER"
+	// affinityHome: the gateway runs in Home mode, its Home server a closed loopback port (main sets
+	// cfg.Home from the Home control plane; here the test sets it, nothing answers there).
+	affinityHome = "PROVIMUX_TEST_AFFINITY_HOME_PORT"
+	// affinityManagement is the gateway's management key (MANAGEMENT_PASSWORD), for the state.
+	affinityManagement = "provimux-test-management"
 )
 
 func affinityWaitWhile(path string) {
@@ -80,6 +86,9 @@ func TestProvimuxAffinityGatewayProcess(t *testing.T) {
 	cfg, err := config.LoadConfig(path)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if port, errPort := strconv.Atoi(os.Getenv(affinityHome)); errPort == nil {
+		cfg.Home = config.HomeConfig{Enabled: true, Host: "127.0.0.1", Port: port, DisableClusterDiscovery: true}
 	}
 	service, err := cliproxy.NewBuilder().WithConfig(cfg).WithConfigPath(path).Build()
 	if err != nil {
@@ -119,6 +128,8 @@ type affinityOptions struct {
 	clientKeys   bool // access.api-keys set (requests carry a caller scope)
 	saveCooldown bool // routing.cooldown.save-cooldown-status
 	kvDisabled   bool // kv-store.disabled
+	affinityOff  bool // routing.session-affinity: false
+	home         bool // Home mode, the Home server a closed loopback port
 }
 
 type affinityGateway struct {
@@ -131,6 +142,8 @@ type affinityGateway struct {
 	log     bytes.Buffer
 	vendor  *affinityVendor
 	stopped chan struct{}
+	home    bool
+	logFrom int // where the running process's log begins
 }
 
 func newAffinityGateway(t *testing.T, o affinityOptions) *affinityGateway {
@@ -143,7 +156,7 @@ func newAffinityGateway(t *testing.T, o affinityOptions) *affinityGateway {
 	if err := os.MkdirAll(authDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	g := &affinityGateway{t: t, dir: dir, config: filepath.Join(dir, "config.yaml"), port: freePort(t), vendor: vendor}
+	g := &affinityGateway{t: t, dir: dir, config: filepath.Join(dir, "config.yaml"), port: freePort(t), vendor: vendor, home: o.home}
 	access := fmt.Sprintf("access:\n  api-keys: [%q, %q]\n", affinityClient1, affinityClient2)
 	if !o.clientKeys {
 		access = ""
@@ -161,7 +174,7 @@ server:
   port: %d
 %srouting:
   strategy: "round-robin"
-  session-affinity: true
+  session-affinity: %t
 %s  cooldown:
     save-cooldown-status: %t
 kv-store:
@@ -182,7 +195,7 @@ api-keys:
       models:
         - name: "provimux-test-upstream"
           alias: %q
-`, g.port, access, persist, o.saveCooldown, o.kvDisabled, authDir, upstream.URL+"/v1", affinityModel)
+`, g.port, access, !o.affinityOff, persist, o.saveCooldown, o.kvDisabled, authDir, upstream.URL+"/v1", affinityModel)
 	if err := os.WriteFile(g.config, []byte(yaml), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -214,11 +227,17 @@ func (g *affinityGateway) startEvery(interval string, env ...string) {
 	// Nothing leaves the machine: the version and console updaters a start runs find no proxy;
 	// loopback (the stand-in vendor) is never proxied.
 	cmd.Env = append(os.Environ(), affinityGatewayEnv+"="+g.config, "HOME="+g.dir, affinityInterval+"="+interval,
-		"HTTP_PROXY=http://127.0.0.1:9", "HTTPS_PROXY=http://127.0.0.1:9", "NO_PROXY=")
+		"HTTP_PROXY=http://127.0.0.1:9", "HTTPS_PROXY=http://127.0.0.1:9", "NO_PROXY=", "MANAGEMENT_PASSWORD="+affinityManagement)
+	if g.home {
+		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%d", affinityHome, freePort(g.t)))
+	}
 	cmd.Env = append(cmd.Env, env...)
 	cmd.Dir = g.dir
 	cmd.Stdout = g
 	cmd.Stderr = g
+	g.logMu.Lock()
+	g.logFrom = g.log.Len()
+	g.logMu.Unlock()
 	if err := cmd.Start(); err != nil {
 		g.t.Fatal(err)
 	}
@@ -232,7 +251,13 @@ func (g *affinityGateway) startEvery(interval string, env ...string) {
 			g.t.Fatalf("gateway exited at start:\n%s", g.log.String())
 		default:
 		}
-		if code, _ := g.models(); code == http.StatusOK {
+		if g.home {
+			// Home mode serves the models Home gives it (none here) and no management API: any
+			// answer says it serves (the bindings' start ran before the server was made).
+			if _, err := g.stateOnce(); err != nil && strings.Contains(err.Error(), "status ") {
+				return
+			}
+		} else if code, _ := g.models(); code == http.StatusOK {
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -393,7 +418,7 @@ func TestProvimuxAffinitySurvivesRestart(t *testing.T) {
 			{"SIGKILL twice, the second before any new write", affinityOptions{persist: true, clientKeys: true}, true, true, expectation{true, false}},
 			{"SIGTERM, no client keys", affinityOptions{persist: true}, false, false, expectation{true, true}},
 			{"session-affinity-persist false: today's behaviour", affinityOptions{clientKeys: true}, false, false, expectation{false, false}},
-			{"session-affinity-persist not set: off by default", affinityOptions{unset: true, clientKeys: true}, false, false, expectation{false, false}},
+			{"session-affinity-persist not set: on by default", affinityOptions{unset: true, clientKeys: true}, false, false, expectation{true, false}},
 			{"kv-store disabled: today's behaviour, no file", affinityOptions{persist: true, clientKeys: true, kvDisabled: true}, false, false, expectation{false, false}},
 		} {
 			tc.options.saveCooldown = saveCooldown
@@ -415,7 +440,7 @@ func TestProvimuxAffinitySurvivesRestart(t *testing.T) {
 					}
 				}
 				g.restart(tc.kill, tc.twice)
-				kept := tc.options.persist && !tc.options.unset && !tc.options.kvDisabled
+				kept := (tc.options.persist || tc.options.unset) && !tc.options.kvDisabled
 				if _, err := os.Stat(g.snapshot()); kept && err != nil {
 					t.Errorf("the snapshot is gone after the start (%v): it stays until the next write", err)
 				}

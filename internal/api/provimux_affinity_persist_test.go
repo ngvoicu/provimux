@@ -58,10 +58,10 @@ func TestProvimuxAffinityPersistManagement(t *testing.T) {
 		t.Fatalf("without a source: %d", got.Code)
 	}
 	management.SetProvimuxAffinityPersistSource(func() any {
-		return map[string]any{"setting": false, "in_effect": false, "reason": "switch-off"}
+		return map[string]any{"setting": true, "set": false, "in_effect": true}
 	})
 	t.Cleanup(func() { management.SetProvimuxAffinityPersistSource(nil) })
-	if got := provimuxRequest(s, http.MethodGet, state, ""); got.Code != http.StatusOK || !strings.Contains(got.Body.String(), `"reason":"switch-off"`) {
+	if got := provimuxRequest(s, http.MethodGet, state, ""); got.Code != http.StatusOK || !strings.Contains(got.Body.String(), `"in_effect":true`) || !strings.Contains(got.Body.String(), `"set":false`) {
 		t.Fatalf("state: %d %s", got.Code, got.Body.String())
 	}
 	req := httptest.NewRequest(http.MethodGet, state, nil)

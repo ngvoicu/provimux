@@ -621,8 +621,8 @@ type RoutingConfig struct {
 
 	// SessionAffinityPersist (Provimux) keeps session affinity's bindings across a restart: they
 	// are written beside the KV store when the process stops (and every few minutes), and put back
-	// once at the next start. Default: false (off unless set). Ignored when SessionAffinity is false,
-	// in Home mode and with the KV store disabled.
+	// once at the next start. Default: true (on whenever SessionAffinity is on; false turns it off).
+	// Ignored when SessionAffinity is false, in Home mode and with the KV store disabled.
 	SessionAffinityPersist *bool `yaml:"session-affinity-persist,omitempty" json:"session-affinity-persist,omitempty"`
 }
 
