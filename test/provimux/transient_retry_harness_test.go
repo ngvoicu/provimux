@@ -197,13 +197,15 @@ type pool struct {
 	vendors  map[string]*standIn
 	order    []string
 	affinity *coreauth.SessionAffinitySelector
+	model    string
 }
 
 type poolOptions struct {
 	affinity bool
 	rebindOn string
-	rule     *bool // routing.retry.same-account-retry; nil: not set (off in a test binary)
-	trace    bool  // the server's answered-by middleware in front of the handler
+	rule     *bool  // routing.retry.same-account-retry; nil: not set (off in a test binary)
+	trace    bool   // the server's answered-by middleware in front of the handler
+	model    string // the model the pool serves and the client asks for; "" is testModel
 }
 
 var (
@@ -240,7 +242,10 @@ func newPool(t *testing.T, opts poolOptions) *pool {
 	manager.RegisterExecutor(runtimeexecutor.NewClaudeExecutor(cfg))
 	manager.RegisterExecutor(runtimeexecutor.NewOpenAICompatExecutor(openRouterKey, cfg))
 
-	p := &pool{t: t, manager: manager, vendors: map[string]*standIn{}, affinity: affinity}
+	p := &pool{t: t, manager: manager, vendors: map[string]*standIn{}, affinity: affinity, model: opts.model}
+	if p.model == "" {
+		p.model = testModel
+	}
 	type account struct {
 		id, provider string
 		priority     int
@@ -290,7 +295,7 @@ func newPool(t *testing.T, opts poolOptions) *pool {
 		if _, err := manager.Register(context.Background(), auth); err != nil {
 			t.Fatalf("Register(%s): %v", a.id, err)
 		}
-		registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: testModel}})
+		registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: p.model}})
 		id := auth.ID
 		t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(id) })
 	}
@@ -318,9 +323,9 @@ func (p *pool) send(session string, stream bool) (int, string) {
 
 // sendRecorded is send, returning the whole recorded answer (status, headers, body).
 func (p *pool) sendRecorded(session string, stream bool) *httptest.ResponseRecorder {
-	body := `{"model":"` + testModel + `","max_tokens":64,"messages":[{"role":"user","content":"hello"}]}`
+	body := `{"model":"` + p.model + `","max_tokens":64,"messages":[{"role":"user","content":"hello"}]}`
 	if stream {
-		body = `{"model":"` + testModel + `","max_tokens":64,"stream":true,"messages":[{"role":"user","content":"hello"}]}`
+		body = `{"model":"` + p.model + `","max_tokens":64,"stream":true,"messages":[{"role":"user","content":"hello"}]}`
 	}
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")

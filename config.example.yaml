@@ -308,10 +308,10 @@ routing:
     # Retry rounds that need no wait remain controlled by request-retry.
     max-retry-interval: 30
 
-    # Provimux: after a passing fault of the vendor (overloaded, 502/503/504/529, or the connection
-    # failed before any answer byte), wait 0.5-1 s and try the same account once more before moving
-    # on; a fault after the answer has begun is never retried. On unless set to false; false is
-    # CLIProxyAPI's behaviour. See "A passing fault" in Provimux's README.
+    # Provimux: when the vendor refuses a request as overloaded in its own documented error field
+    # (Anthropic's overloaded_error, OpenAI's server_is_overloaded), wait 0.5-1 s (or its Retry-After
+    # of 1-2 s) and send it once more to the same account; at most one second try per client request.
+    # Nothing else is sent twice. On unless set to false; false is CLIProxyAPI's behaviour.
     # same-account-retry: true
 
   cooldown:

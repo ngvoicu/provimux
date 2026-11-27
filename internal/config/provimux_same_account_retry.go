@@ -2,10 +2,10 @@ package config
 
 import "testing"
 
-// Provimux: routing.retry.same-account-retry. After a passing fault of the vendor (overloaded or temporarily
-// unavailable, or the connection failed before any answer byte), the gateway waits a moment and tries the same account
-// once more before it moves on (sdk/cliproxy/auth/provimux_same_account_retry.go). On unless the file says false; false
-// is upstream's behaviour.
+// Provimux: routing.retry.same-account-retry. When the vendor answers a request, completely, with its documented
+// structured overload refusal, the gateway waits a moment and sends it once more to the same account, at most once per
+// client request (sdk/cliproxy/auth/provimux_same_account_retry.go). On unless the file says false; false is upstream's
+// behaviour.
 
 // ProvimuxSameAccountRetryDefault is the value when the key is not set.
 const ProvimuxSameAccountRetryDefault = true

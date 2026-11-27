@@ -62,7 +62,7 @@ func TestProvimuxSameAccountRetryStateAndGenericPath(t *testing.T) {
 		}
 		if ojson.Get(body, "default").Bool() != config.ProvimuxSameAccountRetryProcessDefault() || ojson.Get(body, "applies").Bool() != enabled ||
 			ojson.Get(body, "wait_min_ms").Int() != 500 || ojson.Get(body, "wait_max_ms").Int() != 1000 || ojson.Get(body, "retry_after_max_ms").Int() != 2000 ||
-			!ojson.Get(body, "retries").Exists() || !ojson.Get(body, "saved").Exists() || !ojson.Get(body, "not_saved").Exists() || !ojson.Get(body, "since").Exists() {
+			!ojson.Get(body, "second_tries_sent").Exists() || !ojson.Get(body, "second_tries_answered").Exists() || !ojson.Get(body, "second_tries_failed").Exists() || !ojson.Get(body, "left_during_wait").Exists() || !ojson.Get(body, "since").Exists() {
 			t.Fatalf("state: %s", body)
 		}
 	}

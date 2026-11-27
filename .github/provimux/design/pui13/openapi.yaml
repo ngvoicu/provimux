@@ -153,7 +153,7 @@ paths:
   /provimux/same-account-retry:
     get:
       operationId: provimuxSameAccountRetry
-      summary: Whether a passing fault is tried once more on the same account, and what that did since the start
+      summary: Whether a request the vendor refused as overloaded gets one second try on the same account, and what that did since the start
       description: |
         routing.retry.same-account-retry as in use (on unless the file sets false) and the counts since the
         gateway started. The value is written through the generic config path,
@@ -849,7 +849,7 @@ components:
             dropped). Null without a list in use, and for a plugin's model.
     SameAccountRetryResponse:
       type: object
-      required: [observed_at, enabled, set_in_file, default, applies, wait_min_ms, wait_max_ms, retry_after_max_ms, since, retries, saved, not_saved]
+      required: [observed_at, enabled, set_in_file, default, applies, wait_min_ms, wait_max_ms, retry_after_max_ms, since, second_tries_sent, second_tries_answered, second_tries_failed, left_during_wait]
       properties:
         observed_at:
           $ref: "#/components/schemas/Timestamp"
@@ -873,21 +873,27 @@ components:
           description: The longest wait before the second try without a Retry-After.
         retry_after_max_ms:
           type: integer
-          description: The longest vendor Retry-After still waited; a longer one counts as not passing.
+          description: The longest vendor Retry-After still waited (1 or 2 seconds are waited exactly, 0 means the jittered wait); a longer one means no second try.
         since:
           $ref: "#/components/schemas/Timestamp"
-        retries:
+        second_tries_sent:
           type: integer
           minimum: 0
-          description: Second tries made since `since` (the process start). In memory only.
-        saved:
+          description: Second tries sent to the vendor since `since` (the process start), counted as each is sent. In memory only.
+        second_tries_answered:
           type: integer
           minimum: 0
-          description: Of the retries, those the same account answered.
-        not_saved:
+          description: |
+            Of the second tries sent, those the vendor answered: a complete answer, or for a stream an answer that
+            began. Whether such a stream then completed is not counted here.
+        second_tries_failed:
           type: integer
           minimum: 0
-          description: Of the retries, those that failed again (or whose client went away during the wait); the gateway then went on as without the rule.
+          description: Of the second tries sent, those that failed before any answer; the gateway then went on as without the rule.
+        left_during_wait:
+          type: integer
+          minimum: 0
+          description: Refusals after which the client went away during the wait; no second try was sent for them.
     NamesResponse:
       type: object
       required: [observed_at, only_my_names, applied, names, keep_ignored, others, refused]
