@@ -7,7 +7,9 @@ Design, 2026-11-27. This is the design only: no code exists. The contract a buil
 **What he gets.**
 
 1. A command in Pi that shows where this conversation is bound, since when, whether a higher-priority route is free, and what going back costs; and that releases the binding.
-2. The gateway by itself: a conversation that sits below a free higher-priority route goes back once its cache is cold anyway. On unless set; a conversation with a warm cache is never moved by this rule.
+2. The gateway by itself: a conversation that sits below a free higher-priority route goes back once its cache is cold anyway. On unless set; a conversation with a warm cache is never moved by this rule. **Not in this release** (decided by the lead on 2026-11-27: it goes back to the architect for a simpler rule).
+
+**This release** (decided by the lead on 2026-11-27, after the review of the two gateway parts): the first of the two only, made right. A client sees its conversation's route and releases it (G1). The rule, its setting `routing.session-affinity-return`, the lifetime evidence, the operator's list and release, and the console's card are described below for a later release and marked "not in this release" where they appear; none of them is built.
 
 **Read from.**
 
@@ -31,10 +33,10 @@ Design, 2026-11-27. This is the design only: no code exists. The contract a buil
 | Releasing | removing the binding from upstream's store. The conversation's next request is then, for upstream, a conversation without a binding: it goes to the first available route by priority (`Pick`, `selector.go:1832-1842`). **No line of upstream's selector changes** |
 | The book | a small table of ours, in memory: per bound conversation, which account answers it, since when, which account answered it before, which client keys used it, and what its answers said about their cache. Filled by two observers upstream already offers: the manager's result hook and the usage record |
 | Seeing and releasing, for a client | two requests of the gateway's own under `/v1/provimux/session-route`, named by the same session headers a turn carries, limited to conversations that client key has used |
-| Seeing and releasing, for the operator | `/v8/management/provimux/session-routes`, behind the management key: all of them |
-| The rule | every 15 seconds: a binding that sits below a free higher-priority route, and has been quiet for longer than its cache lives, is released. `routing.session-affinity-return`, on unless set |
+| Seeing and releasing, for the operator | `/v8/management/provimux/session-routes`, behind the management key: all of them. **Not in this release** |
+| The rule | every 15 seconds: a binding that sits below a free higher-priority route, and has been quiet for longer than its cache lives, is released. `routing.session-affinity-return`, on unless set. **Not in this release** |
 | Pi | `/provimux-route`: shows, says the cost, releases. And Pi starts sending its session id on Claude-format models, without which the gateway cannot name the conversation at all (finding 3) |
-| The console | a card on the Models page: the switch, the value in use and why, how many conversations sit on a later route, how many went back |
+| The console | a card on the Models page: the switch, the value in use and why, how many conversations sit on a later route, how many went back. **Not in this release** |
 
 Six findings shaped it.
 
@@ -86,6 +88,11 @@ One table in memory, of ours, in package `auth`. It is a note about bindings, ne
 - **Bounded:** 4,096 conversations, the least recently answered dropped first. An entry is a few hundred bytes.
 - **Not kept on disk.** After a restart the book is empty. What that means is in section 8.1.
 - **Clock:** one function of ours, `provimuxSessionRouteNow`, which tests replace.
+- **As built in G1, after the review** (decided by the lead on 2026-11-27):
+  - **Owned by the conversation's parts, never by upstream's string.** An entry is keyed by the provider part, the session identity and the name, kept apart. Upstream joins them with `::`, which a session id may hold; the book never looks an entry up by that string, only hands it to upstream's cache. It does not note a conversation whose provider or name part holds `::` (then upstream's string could be split two ways): such a conversation is answered `not-seen`, safely. Before a show or a release, the binding found must have been chosen for that very session (upstream's binding records it).
+  - **Entries leave** once upstream holds no binding for them and the binding's lifetime has passed since their last answer: the book holds no more than the cache's TTL of history, besides its 4,096 bound.
+  - **Only where session affinity runs.** With `routing.session-affinity` off or in Home mode the book is not subscribed to results and holds nothing; it follows every committed config both ways (one call where the service commits a config, one where a start takes its first). Under a plugin scheduler it stops at the first result it sees and keeps nothing. No timer. A book does not keep its manager alive.
+  - **No usage record** is read in this release (the lifetime evidence is the rule's).
 
 ## 4. Seeing and releasing
 
@@ -118,14 +125,14 @@ Upstream's order, as its comment lists it (`info.go:83-95`), and what a client o
 
 `identity` is an object that holds only the body fields a turn of this client carries its session in; the gateway hands it to the extraction as the turn's body would be. Ids travel in headers and the body, never in a URL, so no access log holds them.
 
-**The name** is `model`, as the client sends it on a turn. A binding is per name: a conversation that used two names has two. A thinking suffix is cut as upstream cuts it (`canonicalModelKey`, `selector.go:842`).
+**The name** is `model`, as the client sends it on a turn. A binding is per name: a conversation that used two names has two. A thinking suffix is cut as upstream cuts it (`canonicalModelKey`, `selector.go:842`). As built in G1, after the review: the name is resolved as the request path resolves a turn's name before an account is chosen, so a turn sent as `auto` is found when asked as `auto`: with "serve only my names" in force the door's `auto` (the first of the owner's served names), then upstream's (`util.ResolveAutoModel`, `sdk/api/handlers/handlers_routing.go:169-189`); none in Home mode. The answer gives the routed name as `routed_model`, a model `GET /v1/models` lists. These are the only renamings before routing; a plugin's model router reads the turn's body and cannot be reproduced: the client asks under the name it routed to.
 
 ### 4.3 Who may
 
 | Caller | Sees and releases |
 |---|---|
 | A configured client key | a conversation whose book entry holds this key's caller scope: one the gateway has seen this key use since it started |
-| The management key | every binding, through the management path |
+| The management key | every binding, through the management path. **Not in this release** |
 
 - **A conversation that is another key's, and one that does not exist, get the same answer:** `conversation: "not-seen"`. Nothing tells them apart.
 - **Why not "whoever knows the session id":** an id can be a word the user chose (`X-Session-ID: main`, a `prompt_cache_key`). A second key holder could then move another's conversation at will.
@@ -134,7 +141,7 @@ Upstream's order, as its comment lists it (`info.go:83-95`), and what a client o
 
 ### 4.4 What is shown
 
-To a client key, per route, exactly what a row of `GET /v1/models?include=accounts` holds: `provider`, `kind`, `priority`, `host`; and `account`, the account marker, where the build has it and `models.answered-by` is on. No login name, e-mail, file, index or cooldown.
+To a client key, per route, exactly what a row of `GET /v1/models?include=accounts` holds: `provider`, `kind`, `priority`, `host`; and `account`, the account marker, where the build has it and `models.answered-by` is on. No login name, e-mail, file, index or cooldown. As built in G1, after the review: an account that list does not show now for the name (disabled, or no longer serving it) is shown as `{"listed": false}` and nothing else, and `position` is then `null`; `first` holds only rows the list shows.
 
 | Shown | New to a holder of a client key? |
 |---|---|
@@ -150,13 +157,13 @@ The operator's list adds what `model-routes` already shows him: the login's name
 
 ### 4.5 Releasing
 
-1. The binding is looked up again in upstream's store. The request may carry `expect`, the token the show answered with (it stands for this binding on this account); when the binding has changed since, nothing is released and the answer is `409` with the state now.
+1. The binding is looked up again in upstream's store. The request may carry `expect`, the token the show answered with; when the binding has changed since, nothing is released and the answer is `409` with the state now. As built in G1, after the review: the token stands for exactly this binding (the conversation, the account, and the selection that made or last chose it: upstream's sequence, a new one at every turn, at every release and new binding), and it is computed again from the binding as it is and compared under the cache's write lock, so a binding released and made again on the same login is not removed by an older token. An `expect` that is present must be a well-formed token: empty, blank or `null` is `400`.
 2. Every key of the binding's group is removed from the session cache (the conversation's key and its aliases), or the matcher's session.
-3. The book's entry is closed: the release is counted, by whom (a client's request, the operator's, the rule), and the entry's binding (account, since, the route before) is cleared. As built in G1, the entry itself and its caller scopes stay (bounded as the book is), so that the key that used the conversation is answered `not-bound` afterwards, as the contract says, and not `not-seen`.
+3. The book's entry is closed: the release is counted, by whom (a client's request, the operator's, the rule), and the entry's binding (account, since, the route before) is cleared. As built in G1, the entry itself and its caller scopes stay until the binding's lifetime has passed (section 3), so that the key that used the conversation is answered `not-bound` afterwards, as the contract says, and not `not-seen`.
 
 Nothing else happens. No request is sent, no account's state changes, no credit of the weighted strategy moves. Releasing twice is not an error: the second answers `released: false`, `conversation: "not-bound"`.
 
-## 5. The rule
+## 5. The rule (not in this release)
 
 `routing.session-affinity-return`, in effect only where session affinity runs (section 9). Every 15 seconds one function, `sweep(now)`, looks at each binding and releases it when **all** of these hold:
 
@@ -170,7 +177,7 @@ A request that arrives between two sweeps after (b) became true is served by the
 
 **Why a sweep and not a test where the binding is read.** The test in `Pick` is exact to the request and costs an inserted block in the file upstream changes most (13 times between v8.0.60 and v8.1.3, `prices-and-cache.md` 11 A), at three places a binding is honoured (`selector.go:1738`, `:1797`, `:1851`). The sweep is exact to 15 seconds in the harmless direction and costs no line there.
 
-## 6. The three things the gateway must know
+## 6. The three things the gateway must know (the rule's; not in this release)
 
 | What | How it is known | Upstream lines |
 |---|---|---|
@@ -239,6 +246,8 @@ Lines added to files that exist:
 | File | Lines | What |
 |---|---|---|
 | `internal/api/server_routes.go` | +1 | `s.registerProvimuxClientRoutes(v1)` after the `/v1/models` routes (`:72-76`). Upstream's file |
+| `sdk/cliproxy/service_config.go` | +1 | `provimuxFollowSessionRoute(s.coreManager, newCfg)` beside the layer's two calls where a config is committed (`provimuxSetNamesRule`, `provimuxSetAnsweredBy`), so the book follows the hot reload. Added in G1 after the review (finding 11). Upstream's file, at an anchor the layer already has |
+| `sdk/cliproxy/builder.go` | +1 | the same for the first config of a start, beside the same two calls. Added in G1 after the review. Upstream's file, at an anchor the layer already has |
 | `internal/config/config_types.go` | +2 | the field `SessionAffinityReturn`, with its comment on the line, after `SessionAffinitySubagents` (`:608`). Upstream's file |
 | `config.example.yaml` | +9 | the setting, commented, after `session-affinity-subagents` (`:269`). Upstream's file |
 | `internal/api/server_provimux.go` | +2 | the two management routes. The layer's own file |
@@ -292,23 +301,23 @@ Without them, lifetime row 2 is skipped. With them it reads the held document th
 
 | Edge | Settled as |
 |---|---|
-| **An answer in flight when its conversation is released** | it finishes on the account it started on. Its result cannot bring the binding back: a success only refreshes a binding that still names that account (`SessionCache.Touch`, `session_cache.go:380-395`), and a failure only removes one that does (`CompareAndDelete`, `:398`). If the attempt fails and upstream retries inside the same request, the retry is selected without a binding and goes to the first route |
-| **A sub-agent** (`session-affinity-subagents: true`) | a child has a binding of its own, made at its first request from the parent's (`selector.go:1796-1810`). Releasing the parent leaves running children where they are: each has its own cache, and they end soon. A child that starts after the release inherits the parent's new account. The rule judges each binding by itself. The parent's last use is not moved by its children ("parent lookups do not extend the parent's TTL", `config.example.yaml:265`), which is right: their requests do not keep the parent's cache warm either. The show says when a conversation is a sub-agent's |
+| **An answer in flight when its conversation is released** | it finishes on the account it started on. Its result cannot bring the binding back: a success only refreshes a binding that still names that account (`SessionCache.Touch`, `session_cache.go:380-395`), and a failure only removes one that does (`CompareAndDelete`, `:398`). If the attempt fails and upstream retries inside the same request, the retry is selected without a binding and goes to the first route. Decided by the lead on 2026-11-27 as upstream's behaviour: if the conversation was bound again **to the same login** before that answer ends, and the answer then fails with a fault of that login, upstream removes the newer binding too (it removes a binding to a login that just failed); the conversation is bound afresh at its next message. A binding to another login is untouched. `TestProvimuxSessionRouteSameLoginFailureRemovesNewer` pins it |
+| **A sub-agent** (`session-affinity-subagents: true`) | a child has a binding of its own, made at its first request from the parent's (`selector.go:1796-1810`). Releasing the parent leaves running children where they are: each has its own cache, and they end soon. A child that starts after the release inherits the parent's binding as upstream does, whatever it is then: where the parent has been bound again on the lower login (a fallback, or a turn on a still-open socket), the child goes there too. A Codex fork names its source as its parent but is not a sub-agent: the show says `subagent: false` for it. The rule judges each binding by itself. The parent's last use is not moved by its children ("parent lookups do not extend the parent's TTL", `config.example.yaml:265`), which is right: their requests do not keep the parent's cache warm either. The show says when a conversation is a sub-agent's |
 | **`session-affinity-subagents: false`** | nothing inherits; every binding is its own. Nothing differs here |
-| **The Codex WebSocket** | decided by the lead on 2026-11-27 (I3 did not hold). A connection's follow-up turns are pinned to the login that served it (`pinned_auth_id`, `sdk/api/handlers/openai/openai_responses_websocket.go:1095`), and they **do** ask the selector: the candidates are narrowed to the pinned login and `Pick` still runs, so after a release the next turn on a still-open socket binds the conversation to that login again. **A release holds only once that connection is closed**; the next connection's first turn then goes to the first route. No line of the selector changes, and no code of ours undoes what upstream's selection did. Pi keeps an idle socket for 30 minutes (pi-provimux's own setting); after the command, pi-provimux closes the conversation's socket, so the release holds for Pi. The rule closes nothing: a binding it releases while a socket is open is made again by that socket's next turn (G2 says so, and does not count it as returned). The show and the release say `websocket_may_hold: true` for a conversation named by Codex headers. `TestProvimuxSessionRoutePinnedFollowUpRebinds` pins today's re-binding, so a change upstream shows at a sync |
+| **The Codex WebSocket** | decided by the lead on 2026-11-27 (I3 did not hold). A connection's follow-up turns are pinned to the login that served it (`pinned_auth_id`, `sdk/api/handlers/openai/openai_responses_websocket.go:1095`), and they **do** ask the selector: the candidates are narrowed to the pinned login and `Pick` still runs, so after a release the next turn on a still-open socket binds the conversation to that login again. **A release holds only if that connection is closed before its next turn**; then the next connection's first turn goes to the first route. A turn on the open connection binds the conversation to the old login again, and closing the connection afterwards does not undo that: release again, then close (corrected by the lead on 2026-11-27, after the review). No line of the selector changes, and no code of ours undoes what upstream's selection did. Pi keeps an idle socket for 30 minutes (pi-provimux's own setting); right after the release, before any further turn, pi-provimux closes the conversation's socket. The show and the release say `websocket_may_hold: true` for a conversation that has had a turn on a connection pinned to its login (the turn carries the connection's execution session, or a pin), whatever header names it, and for one named by Codex headers. `TestProvimuxSessionRoutePinnedFollowUpRebinds` and `TestProvimuxSessionRouteWebsocket` (a real loopback socket, every way of naming) pin today's behaviour, so a change upstream shows at a sync |
 | **`strategy` other than plain priority** | section 2. The show lists the first routes, so the user checks them against the Models page |
 | **Several conversations released at once** | a release sends nothing, so nothing arrives at the recovered account at that moment. Each conversation comes at its own next request, and only conversations whose cache is cold were released by the rule. If the account fails again, upstream fails the conversation over as before; it is then below its first route with a fresh last use, and waits out its cache's lifetime again. No loop is faster than that lifetime |
-| **Home mode** | nothing: Home selects. Not started, no binding listed; the show answers `affinity: "home"`, the state says `home-mode` |
-| **A plugin scheduler** | as upstream's own lookup, which answers "unsupported" there (`conductor_selection.go:839-841`): `affinity: "not-supported"` |
-| **`session-affinity: false`** | nothing is bound and nothing to do. The show answers `affinity: "off"`; the command says every request already goes to the first available route |
+| **Home mode** | nothing: Home selects. Not subscribed, nothing kept; the show and the release answer `affinity: "home"` |
+| **A plugin scheduler** | as upstream's own lookup, which answers "unsupported" there (`conductor_selection.go:839-841`): `affinity: "not-supported"`. The book stops at the first result it sees and keeps nothing; a show subscribes it again once affinity runs |
+| **`session-affinity: false`** | nothing is bound and nothing to do. Not subscribed, nothing kept: a result costs what it costs without Provimux. The show answers `affinity: "off"`; the command says every request already goes to the first available route. A hot reload that turns affinity on starts the book; one that turns it off stops it and forgets what it held |
 | **`session-affinity-rebind-on: quota` or `never`** | fewer bindings move in the first place. One that sits below its first route is judged the same |
-| **The routing settings change while running** | upstream builds a new selector with an empty cache (`sdk/cliproxy/service_config.go:110-133`). The book's entries no longer find their binding and are dropped at the next sweep |
+| **The routing settings change while running** | upstream builds a new selector with an empty cache (`sdk/cliproxy/service_config.go:110-133`). The book's entries no longer find their binding, are answered `not-bound`, and leave once their lifetime has passed; a token names the cache instance too, so an older token never matches a binding of the new cache |
 | **A name served by accounts of several providers** | upstream keys the binding under `mixed`; the book holds the key as upstream made it (section 3), so nothing is derived |
 | **One conversation, two client keys** | one binding (finding 4). Both scopes are in the book; either may see and release it |
 | **Compaction** | with a session id the binding is the same conversation's. Bound by content only, upstream may start a new binding at a compaction (`config.example.yaml:249-251`); P1 ends that for Pi |
 | **`session-affinity-ttl` shorter than the cache's lifetime** | the binding ends by itself first |
 
-## 10. The setting, its state, and the console
+## 10. The setting, its state, and the console (not in this release)
 
 ### 10.1 The setting
 
@@ -371,7 +380,7 @@ In pi-provimux.
    - the cache: "the gateway takes this conversation's cache to live 5 minutes (its own answers said so); it is cold" or "warm for about 3 more minutes";
    - what the rule will do by itself: "it goes back by itself once the cache is cold", or why not.
 3. **The cost, before anything is released.** From Pi's own numbers: the context's size (`ctx.getContextUsage()`, as `auto-compact.ts:191`) and the model's prices as Pi holds them. "Going back now: one read of the conversation without cache, about 182,000 tokens, about $0.55 at the list price (more where the vendor charges for writing the cache). Staying: a cached read, about $0.04, while the cache is warm." When the show says the cache is cold: "The cache is cold already: going back costs nothing extra." A subscription route is said as "at API list price, for comparison", as pi-provimux says prices elsewhere.
-4. It asks. On yes it sends the release with `expect`, closes the conversation's Codex WebSocket where there is one (`closeOpenAICodexWebSocketSessions(sessionId)`, `extensions/index.ts:848`), and says where the next turn will go. On `409` it shows the new state and asks again.
+4. It asks. On yes it sends the release with `expect`, closes the conversation's Codex WebSocket where there is one (`closeOpenAICodexWebSocketSessions(sessionId)`, `extensions/index.ts:848`) before any further turn, and says where the next turn will go. On `409` it shows the new state and asks again (the token changes at every turn: a keep-warm request in between is a turn).
 5. What it says in the other cases: `affinity: "off"` ("nothing is bound: every request already goes to the first available route"); `"home"`; `not-seen` ("this gateway has seen no request of this conversation from your key since it started; send a message and ask again"); `not-bound`; a gateway without the path ("this Provimux has no session routes; they came with <version>"); already on a first route (it still offers the release and says the strategy may choose the same account).
 
 pi-cache-keeper is not changed. Its state would give the cost line a closer "warm until", and the two extensions already exchange events; that is a refinement for later, not a condition.
@@ -388,11 +397,11 @@ No test depends on the machine's speed or on the date: every time is on `provimu
 | 4 | a release during an answer in flight: the answer's success does not bring the binding back, nor does its failure remove a newer one | a test that holds a result back with a channel, not a wait |
 | 5 | a client key gets `not-seen` for another key's conversation and for none, byte for byte the same | a test of the handler with two keys |
 | 6 | the show's routes hold no field a row of `include=accounts` lacks, except `account` | a test that compares the JSON keys with that list's |
-| 7 | the rule never releases a binding whose quiet time is under its lifetime plus 60 s, for each of the three lifetime sources, and at one second under | table tests on `sweep(now)` |
-| 8 | the rule releases only below a free higher-priority route: not on a first route, not while every higher account is cooling, not for a weight-0 account | the same |
-| 9 | a binding refreshed between the judgement and the removal is left | a test that refreshes inside the seam's hook between the two |
-| 10 | with the switch off, `sweep` removes nothing and the paths still work | |
-| 11 | Home mode, a plugin scheduler, session affinity off: nothing starts, the state names the reason, the show answers as section 9 says | |
+| 7 (not in this release) | the rule never releases a binding whose quiet time is under its lifetime plus 60 s, for each of the three lifetime sources, and at one second under | table tests on `sweep(now)` |
+| 8 (not in this release) | the rule releases only below a free higher-priority route: not on a first route, not while every higher account is cooling, not for a weight-0 account | the same |
+| 9 (not in this release) | a binding refreshed between the judgement and the removal is left | a test that refreshes inside the seam's hook between the two |
+| 10 (not in this release) | with the switch off, `sweep` removes nothing and the paths still work | |
+| 11 | Home mode, a plugin scheduler, session affinity off: nothing starts (no subscription, no record, no timer), following the config's hot reload both ways; the show and the release answer as section 9 says | `TestProvimuxSessionRouteFollowsConfig`, `TestProvimuxSessionRouteFollowsHotReload`, `TestProvimuxSessionRouteFootprint` |
 | 12 | every answer of the four paths matches `session-route/openapi.yaml` | a contract test over the examples, as the figures' |
 | 13 | after a release and a closed socket, the next connection's first turn binds at the first route (decided by the lead on 2026-11-27; a pinned follow-up on the still-open socket binds to its login again, and a test pins that too) | `TestProvimuxSessionRoutePinnedFollowUpRebinds` (I3) |
 | 14 | Pi sends `x-session-affinity` on a Claude-format model and nothing new on a Codex-format one | pi-provimux's request tests |
@@ -405,13 +414,13 @@ Each is one worker and one review. Order: G1; then P1 and G2 side by side; then 
 | | Repository | Holds | May touch | Must prove | Needs |
 |---|---|---|---|---|---|
 | **G1** | provimux | the seam, the book with its result hook, the show and the release for a client key | the new files of 7.1 except the sweep, the usage plugin, the setting and the management handlers; `internal/api/server_routes.go` (+1); the README's section; `session-route/openapi.yaml` only to correct it against what is built | rows 1 to 6, 12 (client paths), 13 | nothing |
-| **G2** | provimux | the rule: the setting, the usage evidence, the three lifetime sources (the figures' as a reader that is `nil` on `main`), the sweep, the state, the operator's list and release | `provimux_session_route.go` (the sweep and the state), `internal/provimux/sessionroute/`, `internal/config/provimux_session_return.go`, `internal/config/config_types.go` (+2), `config.example.yaml` (+9), `internal/api/handlers/management/provimux_session_routes.go`, `internal/api/server_provimux.go` (+2), the README | rows 7 to 12; that `PUT /v8/management/config/routing/session-affinity-return` writes the setting and the state follows without a restart (I4) | G1 |
+| **G2** (not in this release: back to the architect) | provimux | the rule: the setting, the usage evidence, the three lifetime sources (the figures' as a reader that is `nil` on `main`), the sweep, the state, the operator's list and release | `provimux_session_route.go` (the sweep and the state), `internal/provimux/sessionroute/`, `internal/config/provimux_session_return.go`, `internal/config/config_types.go` (+2), `config.example.yaml` (+9), `internal/api/handlers/management/provimux_session_routes.go`, `internal/api/server_provimux.go` (+2), the README | rows 7 to 12; that `PUT /v8/management/config/routing/session-affinity-return` writes the setting and the state follows without a restart (I4) | G1 |
 | **P1** | pi-provimux | P1a and P1b of section 11; README and changelog | `extensions/lib.ts` (the compat flag), a new `extensions/route.ts`, `extensions/index.ts` (registering the command), tests | rows 14, 15; each case of section 11, step 5, against a stub gateway built from the contract's examples | G1 released, or built against the examples before that |
-| **C1** | provimux-ui | the card of 10.3 | a new `src/provimux/pages/models/SessionReturnCard.tsx` with its request file, `ModelsSettings.tsx`, `src/provimux/api/{types,normalize,provimuxApi}.ts`, the locale files | the value in use is shown for each `reason`; a 404 hides the card; a write refused by a changed file (412) writes nothing | G2 released |
+| **C1** (not in this release) | provimux-ui | the card of 10.3 | a new `src/provimux/pages/models/SessionReturnCard.tsx` with its request file, `ModelsSettings.tsx`, `src/provimux/api/{types,normalize,provimuxApi}.ts`, the locale files | the value in use is shown for each `reason`; a 404 hides the card; a write refused by a changed file (412) writes nothing | G2 released |
 | **C2**, only if wanted | provimux-ui | the list of conversations with a release each | the card's files | | C1 |
 | **G3**, only once the persistence branch is on `main` | provimux | the snapshot carries each binding's caller scopes; the book is filled from it at the start | that branch's snapshot file and its tests | a client's show works for a restored binding of its own, and `not-seen` for another key's | G1, that branch |
 
-A release of Provimux can carry G1 alone (the command works), or G1 and G2.
+A release of Provimux can carry G1 alone (the command works), or G1 and G2. The first carries G1 alone (decided by the lead on 2026-11-27).
 
 ## 14. Decisions, and what is not verified
 
