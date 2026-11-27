@@ -35,10 +35,11 @@ import (
 // 1 hour, then the normal 6 hours; the held document stays. The same round also asks for the
 // entries' prices and cache lifetimes, on its own schedule (provimux_figures.go).
 
-const (
-	provimuxPublishedInterval = 6 * time.Hour
-	provimuxPublishedScan     = 10 * time.Minute
-)
+const provimuxPublishedInterval = 6 * time.Hour
+
+// provimuxPublishedScan is how often the round looks whether a request is due; a variable so that a test can
+// shorten it.
+var provimuxPublishedScan = 10 * time.Minute
 
 // provimuxPublishedBackoff is the wait after the 1st, 2nd, ... consecutive failure; past the end, the
 // normal interval.
@@ -62,8 +63,9 @@ type provimuxPublishedStore struct {
 	index      map[string]map[string]*modellists.ListingModel
 	wake       chan struct{}
 	running    atomic.Bool
-	fetching   sync.Mutex // one fetch at a time
-	lastLogged string     // dataset version of the last accepted-document line
+	rounds     atomic.Uint64 // rounds ended in this process (tests wait on it)
+	fetching   sync.Mutex    // one fetch at a time
+	lastLogged string        // dataset version of the last accepted-document line
 }
 
 var provimuxPublished = &provimuxPublishedStore{wake: make(chan struct{}, 1)}
@@ -184,30 +186,43 @@ func (s *Service) runPublishedListRefresh(ctx context.Context) {
 	timer := time.NewTimer(0)
 	defer timer.Stop()
 	for {
+		scanned := false
 		select {
 		case <-ctx.Done():
 			return
 		case <-provimuxPublished.wake:
 		case <-timer.C:
+			scanned = true
+		}
+		// The round's time, read before the next scan is set: a wait of whole scans falls due on its scan.
+		roundAt := liveModelListNow()
+		if scanned {
 			timer.Reset(provimuxPublishedScan)
 		}
-		s.cfgMu.RLock()
-		cfg := s.cfg
-		s.cfgMu.RUnlock()
-		on := provimuxPublishedListsOn(cfg)
-		if provimuxSetPublishedOn(on) {
-			// Turned on or off: the learned models' fields change with it.
-			s.provimuxPublishedChanged(provimuxAllSections())
-		}
-		if !on {
-			continue
-		}
-		if provimuxPublished.due(liveModelListNow()) {
-			s.refreshPublishedLists(ctx, cfg)
-		}
-		// The figures: the round's second request, with its own due time and back-off (prices-and-cache.md 6.2).
-		s.provimuxFiguresRound(ctx, cfg)
+		s.provimuxPublishedRound(ctx, roundAt)
+		provimuxPublished.rounds.Add(1)
 	}
+}
+
+// provimuxPublishedRound is one round: the switch, then the listings and the figures when each is due.
+func (s *Service) provimuxPublishedRound(ctx context.Context, roundAt time.Time) {
+	cfg := s.currentConfig()
+	on := provimuxPublishedListsOn(cfg)
+	if provimuxSetPublishedOn(on) {
+		// Turned on or off: the learned models' fields change with it.
+		s.provimuxPublishedChanged(provimuxAllSections())
+	}
+	if !on {
+		return
+	}
+	// The figures' disk copy is held before any request of the round (prices-and-cache.md 6.2).
+	provimuxFigures.loadCache(liveModelLists.cache.Load())
+	if provimuxPublished.due(liveModelListNow()) {
+		s.refreshPublishedLists(ctx, cfg)
+	}
+	// The figures: the round's second request, with its own due time and back-off, counted from the round's
+	// time and not from the end of the listings' request (prices-and-cache.md 6.2).
+	s.provimuxFiguresRoundAt(ctx, cfg, roundAt)
 }
 
 // refreshPublishedLists sends the one request and applies its answer.

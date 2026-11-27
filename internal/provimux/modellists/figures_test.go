@@ -88,7 +88,7 @@ func newFiguresStandIn(t *testing.T, entries []json.RawMessage, version, generat
 var figuresTestNow = time.Date(2026, 11, 26, 12, 0, 0, 0, time.UTC)
 
 func fetchFiguresFrom(server *pdentries.Server, held *FiguresDocument) (FiguresResult, error) {
-	return FetchFigures(context.Background(), server.Client(), server.EntriesURL(), held, "provimux/test", figuresTestNow, 5*time.Second)
+	return FetchFigures(context.Background(), server.Client(), server.EntriesURL(), held, "provimux/test", figuresTestNow, 5*time.Second, nil)
 }
 
 func asJSONValue(t *testing.T, v any) any {
@@ -558,7 +558,7 @@ func TestFiguresFetchFailures(t *testing.T) {
 			_, _ = w.Write([]byte(`{"meta":`))
 		}))
 		t.Cleanup(server.Close)
-		_, err := FetchFigures(context.Background(), server.Client(), server.URL, nil, "provimux/test", figuresTestNow, 5*time.Second)
+		_, err := FetchFigures(context.Background(), server.Client(), server.URL, nil, "provimux/test", figuresTestNow, 5*time.Second, nil)
 		var fetchErr *FetchError
 		if !errors.As(err, &fetchErr) || fetchErr.Category != FailureNetwork {
 			t.Fatalf("err %v", err)
@@ -568,7 +568,7 @@ func TestFiguresFetchFailures(t *testing.T) {
 	t.Run("unreachable", func(t *testing.T) {
 		closed := httptest.NewServer(http.NotFoundHandler())
 		closed.Close()
-		_, err := FetchFigures(context.Background(), nil, closed.URL, nil, "provimux/test", figuresTestNow, 5*time.Second)
+		_, err := FetchFigures(context.Background(), nil, closed.URL, nil, "provimux/test", figuresTestNow, 5*time.Second, nil)
 		var fetchErr *FetchError
 		if !errors.As(err, &fetchErr) || fetchErr.Category != FailureNetwork {
 			t.Fatalf("err %v", err)
@@ -581,7 +581,7 @@ func TestFiguresFetchFailures(t *testing.T) {
 		server.SetHang(hang)
 		t.Cleanup(func() { close(hang) })
 		started := time.Now()
-		_, err := FetchFigures(context.Background(), server.Client(), server.EntriesURL(), nil, "provimux/test", figuresTestNow, 100*time.Millisecond)
+		_, err := FetchFigures(context.Background(), server.Client(), server.EntriesURL(), nil, "provimux/test", figuresTestNow, 100*time.Millisecond, nil)
 		var fetchErr *FetchError
 		if !errors.As(err, &fetchErr) || fetchErr.Category != FailureNetwork || time.Since(started) > 5*time.Second {
 			t.Fatalf("err %v after %s", err, time.Since(started))
@@ -643,7 +643,7 @@ func TestFiguresDiskCopy(t *testing.T) {
 	}
 	dir := t.TempDir()
 	store := NewStore(dir)
-	if _, err = store.ReadFigures(); !errors.Is(err, ErrNotCached) {
+	if _, err = store.ReadFigures(figuresTestNow); !errors.Is(err, ErrNotCached) {
 		t.Fatalf("nothing on disk: %v", err)
 	}
 	if err = store.WriteFigures(result.Document); err != nil {
@@ -657,7 +657,7 @@ func TestFiguresDiskCopy(t *testing.T) {
 	if leftovers, _ := filepath.Glob(filepath.Join(dir, ".*.tmp")); len(leftovers) != 0 {
 		t.Fatalf("temporary files left: %v", leftovers)
 	}
-	back, err := store.ReadFigures()
+	back, err := store.ReadFigures(figuresTestNow)
 	if err != nil || !reflect.DeepEqual(asJSONValue(t, back), asJSONValue(t, result.Document)) {
 		t.Fatalf("read back: %v", err)
 	}
@@ -706,7 +706,7 @@ func TestFiguresDiskCopy(t *testing.T) {
 			t.Fatal(err)
 		}
 		fresh := NewStore(dir)
-		if doc, errRead := fresh.ReadFigures(); errRead == nil || errors.Is(errRead, ErrNotCached) || doc != nil {
+		if doc, errRead := fresh.ReadFigures(figuresTestNow); errRead == nil || errors.Is(errRead, ErrNotCached) || doc != nil {
 			t.Fatalf("%s: read %v", name, errRead)
 		}
 		if !fresh.warned["bad:"+FiguresFileName] {
@@ -715,7 +715,7 @@ func TestFiguresDiskCopy(t *testing.T) {
 		if err = fresh.WriteFigures(result.Document); err != nil {
 			t.Fatal(err)
 		}
-		if doc, errRead := fresh.ReadFigures(); errRead != nil || len(doc.Entries) != 450 {
+		if doc, errRead := fresh.ReadFigures(figuresTestNow); errRead != nil || len(doc.Entries) != 450 {
 			t.Fatalf("%s: the next accepted document replaces it: %v", name, errRead)
 		}
 	}
