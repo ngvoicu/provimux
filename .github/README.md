@@ -65,6 +65,9 @@ server's address, see [For a team](#for-a-team)). Docker, release archives and b
 - **[Which model entry answered](#which-model-entry-answered).** Every answer names the providers.dev entry of the
   model the account received, read from the request Provimux sent, so a tool can know the price and the cache
   lifetime of what really answered.
+- **[Prices and cache lifetimes for your tools](#prices-and-cache-lifetimes-for-your-tools).**
+  `GET /v1/models?include=figures` adds providers.dev's published prices and cache lifetimes for the entries your
+  own answers named; a client that does not ask gets the list as before.
 - **[Its own console pages](#the-console-provimux-ui)** in provimux-ui: **Accounts**, **Models** (every name you can
   send and the accounts behind it, by priority, with the cooldown recorded and its reason) and **Savings**, read from
   [Provimux's own endpoints](#model-routes-and-live-list-status-for-the-console).
@@ -380,6 +383,47 @@ So Provimux reads the entry from the request it sent; it never predicts it.
 
 **How to turn it off.** `models.answered-by: false` turns the entry and `answered` off with the account marker. In
 Home mode nothing is sent.
+
+### Prices and cache lifetimes for your tools
+
+A tool behind Provimux can know what the account that answered costs and how long its prompt cache lives, without
+knowing any provider. A cost meter shows the price of what answered; a cache keeper knows when that cache goes cold.
+Provimux keeps providers.dev's published figures and hands them to any tool that asks the model list:
+
+```bash
+curl -s "$PROVIMUX/v1/models?include=figures" -H "Authorization: Bearer $KEY"
+```
+
+- **What comes back.** The list as `include=accounts` gives it, plus `figures`: the figures of every entry your
+  rows' `answered` name, keyed by entry (`anthropic/claude-opus-5-5`). Each has prices in US dollars per million
+  tokens (input, output, cache read, cache write per lifetime, prices above a prompt size; for a subscription the
+  API list prices, marked as a reference), cache lifetimes in seconds (`rely_on_s`, with what it rests on and its
+  date), the input window and the output limit. `figures.state` is `held`, `none` (nothing fetched yet) or `off`.
+- **From an answer to its figures.** Look up the answer's `X-Provimux-Entry` in `figures.entries`. Not there? Read
+  the list once more: the answer has put its entry on the row of the account that answered, under the name you
+  called, also when another account of that name failed first. Still not there means providers.dev has no figures
+  for that entry.
+- **Your answers, your figures.** The list carries the figures of the entries your own key's answers named, and with
+  [Serve only my names](#serve-only-my-names), only your names.
+- **No figures is a normal answer.** providers.dev covers recent models only. Provimux never fills in a figure from
+  the account's kind or the model's name.
+- **Nothing changes for a client that does not ask.** Without `include=figures` the list is byte for byte what it
+  was. `GET /v1/models/<id>?include=figures` gives that model's `accounts` only; the figures are on the list.
+- **The contract** is [`openapi.yaml`](provimux/design/prices-and-cache/openapi.yaml), contract 1, with example
+  answers beside it. Required keys are always there; an unknown value is `null`. A change that would break a tool
+  comes as contract 2 under a new `include` value.
+- **For the console,** `GET /v8/management/provimux/figures` (management key) gives the figures for any key's
+  answers, when they were fetched, whether they come from the disk copy, and the last failed fetch; `?all=true`
+  gives every held entry.
+
+**How to turn it off.** `models.published-lists: false` keeps Provimux from contacting providers.dev at all: no
+figures (`state` is `off`) and no model lists from it. `models.answered-by: false` removes the entries from answers
+and rows, and with them the way from an answer to its figures.
+
+```yaml
+models:
+  published-lists: false
+```
 
 ### Live model lists for each login
 
@@ -1136,6 +1180,13 @@ providers for every user), through your configured proxy. It carries a `User-Age
 about your requests. providers.dev sees what any web server sees, the address the request comes from. The answer
 only fills a model's name, window, output limit and modalities where neither the vendor's list nor the catalog
 states them.
+
+In the same round and under the same switch, a second request: `GET https://providers.dev/api/v1/entries`, with
+the same fixed list of providers for every user, 200 entries a page, at most 10 pages. It is sent at startup, every
+6 hours and on `POST /v8/management/models/refresh`, through your configured proxy, with the `User-Agent`
+`provimux/<version>` and each page's `ETag`. Nothing about your accounts, models or requests is sent. The answer is
+kept in `model-lists/figures.json`, so a start without network has the figures of the last run, with their dates. A
+dataset dated more than 24 hours ahead of the gateway's clock is refused.
 
 ## Support
 
