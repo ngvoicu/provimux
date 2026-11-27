@@ -105,6 +105,7 @@ func (m *Manager) RegisterExecutorWithRevision(executor ProviderExecutor) uint64
 	if provider == "" {
 		return 0
 	}
+	provimuxRegistering(m, provider, executor) // Provimux: before it is in place, an executor not the gateway's own turns its provider's entries off (answered-by.md (5))
 
 	var replaced ProviderExecutor
 	var toReschedule []string
