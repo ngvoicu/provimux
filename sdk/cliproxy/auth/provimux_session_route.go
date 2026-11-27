@@ -24,8 +24,9 @@ import (
 // session bindings, never their source: every reader asks upstream's cache first (through the seam). A client key sees
 // and releases only a conversation the book has seen that key use since the gateway started (decided by the lead on
 // 2026-11-27). Releasing removes the binding from upstream's cache and nothing else: nothing is sent, no account's
-// state changes. The automatic return (the rule) is not in this release. This file calls the seam and exported names
-// only.
+// state changes. The automatic return (the rule, design section 15) is provimux_session_return.go's: the book only
+// reads its state for the show, and takes a return by the rule as the end of a binding's life. This file calls the
+// seam and exported names only.
 
 // provimuxSessionBookLimit is the number of conversations the book keeps; the least recently answered go first.
 const provimuxSessionBookLimit = 4096
@@ -162,8 +163,8 @@ type ProvimuxSessionPosition struct {
 	HigherPriorityFreeAt *string `json:"higher_priority_free_at"`
 }
 
-// ProvimuxSessionRule is SessionRoute.rule (design section 15): whether the rule runs, and the operator's time. The
-// rule is not in this release: never in effect, no time.
+// ProvimuxSessionRule is SessionRoute.rule (design section 15): whether the rule runs, and the operator's time (null
+// when not set).
 type ProvimuxSessionRule struct {
 	InEffect   bool     `json:"in_effect"`
 	ColdAfterS *float64 `json:"cold_after_s"`
@@ -229,6 +230,9 @@ type ProvimuxSessionBookEntry struct {
 	// for, a new account or cache instance, the account registered again). 0: the book holds no binding of it.
 	Life      uint64
 	lifeCache weak.Pointer[SessionCache]
+	// lifeReturned is the rule's return number under the binding's key when the life began (design section 15): a
+	// return by the rule since then ends the life.
+	lifeReturned uint64
 }
 
 func (e *ProvimuxSessionBookEntry) owner() provimuxConversation {
@@ -424,18 +428,19 @@ func (b *ProvimuxSessionBook) OnResult(_ context.Context, res Result) {
 		return
 	}
 	switch {
-	case entry.Current == "":
+	case entry.Current == "" || binding.Returned != entry.lifeReturned:
+		// New, or the rule returned the conversation since (design section 15): a new stretch from its first route.
 		entry.Current, entry.Since, entry.Previous, entry.PreviousAt = res.AuthID, now, "", time.Time{}
-		b.newLifeLocked(entry, binding.Cache)
+		b.newLifeLocked(entry, binding)
 	case entry.Current != res.AuthID:
 		entry.Previous, entry.PreviousAt = entry.Current, now
 		entry.Current, entry.Since = res.AuthID, now
-		b.newLifeLocked(entry, binding.Cache)
+		b.newLifeLocked(entry, binding)
 	case entry.Life == 0 || entry.lifeCache.Value() != binding.Cache:
 		// Removed (by upstream, or by a new cache when the routing settings changed) and made again on the same
 		// account: another life.
 		entry.Since, entry.Previous, entry.PreviousAt = now, "", time.Time{}
-		b.newLifeLocked(entry, binding.Cache)
+		b.newLifeLocked(entry, binding)
 	case !entry.LastSuccess.IsZero() && !now.Before(entry.LastSuccess.Add(ttl)):
 		// The binding ended by its own lifetime and was made again on the same account: a new stretch for since,
 		// the same life for expect (design section 15.11).
@@ -444,11 +449,12 @@ func (b *ProvimuxSessionBook) OnResult(_ context.Context, res Result) {
 	entry.LastSuccess = now
 }
 
-// newLifeLocked gives entry a new life number, in cache.
-func (b *ProvimuxSessionBook) newLifeLocked(entry *ProvimuxSessionBookEntry, cache *SessionCache) {
+// newLifeLocked gives entry a new life number, for binding's cache and the rule's returns under its key so far.
+func (b *ProvimuxSessionBook) newLifeLocked(entry *ProvimuxSessionBookEntry, binding provimuxSeamBinding) {
 	b.lives++
 	entry.Life = b.lives
-	entry.lifeCache = weak.Make(cache)
+	entry.lifeCache = weak.Make(binding.Cache)
+	entry.lifeReturned = binding.Returned
 }
 
 // OnAuthRegistered ends the life of every binding the book holds on an account registered again: upstream drops the
@@ -621,7 +627,7 @@ func (b *ProvimuxSessionBook) lifeToken(owner provimuxConversation, life uint64)
 // heldLife is the life the book holds for the binding found, or 0 where the book does not hold it (no answer seen on
 // it yet).
 func heldLife(entry ProvimuxSessionBookEntry, binding provimuxSeamBinding) uint64 {
-	if entry.Life == 0 || entry.Current != binding.AuthID || entry.lifeCache.Value() != binding.Cache {
+	if entry.Life == 0 || entry.Current != binding.AuthID || entry.lifeCache.Value() != binding.Cache || entry.lifeReturned != binding.Returned {
 		return 0
 	}
 	return entry.Life
@@ -679,7 +685,7 @@ func (b *ProvimuxSessionBook) show(r provimuxResolved, asked, routed string, now
 		Model:        ProvimuxSessionModelName(asked),
 		RoutedModel:  provimuxRoutedName(asked, routed),
 		First:        []ProvimuxRoute{},
-		Rule:         ProvimuxSessionRule{InEffect: false, ColdAfterS: nil},
+		Rule:         provimuxSessionRuleOf(b.Manager()),
 	}
 	if r.mode != provimuxAffinityOn {
 		out.Conversation = "not-bound"
@@ -804,12 +810,12 @@ func (b *ProvimuxSessionBook) ReleaseRouted(scope string, headers http.Header, b
 		}
 	}
 	if !conflict && entry != nil {
-		held, heldCache := entry.Current, entry.lifeCache.Value()
+		held, heldCache, heldReturned := entry.Current, entry.lifeCache.Value(), entry.lifeReturned
 		still := func(binding provimuxSeamBinding) bool {
 			if binding.Session != owner.Session {
 				return false
 			}
-			if expect != "" && (binding.AuthID != held || binding.Cache != heldCache) {
+			if expect != "" && (binding.AuthID != held || binding.Cache != heldCache || binding.Returned != heldReturned) {
 				return false
 			}
 			removedAuth = binding.AuthID

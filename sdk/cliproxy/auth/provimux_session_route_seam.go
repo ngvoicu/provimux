@@ -203,11 +203,15 @@ type provimuxSeamBinding struct {
 	TTL       time.Duration
 	Session   string        // the session of the selection that made or last chose the binding ("" when unknown)
 	Cache     *SessionCache // the cache instance: a new one when the routing settings change
+	// Returned is the number of the rule's last return of a binding under this key (design section 15), 0 when none
+	// is known: a binding made after a return is another life, even on the same account.
+	Returned uint64
 }
 
-func provimuxSeamBindingOf(cache *SessionCache, entry sessionEntry) provimuxSeamBinding {
+func provimuxSeamBindingOf(affinity *SessionAffinitySelector, key string, entry sessionEntry) provimuxSeamBinding {
+	cache := affinity.cache
 	return provimuxSeamBinding{AuthID: entry.authID, ExpiresAt: entry.expiresAt, TTL: cache.ttl,
-		Session: entry.binding.sessionID, Cache: cache}
+		Session: entry.binding.sessionID, Cache: cache, Returned: affinity.provimux.returnedOfLocked(key)}
 }
 
 // provimuxSeamLookup reads the binding under key without touching it (no refresh, no eviction order), under the
@@ -223,7 +227,7 @@ func provimuxSeamLookup(affinity *SessionAffinitySelector, key string) (provimux
 	if !ok || entry.authID == "" || !time.Now().Before(entry.expiresAt) {
 		return provimuxSeamBinding{}, false
 	}
-	return provimuxSeamBindingOf(cache, entry), true
+	return provimuxSeamBindingOf(affinity, key, entry), true
 }
 
 // provimuxSeamTTL is the session cache's TTL: how long a binding lives after its last use.
@@ -250,7 +254,7 @@ func provimuxSeamRelease(affinity *SessionAffinitySelector, key string, still fu
 	defer cache.mu.Unlock()
 	cache.ensureInitializedLocked()
 	entry, ok := cache.entries[key]
-	if !ok || entry.authID == "" || !time.Now().Before(entry.expiresAt) || !still(provimuxSeamBindingOf(cache, entry)) {
+	if !ok || entry.authID == "" || !time.Now().Before(entry.expiresAt) || !still(provimuxSeamBindingOf(affinity, key, entry)) {
 		return false
 	}
 	cache.removeAliasGroupLocked(entry)

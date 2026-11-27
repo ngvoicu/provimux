@@ -1411,6 +1411,7 @@ func availabilityBlock(unavailable, quotaExceeded bool, nextRetryAfter, nextReco
 // It extracts session ID from multiple sources and maintains session-to-auth
 // mappings with automatic failover when the bound auth becomes unavailable.
 type SessionAffinitySelector struct {
+	provimux          provimuxSessionReturn // Provimux: session-route (design section 15)
 	fallback          Selector
 	cache             *SessionCache
 	matcher           *cliproxysession.MerklePrefixMatcher
@@ -1741,6 +1742,7 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 		s.cache.setSessionAliases(authID, bindingProvider, primaryID, keys...)
 	}
 
+	s.provimuxReturn(explicitID != "" && !isSubagent && !isFork, cacheKey, fallbackKey, available, now) // Provimux: session-route (design section 15)
 	if cachedAuthID, ok := s.cache.GetAndRefresh(cacheKey); ok {
 		for _, auth := range available {
 			if auth.ID == cachedAuthID {
