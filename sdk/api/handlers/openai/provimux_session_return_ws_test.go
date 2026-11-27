@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -43,12 +42,10 @@ func TestProvimuxSessionReturnWebsocket(t *testing.T) {
 		registry.GetGlobalRegistry().RegisterClient(id, "codex", []*registry.ModelInfo{{ID: model, Object: "model"}})
 		t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(id) })
 	}
-	// A turn waits for its result to be recorded, and then for upstream's refresh of the binding, which follows the
-	// result hooks in the same call: only then may the test move the bindings into the past.
-	recorded := make(chan time.Time, 8)
+	recorded := make(chan struct{}, 8)
 	t.Cleanup(m.AddHook(srRecorded(func(res coreauth.Result) {
 		if len(res.Options.OriginalRequest) > 0 {
-			recorded <- time.Now()
+			recorded <- struct{}{}
 		}
 	})))
 	h := NewOpenAIResponsesAPIHandler(handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, m))
@@ -82,18 +79,10 @@ func TestProvimuxSessionReturnWebsocket(t *testing.T) {
 			case "error":
 				t.Fatal(string(frame))
 			case "response.completed":
-				var at time.Time
 				select {
-				case at = <-recorded:
-				case <-time.After(30 * time.Second):
+				case <-recorded:
+				case <-time.After(30 * time.Second): // only a hung test waits this long
 					t.Fatal("the turn's result was never recorded")
-				}
-				deadline := time.Now().Add(30 * time.Second) // only a hung test meets it
-				for coreauth.ProvimuxSessionReturnLastUseForTest(m).Before(at) {
-					if time.Now().After(deadline) {
-						t.Fatal("upstream never refreshed the binding after the turn's result")
-					}
-					runtime.Gosched()
 				}
 				return ojson.GetBytesNoCopy(frame, "response.id").String()
 			}

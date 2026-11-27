@@ -42,7 +42,8 @@ func parseProvimuxColdAfter(value string) (time.Duration, error) {
 }
 
 // UnmarshalYAML accepts a duration string of at least one minute. Anything else (a number, a shorter or malformed
-// duration) is refused where the configuration is read: the file at a start or a reload, a management write.
+// duration, an empty string, a list) is refused where the configuration is read: the file at a start or a reload, a
+// management write. null is off, as removing the key is (yaml.v3 leaves the value empty without calling this).
 func (d *ProvimuxColdAfter) UnmarshalYAML(node *yaml.Node) error {
 	if node == nil || node.Kind != yaml.ScalarNode || node.ShortTag() != "!!str" {
 		value := ""
@@ -60,6 +61,10 @@ func (d *ProvimuxColdAfter) UnmarshalYAML(node *yaml.Node) error {
 
 // UnmarshalJSON holds a JSON copy of the configuration to the same rule.
 func (d *ProvimuxColdAfter) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" { // null is off, as in YAML
+		*d = ""
+		return nil
+	}
 	var value string
 	if errJSON := json.Unmarshal(data, &value); errJSON != nil {
 		return provimuxColdAfterError(string(data))

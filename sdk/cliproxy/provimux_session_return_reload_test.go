@@ -1,6 +1,9 @@
 package cliproxy
 
 import (
+	"bytes"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -73,4 +76,32 @@ func TestProvimuxSessionReturnFollowsEveryCommit(t *testing.T) {
 	}
 	h.service.applyWatcherConfigUpdate(cfg)
 	expect("written through the config API", "", 60.9)
+
+	// The leaf through the config API: what is not a duration of at least a minute is refused with the key named and
+	// the file untouched; null is off, as removing the key is.
+	put := func(body string) (int, string) {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPut, "/v8/management/config/routing/session-affinity-return/cold-after", strings.NewReader(body))
+		request.Header.Set("Authorization", "Bearer "+namesManagementKey)
+		request.Header.Set("Content-Type", "application/json")
+		h.handler.ServeHTTP(recorder, request)
+		return recorder.Code, recorder.Body.String()
+	}
+	for _, bad := range []string{`"30s"`, `360`, `""`, `[]`} {
+		before, _ := os.ReadFile(h.configPath)
+		code, message := put(bad)
+		after, _ := os.ReadFile(h.configPath)
+		if code != http.StatusUnprocessableEntity || !strings.Contains(message, "routing.session-affinity-return.cold-after") || !bytes.Equal(before, after) {
+			t.Fatalf("leaf %s: %d %s, file untouched %v; want 422 naming the key", bad, code, message, bytes.Equal(before, after))
+		}
+	}
+	if code, message := put(`null`); code != http.StatusOK {
+		t.Fatalf("leaf null: %d %s", code, message)
+	}
+	cfg, err = internalconfig.LoadConfig(h.configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.service.applyWatcherConfigUpdate(cfg)
+	expect("null at the leaf", "not-set", -1)
 }
