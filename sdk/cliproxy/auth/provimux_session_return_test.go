@@ -176,18 +176,6 @@ func TestProvimuxSessionReturnSevenThings(t *testing.T) {
 				t.Cleanup(func() { s.f.m.SetPluginScheduler(nil) })
 				return true, "", s.f.auths(), cold(s)
 			}},
-		{name: "K1: a selector the manager no longer selects with: nothing",
-			prepare: func(t *testing.T, s setup) (bool, string, []*Auth, time.Time) {
-				replacement := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{Fallback: &RoundRobinSelector{}, TTL: provimuxRTTTL})
-				t.Cleanup(replacement.Stop)
-				s.f.m.SetSelector(replacement)
-				return true, "", s.f.auths(), cold(s)
-			}},
-		{name: "K1: the setting is another manager's: nothing",
-			prepare: func(t *testing.T, s setup) (bool, string, []*Auth, time.Time) {
-				t.Cleanup(SetProvimuxSessionReturnForTest(NewManager(nil, nil, nil), ProvimuxSessionReturnSetting{ColdAfter: provimuxRTCold, ColdAfterSet: true, Affinity: true, TTL: provimuxRTTTL}))
-				return true, "", s.f.auths(), cold(s)
-			}},
 		{name: "K2: not named, a sub-agent or a fork: nothing, no note",
 			prepare: func(t *testing.T, s setup) (bool, string, []*Auth, time.Time) { return false, "", s.f.auths(), cold(s) }},
 		{name: "K3: no binding under the key: nothing", noted: true,
@@ -783,30 +771,6 @@ func TestProvimuxSessionReturnEndsTheLife(t *testing.T) {
 	}
 	if released, conflict := f.book.Release(scope, header, nil, provimuxSRModel, *now.Binding); conflict != nil || !released.Released {
 		t.Fatalf("the current token: %s %v", mustJSON(t, released), conflict != nil)
-	}
-}
-
-// TestProvimuxSessionReturnSelectorsApart is row 10: two selectors in one process share no note, and the rule acts
-// only on the selector of the manager its setting was committed for.
-func TestProvimuxSessionReturnSelectorsApart(t *testing.T) {
-	one := newProvimuxSRFixture(t, "round-robin", false, nil)
-	two := newProvimuxSRFixture(t, "round-robin", false, nil)
-	one.withTTL(provimuxRTTTL)
-	two.withTTL(provimuxRTTTL)
-	one.rule(provimuxRTCold)
-	header := http.Header{"X-Session-Affinity": {"pi-apart"}}
-	one.fellBack(header, "")
-	two.fellBack(header, "")
-	if one.notes() != 1 || two.notes() != 0 {
-		t.Fatalf("notes: %d and %d; want only the first selector's", one.notes(), two.notes())
-	}
-	before := provimuxReturned.Load()
-	two.age(provimuxRTCold + time.Hour)
-	if err := two.turn(header, "", "", nil); err != nil {
-		t.Fatal(err)
-	}
-	if provimuxReturned.Load() != before || two.notes() != 0 {
-		t.Fatal("the rule acted on a manager its setting was not committed for")
 	}
 }
 

@@ -109,18 +109,10 @@ func ProvimuxSessionReturnAgeForTest(m *Manager, d time.Duration) {
 	}
 }
 
-// provimuxReturnRuns reports whether s is m's selector (owned) and whether the rule judges there (runs): not Home, no
-// plugin scheduler, s does not refuse to move a bound conversation (rebind-on never), and cold-after is shorter than
-// s's binding lifetime.
-func provimuxReturnRuns(m *Manager, s *SessionAffinitySelector, coldAfter time.Duration) (owned, runs bool) {
-	if m == nil || s == nil || s.cache == nil {
-		return false, false
-	}
-	if current, ok := m.Selector().(*SessionAffinitySelector); !ok || current != s {
-		return false, false
-	}
-	runs = !s.rebindOnNever && coldAfter > 0 && coldAfter < s.cache.ttl && !m.HomeEnabled() && !m.hasPluginScheduler()
-	return true, runs
+// provimuxReturnRuns reports whether the rule judges on s, m's selector: not Home, no plugin scheduler, s does not
+// refuse to move a bound conversation (rebind-on never), and cold-after is shorter than s's binding lifetime.
+func provimuxReturnRuns(m *Manager, s *SessionAffinitySelector, coldAfter time.Duration) bool {
+	return !s.rebindOnNever && coldAfter > 0 && coldAfter < s.cache.ttl && !m.HomeEnabled() && !m.hasPluginScheduler()
 }
 
 // provimuxReturn is the rule (15.3), called by Pick right before it looks the binding up. named is K2 (the client
@@ -135,10 +127,7 @@ func (s *SessionAffinitySelector) provimuxReturn(named bool, cacheKey, fallbackK
 		return
 	}
 	coldAfter := value.setting.ColdAfter
-	owned, runs := provimuxReturnRuns(value.manager.Value(), s, coldAfter) // K1 (as it runs)
-	if !owned {
-		return
-	}
+	runs := provimuxReturnRuns(value.manager.Value(), s, coldAfter) // K1 (as it runs)
 	cache := s.cache
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
@@ -313,7 +302,7 @@ func provimuxReturnReason(m *Manager) string {
 	if setting.ColdAfter >= affinity.cache.ttl || (setting.TTL > 0 && setting.ColdAfter >= setting.TTL) {
 		return provimuxReturnNotBelowTTL
 	}
-	if _, runs := provimuxReturnRuns(m, affinity, setting.ColdAfter); !value.possible || !runs {
+	if !value.possible || !provimuxReturnRuns(m, affinity, setting.ColdAfter) {
 		return provimuxReturnNotSet // not reached: every condition of the two is named above
 	}
 	return ""
