@@ -606,6 +606,8 @@ type RoutingConfig struct {
 	// When false, subagents are distributed across the credential pool via the fallback selector.
 	// Default: true. Ignored when SessionAffinity is false.
 	SessionAffinitySubagents *bool `yaml:"session-affinity-subagents,omitempty" json:"session-affinity-subagents,omitempty"`
+	// Provimux: a conversation unused for cold-after, bound below the first route, returns at its next request (provimux_session_return.go).
+	SessionAffinityReturn *ProvimuxSessionReturn `yaml:"session-affinity-return,omitempty" json:"session-affinity-return,omitempty"`
 
 	// SessionAffinityRebindOn controls which credential failures rebind an established session
 	// to the failover credential.
