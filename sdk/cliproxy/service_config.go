@@ -180,6 +180,7 @@ func (s *Service) commitConfigUpdate(newCfg *config.Config) configCommit {
 	registry.UpdateModelCatalogSources(newCfg.Models, newCfg.Home.Enabled)
 	provimuxSetNamesRule(newCfg) // Provimux: only-my-names
 	provimuxSetAnsweredBy(newCfg)
+	provimuxFollowSessionRoute(s.coreManager, newCfg) // Provimux: session-route
 	return configCommit{cfg: newCfg, sequence: s.configSequence}
 }
 

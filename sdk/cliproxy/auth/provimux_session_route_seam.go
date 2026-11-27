@@ -13,7 +13,8 @@ import (
 // Provimux: the seam of session-route (.github/provimux/design/session-route.md 7.1). Every use of a name upstream
 // does not export is here and nowhere else, so a rename upstream stops the build of this one file and a change of
 // meaning is caught by TestProvimuxSessionRouteSeam. Nothing here selects, sends or changes an account; the only
-// write is provimuxSeamRelease, which removes one binding group as upstream's own CompareAndDelete would.
+// write is provimuxSeamRelease, which removes one binding group under the cache's lock, as upstream's own
+// CompareAndDelete would.
 
 // Affinity modes as the contract names them (session-route/openapi.yaml, SessionRoute.affinity).
 const (
@@ -43,21 +44,47 @@ func provimuxSeamAffinity(m *Manager) (*SessionAffinitySelector, string) {
 	return affinity, provimuxAffinityOn
 }
 
-// provimuxSeamKey is a binding's key in upstream's session cache, and its parts.
+// ProvimuxSessionAffinityMode is session affinity as it runs on m, as the contract names it: "on", "off", "home" or
+// "not-supported".
+func ProvimuxSessionAffinityMode(m *Manager) string {
+	_, mode := provimuxSeamAffinity(m)
+	return mode
+}
+
+// ProvimuxResultObservers is the number of observers subscribed to m's results besides the constructor's hook
+// (Manager.AddHook). For tests: with nothing subscribed, a result costs what it costs without Provimux.
+func ProvimuxResultObservers(m *Manager) int {
+	if m == nil || m.hook == nil {
+		return 0
+	}
+	observers := m.hook.observers.Load()
+	if observers == nil {
+		return 0
+	}
+	return len(*observers)
+}
+
+// provimuxKeyDelimiter is the separator upstream joins a binding key's parts with (selector.go, cacheKey).
+const provimuxKeyDelimiter = "::"
+
+// provimuxSeamKey is a binding's key in upstream's cache, and its parts as received, kept apart.
 type provimuxSeamKey struct {
-	Key        string // provider::session::model, exactly as Pick made it
+	Key        string // provider::session::model, exactly as Pick made it: only ever handed to upstream's cache
 	Provider   string // the provider part: a scheduling provider, or "mixed"
 	Session    string // the bounded session identity
 	ModelKey   string // canonicalModelKey of the route model
 	RouteModel string // the route model as Pick received it
-	Parent     string // the parent conversation's identity, for a sub-agent
+	Parent     string // the parent conversation's identity, for a sub-agent (never a fork's source or an alias)
+	Socket     bool   // the turn came on a connection pinned to its login (a Codex WebSocket's execution session)
 	Derived    bool   // the keys were not in the result's metadata and were derived as OnResult derives them
 }
 
 // provimuxSeamResultKey returns the cache key the result's binding was made under. First from what Pick wrote into
 // the request's metadata (the provider, the model and the canonical session id); where a path lost them, derived as
 // SessionAffinitySelector.OnResult derives them. ok is false for a conversation bound by its content only (the prefix
-// matcher), and for one with no session at all. The caller still requires the cache to hold the key (I1).
+// matcher), for one with no session at all, and for one whose provider or model part holds upstream's delimiter:
+// then upstream's string could be split more than one way, and the book refuses to note it (session-route G1).
+// The caller still requires the cache to hold the key (I1).
 func provimuxSeamResultKey(res Result) (provimuxSeamKey, bool) {
 	metadata := res.Options.Metadata
 	if metadata != nil {
@@ -70,6 +97,7 @@ func provimuxSeamResultKey(res Result) (provimuxSeamKey, bool) {
 	provider := sessionMetadataString(metadata, cliproxyexecutor.SessionAffinityProviderMetadataKey)
 	routeModel := sessionMetadataString(metadata, cliproxyexecutor.SessionAffinityModelMetadataKey)
 	session := sessionMetadataString(metadata, cliproxyexecutor.CanonicalSessionIDMetadataKey)
+	isFork, _ := metadata[cliproxyexecutor.IsForkMetadataKey].(bool)
 	derived := false
 	if provider == "" || routeModel == "" || session == "" {
 		derived = true
@@ -91,25 +119,35 @@ func provimuxSeamResultKey(res Result) (provimuxSeamKey, bool) {
 		if explicitID != "" {
 			session = cliproxysession.BoundSessionIdentity(explicitID)
 		}
+		if fork, _ := scratch[cliproxyexecutor.IsForkMetadataKey].(bool); fork {
+			isFork = true
+		}
 	}
 	provider = strings.TrimSpace(provider)
 	modelKey := canonicalModelKey(routeModel)
-	if provider == "" || session == "" {
+	if provider == "" || session == "" || modelKey == "" {
+		return provimuxSeamKey{}, false
+	}
+	if strings.Contains(provider, provimuxKeyDelimiter) || strings.Contains(modelKey, provimuxKeyDelimiter) {
 		return provimuxSeamKey{}, false
 	}
 	// The metadata's parent is also where Pick puts an alias of the same conversation (a prompt_cache_key's
-	// conversation id): it is a parent only where upstream's own test says the session is a sub-agent's.
+	// conversation id) and a fork's source: it is a parent only where upstream's own test says the session is a
+	// sub-agent's, and never for a fork.
 	parent := sessionMetadataString(metadata, cliproxyexecutor.ParentSessionIDMetadataKey)
-	if parent != "" && !isSubagentSession(session, parent) {
+	if parent != "" && (isFork || !isSubagentSession(session, parent)) {
 		parent = ""
 	}
+	socket := sessionMetadataString(metadata, cliproxyexecutor.ExecutionSessionMetadataKey) != "" ||
+		sessionMetadataString(metadata, cliproxyexecutor.PinnedAuthMetadataKey) != ""
 	return provimuxSeamKey{
-		Key:        provider + "::" + session + "::" + modelKey,
+		Key:        provider + provimuxKeyDelimiter + session + provimuxKeyDelimiter + modelKey,
 		Provider:   provider,
 		Session:    session,
 		ModelKey:   modelKey,
 		RouteModel: routeModel,
 		Parent:     parent,
+		Socket:     socket,
 		Derived:    derived,
 	}, true
 }
@@ -134,11 +172,19 @@ func provimuxSeamModelKey(model string) string {
 	return canonicalModelKey(model)
 }
 
-// provimuxSeamBinding is what upstream's cache holds under a key now: the account, the expiry, and the cache's TTL.
+// provimuxSeamBinding is what upstream's cache holds under a key now.
 type provimuxSeamBinding struct {
 	AuthID    string
 	ExpiresAt time.Time
 	TTL       time.Duration
+	Session   string        // the session of the selection that made or last chose the binding ("" when unknown)
+	Sequence  uint64        // that selection's place in the cache's order: a new one at every selection
+	Cache     *SessionCache // the cache instance: a new one when the routing settings change
+}
+
+func provimuxSeamBindingOf(cache *SessionCache, entry sessionEntry) provimuxSeamBinding {
+	return provimuxSeamBinding{AuthID: entry.authID, ExpiresAt: entry.expiresAt, TTL: cache.ttl,
+		Session: entry.binding.sessionID, Sequence: entry.binding.sequence, Cache: cache}
 }
 
 // provimuxSeamLookup reads the binding under key without touching it (no refresh, no eviction order), under the
@@ -154,18 +200,27 @@ func provimuxSeamLookup(affinity *SessionAffinitySelector, key string) (provimux
 	if !ok || entry.authID == "" || !time.Now().Before(entry.expiresAt) {
 		return provimuxSeamBinding{}, false
 	}
-	return provimuxSeamBinding{AuthID: entry.authID, ExpiresAt: entry.expiresAt, TTL: cache.ttl}, true
+	return provimuxSeamBindingOf(cache, entry), true
+}
+
+// provimuxSeamTTL is the session cache's TTL: how long a binding lives after its last use.
+func provimuxSeamTTL(affinity *SessionAffinitySelector) time.Duration {
+	if affinity == nil || affinity.cache == nil {
+		return 0
+	}
+	return affinity.cache.ttl
 }
 
 // provimuxSeamBeforeRemove runs inside provimuxSeamRelease between the judgement and the removal, before the cache's
 // lock is taken. Only tests set it, to prove that a binding changed in between is left.
 var provimuxSeamBeforeRemove func()
 
-// provimuxSeamRelease removes the binding under key, with every alias of its group, only while it is still bound to
-// expectedAuthID and still expires at expectedExpiry when that is given (zero: any expiry). Unlike Invalidate, no
-// alias of the group survives to bring the binding back. It reports whether it removed it.
-func provimuxSeamRelease(affinity *SessionAffinitySelector, key, expectedAuthID string, expectedExpiry time.Time) bool {
-	if affinity == nil || affinity.cache == nil || key == "" || expectedAuthID == "" {
+// provimuxSeamRelease removes the binding under key, with every alias of its group, only while still holds for the
+// binding as it is under the cache's write lock: the judgement and the removal are one step, so nothing can come
+// between them. Unlike Invalidate, no alias of the group survives to bring the binding back. It reports whether it
+// removed it.
+func provimuxSeamRelease(affinity *SessionAffinitySelector, key string, still func(provimuxSeamBinding) bool) bool {
+	if affinity == nil || affinity.cache == nil || key == "" || still == nil {
 		return false
 	}
 	if hook := provimuxSeamBeforeRemove; hook != nil {
@@ -176,10 +231,7 @@ func provimuxSeamRelease(affinity *SessionAffinitySelector, key, expectedAuthID 
 	defer cache.mu.Unlock()
 	cache.ensureInitializedLocked()
 	entry, ok := cache.entries[key]
-	if !ok || entry.authID != expectedAuthID {
-		return false
-	}
-	if !expectedExpiry.IsZero() && !entry.expiresAt.Equal(expectedExpiry) {
+	if !ok || entry.authID == "" || !time.Now().Before(entry.expiresAt) || !still(provimuxSeamBindingOf(cache, entry)) {
 		return false
 	}
 	cache.removeAliasGroupLocked(entry)
