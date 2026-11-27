@@ -34,7 +34,7 @@ brew services start provimux
 
 Then open the console at `http://127.0.0.1:8317/management.html` (on the same machine; from another machine, use the
 server's address, see [For a team](#for-a-team)). Docker, release archives and building from source:
-[Install](#install). An existing CLIProxyAPI setup works as it is.
+[Install](#install).
 
 ## What Provimux adds
 
@@ -88,8 +88,8 @@ Then: [Install](#install) · [For a team](#for-a-team) · [The console](#the-con
 
 ## Install
 
-Provimux uses the same `config.yaml`, auth folder (`~/.cli-proxy-api`) and port (8317) as CLIProxyAPI, so an existing
-CLIProxyAPI setup works as it is: stop CLIProxyAPI and start Provimux in its place.
+By default Provimux reads its settings from `config.yaml`, keeps its logins in the auth folder `~/.cli-proxy-api`, and
+listens on port 8317.
 
 ### Homebrew
 
@@ -101,14 +101,7 @@ brew services start provimux
 ```
 
 The config is `$(brew --prefix)/etc/provimux.conf`, created from `config.example.yaml` on first install and never
-overwritten. To reuse an existing Homebrew CLIProxyAPI setup, stop its service (both listen on port 8317 by default) and
-point Provimux at its config:
-
-```bash
-brew services stop cliproxyapi
-ln -sf "$(brew --prefix)/etc/cliproxyapi.conf" "$(brew --prefix)/etc/provimux.conf"
-brew services start provimux
-```
+overwritten.
 
 ### Docker
 
@@ -121,10 +114,9 @@ docker run -d --name provimux -p 8317:8317 \
   ghcr.io/ngvoicu/provimux:latest
 ```
 
-The image uses CLIProxyAPI's paths: the config at `/CLIProxyAPI/config.yaml`, the auth folder at
-`/root/.cli-proxy-api`, logs in `/CLIProxyAPI/logs` and plugins in `/CLIProxyAPI/plugins`, so a CLIProxyAPI
-`docker-compose.yml` works with only the image name changed. Each release is also tagged with its version
-(`ghcr.io/ngvoicu/provimux:8.0.79-pmx.1`).
+The image is built as CLIProxyAPI's is and uses its paths: the config at `/CLIProxyAPI/config.yaml`, the auth folder
+at `/root/.cli-proxy-api`, logs in `/CLIProxyAPI/logs` and plugins in `/CLIProxyAPI/plugins`. Each release is also
+tagged with its version (`ghcr.io/ngvoicu/provimux:8.0.79-pmx.1`).
 
 The image's default `TZ` is upstream's `Asia/Shanghai`, and [Savings](#savings-what-prompt-caching-was-worth-and-what-each-key-cost)
 keeps its totals per day of that zone: set `TZ` (e.g. `-e TZ=Europe/Bucharest`) before the first run, since days
@@ -162,9 +154,8 @@ go build -o provimux ./cmd/server
 ./provimux --config /path/to/your/config.yaml
 ```
 
-A fresh checkout has no `config.yaml`, only `config.example.yaml`. Pass your existing CLIProxyAPI config with
-`--config`, or copy the example (`cp config.example.yaml config.yaml`), edit it, and start with
-`--config config.yaml`.
+A fresh checkout has no `config.yaml`, only `config.example.yaml`. Pass your config with `--config`, or copy the
+example (`cp config.example.yaml config.yaml`), edit it, and start with `--config config.yaml`.
 
 For logins and the configuration reference, CLIProxyAPI's
 [documentation](https://github.com/router-for-me/CLIProxyAPI#readme) applies; `config.example.yaml` in this
