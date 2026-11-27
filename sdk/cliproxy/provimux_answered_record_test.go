@@ -1,6 +1,9 @@
 package cliproxy
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -591,4 +594,17 @@ func waitAnswered(t *testing.T, ok func() bool) {
 			return
 		}
 	}
+}
+
+// answeredContent is a record file's content: what follows its first line (the line with the digest).
+func answeredContent(raw []byte) []byte {
+	_, content, _ := bytes.Cut(raw, []byte{'\n'})
+	return content
+}
+
+// answeredSeal is a record file of content under its digest, as the writer makes one: a file that is changed and
+// sealed again is refused by the strict parsing alone.
+func answeredSeal(content []byte) []byte {
+	sum := sha256.Sum256(content)
+	return append([]byte(provimuxAnsweredHeader+hex.EncodeToString(sum[:])+"\n"), content...)
 }

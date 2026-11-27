@@ -86,11 +86,11 @@ func TestProvimuxAnsweredChangedUnderneath(t *testing.T) {
 	book.note("k", "c", "m", "n", "p/first")
 	book.flush()
 	mine, _ := os.ReadFile(file)
-	other := bytes.Replace(mine, []byte("p/first"), []byte("p/other"), 1)
+	other := answeredSeal(bytes.Replace(answeredContent(mine), []byte("p/first"), []byte("p/other"), 1))
 	if bytes.Equal(other, mine) {
 		t.Fatal("fixture")
 	}
-	if _, ok := provimuxAnsweredParse(other); !ok {
+	if _, errDecode := provimuxAnsweredDecode(other); errDecode != nil {
 		t.Fatal("fixture: the changed file is in the record's own form")
 	}
 	if err := os.WriteFile(file, other, 0o600); err != nil {

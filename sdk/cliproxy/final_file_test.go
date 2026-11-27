@@ -14,66 +14,75 @@ import (
 )
 
 func TestFinalIncompleteRecord(t *testing.T) {
-	for _, field := range []string{"client", "entry", "unknown"} {
-		t.Run(field, func(t *testing.T) {
-			h := newSentHarness(t, reviewRouter)
-			clock := newSentClock()
-			book := useAnsweredBook(t, clock)
-			dir := t.TempDir()
-			f := filepath.Join(dir, provimuxAnsweredFile)
-			a := sentKeyFor(t, h, "review-public")
-			credential, marker := ca.ProvimuxCredentialRef(a.ID), a.ProvimuxAccountMarker()
-			writer := newProvimuxAnsweredBook(clock.Now)
-			writer.setPlace(dir)
-			writer.note(ca.ProvimuxClientRef(sentClientKey), credential, marker, "review-public", "openrouter/lab/native")
-			writer.close()
-			raw, err := os.ReadFile(f)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var data map[string]any
-			if err = json.Unmarshal(raw, &data); err != nil {
-				t.Fatal(err)
-			}
-			row := data["rows"].([]any)[0].(map[string]any)
-			switch field {
-			case "client":
-				delete(row, "client")
-			case "entry":
-				delete(row["items"].([]any)[0].(map[string]any), "entry")
-			default:
-				row["unexpected"] = "fixture"
-			}
-			damaged, err := json.MarshalIndent(data, "", "  ")
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err = os.WriteFile(f, damaged, 0600); err != nil {
-				t.Fatal(err)
-			}
-			book.setPlace(dir)
-			who := sentClientKey
-			if field == "client" {
-				followConfigureKeys(h)
-				who = ""
-			}
-			status, body, _ := followCall(t, h, "GET", "/v1/models?include=accounts", "", who, "")
-			if status != 200 {
-				t.Fatal("list fixture", status)
-			}
-			existing := book.read(ca.ProvimuxClientRef(who), false, credential, marker, "review-public")
-			leaked := bytes.Contains(body, []byte("openrouter/lab/native"))
-			book.note("other", "other", "different", "new", "different/entry")
-			book.close()
-			final, err := os.ReadFile(f)
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Logf("damaged field=%s public list has original price=%v loaded outcomes=%v original file preserved=%v", field, leaked, existing, bytes.Equal(damaged, final))
-			if len(existing) != 0 || leaked || !bytes.Equal(damaged, final) {
-				t.Error("a damaged file supplied a row or was overwritten")
-			}
-		})
+	// Part (6): a file changed so is refused by its digest before anything is parsed ("digest"); sealed again over the
+	// changed content, by the strict parsing ("resealed").
+	for _, mode := range []string{"digest", "resealed"} {
+		for _, field := range []string{"client", "entry", "unknown"} {
+			t.Run(mode+"/"+field, func(t *testing.T) {
+				h := newSentHarness(t, reviewRouter)
+				clock := newSentClock()
+				book := useAnsweredBook(t, clock)
+				dir := t.TempDir()
+				f := filepath.Join(dir, provimuxAnsweredFile)
+				a := sentKeyFor(t, h, "review-public")
+				credential, marker := ca.ProvimuxCredentialRef(a.ID), a.ProvimuxAccountMarker()
+				writer := newProvimuxAnsweredBook(clock.Now)
+				writer.setPlace(dir)
+				writer.note(ca.ProvimuxClientRef(sentClientKey), credential, marker, "review-public", "openrouter/lab/native")
+				writer.close()
+				raw, err := os.ReadFile(f)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var data map[string]any
+				if err = json.Unmarshal(answeredContent(raw), &data); err != nil {
+					t.Fatal(err)
+				}
+				row := data["rows"].([]any)[0].(map[string]any)
+				switch field {
+				case "client":
+					delete(row, "client")
+				case "entry":
+					delete(row["items"].([]any)[0].(map[string]any), "entry")
+				default:
+					row["unexpected"] = "fixture"
+				}
+				content, err := json.MarshalIndent(data, "", "  ")
+				if err != nil {
+					t.Fatal(err)
+				}
+				damaged := answeredSeal(content)
+				if mode == "digest" {
+					line, _, _ := bytes.Cut(raw, []byte{'\n'})
+					damaged = append(append(append([]byte{}, line...), '\n'), content...)
+				}
+				if err = os.WriteFile(f, damaged, 0600); err != nil {
+					t.Fatal(err)
+				}
+				book.setPlace(dir)
+				who := sentClientKey
+				if field == "client" {
+					followConfigureKeys(h)
+					who = ""
+				}
+				status, body, _ := followCall(t, h, "GET", "/v1/models?include=accounts", "", who, "")
+				if status != 200 {
+					t.Fatal("list fixture", status)
+				}
+				existing := book.read(ca.ProvimuxClientRef(who), false, credential, marker, "review-public")
+				leaked := bytes.Contains(body, []byte("openrouter/lab/native"))
+				book.note("other", "other", "different", "new", "different/entry")
+				book.close()
+				final, err := os.ReadFile(f)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Logf("damaged field=%s public list has original price=%v loaded outcomes=%v original file preserved=%v", field, leaked, existing, bytes.Equal(damaged, final))
+				if len(existing) != 0 || leaked || !bytes.Equal(damaged, final) {
+					t.Error("a damaged file supplied a row or was overwritten")
+				}
+			})
+		}
 	}
 }
 
