@@ -20,6 +20,8 @@ func (s *Server) registerProvimuxRoutes(v8 *gin.RouterGroup) {
 	v8.GET("/provimux/savings", s.mgmt.ProvimuxSavings)
 	v8.GET("/provimux/names", s.mgmt.ProvimuxNames)
 	v8.GET("/provimux/session-affinity-persist", s.mgmt.ProvimuxAffinityPersist)
+	// The wait a stop now uses: the server's own configuration, which upstream's stop reads (a refused reload left it).
+	v8.GET("/provimux/restart-drain", func(c *gin.Context) { s.mgmt.ProvimuxRestartDrainOf(c, s.getConfig()) })
 }
 
 // ProvimuxRoutes lists the method and path of every route the server registered, for Provimux's tests

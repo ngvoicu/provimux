@@ -40,15 +40,29 @@ type ProvimuxRestartDrain int
 // write): a number never keeps the gateway from starting or a save from being made (upstream's own keys take any
 // number too). Anything else (2.75, "10", true) is refused, as upstream refuses a wrong type.
 func (d *ProvimuxRestartDrain) UnmarshalYAML(node *yaml.Node) error {
-	var seconds int
-	if node.Kind != yaml.ScalarNode || node.ShortTag() != "!!int" || node.Decode(&seconds) != nil {
-		return fmt.Errorf("server.restart-drain-seconds must be a whole number of seconds from 0 to %d, got %q",
-			ProvimuxRestartDrainMaxSeconds, node.Value)
+	used, clamped, err := ProvimuxRestartDrainRead(node)
+	if err != nil {
+		return err
 	}
-	used := min(max(seconds, 0), ProvimuxRestartDrainMaxSeconds)
-	provimuxWarnRestartDrain(node.Value, used, used != seconds)
+	provimuxWarnRestartDrain(node.Value, used, clamped)
 	*d = ProvimuxRestartDrain(used)
 	return nil
+}
+
+// ProvimuxRestartDrainRead is the rule UnmarshalYAML applies to a value of server.restart-drain-seconds, without
+// its warning: the seconds it gives, whether a number out of range was taken as its bound, or why it is refused.
+func ProvimuxRestartDrainRead(node *yaml.Node) (used int, clamped bool, err error) {
+	var seconds int
+	if node == nil || node.Kind != yaml.ScalarNode || node.ShortTag() != "!!int" || node.Decode(&seconds) != nil {
+		value := ""
+		if node != nil {
+			value = node.Value
+		}
+		return 0, false, fmt.Errorf("server.restart-drain-seconds must be a whole number of seconds from 0 to %d, got %q",
+			ProvimuxRestartDrainMaxSeconds, value)
+	}
+	used = min(max(seconds, 0), ProvimuxRestartDrainMaxSeconds)
+	return used, used != seconds, nil
 }
 
 // The config is parsed several times at start and at each reload: the warning is written once per value found.
@@ -77,7 +91,21 @@ func (cfg *Config) ProvimuxStopDrainSeconds() int {
 	if cfg.RestartDrainSeconds != nil {
 		return int(*cfg.RestartDrainSeconds)
 	}
+	return cfg.ProvimuxStopDrainDefaultSeconds()
+}
+
+// ProvimuxStopDrainDefaultSeconds is the budget when server.restart-drain-seconds is not set: the default, or
+// server.shutdown-timeout when that is larger.
+func (cfg *Config) ProvimuxStopDrainDefaultSeconds() int {
 	return max(provimuxRestartDrainDefault, cfg.ShutdownTimeoutSeconds)
+}
+
+// SetProvimuxRestartDrainDefault sets the default budget of this process and returns the previous one. For tests
+// (a test binary has 0) that need a real gateway's default.
+func SetProvimuxRestartDrainDefault(seconds int) int {
+	previous := provimuxRestartDrainDefault
+	provimuxRestartDrainDefault = seconds
+	return previous
 }
 
 // ProvimuxStopDrain is ProvimuxStopDrainSeconds, read by upstream's stop, which logs at info level when it is going
