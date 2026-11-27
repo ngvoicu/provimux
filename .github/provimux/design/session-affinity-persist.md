@@ -7,16 +7,18 @@ whoever changes the code or reviews it. Code: `sdk/cliproxy/provimux_affinity_pe
 
 ## 1. Shape
 
-- **Off by default** in the release that introduces it: `provimuxAffinityPersistDefault` (one constant). The
-  configuration (`routing.session-affinity-persist`) or the console turns it on. Tests cover both default values
-  (`TestProvimuxAffinityDefault`).
+- **On by default whenever session affinity is on**: `provimuxAffinityPersistDefault` (one constant). A user with
+  `routing.session-affinity: true` gets it without setting anything; `routing.session-affinity-persist: false`, in the
+  configuration or the console, turns it off. Tests cover both values of the constant (`TestProvimuxAffinityDefault`)
+  and what an upgrade does when nothing is set (`TestProvimuxAffinityUpgradeSetsNothing`). Note (2026-11-27): the
+  default is on, by the owner's rule.
 - **Only the session cache is kept**, never the LCP matcher. Its groups are copied under the cache's read lock in the
   cache's eviction order, encrypted and written after the lock is released: when the process is told to stop (just
   before upstream's `StopAutoRefresh`, before the HTTP drain), and every 5 minutes. Nothing runs on a request.
 - **Restored once at start**, before the server exists, in the same order, with the selection sequence kept. Each entry
   lives until the earlier of its own expiry and its last use plus the TTL configured now, and never past the
   snapshot's time plus that TTL. The file is not deleted after a restore: it stays until the next write replaces it.
-- **Off means gone**: whenever it is not in effect (setting off or not set, session affinity off, Home mode, KV store
+- **Off means gone**: whenever it is not in effect (setting false, session affinity off, Home mode, KV store
   disabled), our files are removed at the start, at every check (5 s) and at the stop, and none is written. Removal
   needs our key and the store's lock (see 3); files that do not authenticate, and a store another running Provimux
   holds, are left.
@@ -105,10 +107,10 @@ conversation goes to another account once after the upgrade, where its cache is 
 
 ```json
 {
-  "setting": false,             // routing.session-affinity-persist as it applies (the default when not set)
+  "setting": true,              // routing.session-affinity-persist as it applies (the default, on, when not set)
   "set": false,                 // whether the configuration sets it
-  "in_effect": false,
-  "reason": "switch-off",       // when not in effect, see below
+  "in_effect": true,
+  "reason": "",                 // when not in effect, see below
   "detail": "",                 // which file and why, for the file reasons
   "snapshot": "/path/kv.db.affinity",
   "key": "/path/kv.db.affinity-key",
@@ -122,7 +124,7 @@ conversation goes to another account once after the upgrade, where its cache is 
 }
 ```
 
-Reasons: from the configuration `session-affinity-off`, `home-mode`, `kv-store-off`, `switch-off` (also when not set);
+Reasons: from the configuration `session-affinity-off`, `home-mode`, `kv-store-off`, `switch-off` (set to false);
 from the files `foreign-file`, `key-not-private`, `directory-not-writable`, `path-unusable`, `in-use`. The state is a
 copy in memory; reading it never waits on the disk. With two services in one process (an SDK embedding), the endpoint
 shows the one started last.

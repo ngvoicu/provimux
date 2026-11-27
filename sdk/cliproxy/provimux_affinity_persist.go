@@ -1,6 +1,7 @@
 package cliproxy
 
-// Provimux layer: routing.session-affinity-persist (off unless set; provimuxAffinityPersistDefault).
+// Provimux layer: routing.session-affinity-persist (on whenever session affinity is on, unless set to
+// false; provimuxAffinityPersistDefault).
 // Session affinity's session cache is written when the process is told to stop (just before
 // upstream's StopAutoRefresh, before the HTTP drain) and every 5 minutes, and put back once at the
 // next start, before the server exists (sdk/cliproxy/auth/provimux_affinity_snapshot.go). Nothing
@@ -49,8 +50,9 @@ import (
 )
 
 // provimuxAffinityPersistDefault is routing.session-affinity-persist when the configuration does not
-// set it.
-const provimuxAffinityPersistDefault = false
+// set it: on, by the owner's rule. It applies only where session affinity is on, outside Home mode
+// and with the KV store enabled; false in the configuration turns it off.
+const provimuxAffinityPersistDefault = true
 
 const (
 	provimuxAffinitySuffix    = ".affinity"
@@ -121,8 +123,8 @@ type ProvimuxAffinityPersistStatus struct {
 	Set bool `json:"set"`
 	// InEffect: bindings are being kept across restarts.
 	InEffect bool `json:"in_effect"`
-	// Reason when not in effect: session-affinity-off, home-mode, kv-store-off or switch-off (the
-	// configuration; our files are removed), or foreign-file, key-not-private,
+	// Reason when not in effect: session-affinity-off, home-mode, kv-store-off or switch-off (set to
+	// false) (the configuration; our files are removed), or foreign-file, key-not-private,
 	// directory-not-writable, path-unusable or in-use (nothing is written or removed).
 	Reason string `json:"reason,omitempty"`
 	// Detail says which file and why, for the file reasons.

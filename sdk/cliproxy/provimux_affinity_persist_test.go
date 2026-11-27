@@ -164,12 +164,17 @@ func pmxSessions(t *testing.T, snapshot, key string) []string {
 	return out
 }
 
-// The default: off unless set, in one constant; both values are covered.
+// The default: on whenever session affinity is on, by the owner's rule, in one constant; both values
+// of the constant are covered. Not set, with session affinity on: the bindings are written and come
+// back. Not set, with session affinity off, in Home mode or with the KV store disabled: nothing.
 func TestProvimuxAffinityDefault(t *testing.T) {
-	if provimuxAffinityPersistDefault {
-		t.Fatal("routing.session-affinity-persist is on by default in this release; the design says off")
+	if !provimuxAffinityPersistDefault {
+		t.Fatal("routing.session-affinity-persist is off by default; the owner's rule is on whenever session affinity is on")
 	}
 	cfg := &config.Config{}
+	if setting, set, on, reason := provimuxAffinityMode(cfg); !setting || set || on || reason != provimuxReasonAffinityOff {
+		t.Fatalf("not set, session affinity off: %v %v %v %s", setting, set, on, reason)
+	}
 	cfg.Routing.SessionAffinity = true
 	if setting, set, on, reason := provimuxAffinityModeWith(cfg, false); setting || set || on || reason != provimuxReasonSwitchOff {
 		t.Fatalf("default off: %v %v %v %s", setting, set, on, reason)
@@ -183,24 +188,62 @@ func TestProvimuxAffinityDefault(t *testing.T) {
 			t.Fatalf("default %v, set to %v: %v %v %v", byDefault, !byDefault, setting, set, on)
 		}
 	}
-	// Not set: nothing is written, and our files of an earlier run go.
+	// Not set, session affinity on: the first start of this build finds no file, the stop writes
+	// both, and the next start puts the conversation back on its account.
 	dir := t.TempDir()
 	a, b := pmxClaude("provimux-test-a.json", "acc-a"), pmxClaude("provimux-test-b.json", "acc-b")
-	earlier := pmxService(t, dir, "", pmxOn, a, b)
-	pmxStart(t, earlier)
-	pmxBind(t, earlier, "provimux-test-session", a, b)
-	pmxWrite(earlier)
-	pmxEnd(earlier)
-	unset := pmxService(t, dir, "", nil, a, b)
-	status := pmxStart(t, unset)
-	pmxBind(t, unset, "provimux-test-other", a, b)
-	pmxWrite(unset)
-	unset.provimuxAffinityStop()
-	if status.Setting || status.Set || status.InEffect || status.Reason != provimuxReasonSwitchOff || status.RestoredAtStart != nil {
-		t.Fatalf("state %+v", status)
+	first := pmxService(t, dir, "", nil, a, b)
+	snapshot, key := pmxPaths(t, first)
+	if pmxExists(snapshot) || pmxExists(key) {
+		t.Fatal("premise: files before the first start")
 	}
-	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
-		t.Fatalf("files: %v", entries)
+	status := pmxStart(t, first)
+	if !status.Setting || status.Set || !status.InEffect || status.Reason != "" || status.RestoredAtStart != nil || status.StartNote != "no snapshot" {
+		t.Fatalf("first start, not set: %+v", status)
+	}
+	pmxBind(t, first, "provimux-test-primer", a, b)
+	bound := pmxBind(t, first, "provimux-test-session", a, b)
+	first.provimuxAffinityStop()
+	if !pmxExists(snapshot) || !pmxExists(key) {
+		t.Fatal("not set: the stop wrote no files")
+	}
+	if sessions := pmxSessions(t, snapshot, key); len(sessions) != 2 {
+		t.Fatalf("sessions written: %v", sessions)
+	}
+	second := pmxService(t, dir, "", nil, a, b)
+	status = pmxStart(t, second)
+	if !status.InEffect || status.RestoredAtStart == nil || status.RestoredAtStart.Sessions != 2 {
+		t.Fatalf("second start, not set: %+v", status)
+	}
+	if id, state := pmxBound(second, "provimux-test-session"); state != "bound" || id != bound {
+		t.Fatalf("bound to %s, after the restart %s (%s)", bound, id, state)
+	}
+	second.provimuxAffinityStop()
+
+	// Not set, with session affinity off, in Home mode or with the KV store disabled: no file, and
+	// the state names the cause.
+	for _, tc := range []struct {
+		name   string
+		change func(*config.Config)
+		reason string
+	}{
+		{"session affinity off", func(c *config.Config) { c.Routing.SessionAffinity = false }, provimuxReasonAffinityOff},
+		{"home mode", func(c *config.Config) { c.Home.Enabled = true }, provimuxReasonHome},
+		{"kv store disabled", func(c *config.Config) { c.KVStore.Disabled = true }, provimuxReasonKVStoreOff},
+	} {
+		dir := t.TempDir()
+		s := pmxService(t, dir, "", nil, a, b)
+		tc.change(s.cfg)
+		pmxBind(t, s, "provimux-test-session", a, b)
+		status := pmxStart(t, s)
+		pmxWrite(s)
+		s.provimuxAffinityStop()
+		if !status.Setting || status.Set || status.InEffect || status.Reason != tc.reason || status.RestoredAtStart != nil {
+			t.Fatalf("%s, not set: state %+v", tc.name, status)
+		}
+		if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+			t.Fatalf("%s, not set: files %v", tc.name, entries)
+		}
 	}
 }
 
@@ -598,14 +641,18 @@ func TestProvimuxAffinitySecondCrashRestoresAgain(t *testing.T) {
 }
 
 // Finding 11: whenever the feature is not in effect, for any reason and any combination of them
-// (the setting off or not set, session affinity off, Home mode, KV store disabled), our files from
-// an earlier run are removed, nothing is restored and nothing is written.
+// (the setting false, session affinity off, Home mode, KV store disabled; each also with the setting
+// not set, which alone means on), our files from an earlier run are removed, nothing is restored and
+// nothing is written.
 func TestProvimuxAffinityOffMeansGone(t *testing.T) {
 	a, b := pmxClaude("provimux-test-a.json", "acc-a"), pmxClaude("provimux-test-b.json", "acc-b")
 	causes := []string{"switch off", "not set", "session affinity off", "home mode", "kv store disabled"}
 	for mask := 1; mask < 1<<len(causes); mask++ {
 		if mask&3 == 3 {
 			continue // off and not set at once
+		}
+		if mask == 2 {
+			continue // not set alone: on (TestProvimuxAffinityDefault)
 		}
 		var names []string
 		for i, cause := range causes {
@@ -1010,6 +1057,10 @@ func TestProvimuxAffinitySwitch(t *testing.T) {
 	if _, set, on, reason := provimuxAffinityMode(cfg); !set || on || reason != provimuxReasonSwitchOff {
 		t.Fatalf("off: %v %v %s", set, on, reason)
 	}
+	cfg.Routing.SessionAffinityPersist = nil
+	if setting, set, on, reason := provimuxAffinityMode(cfg); !setting || set || !on || reason != "" {
+		t.Fatalf("not set: %v %v %v %s", setting, set, on, reason)
+	}
 	cfg.Routing.SessionAffinityPersist = pmxOn
 	cfg.KVStore.Disabled = true
 	if _, _, on, reason := provimuxAffinityMode(cfg); on || reason != provimuxReasonKVStoreOff {
@@ -1047,18 +1098,22 @@ func TestProvimuxAffinitySwitch(t *testing.T) {
 		s.cfg = &next
 		s.cfgMu.Unlock()
 	}
-	for _, off := range []*bool{pmxBool(false), nil} {
-		reload(off)
+	// Off, then back on: by setting it true, and by removing the line (not set means on).
+	for _, on := range []*bool{pmxOn, nil} {
+		reload(pmxBool(false))
 		waitFor("the files removed", func() bool { return !pmxExists(snapshot) && !pmxExists(key) })
-		time.Sleep(200 * time.Millisecond)
+		pmxWrite(s)
 		if pmxExists(snapshot) || pmxExists(key) {
 			t.Fatal("a file was written with the switch off")
 		}
-		if status := s.provimuxAffinityRuntime().currentStatus(); status.InEffect || status.Reason != provimuxReasonSwitchOff {
+		if status := s.provimuxAffinityRuntime().currentStatus(); status.InEffect || status.Reason != provimuxReasonSwitchOff || status.Setting || !status.Set {
 			t.Fatalf("status %+v", status)
 		}
-		reload(pmxOn)
+		reload(on)
 		waitFor("a snapshot after the switch is back on", func() bool { return pmxExists(snapshot) })
+		if status := s.provimuxAffinityRuntime().currentStatus(); !status.InEffect || status.Reason != "" || !status.Setting || status.Set != (on != nil) {
+			t.Fatalf("back on (set %v): status %+v", on != nil, status)
+		}
 	}
 }
 

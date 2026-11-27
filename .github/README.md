@@ -47,9 +47,9 @@ server's address, see [For a team](#for-a-team)). Docker, release archives and b
   `prompt_cache_options.ttl` (for example `"12h"`) is forwarded instead of removed.
 - **[A Codex WebSocket replay that stays a replay](#codex-websocket-a-full-replay-stays-a-replay)**: a re-sent
   conversation is no longer merged into a double transcript billed at about twice the input.
-- **[Conversations keep their account across a restart](#conversations-keep-their-account-across-a-restart)**: when
-  turned on, a conversation that sends its session id goes back to the account whose cache holds it after an upgrade
-  or a restart.
+- **[Conversations keep their account across a restart](#conversations-keep-their-account-across-a-restart)**: with
+  session affinity on, a conversation that sends its session id goes back to the account whose cache holds it after an
+  upgrade or a restart.
 
 **Clarity: you see which account has which models, which one answered, and why a route is paused.**
 
@@ -805,22 +805,24 @@ incremental request that names no model still appends, and pending tool calls an
 
 ### Conversations keep their account across a restart
 
-**What you get.** When you turn this on, a conversation that sends its own session id (Pi, Claude Code, the Codex CLI,
-any client that sends a session header or a prompt cache key) goes back after a restart (an upgrade, `brew services
+**What you get.** With session affinity on, a conversation that sends its own session id (Pi, Claude Code, the Codex
+CLI, any client that sends a session header or a prompt cache key) goes back after a restart (an upgrade, `brew services
 restart`) to the account it was on, so the provider reads its prompt cache instead of writing it again on another
 account. CLIProxyAPI keeps session affinity's bindings in memory only: without this, a restart sends about half the
 conversations behind a name with two accounts to the other account, whose cache is cold.
 
-**How to turn it on.** It is off unless you turn it on, in the configuration or in the console
-(`/v8/management/config/routing/session-affinity-persist`). It needs `routing.session-affinity: true`, and it does not
-apply in Home mode or with `kv-store.disabled: true`. Whenever it does not apply, for any reason, nothing is written
-and Provimux's own files from an earlier run are removed (unless another running Provimux uses the same store). `GET
+**It is on whenever session affinity is on.** With `routing.session-affinity: true` there is nothing to set: after an
+upgrade, the two files below appear at the first stop or within 5 minutes. It does not apply in Home mode or with
+`kv-store.disabled: true`. Whenever it does not apply, for any reason, nothing is written and Provimux's own files from
+an earlier run are removed (unless another running Provimux uses the same store). `GET
 /v8/management/provimux/session-affinity-persist` says whether it is in effect and, if not, why.
+
+**How to turn it off.** Set it to `false` in the configuration, or in the console
+(`/v8/management/config/routing/session-affinity-persist`). Provimux then removes its own files and writes none.
 
 ```yaml
 routing:
-  session-affinity: true
-  session-affinity-persist: true
+  session-affinity-persist: false
 ```
 
 **What is written, and where.** When Provimux is told to stop, and every 5 minutes while it runs, two files beside the
