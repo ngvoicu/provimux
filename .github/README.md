@@ -840,8 +840,9 @@ and `.affinity-key`). Nothing is read or written while a request is routed.
   vendor identity. No client key, login file name, login e-mail address or conversation content is in them.
 - Provimux replaces or removes a file at those two names only when it authenticates with that key. Anything else
   there, a damaged file of Provimux's included, is left as it is, nothing is restored or written, and the state says
-  so: a damaged snapshot must be removed by hand. A file Provimux was writing when its process ended is removed at the
-  next start.
+  so: a damaged snapshot must be removed by hand. A file Provimux had written in full but not yet put in place when
+  its process ended is removed at the next start, unless another running Provimux uses the same store; one cut off
+  midway stays, and can be removed by hand.
 
 **What comes back.** At the next start, before anything is served, each binding with lifetime left goes back to the
 same account, with the lifetime it had, never longer than its last use plus the `session-affinity-ttl` configured now.
@@ -859,7 +860,9 @@ Meta and Antigravity. An account whose marker begins with `s.` starts afresh aft
 Studio connection, a login or key a plugin made, a Claude login without an organisation id or whose profile Anthropic
 refused, and any login that lacks the ids its provider's rule reads. A Claude login whose file does not hold its ids
 yet gets them at its first request, and CLIProxyAPI saves them to the login file: its conversations are kept from
-then on. The state counts the bindings left out for this reason (`left_out_no_account_identity`).
+the next start. The state counts the bindings left out for want of an identity (`left_out_no_account_identity`). Two
+credentials Provimux takes for the same account (the same base URL and key under two entries, one Vertex service
+account used for two projects, one Antigravity account with two projects) both start afresh after a restart.
 
 **What does not come back.**
 

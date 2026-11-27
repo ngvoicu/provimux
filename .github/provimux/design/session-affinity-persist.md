@@ -68,8 +68,9 @@ state says `in-use` and that gateway's files are not touched, whether the settin
 (`TestProvimuxAffinityStoreMovedWhileRunning`).
 
 **One line per state.** A blocked state (`foreign-file`, `in-use`, `key-not-private`, `directory-not-writable`,
-`path-unusable`) is logged as a warning when it or its detail changes, not at every check, and once at info level when it
-clears (`TestProvimuxAffinityWarnsOnce`).
+`path-unusable`) is logged as a warning when it or its detail changes, not at every check, and once at info level when
+it clears (`TestProvimuxAffinityWarnsOnce`). The random part of a probe's or temporary file's name is left out of the
+detail (`.kv.db.affinity.probe-*`), or `directory-not-writable` would look changed at every check.
 
 A stop waits at most 1.5 s for its final write. When it gives up, the runtime is marked cancelled. Just before the
 rename, the writer checks that it still holds the lock and was not cancelled; otherwise it removes its temporary file
@@ -89,16 +90,18 @@ written, and the write counts them (`left_out_no_account_identity`). A restored 
 identity has that HMAC now; two auths with the same identity get none.
 
 While running, every auth ID is read at every check (5 s) and twice around each write's copy. An auth ID first seen
-after the start is trusted only from that moment, and so is one seen first without an identity and then with one
-(upstream fills a Claude login's ids in memory at its first request, and saves them to the login file, so this lasts
-one run: `TestProvimuxAffinityIdentityAfterStart`); one whose identity changes, becomes unreadable, or is missing at any
-check is **tainted for the rest of the run**: none of its bindings is written again, those made after the change
-included. A binding is written only when its auth ID was watched, untainted, from the binding's last use to the write.
-This closes the three paths the third review found (`TestProvimuxAffinityLoginRotationGaps`): a replacement between
-the check and the write's own read (the second read taints it), a login added and replaced before its first check (its
-watch starts after the binding's last use), an old request completing after the replacement was seen (tainted, whatever
-the last use). It prefers leaving out too much: a binding made on a new login in the seconds before its first check is
-left out.
+after the start is trusted only from that moment; one whose identity changes (an identity appearing where there was none
+included), becomes unreadable, or is missing at any check is **tainted for the rest of the run**: none of its bindings
+is written again, those made after the change included. A binding is written only when its auth ID was watched,
+untainted, from the binding's last use to the write. This closes the three paths the third review found
+(`TestProvimuxAffinityLoginRotationGaps`): a replacement between the check and the write's own read (the second read
+taints it), a login added and replaced before its first check (its watch starts after the binding's last use), an old
+request completing after the replacement was seen (tainted, whatever the last use). It prefers leaving out too much: a
+binding made on a new login in the seconds before its first check is left out, and so is every binding, in that run, of
+a Claude login whose ids upstream fills at its first request: a login without ids replaced by another account's (with
+ids, or getting them at its first request) looks the same, and the fourth review's three paths show it
+(`TestProvimuxAffinityReplacedLoginPaths`). Upstream saves the ids it fills to the login file, so such a login is kept
+from the next start (`TestProvimuxAffinityIdentityAfterStart`).
 
 ## 5. Across builds: the pin
 

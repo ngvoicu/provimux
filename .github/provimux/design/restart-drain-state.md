@@ -90,3 +90,9 @@ start with either file fails at loading the configuration:
 ```json
 {"seconds":60,"waits_at_most":30,"set":false,"default":60,"shutdown_timeout":60,"min":0,"max":30,"stop_limit":30}
 ```
+
+## Notes for a later release
+
+- With `shutdown-timeout: 60` and the drain not set, the released stop's log line says "stopping: waiting up to 60
+  seconds for the answers in flight" while the wait is 30 (upstream's bound on the whole stop). The line could say
+  `waits_at_most`. Not changed here: a stop does what it did.

@@ -512,6 +512,24 @@ func (rt *provimuxAffinityRuntime) publish(snapshot string, secret []byte) func(
 	}
 }
 
+// provimuxAffinityStableError is err's text without the random part of a probe's or temporary file's name
+// (".kv.db.affinity.probe-123" is written ".kv.db.affinity.probe-*"), so the same cause reads the same at every
+// check, and a blocked state is logged once.
+func provimuxAffinityStableError(err error) string {
+	var pathErr *fs.PathError
+	if !errors.As(err, &pathErr) {
+		return err.Error()
+	}
+	name := filepath.Base(pathErr.Path)
+	for _, marker := range []string{".probe-", ".tmp-"} {
+		if at := strings.LastIndex(name, marker); at >= 0 {
+			name = name[:at+len(marker)] + "*"
+			return (&fs.PathError{Op: pathErr.Op, Path: filepath.Join(filepath.Dir(pathErr.Path), name), Err: pathErr.Err}).Error()
+		}
+	}
+	return err.Error()
+}
+
 // provimuxAffinityWritable checks that the directory takes a file of ours and lets it go again.
 func provimuxAffinityWritable(snapshot string) error {
 	probe, errCreate := os.CreateTemp(filepath.Dir(snapshot), "."+filepath.Base(snapshot)+".probe-*")
@@ -611,13 +629,11 @@ func (rt *provimuxAffinityRuntime) observe(identities map[string]string, now tim
 				since = time.Time{}
 			}
 			rt.identities[authID] = provimuxAffinityIdentity{identity: sum, since: since}
-		case previous.identity == "" && sum != "" && !previous.tainted:
-			// No identity, then one (upstream fills a Claude login's ids at its first request): the
-			// login is first seen with an identity now, and trusted from now on, as one added now is.
-			// Its earlier bindings had no identity and were never written.
-			rt.identities[authID] = provimuxAffinityIdentity{identity: sum, since: now}
 		case previous.identity != sum:
-			// One identity, then another or none: a changed login, left out for the rest of the run.
+			// Any change, an identity appearing where there was none included: the login file may now
+			// be another account's (a login without ids replaced by one with them, or by one that gets
+			// them at its first request), so it is left out for the rest of the run. Upstream saves the
+			// ids it fills to the login file: such a login is kept from the next start.
 			previous.identity, previous.tainted = sum, true
 			rt.identities[authID] = previous
 		}
@@ -756,7 +772,7 @@ func (s *Service) provimuxAffinityApply(rt *provimuxAffinityRuntime, cfg *config
 	}
 	if probe || previous == provimuxReasonNotWritable {
 		if errWritable := provimuxAffinityWritable(snapshot); errWritable != nil {
-			rt.block(&provimuxAffinityBlocked{provimuxReasonNotWritable, filepath.Dir(snapshot) + ": " + errWritable.Error()})
+			rt.block(&provimuxAffinityBlocked{provimuxReasonNotWritable, filepath.Dir(snapshot) + ": " + provimuxAffinityStableError(errWritable)})
 			return snapshot, nil, false
 		}
 	}
@@ -1022,7 +1038,7 @@ func (s *Service) provimuxAffinityWriteLocked(rt *provimuxAffinityRuntime, snaps
 			return
 		}
 		if errors.Is(errWrite, fs.ErrPermission) {
-			errWrite = &provimuxAffinityBlocked{provimuxReasonNotWritable, errWrite.Error()}
+			errWrite = &provimuxAffinityBlocked{provimuxReasonNotWritable, provimuxAffinityStableError(errWrite)}
 		}
 		if rt.block(errWrite) {
 			return

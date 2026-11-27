@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
@@ -213,67 +214,161 @@ func TestProvimuxAffinityStoreMovedWhileRunning(t *testing.T) {
 	resident.provimuxAffinityStop()
 }
 
-// Finding 4, the reviewer's reproduction: a Claude login whose file holds no account ids at the start; upstream
-// fills them in memory at its first request. "No identity, then one" is a login first seen then: its bindings made
-// from then on are written and come back; those from before are not. "One identity, then another" (and "none, one,
-// another") stays a change, left out for the rest of the run.
+// Finding 4: a Claude login whose file holds no account ids at the start; upstream fills them in memory at its first
+// request (and saves them to the login file). An identity appearing where there was none is a change like any other:
+// the login's bindings are left out for the rest of the run, those made after the ids appeared included, because the
+// file may now be another account's. From the next start, with the ids in the file, its conversations are kept.
 func TestProvimuxAffinityIdentityAfterStart(t *testing.T) {
 	dir := t.TempDir()
 	a := pmxClaude("provimux-test-a.json", "acc-a")
-	idless := &coreauth.Auth{ID: "provimux-test-b.json", Provider: "claude", Status: coreauth.StatusActive,
-		Attributes: map[string]string{"auth_kind": "oauth"}, Metadata: map[string]any{"email": "shared@example.invalid"}}
 	filled := pmxClaude("provimux-test-b.json", "acc-b")
-	s := pmxService(t, dir, "", nil, a, idless)
+	s := pmxService(t, dir, "", nil, a, pmxNoIDs("provimux-test-b.json"))
 	pmxStart(t, s)
 	rt := s.provimuxAffinityRuntime()
-	pmxBindOn(t, s, "provimux-test-before", idless, a, idless)
+	pmxBindOn(t, s, "provimux-test-before", pmxNoIDs("provimux-test-b.json"), a, pmxNoIDs("provimux-test-b.json"))
 	if _, err := s.coreManager.Update(context.Background(), filled); err != nil { // the first request fills the ids
 		t.Fatal(err)
 	}
-	s.provimuxAffinityTick(rt, false) // the next check sees them
+	s.provimuxAffinityTick(rt, false) // the next check sees them: a change
 	pmxBindOn(t, s, "provimux-test-after", filled, a, filled)
 	status := pmxWrite(s)
 	snapshot, key := pmxPaths(t, s)
 	written := " " + strings.Join(pmxSessions(t, snapshot, key), " ") + " "
-	if !strings.Contains(written, " header:provimux-test-after ") {
-		t.Fatalf("a binding made after the login got its ids is left out (%+v); written: %s", status, written)
+	if strings.Contains(written, " header:provimux-test-before ") || strings.Contains(written, " header:provimux-test-after ") {
+		t.Fatalf("a binding of the login whose ids appeared during the run is written (%+v): %s", status, written)
 	}
-	if strings.Contains(written, " header:provimux-test-before ") {
-		t.Fatalf("a binding of the login before it had ids is written: %s", written)
+	if status.LeftOut < 2 {
+		t.Fatalf("the left-out bindings are not counted as unverified: %+v", status)
 	}
 	s.provimuxAffinityStop()
 
-	// The next start (the ids are in the file now): the conversation comes back to the login.
+	// The next start, the ids in the login file: bindings made in this run are kept and come back.
 	next := pmxService(t, dir, "", nil, a, filled)
 	pmxStart(t, next)
-	if id, state := pmxBound(next, "provimux-test-after"); state != "bound" || id != filled.ID {
-		t.Fatalf("after the restart: %s (%s), want %s", id, state, filled.ID)
-	}
+	pmxBindOn(t, next, "provimux-test-next-run", filled, a, filled)
+	pmxWrite(next)
 	next.provimuxAffinityStop()
+	third := pmxService(t, dir, "", nil, a, filled)
+	pmxStart(t, third)
+	if id, state := pmxBound(third, "provimux-test-next-run"); state != "bound" || id != filled.ID {
+		t.Fatalf("a conversation of the run after the ids were saved: %s (%s), want %s", id, state, filled.ID)
+	}
+	third.provimuxAffinityStop()
+}
 
-	// None, then one, then another account's: tainted from the change on, as before.
-	dir2 := t.TempDir()
-	idless2 := &coreauth.Auth{ID: "provimux-test-b.json", Provider: "claude", Status: coreauth.StatusActive,
+// pmxNoIDs is a Claude login whose file holds no account ids yet.
+func pmxNoIDs(id string) *coreauth.Auth {
+	return &coreauth.Auth{ID: id, Provider: "claude", Status: coreauth.StatusActive,
 		Attributes: map[string]string{"auth_kind": "oauth"}, Metadata: map[string]any{"email": "shared@example.invalid"}}
-	r := pmxService(t, dir2, "", nil, a, idless2)
-	pmxStart(t, r)
-	rrt := r.provimuxAffinityRuntime()
-	if _, err := r.coreManager.Update(context.Background(), pmxClaude("provimux-test-b.json", "acc-b")); err != nil {
-		t.Fatal(err)
+}
+
+// Finding 4, the reviewer's nine paths: B starts without ids (vendor account acc-b) and holds old-session; then, per
+// path, its ids appear, or another account's login (acc-c) takes the file. After a restart old-session may come back
+// only to acc-b, never to another account. The three paths that "no identity, then one" reopened are marked; the
+// other six stay closed.
+func TestProvimuxAffinityReplacedLoginPaths(t *testing.T) {
+	type tools struct {
+		s      *Service
+		b      *coreauth.Auth
+		update func(*coreauth.Auth)
+		touch  func() // the answer of old-session on B ends now
+		check  func() // a 5 s check
 	}
-	r.provimuxAffinityTick(rrt, false)
-	other := pmxClaude("provimux-test-b.json", "acc-c")
-	if _, err := r.coreManager.Update(context.Background(), other); err != nil {
-		t.Fatal(err)
+	for _, path := range []struct {
+		name  string
+		run   func(t *testing.T, x tools)
+		after string // the account of B at the restart
+	}{
+		{"ids of the same account appear, the conversation not used again", func(t *testing.T, x tools) {
+			x.update(pmxClaude("B", "acc-b"))
+			x.check()
+		}, "acc-b"},
+		{"ids of the same account appear, its request completes after the check", func(t *testing.T, x tools) {
+			x.update(pmxClaude("B", "acc-b"))
+			x.check()
+			x.touch()
+		}, "acc-b"},
+		{"replaced by another account's login with ids, the conversation not used again", func(t *testing.T, x tools) {
+			x.update(pmxClaude("B", "acc-c"))
+			x.check()
+		}, "acc-c"},
+		{"reopened 1: replaced by another account's login with ids, the old request completes after the check", func(t *testing.T, x tools) {
+			x.update(pmxClaude("B", "acc-c"))
+			x.check()
+			x.touch()
+		}, "acc-c"},
+		{"replaced by another account's login with ids, the old request completes before the check", func(t *testing.T, x tools) {
+			x.update(pmxClaude("B", "acc-c"))
+			x.touch()
+			x.check()
+		}, "acc-c"},
+		{"replaced inside the write (between its two reads of the accounts)", func(t *testing.T, x tools) {
+			original := provimuxAffinityOwnedByUs
+			var once sync.Once
+			provimuxAffinityOwnedByUs = func(f fs.FileInfo) bool {
+				once.Do(func() { x.update(pmxClaude("B", "acc-c")) })
+				return original(f)
+			}
+			defer func() { provimuxAffinityOwnedByUs = original }()
+			pmxWrite(x.s)
+		}, "acc-c"},
+		{"ids appear (acc-b), then replaced by acc-c", func(t *testing.T, x tools) {
+			x.update(pmxClaude("B", "acc-b"))
+			x.check()
+			x.touch()
+			x.update(pmxClaude("B", "acc-c"))
+			x.check()
+			x.touch()
+		}, "acc-c"},
+		{"reopened 2: ids appear and are replaced between two checks (acc-b never seen)", func(t *testing.T, x tools) {
+			x.update(pmxClaude("B", "acc-b"))
+			x.touch()
+			x.update(pmxClaude("B", "acc-c"))
+			x.check()
+			x.touch()
+		}, "acc-c"},
+		{"reopened 3: replaced by another login without ids, whose ids appear at its first request", func(t *testing.T, x tools) {
+			x.update(pmxNoIDs("B")) // acc-c's login, no ids yet
+			x.check()
+			x.update(pmxClaude("B", "acc-c")) // its first request filled them
+			x.check()
+			x.touch() // an answer of the old account still in flight
+		}, "acc-c"},
+	} {
+		t.Run(path.name, func(t *testing.T) {
+			dir := t.TempDir()
+			a, b := pmxClaude("A", "acc-a"), pmxNoIDs("B")
+			s := pmxService(t, dir, "", nil, a, b)
+			pmxStart(t, s)
+			pmxWrite(s)
+			pmxBindOn(t, s, "old-session", b, a, b)
+			x := tools{s: s, b: b,
+				update: func(auth *coreauth.Auth) {
+					if _, err := s.coreManager.Update(context.Background(), auth); err != nil {
+						t.Fatal(err)
+					}
+				},
+				touch: func() {
+					s.coreManager.Selector().(*coreauth.SessionAffinitySelector).OnResult(coreauth.Result{AuthID: b.ID, Provider: "mixed",
+						Model: "provimux-test-model", Success: true, Options: pmxSessionOpts("old-session")})
+				},
+				check: func() { s.provimuxAffinityTick(s.provimuxAffinityRuntime(), false) },
+			}
+			path.run(t, x)
+			pmxWrite(s)
+			pmxEnd(s)
+			next := pmxService(t, dir, "", nil, pmxClaude("A", "acc-a"), pmxClaude("B", path.after))
+			pmxStart(t, next)
+			id, state := pmxBound(next, "old-session")
+			if state != "bound" {
+				return
+			}
+			auth, _ := next.coreManager.GetByID(id)
+			if account, _ := auth.Metadata["account_uuid"].(string); account != "acc-b" {
+				t.Fatalf("old-session, last answered by acc-b, came back on %s", account)
+			}
+		})
 	}
-	r.provimuxAffinityTick(rrt, false)
-	pmxBindOn(t, r, "provimux-test-replaced", other, a, other)
-	status = pmxWrite(r)
-	snapshot2, key2 := pmxPaths(t, r)
-	if written := " " + strings.Join(pmxSessions(t, snapshot2, key2), " ") + " "; strings.Contains(written, " header:provimux-test-replaced ") {
-		t.Fatalf("a login replaced by another account's after it got its ids is written (%+v): %s", status, written)
-	}
-	r.provimuxAffinityStop()
 }
 
 // Note 6: a temporary file a process left when it ended mid-write is removed at the next start, when it
