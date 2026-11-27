@@ -34,11 +34,13 @@ import (
 //     got a complete response: status line, headers and the whole body, read to its end; none had a 2xx (or any
 //     non-error) status, none failed without a response (refused, reset, closed, timed out, cut short: the vendor may
 //     have accepted the request);
-//   - the last of them has an error status other than 429;
+//   - the last of them went to the vendor's own API host and has a status its documentation names for the refusal
+//     (provimuxOverloadAllowList), and no x-should-retry: false;
 //   - its body, parsed as the account's vendor's error format, carries no spend, quota, billing or rate-limit code
-//     (provimuxLimitCodes, checked first), and carries the vendor's documented overload value (provimuxOverloadAllowList);
+//     (provimuxLimitCodes, checked first), and carries the vendor's documented overload value;
 //   - the client call has not had its second try yet (one per client call, whatever the rounds, accounts, model pools,
-//     fallbacks and refreshes around it), the request is not one that creates something when sent, it is not a
+//     fallbacks and refreshes around it), the request is not one that creates something when sent nor offers the image
+//     tool, it is not a
 //     WebSocket turn, the gateway is not in Home mode, and no request-scoped-errors rule of the owner matches.
 //
 // Upstream calls the executor in two places, each through provimuxSameAccountOnce (one changed line each):
@@ -92,23 +94,63 @@ func ProvimuxSetRetryClockForTest(sleep func(context.Context, time.Duration) err
 	return func() { provimuxRetrySleep, provimuxRetryJitterOf = prevSleep, prevJitter }
 }
 
-// provimuxOverloadAllowList is, per built-in executor (the account's provider), the structured value of the vendor's
-// error body that its public documentation gives for "overloaded: the request was not processed; try again". An
-// executor without an entry is never tried twice.
-var provimuxOverloadAllowList = map[string]func(body []byte) bool{
+// provimuxOverloadAllowList is, per built-in executor (the account's provider), where and how its vendor's public
+// documentation says "overloaded: the request was not processed; try again": the vendor's own API hosts (https, the
+// default port), the statuses that carry it, and the structured value of the error body. It applies only there: an
+// account of that executor with another base address, another status, or another body never gets a second try, and
+// an executor without an entry never does.
+var provimuxOverloadAllowList = map[string]provimuxVendorEntry{
 	// Anthropic: "529 - overloaded_error: The API is temporarily overloaded" and "A 503 with overloaded_error counts
-	// as a 5xx" (https://platform.claude.com/docs/en/api/errors): error.type is the value, whatever error status carries
-	// it (the owner's gateway received it under 502).
-	"claude": func(body []byte) bool {
-		return ojson.GetBytesNoCopy(body, "type").String() == "error" &&
-			ojson.GetBytesNoCopy(body, "error.type").String() == "overloaded_error"
+	// as a 5xx" (https://platform.claude.com/docs/en/api/errors); 502 is the status the owner's gateway received it
+	// under. Its API is api.anthropic.com, the Claude executor's default base address.
+	"claude": {
+		hosts:    []string{"api.anthropic.com"},
+		statuses: map[int]bool{529: true, http.StatusServiceUnavailable: true, http.StatusBadGateway: true},
+		refusal: func(body []byte) bool {
+			return ojson.GetBytesNoCopy(body, "type").String() == "error" &&
+				ojson.GetBytesNoCopy(body, "error.type").String() == "overloaded_error"
+		},
 	},
 	// OpenAI: "503 - Model temporarily overloaded. Type: service_unavailable_error, Code: server_is_overloaded. Cause:
-	// The requested model is temporarily overloaded" (https://developers.openai.com/api/docs/guides/error-codes).
-	"codex": func(body []byte) bool {
-		return ojson.GetBytesNoCopy(body, "error.code").String() == "server_is_overloaded" &&
-			ojson.GetBytesNoCopy(body, "error.type").String() == "service_unavailable_error"
+	// The requested model is temporarily overloaded" (https://developers.openai.com/api/docs/guides/error-codes). Its
+	// hosts: the API (api.openai.com) and the ChatGPT Codex backend the Codex executor uses by default (chatgpt.com).
+	"codex": {
+		hosts:    []string{"api.openai.com", "chatgpt.com"},
+		statuses: map[int]bool{http.StatusServiceUnavailable: true},
+		refusal: func(body []byte) bool {
+			return ojson.GetBytesNoCopy(body, "error.code").String() == "server_is_overloaded" &&
+				ojson.GetBytesNoCopy(body, "error.type").String() == "service_unavailable_error"
+		},
 	},
+}
+
+type provimuxVendorEntry struct {
+	hosts    []string
+	statuses map[int]bool
+	refusal  func(body []byte) bool
+}
+
+// provimuxVendorHost reports whether a request went to one of the provider's own hosts: https, the default port. Tests,
+// whose stand-ins listen on loopback, replace it (ProvimuxSetVendorHostsForTest).
+var provimuxVendorHost = func(provider, scheme, host, port string) bool {
+	entry, listed := provimuxOverloadAllowList[provider]
+	if !listed || scheme != "https" || (port != "" && port != "443") {
+		return false
+	}
+	for _, own := range entry.hosts {
+		if strings.EqualFold(host, own) {
+			return true
+		}
+	}
+	return false
+}
+
+// ProvimuxSetVendorHostsForTest makes every host count as the provider's own, so that tests can put a loopback
+// stand-in in the vendor's place, and returns the function that puts the real check back. For tests only.
+func ProvimuxSetVendorHostsForTest() (restore func()) {
+	previous := provimuxVendorHost
+	provimuxVendorHost = func(string, string, string, string) bool { return true }
+	return func() { provimuxVendorHost = previous }
 }
 
 // provimuxLimitCodes are the structured values that say a spend, quota, billing or rate limit. Checked before the
@@ -126,26 +168,26 @@ var provimuxLimitCodes = map[string]bool{
 	"usage_limit_reached": true, "usage_not_included": true, "turn_rate_limit_exceeded": true,
 }
 
-// The counts since the process started, for the state path.
+// The counts since the process started, for the state path. They count what the gateway itself does: whether a request
+// reached the vendor's connection or an answer's first byte arrived is not what they say.
 var (
-	provimuxRetrySince       = time.Now()
-	provimuxSecondTriesSent  atomic.Uint64
-	provimuxSecondTriesOK    atomic.Uint64
-	provimuxSecondTriesError atomic.Uint64
-	provimuxLeftDuringWait   atomic.Uint64
+	provimuxRetrySince        = time.Now()
+	provimuxSecondCalls       atomic.Uint64
+	provimuxSecondCallsOK     atomic.Uint64
+	provimuxSecondCallsFailed atomic.Uint64
+	provimuxLeftDuringWait    atomic.Uint64
 )
 
 // ProvimuxSameAccountRetryCounts is what the rule did since the process started.
 type ProvimuxSameAccountRetryCounts struct {
 	Since time.Time
-	// SecondTriesSent: second tries sent to the vendor (counted as each is sent, after the wait).
-	SecondTriesSent uint64
-	// SecondTriesAnswered: of those, the ones the vendor answered: a complete answer, or for a stream an answer that
-	// began (whether a stream then completed is not known here).
-	SecondTriesAnswered uint64
-	// SecondTriesFailed: of those, the ones that failed before any answer; the gateway went on as without the rule.
-	SecondTriesFailed uint64
-	// LeftDuringWait: refusals after which the client went away during the wait; no second try was sent.
+	// SecondCalls: the executor was called a second time on the same account (after the wait).
+	SecondCalls uint64
+	// SecondCallsWithoutError: of those, the call returned without an error (for a stream: the stream was handed on).
+	SecondCallsWithoutError uint64
+	// SecondCallsWithError: of those, the call returned an error; the gateway went on as without the rule.
+	SecondCallsWithError uint64
+	// LeftDuringWait: refusals after which the client went away during the wait; the executor was not called again.
 	LeftDuringWait uint64
 }
 
@@ -153,11 +195,11 @@ type ProvimuxSameAccountRetryCounts struct {
 // four are not one snapshot.
 func ProvimuxSameAccountRetryStats() ProvimuxSameAccountRetryCounts {
 	return ProvimuxSameAccountRetryCounts{
-		Since:               provimuxRetrySince,
-		SecondTriesSent:     provimuxSecondTriesSent.Load(),
-		SecondTriesAnswered: provimuxSecondTriesOK.Load(),
-		SecondTriesFailed:   provimuxSecondTriesError.Load(),
-		LeftDuringWait:      provimuxLeftDuringWait.Load(),
+		Since:                   provimuxRetrySince,
+		SecondCalls:             provimuxSecondCalls.Load(),
+		SecondCallsWithoutError: provimuxSecondCallsOK.Load(),
+		SecondCallsWithError:    provimuxSecondCallsFailed.Load(),
+		LeftDuringWait:          provimuxLeftDuringWait.Load(),
 	}
 }
 
@@ -185,7 +227,7 @@ func provimuxSameAccountOnce[T any](m *Manager, ctx context.Context, auth **Auth
 	account := formatAuthIdentity(*auth, provimuxAuthProvider(*auth))
 	if errWait := provimuxRetrySleep(ctx, wait); errWait != nil {
 		provimuxLeftDuringWait.Add(1)
-		entry.Infof("same-account retry: %s on %s; the client left during the wait, no second try", refusal, account)
+		entry.Infof("same-account retry: %s on %s; the client left during the wait, the executor was not called again", refusal, account)
 		var zero T
 		return zero, errFirst
 	}
@@ -196,15 +238,15 @@ func provimuxSameAccountOnce[T any](m *Manager, ctx context.Context, auth **Auth
 	if sync != nil {
 		sync()
 	}
-	provimuxSecondTriesSent.Add(1)
+	provimuxSecondCalls.Add(1)
 	second, errSecond := call(ctx, *auth, req, opts)
 	if errSecond == nil {
-		provimuxSecondTriesOK.Add(1)
-		entry.Infof("same-account retry: %s on %s; the second try, after %v, was answered", refusal, account, wait.Round(time.Millisecond))
+		provimuxSecondCallsOK.Add(1)
+		entry.Infof("same-account retry: %s on %s; called the executor a second time after %v: it returned without an error", refusal, account, wait.Round(time.Millisecond))
 		return second, nil
 	}
-	provimuxSecondTriesError.Add(1)
-	entry.Infof("same-account retry: %s on %s; the second try, after %v, failed too (%s), going on as without the rule", refusal, account, wait.Round(time.Millisecond), provimuxStatusText(errSecond))
+	provimuxSecondCallsFailed.Add(1)
+	entry.Infof("same-account retry: %s on %s; called the executor a second time after %v: it returned an error (%s), going on as without the rule", refusal, account, wait.Round(time.Millisecond), provimuxStatusText(errSecond))
 	return second, errSecond
 }
 
@@ -240,7 +282,14 @@ func (m *Manager) provimuxSecondTryAllowed(ctx context.Context, auth *Auth, err 
 	if !ok {
 		return 0, "", false
 	}
-	if !ProvimuxOverloadRefusal(provimuxAuthProvider(auth), response.status, response.body) {
+	provider := provimuxAuthProvider(auth)
+	if !provimuxVendorHost(provider, response.scheme, response.host, response.port) {
+		return 0, "", false // the source of the allow-list entry is about the vendor's own API only
+	}
+	if strings.EqualFold(strings.TrimSpace(response.shouldRetry), "false") {
+		return 0, "", false // the vendor says not to retry (x-should-retry: false)
+	}
+	if !ProvimuxOverloadRefusal(provider, response.status, response.body) {
 		return 0, "", false
 	}
 	wait := provimuxRetryWait + provimuxRetryJitterOf()
@@ -257,17 +306,18 @@ func (m *Manager) provimuxSecondTryAllowed(ctx context.Context, auth *Auth, err 
 }
 
 // ProvimuxOverloadRefusal is the table: whether a complete error response of status with the (decoded) body, received by
-// an account of provider, is the vendor's documented overload refusal. A 429 never is; a body with a limit code never
-// is; otherwise the provider's allow-list entry decides, and a provider without one never is.
+// an account of provider from the vendor's own host, is the vendor's documented overload refusal. A body with a limit
+// code never is; otherwise the provider's allow-list entry decides (its statuses and its value), and a provider without
+// one never is.
 func ProvimuxOverloadRefusal(provider string, status int, body []byte) bool {
-	if status < 400 || status == http.StatusTooManyRequests {
+	entry, listed := provimuxOverloadAllowList[strings.ToLower(strings.TrimSpace(provider))]
+	if !listed || !entry.statuses[status] {
 		return false
 	}
 	if !ojson.ValidBytes(body) || provimuxCarriesLimitCode(body) {
 		return false
 	}
-	allowed, listed := provimuxOverloadAllowList[strings.ToLower(strings.TrimSpace(provider))]
-	return listed && allowed(body)
+	return entry.refusal(body)
 }
 
 // provimuxCarriesLimitCode reports whether a code or type field of the body is a spend, quota, billing or rate-limit
@@ -287,15 +337,22 @@ func provimuxCarriesLimitCode(body []byte) bool {
 }
 
 // provimuxRepeatable reports whether the request may be sent twice at all: not a job whose sending creates something
-// (an image, a video, speech, a Gemini interaction), nor a request that forces the image tool. Only overload refusals
-// are ever sent twice now, so this is a second guard.
+// (an image, a video, speech, a Gemini interaction), nor a client request that offers the image tool at all, however
+// tool_choice is spelt. Only overload refusals are ever sent twice now, so this is a second guard.
 func provimuxRepeatable(opts cliproxyexecutor.Options) bool {
 	switch strings.ToLower(strings.TrimSpace(opts.SourceFormat.String())) {
 	case "openai-image", "openai-video", "openai-speech", "interactions":
 		return false
 	}
-	if len(opts.OriginalRequest) > 0 && ojson.GetBytesNoCopy(opts.OriginalRequest, "tool_choice.type").String() == "image_generation" {
-		return false
+	if len(opts.OriginalRequest) > 0 {
+		if ojson.GetBytesNoCopy(opts.OriginalRequest, "tool_choice.type").String() == "image_generation" {
+			return false
+		}
+		for _, tool := range ojson.GetBytesNoCopy(opts.OriginalRequest, "tools").Array() {
+			if tool.Get("type").String() == "image_generation" {
+				return false
+			}
+		}
 	}
 	return true
 }
@@ -352,22 +409,28 @@ type provimuxObservation struct {
 }
 
 type provimuxExchange struct {
-	mu         sync.Mutex
-	failed     bool // no response arrived
-	status     int
-	length     int64 // Content-Length; -1 unknown
-	encoding   string
-	retryAfter string
-	body       bytes.Buffer
-	read       int64
-	eof        bool
-	tooLarge   bool
+	mu          sync.Mutex
+	scheme      string
+	host        string
+	port        string
+	shouldRetry string
+	failed      bool // no response arrived
+	status      int
+	length      int64 // Content-Length; -1 unknown
+	encoding    string
+	retryAfter  string
+	body        bytes.Buffer
+	read        int64
+	eof         bool
+	tooLarge    bool
 }
 
 type provimuxResponse struct {
-	status     int
-	body       []byte
-	retryAfter string
+	status             int
+	body               []byte
+	retryAfter         string
+	shouldRetry        string
+	scheme, host, port string
 }
 
 // refusal returns the try's last response when every exchange of the try got a complete error response (nothing
@@ -395,7 +458,8 @@ func (o *provimuxObservation) refusal() (provimuxResponse, bool) {
 	if !ok {
 		return provimuxResponse{}, false
 	}
-	return provimuxResponse{status: last.status, body: body, retryAfter: last.retryAfter}, true
+	return provimuxResponse{status: last.status, body: body, retryAfter: last.retryAfter, shouldRetry: last.shouldRetry,
+		scheme: last.scheme, host: last.host, port: last.port}, true
 }
 
 // provimuxObserve returns ctx with a transport decorator that notes each HTTP exchange of the try on observed. It
@@ -420,6 +484,9 @@ type provimuxObserver struct {
 
 func (o *provimuxObserver) RoundTrip(req *http.Request) (*http.Response, error) {
 	exchange := &provimuxExchange{length: -1}
+	if req.URL != nil {
+		exchange.scheme, exchange.host, exchange.port = strings.ToLower(req.URL.Scheme), req.URL.Hostname(), req.URL.Port()
+	}
 	o.observed.mu.Lock()
 	o.observed.exchanges = append(o.observed.exchanges, exchange)
 	o.observed.mu.Unlock()
@@ -439,6 +506,7 @@ func (o *provimuxObserver) RoundTrip(req *http.Request) (*http.Response, error) 
 		exchange.encoding = resp.Header.Get("Content-Encoding")
 	}
 	exchange.retryAfter = resp.Header.Get("Retry-After")
+	exchange.shouldRetry = resp.Header.Get("X-Should-Retry")
 	resp.Body = &provimuxBodyTap{ReadCloser: resp.Body, exchange: exchange}
 	return resp, nil
 }

@@ -32,6 +32,7 @@ import (
 func singleAccountCall(t *testing.T, provider, source, model, body string, build func(*config.Config) coreauth.ProviderExecutor, first func(w http.ResponseWriter), stream bool) int {
 	t.Helper()
 	isolateHome(t)
+	loopbackVendors(t)
 	installClock(t, nil)
 	var mu sync.Mutex
 	calls := 0
@@ -169,6 +170,7 @@ func TestTransientRetryFinding3WebSocketTurn(t *testing.T) {
 	for _, mode := range []string{"loss-nonstream", "loss-stream", "refused-upgrade-nonstream"} {
 		t.Run(mode, func(t *testing.T) {
 			isolateHome(t)
+			loopbackVendors(t)
 			installClock(t, nil)
 			var mu sync.Mutex
 			upgrades, frames := 0, 0

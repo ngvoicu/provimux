@@ -50,8 +50,15 @@ func streamName(stream bool) string {
 }
 
 func countsDelta(before, after coreauth.ProvimuxSameAccountRetryCounts) [4]uint64 {
-	return [4]uint64{after.SecondTriesSent - before.SecondTriesSent, after.SecondTriesAnswered - before.SecondTriesAnswered,
-		after.SecondTriesFailed - before.SecondTriesFailed, after.LeftDuringWait - before.LeftDuringWait}
+	return [4]uint64{after.SecondCalls - before.SecondCalls, after.SecondCallsWithoutError - before.SecondCallsWithoutError,
+		after.SecondCallsWithError - before.SecondCallsWithError, after.LeftDuringWait - before.LeftDuringWait}
+}
+
+// loopbackVendors lets a loopback stand-in count as the vendor's own API host for the test (the allow-list applies only
+// to Anthropic's and OpenAI's own hosts).
+func loopbackVendors(t *testing.T) {
+	t.Helper()
+	t.Cleanup(coreauth.ProvimuxSetVendorHostsForTest())
 }
 
 // The owner's report with the rule on: the login's 502 overloaded_error gets one second try, the login answers, and
@@ -87,7 +94,7 @@ func TestTransientRetryReportRuleOn(t *testing.T) {
 					t.Errorf("waits %v, want one between 500 ms and 1 s", waits)
 				}
 				if got := countsDelta(statsBefore, coreauth.ProvimuxSameAccountRetryStats()); got != [4]uint64{1, 1, 0, 0} {
-					t.Errorf("counts (sent, answered, failed, left) %v, want [1 1 0 0]", got)
+					t.Errorf("counts (calls, without error, with error, left) %v, want [1 1 0 0]", got)
 				}
 				for i := 0; i < 3; i++ {
 					if code, body := p.send("conversation", stream); code != 200 || answeredBy(body) != "login" {
@@ -143,7 +150,9 @@ func TestTransientRetryFaultTable(t *testing.T) {
 		{name: "529 overloaded_error", f: fault{status: 529, body: bodyOverloaded}, refusal: true},
 		{name: "502 overloaded_error (the report)", f: fault{status: 502, body: bodyOverloaded}, refusal: true},
 		{name: "503 overloaded_error", f: fault{status: 503, body: bodyOverloaded}, refusal: true},
-		{name: "500 overloaded_error", f: fault{status: 500, body: bodyOverloaded}, refusal: true},
+		{name: "500 overloaded_error: not a status the page names", f: fault{status: 500, body: bodyOverloaded}},
+		{name: "529 overloaded_error, x-should-retry false", f: fault{status: 529, body: bodyOverloaded, headers: map[string]string{"X-Should-Retry": "false"}}},
+		{name: "529 overloaded_error, x-should-retry true", f: fault{status: 529, body: bodyOverloaded, headers: map[string]string{"X-Should-Retry": "true"}}, refusal: true},
 		{name: "529 overloaded_error, insufficient capacity", f: fault{status: 529, body: `{"type":"error","error":{"type":"overloaded_error","message":"Insufficient server capacity. Try again shortly."}}`}, refusal: true},
 		{name: "529 overloaded_error, Retry-After 2", f: fault{status: 529, body: bodyOverloaded, headers: map[string]string{"Retry-After": "2"}}, refusal: true},
 
@@ -278,7 +287,7 @@ func TestTransientRetrySecondRefusal(t *testing.T) {
 				t.Errorf("login cooldown %v, want upstream's 60 s", cd)
 			}
 			if got := countsDelta(before, coreauth.ProvimuxSameAccountRetryStats()); got != [4]uint64{1, 0, 1, 0} {
-				t.Errorf("counts (sent, answered, failed, left) %v, want [1 0 1 0]", got)
+				t.Errorf("counts (calls, without error, with error, left) %v, want [1 0 1 0]", got)
 			}
 			if code, body := p.send("conversation", stream); code != 200 || answeredBy(body) != "devin" {
 				t.Fatalf("next turn %d answered by %q, want devin (the binding moved, as today)", code, answeredBy(body))

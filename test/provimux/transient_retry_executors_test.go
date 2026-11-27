@@ -208,6 +208,7 @@ const bodyOpenAIOverloaded = `{"error":{"type":"service_unavailable_error","code
 func executorCalls(t *testing.T, fx executorFixture, fault string, rule *bool, stream bool) (int, int) {
 	t.Helper()
 	isolateHome(t)
+	loopbackVendors(t)
 	clock := installClock(t, nil)
 	var mu sync.Mutex
 	calls := 0

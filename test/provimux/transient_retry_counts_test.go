@@ -10,10 +10,10 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
-// Finding 6: the counts say what happened. A second try is counted when it is sent, not before the wait; a client that
-// leaves during the wait is counted as left, with no second try sent; "answered" is a complete answer, or a stream that
-// began (a stream that began and then failed is answered: completion is not what this counts); "failed" is a second
-// try that failed before any answer.
+// The counts say what the gateway did: second_calls when the executor is called a second time (after the wait); a client
+// that leaves during the wait is counted as left, with no second call; "without error" when that call returned without
+// an error (a stream that began and then failed is one: completion is not what this counts); "with error" when it
+// returned an error.
 func TestTransientRetryFinding6Counts(t *testing.T) {
 	t.Run("left during the wait", func(t *testing.T) {
 		for _, retryAfter := range []string{"", "1"} {
@@ -38,7 +38,7 @@ func TestTransientRetryFinding6Counts(t *testing.T) {
 			got := countsDelta(before, coreauth.ProvimuxSameAccountRetryStats())
 			restore()
 			if got != [4]uint64{0, 0, 0, 1} || p.vendors["login"].callCount() != 2 {
-				t.Fatalf("Retry-After %q: counts (sent, answered, failed, left) %v, login %d requests (warm-up + refusal); want [0 0 0 1] and 2", retryAfter, got, p.vendors["login"].callCount())
+				t.Fatalf("Retry-After %q: counts (calls, without error, with error, left) %v, login %d requests (warm-up + refusal); want [0 0 0 1] and 2", retryAfter, got, p.vendors["login"].callCount())
 			}
 		}
 	})
@@ -49,7 +49,7 @@ func TestTransientRetryFinding6Counts(t *testing.T) {
 		before := coreauth.ProvimuxSameAccountRetryStats()
 		_, body := p.send("", true)
 		if got := countsDelta(before, coreauth.ProvimuxSameAccountRetryStats()); got != [4]uint64{1, 1, 0, 0} || !strings.Contains(body, "partial from login") {
-			t.Fatalf("counts %v, want [1 1 0 0] (sent, and answered: the stream began); body %s", got, body)
+			t.Fatalf("counts %v, want [1 1 0 0] (called, and returned without an error: the stream was handed on); body %s", got, body)
 		}
 	})
 	t.Run("a second try refused again", func(t *testing.T) {

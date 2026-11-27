@@ -221,6 +221,7 @@ func newPool(t *testing.T, opts poolOptions) *pool {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	isolateHome(t)
+	loopbackVendors(t)
 	cfg := &config.Config{}
 	cfg.RequestRetry = 3
 	cfg.MaxRetryInterval = 30

@@ -25,13 +25,15 @@ type provimuxSameAccountRetryResponse struct {
 	WaitMinMS       int64 `json:"wait_min_ms"`
 	WaitMaxMS       int64 `json:"wait_max_ms"`
 	RetryAfterMaxMS int64 `json:"retry_after_max_ms"`
-	// Since the process started (each count read on its own, not one snapshot): second tries sent; of those, answered
-	// (a complete answer, or a stream that began) and failed; and refusals after which the client left during the wait.
-	Since               string `json:"since"`
-	SecondTriesSent     uint64 `json:"second_tries_sent"`
-	SecondTriesAnswered uint64 `json:"second_tries_answered"`
-	SecondTriesFailed   uint64 `json:"second_tries_failed"`
-	LeftDuringWait      uint64 `json:"left_during_wait"`
+	// Since the process started (each count read on its own, not one snapshot): how often the executor was called a
+	// second time on the same account; of those, how often that call returned without an error (for a stream: the stream
+	// was handed on) and with one; and refusals after which the client left during the wait. They count what the gateway
+	// does, not what reached the vendor.
+	Since                   string `json:"since"`
+	SecondCalls             uint64 `json:"second_calls"`
+	SecondCallsWithoutError uint64 `json:"second_calls_without_error"`
+	SecondCallsWithError    uint64 `json:"second_calls_with_error"`
+	LeftDuringWait          uint64 `json:"left_during_wait"`
 }
 
 // ProvimuxSameAccountRetry handles GET /v8/management/provimux/same-account-retry.
@@ -42,18 +44,18 @@ func (h *Handler) ProvimuxSameAccountRetry(c *gin.Context) {
 	waitMin, waitMax := coreauth.ProvimuxRetryWaitBounds()
 	stats := coreauth.ProvimuxSameAccountRetryStats()
 	c.JSON(http.StatusOK, provimuxSameAccountRetryResponse{
-		ObservedAt:          provimuxTime(provimuxNow()),
-		Enabled:             enabled,
-		SetInFile:           set,
-		Default:             config.ProvimuxSameAccountRetryProcessDefault(),
-		Applies:             enabled && !home,
-		WaitMinMS:           waitMin.Milliseconds(),
-		WaitMaxMS:           waitMax.Milliseconds(),
-		RetryAfterMaxMS:     coreauth.ProvimuxRetryAfterMax.Milliseconds(),
-		Since:               provimuxTime(stats.Since),
-		SecondTriesSent:     stats.SecondTriesSent,
-		SecondTriesAnswered: stats.SecondTriesAnswered,
-		SecondTriesFailed:   stats.SecondTriesFailed,
-		LeftDuringWait:      stats.LeftDuringWait,
+		ObservedAt:              provimuxTime(provimuxNow()),
+		Enabled:                 enabled,
+		SetInFile:               set,
+		Default:                 config.ProvimuxSameAccountRetryProcessDefault(),
+		Applies:                 enabled && !home,
+		WaitMinMS:               waitMin.Milliseconds(),
+		WaitMaxMS:               waitMax.Milliseconds(),
+		RetryAfterMaxMS:         coreauth.ProvimuxRetryAfterMax.Milliseconds(),
+		Since:                   provimuxTime(stats.Since),
+		SecondCalls:             stats.SecondCalls,
+		SecondCallsWithoutError: stats.SecondCallsWithoutError,
+		SecondCallsWithError:    stats.SecondCallsWithError,
+		LeftDuringWait:          stats.LeftDuringWait,
 	})
 }
