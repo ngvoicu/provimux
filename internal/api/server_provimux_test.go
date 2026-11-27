@@ -23,6 +23,7 @@ var provimuxManagementPaths = []string{
 	"/v8/management/provimux/live-lists",
 	"/v8/management/provimux/model-lists",
 	"/v8/management/provimux/savings",
+	"/v8/management/provimux/restart-drain",
 }
 
 // provimuxTestLiveSource stands in for sdk/cliproxy, which registers the real one and which this
