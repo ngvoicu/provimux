@@ -68,7 +68,7 @@ func TestFollowReloadWithCommittedHTTP(t *testing.T) {
 	for _, dir := range []string{old, destination} {
 		raw, err := os.ReadFile(filepath.Join(dir, provimuxAnsweredFile))
 		if err == nil {
-			if _, ok := provimuxAnsweredParse(raw); !ok {
+			if _, errDecode := provimuxAnsweredDecode(raw); errDecode != nil {
 				t.Errorf("the record's file in %s is not readable after the reload", dir)
 			}
 		}

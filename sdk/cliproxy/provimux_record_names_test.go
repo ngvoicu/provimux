@@ -40,7 +40,7 @@ func TestProvimuxRecordFieldNamesExact(t *testing.T) {
 		{"genuine", nil},
 		{"document/Rows", rename(`"rows":`, `"Rows":`)},
 		{"document/FORMAT", rename(`"format":`, `"FORMAT":`)},
-		{"document/version-twice", duplicate(`"version":\s*1`)},
+		{"document/version-twice", duplicate(`"version":\s*2`)},
 		{"row/Client", rename(`"client":`, `"Client":`)},
 		{"row/escaped-client", rename(`"client":`, `"\u0063lient":`)},
 		{"row/name-and-Name", func(raw []byte) []byte {
@@ -53,61 +53,77 @@ func TestProvimuxRecordFieldNamesExact(t *testing.T) {
 		{"item/AT", rename(`"at":`, `"AT":`)},
 		{"row/unknown-field", rename(`"client":`, `"unrecognized-fixture":true,"client":`)},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			h := newSentHarness(t, reviewRouter)
-			clock := newSentClock()
-			book := useAnsweredBook(t, clock)
-			dir := t.TempDir()
-			file := filepath.Join(dir, provimuxAnsweredFile)
-			a := sentKeyFor(t, h, "review-public")
-			credential, marker := coreauth.ProvimuxCredentialRef(a.ID), a.ProvimuxAccountMarker()
-			writer := newProvimuxAnsweredBook(clock.Now)
-			writer.setPlace(dir)
-			writer.note(coreauth.ProvimuxClientRef(sentClientKey), credential, marker, "review-public", "openrouter/lab/native")
-			writer.close()
-			genuine, err := os.ReadFile(file)
-			if err != nil {
-				t.Fatal(err)
+	// Part (6): the file is changed under its old digest ("digest": refused before parsing), and sealed again over the
+	// changed content ("resealed": refused by the strict parsing).
+	for _, mode := range []string{"digest", "resealed"} {
+		for _, tc := range cases {
+			if tc.change == nil && mode == "resealed" {
+				continue
 			}
-			written := genuine
-			if tc.change != nil {
-				if written = tc.change(genuine); bytes.Equal(written, genuine) {
-					t.Fatalf("fixture: the change did not apply to %s", genuine)
-				}
-				if err = os.WriteFile(file, written, 0o600); err != nil {
+			t.Run(mode+"/"+tc.name, func(t *testing.T) {
+				h := newSentHarness(t, reviewRouter)
+				clock := newSentClock()
+				book := useAnsweredBook(t, clock)
+				dir := t.TempDir()
+				file := filepath.Join(dir, provimuxAnsweredFile)
+				a := sentKeyFor(t, h, "review-public")
+				credential, marker := coreauth.ProvimuxCredentialRef(a.ID), a.ProvimuxAccountMarker()
+				writer := newProvimuxAnsweredBook(clock.Now)
+				writer.setPlace(dir)
+				writer.note(coreauth.ProvimuxClientRef(sentClientKey), credential, marker, "review-public", "openrouter/lab/native")
+				writer.close()
+				genuine, err := os.ReadFile(file)
+				if err != nil {
 					t.Fatal(err)
 				}
-			}
-			_, hook := logtest.NewNullLogger()
-			saved := log.StandardLogger().ReplaceHooks(make(log.LevelHooks))
-			log.AddHook(hook)
-			defer log.StandardLogger().ReplaceHooks(saved)
-
-			book.setPlace(dir)
-			client, management, raw := h.listsRow(sentClientKey, "review-public", marker)
-			loaded := book.read(coreauth.ProvimuxClientRef(sentClientKey), false, credential, marker, "review-public")
-			shown := strings.Contains(raw, "openrouter/lab/native") || len(provimuxItemsOf(client)) != 0 || len(provimuxItemsOf(management)) != 0
-			book.note("provimux-test-other", "provimux-test-other", "provimux-test-other", "provimux-test-other", "provimux-test/other")
-			book.close()
-			final, err := os.ReadFile(file)
-			if err != nil {
-				t.Fatal(err)
-			}
-			warned := false
-			for _, entry := range hook.AllEntries() {
-				warned = warned || (entry.Level == log.WarnLevel && strings.Contains(entry.Message, "is left as it is"))
-			}
-			t.Logf("%s: loaded %v, shown %v, left as it is %v, warned %v", tc.name, loaded, shown, bytes.Equal(final, written), warned)
-			if tc.change == nil {
-				if len(loaded) != 1 || !shown || bytes.Equal(final, written) || warned {
-					t.Errorf("the genuine file was not the record's own")
+				written := genuine
+				if tc.change != nil {
+					line, content, _ := bytes.Cut(genuine, []byte{'\n'})
+					changed := tc.change(append([]byte{}, content...))
+					if bytes.Equal(changed, content) {
+						t.Fatalf("fixture: the change did not apply to %s", content)
+					}
+					written = append(append(append([]byte{}, line...), '\n'), changed...)
+					if mode == "resealed" {
+						written = answeredSeal(changed)
+						if _, errDecode := provimuxAnsweredDecode(written); errDecode == nil || !strings.Contains(errDecode.Error(), "not the record's") {
+							t.Fatalf("fixture: the resealed file is not refused by the parsing: %v", errDecode)
+						}
+					}
+					if err = os.WriteFile(file, written, 0o600); err != nil {
+						t.Fatal(err)
+					}
 				}
-				return
-			}
-			if len(loaded) != 0 || shown || !bytes.Equal(final, written) || !warned {
-				t.Errorf("a file with a field name other than the record's was taken for the record's own")
-			}
-		})
+				_, hook := logtest.NewNullLogger()
+				saved := log.StandardLogger().ReplaceHooks(make(log.LevelHooks))
+				log.AddHook(hook)
+				defer log.StandardLogger().ReplaceHooks(saved)
+
+				book.setPlace(dir)
+				client, management, raw := h.listsRow(sentClientKey, "review-public", marker)
+				loaded := book.read(coreauth.ProvimuxClientRef(sentClientKey), false, credential, marker, "review-public")
+				shown := strings.Contains(raw, "openrouter/lab/native") || len(provimuxItemsOf(client)) != 0 || len(provimuxItemsOf(management)) != 0
+				book.note("provimux-test-other", "provimux-test-other", "provimux-test-other", "provimux-test-other", "provimux-test/other")
+				book.close()
+				final, err := os.ReadFile(file)
+				if err != nil {
+					t.Fatal(err)
+				}
+				warned := false
+				for _, entry := range hook.AllEntries() {
+					warned = warned || (entry.Level == log.WarnLevel && strings.Contains(entry.Message, "is left as it is"))
+				}
+				t.Logf("%s: loaded %v, shown %v, left as it is %v, warned %v", tc.name, loaded, shown, bytes.Equal(final, written), warned)
+				if tc.change == nil {
+					if len(loaded) != 1 || !shown || bytes.Equal(final, written) || warned {
+						t.Errorf("the genuine file was not the record's own")
+					}
+					return
+				}
+				if len(loaded) != 0 || shown || !bytes.Equal(final, written) || !warned {
+					t.Errorf("a file with a field name other than the record's was taken for the record's own")
+				}
+			})
+		}
 	}
 }

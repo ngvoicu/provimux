@@ -375,7 +375,7 @@ func TestReview21StoreRelocation(t *testing.T) {
 	client, credential := ca.ProvimuxClientRef(sentClientKey), ca.ProvimuxCredentialRef(a.ID)
 	p1, p2 := t.TempDir(), t.TempDir()
 	seed := func(dir, entry string) {
-		stored := provimuxAnsweredStored{Format: provimuxAnsweredFormat, Version: 1, Rows: []provimuxAnsweredStoredRow{{Credential: credential, Marker: marker, Name: "review-public", Client: client,
+		stored := provimuxAnsweredStored{Format: provimuxAnsweredFormat, Version: provimuxAnsweredVersion, Rows: []provimuxAnsweredStoredRow{{Credential: credential, Marker: marker, Name: "review-public", Client: client,
 			Items: []provimuxAnsweredStoredItem{{Entry: &entry, At: clock.Now().Format(time.RFC3339Nano), Seq: 1}}}}}
 		if _, err := provimuxAnsweredWrite(filepath.Join(dir, provimuxAnsweredFile), stored, provimuxAnsweredSeen{}); err != nil {
 			t.Fatal(err)
