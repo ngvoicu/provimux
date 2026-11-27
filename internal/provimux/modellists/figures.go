@@ -608,7 +608,8 @@ func readLifetime(profile string, safe *safeLifetimeJSON, items []lifetimeItemJS
 			continue
 		}
 		client := *item.Client
-		if item.Chosen && out.Safe.Basis == BasisMeasured && !seen[client] {
+		// An empty client id names no client: left out here, as the disk copy's reading refuses it (Lifetime.check).
+		if item.Chosen && out.Safe.Basis == BasisMeasured && client != "" && !seen[client] {
 			seen[client] = true
 			out.Safe.MeasuredWith = append(out.Safe.MeasuredWith, FiguresClient{Client: client,
 				Label: copyString(item.ClientLabel), Kind: copyString(item.ClientKind)})

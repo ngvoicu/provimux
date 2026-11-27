@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -110,6 +111,18 @@ func TestFiguresGeneratedFarAheadOfTheClockIsRefused(t *testing.T) {
 	if doc, errRead := NewStore(dir).ReadFigures(inTime); errRead != nil || len(doc.Entries) != 450 {
 		t.Fatalf("a disk copy 24 hours ahead exactly: %v", errRead)
 	}
+
+	// The bound is 24 hours, as decided, and not whatever the constant says: a clock 24 hours and a millisecond, or 25
+	// hours, behind the dataset is refused on both paths.
+	for _, behind := range []time.Duration{24*time.Hour + time.Millisecond, 25 * time.Hour} {
+		clock := generated.Add(-behind)
+		if _, errFetch := fetch(clock); !errors.Is(errFetch, ErrAhead) {
+			t.Fatalf("%s behind: the fetch gave %v", behind, errFetch)
+		}
+		if _, errRead := NewStore(dir).ReadFigures(clock); !errors.Is(errRead, ErrAhead) {
+			t.Fatalf("%s behind: the disk copy gave %v", behind, errRead)
+		}
+	}
 }
 
 // A redirect is followed only to the same host over https: one to another origin, and one to the same host over
@@ -145,6 +158,24 @@ func TestFiguresRedirectOnlyToTheSameHostOverHTTPS(t *testing.T) {
 	result, err := FetchFigures(context.Background(), secure.Client(), secure.URL+pdentries.Path, nil, "provimux/test", figuresTestNow, 5*time.Second, nil)
 	if err != nil || len(result.Document.Entries) != len(fixture.Entries) {
 		t.Fatalf("the same host over https: %v", err)
+	}
+
+	// Another origin over https (another port on the same address, whose certificate the client trusts as it trusts
+	// the first's) answers as the redirect itself, and is never asked.
+	var asked atomic.Int32
+	otherSecure := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked.Add(1)
+		_, _ = w.Write(page)
+	}))
+	t.Cleanup(otherSecure.Close)
+	away := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, otherSecure.URL+pdentries.Path+"?"+r.URL.RawQuery, http.StatusFound)
+	}))
+	t.Cleanup(away.Close)
+	_, err = FetchFigures(context.Background(), away.Client(), away.URL+pdentries.Path, nil, "provimux/test", figuresTestNow, 5*time.Second, nil)
+	figuresRefusal(t, err, FailureHTTP, http.StatusFound)
+	if n := asked.Load(); n != 0 {
+		t.Fatalf("another origin over https was asked %d times", n)
 	}
 }
 
@@ -219,6 +250,47 @@ func TestFiguresValuesOnlyABrokenSummaryCarriesAreLeftOut(t *testing.T) {
 				len(short.ThroughProvimux) != len(base.Cache.Short.ThroughProvimux) {
 				t.Fatalf("lifetime_s %s became a measurement: %+v", name, short)
 			}
+		}
+	})
+
+	// The fetch reading and the disk copy's reading agree: a chosen measurement with an empty client id names no
+	// client, so it is left out of measured_with on a fetch, and the record passes the disk copy's reading (read checks
+	// it) instead of being dropped after every start.
+	t.Run("a chosen measurement with an empty client id", func(t *testing.T) {
+		if base.Cache.Short.Safe.Basis != BasisMeasured {
+			t.Fatalf("premise: the short profile's safe value is not measured: %+v", base.Cache.Short.Safe)
+		}
+		entry := read(pdentries.Edit(perUse, func(m map[string]any) {
+			lifetime := m["cache_lifetime"].(map[string]any)
+			for _, client := range []string{"", "provimux-test-client"} {
+				// date-safe: a measurement's day inside a summary; nothing compares it with today.
+				lifetime["lifetimes"] = append(lifetime["lifetimes"].([]any), map[string]any{"retention_profile": "short", "basis": "measured",
+					"date": "2026-11-20", "lifetime_s": 300, "client": client, "client_label": nil, "client_kind": nil,
+					"parameter": nil, "value": nil, "checks": 3, "hits": 3, "first_miss_s": nil, "chosen": true})
+			}
+		}))
+		want := append([]FiguresClient{}, base.Cache.Short.Safe.MeasuredWith...)
+		want = append(want, FiguresClient{Client: "provimux-test-client"})
+		got := entry.Cache.Short.Safe.MeasuredWith
+		if len(got) != len(want) {
+			t.Fatalf("measured_with %+v, want %+v", got, want)
+		}
+		for i := range want {
+			if got[i].Client != want[i].Client {
+				t.Fatalf("measured_with %+v, want %+v", got, want)
+			}
+		}
+		dir := t.TempDir()
+		doc := &FiguresDocument{Schema: FiguresSchema, Providers: strings.Join(FigureProviders(), ","), DatasetVersion: "ds-provimux-test",
+			GeneratedAt: time.Unix(0, 0).UTC(), FetchedAt: time.Unix(0, 0).UTC(), Total: 1,
+			Pages:   []FiguresPage{{Offset: 0, ETag: `W/"provimux-test"`, Count: 1, Refs: []string{EntryRef(entry.Provider, entry.Model)}}},
+			Entries: map[string]Figures{EntryRef(entry.Provider, entry.Model): entry}}
+		if err := NewStore(dir).WriteFigures(doc); err != nil {
+			t.Fatal(err)
+		}
+		back, err := NewStore(dir).ReadFigures(time.Unix(0, 0).UTC())
+		if err != nil || len(back.Entries) != 1 || back.Unread != 0 {
+			t.Fatalf("the disk copy: %v, %d entries, %d unread", err, len(back.Entries), back.Unread)
 		}
 	})
 
@@ -411,5 +483,48 @@ func TestFiguresSameEntryOnTwoPages(t *testing.T) {
 	figuresRefusal(t, err, FailureResponse, 0)
 	if result.Document != nil || !strings.Contains(err.Error(), "on two pages") || len(server.Requests()) != 2 {
 		t.Fatalf("%v after %d requests", err, len(server.Requests()))
+	}
+}
+
+// The same entry on a page that answers 200 and on a held page that answers 304 is refused too: the 304 page's
+// entries are the held ones, and one of them is already on this fetch's earlier page.
+func TestFiguresSameEntryOnANewPageAndAHeldOne(t *testing.T) {
+	fixture, _ := loadFiguresFixture(t)
+	server := newFiguresStandIn(t, figuresVolume(t, 450), fixture.Version, fixture.Generated)
+	var second any
+	server.SetPage(func(offset int, body []byte) (int, []byte) {
+		if offset == FiguresPageLimit && second == nil {
+			var page map[string]any
+			if json.Unmarshal(body, &page) == nil {
+				second = page["data"].([]any)[0] // page 1's first entry, as held
+			}
+		}
+		return 0, nil
+	})
+	seed, err := fetchFiguresFrom(server, nil)
+	if err != nil || len(seed.Document.Entries) != 450 || second == nil {
+		t.Fatalf("seed: %v", err)
+	}
+	server.SetPage(func(offset int, body []byte) (int, []byte) {
+		if offset != 0 {
+			return 0, nil // pages 1 and 2 are as held: 304
+		}
+		var page map[string]any
+		if err := json.Unmarshal(body, &page); err != nil {
+			return 0, nil
+		}
+		data := page["data"].([]any)
+		data[len(data)-1] = second // page 0 changed: it ends with page 1's first entry
+		out, _ := json.Marshal(page)
+		return http.StatusOK, out
+	})
+	before := len(server.Requests())
+	result, err := fetchFiguresFrom(server, seed.Document)
+	figuresRefusal(t, err, FailureResponse, 0)
+	if result.Document != nil || !strings.Contains(err.Error(), "on two pages") || len(server.Requests())-before != 2 {
+		t.Fatalf("%v after %d requests", err, len(server.Requests())-before)
+	}
+	if len(seed.Document.Entries) != 450 {
+		t.Fatal("the held document was changed")
 	}
 }
