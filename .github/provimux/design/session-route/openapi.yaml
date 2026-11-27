@@ -474,15 +474,19 @@ components:
           description: |
             What the gateway does by itself (the second design of the rule). With `in_effect`: at this
             conversation's next request, if it is bound to an account below the highest-priority
-            account that request may use, and it sent no message for `cold_after_s`, the binding is
+            account that request may use, and no message of it was routed to an account for `cold_after_s`, the binding is
             dropped and the request is routed as a new conversation's. It is decided at that request,
             from that request's own accounts, so no show can say beforehand that it will happen. Never
             for a sub-agent or a fork, a pinned turn, or a conversation the client did not name.
             The object `cache` of an earlier draft of this contract is withdrawn: the gateway states
-            no cache's lifetime. The rule never moves a conversation that sent a message within
-            `cold_after_s`. An answer that itself takes longer than that does not count as use while
-            it streams, so the message after it can go back: a vendor's prompt cache is refreshed when
-            a request reads it, not while the answer is written. Any binding below a higher priority
+            no cache's lifetime. The rule never moves a conversation that had a message routed to an
+            account within `cold_after_s`. A message the gateway refused before choosing an account
+            (for example while every account that serves the name is cooling) reaches no provider and
+            reads no cache, so it does not count as use; nor does an answer while it streams, so the
+            message after an answer that itself took longer than `cold_after_s` can go back. A
+            provider's prompt cache is refreshed when a request reads it, not while the answer is
+            written. The gateway cannot see how long a provider keeps a cache, so the operator
+            chooses the time. Any binding below a higher priority
             this request may use can return, also after the operator adds a higher-priority account.
             The rule sends no request to any provider.
           required: [in_effect, cold_after_s]

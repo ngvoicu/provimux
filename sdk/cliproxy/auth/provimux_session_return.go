@@ -9,10 +9,11 @@ import (
 // Provimux: session-route, the rule (.github/provimux/design/session-route.md 15). At a conversation's next request,
 // inside upstream's selection (SessionAffinitySelector.Pick, one line before the binding is looked up), the binding is
 // dropped when the operator has set cold-after, the client named the conversation, it is bound to an account below
-// the highest-priority account this request may use, and it has sent no message for cold-after. "Sent no message" is
-// read from the rule's own note: the time a request of the conversation last came to selection. A vendor's prompt
-// cache is refreshed when a request reads it, not while the answer is written, so the time since the last message
-// sent is what tells whether the cache can still be warm. Whatever is not certain leaves the binding alone. No book,
+// the highest-priority account this request may use, and no message of it was routed to an account for cold-after.
+// That is read from the rule's own note: the time a request of the conversation last came to selection. A message
+// refused before selection reaches no provider and leaves no note. A provider's prompt cache is refreshed when a
+// request reads it, not while the answer is written, so the time since the last routed message is what tells whether
+// the cache can still be warm. Whatever is not certain leaves the binding alone. No book,
 // no result hook, no usage record, no timer, nothing from a file.
 //
 // The names of upstream's this file uses: the selector's cache, rebindOnNever and its own field provimux; the cache's
@@ -127,7 +128,7 @@ func provimuxReturnRuns(m *Manager, s *SessionAffinitySelector, coldAfter time.D
 // available is the list Pick chooses from for this request; now is the time Pick took. It returns nothing: it either
 // dropped the binding or did not, and Pick's own lines decide everything after it. Not in effect, it is one atomic
 // load and a return. Every request that passes K1 and K2 is noted, judged or not, so a note is always the
-// conversation's last message.
+// conversation's last message routed to an account.
 func (s *SessionAffinitySelector) provimuxReturn(named bool, cacheKey, fallbackKey string, available []*Auth, now time.Time) {
 	value := provimuxReturnCurrent.Load()
 	if value == nil || !value.possible || !named || s == nil || cacheKey == "" { // K1 (as configured), K2
@@ -179,7 +180,7 @@ func (s *SessionAffinitySelector) provimuxJudgeLocked(cache *SessionCache, cache
 	if !boundFound || boundPriority >= highest {
 		return false
 	}
-	var last time.Time // K6: the conversation's last message, through any key of its binding
+	var last time.Time // K6: the conversation's last routed message, through any key of its binding
 	for _, key := range append([]string{cacheKey}, entry.aliases...) {
 		if seen := s.provimux.seen[key]; seen.After(last) {
 			last = seen
