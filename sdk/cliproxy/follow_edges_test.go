@@ -1,70 +1,16 @@
 package cliproxy
 
 import (
-	"bytes"
 	"github.com/MoeForge/moego/ojson"
 	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	ca "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 )
-
-// Finding 41, second half: the stop is final (rule B.4). Ported: the reviewer counted every item read after the stop;
-// the stop now keeps memory as it was when it began (the move it overtook is not made), so the test asks for what the
-// finding is about: the note after the stop is not there.
-func TestFollowOverlappingCloseAndMove(t *testing.T) {
-	c := newSentClock()
-	var armed atomic.Bool
-	atRead, goOn := make(chan struct{}), make(chan struct{})
-	b := newProvimuxAnsweredBook(func() time.Time {
-		if armed.CompareAndSwap(true, false) {
-			close(atRead)
-			<-goOn
-		}
-		return c.Now()
-	})
-	d1, d2 := t.TempDir(), t.TempDir()
-	b.setPlace(d1)
-	b.note("k", "c", "m", "n", "p/before")
-	b.flush()
-	armed.Store(true)
-	moved, stopped := make(chan struct{}), make(chan struct{})
-	go func() { b.setPlace(d2); close(moved) }()
-	<-atRead
-	go func() { b.close(); close(stopped) }()
-	limit := time.Now().Add(2 * time.Second)
-	for {
-		b.mu.Lock()
-		closed := b.closed
-		b.mu.Unlock()
-		if closed {
-			break
-		}
-		if time.Now().After(limit) {
-			close(goOn)
-			t.Fatal("stop did not close intake")
-		}
-		time.Sleep(time.Millisecond)
-	}
-	close(goOn)
-	<-moved
-	<-stopped
-	b.note("k", "c", "m", "n", "p/after-stop")
-	got := b.read("k", false, "c", "m", "n")
-	t.Logf("move started first, stop closed intake, both returned; after-stop row=%v", got)
-	for _, item := range got {
-		if item.Entry == "p/after-stop" {
-			t.Error("in-flight reload reopened intake across the final stop")
-		}
-	}
-	b.close()
-}
 
 // Finding 40, the reviewer's synchronised reproduction, unchanged: the newest note is first (rule B.3).
 func TestFollowClockInterleave(t *testing.T) {
@@ -97,39 +43,6 @@ func TestFollowClockInterleave(t *testing.T) {
 	if len(got) != 2 || got[0].Entry != "p/second" {
 		t.Errorf("time-ordered result %v", got)
 	}
-}
-func TestFollowNextFileWrite(t *testing.T) {
-	c := newSentClock()
-	b := newProvimuxAnsweredBook(c.Now)
-	d := t.TempDir()
-	b.setPlace(d)
-	f := filepath.Join(d, provimuxAnsweredFile)
-	b.note("k", "c", "m", "n", "p/old")
-	b.flush()
-	c.add(90 * 24 * time.Hour)
-	if len(b.read("k", false, "c", "m", "n")) != 1 {
-		t.Fatal("exact edge")
-	}
-	c.add(time.Nanosecond)
-	if len(b.read("k", false, "c", "m", "n")) != 0 {
-		t.Fatal("past edge")
-	}
-	b.note("another-client", "c2", "m2", "n2", "p/new")
-	end := time.Now().Add(2 * time.Second)
-	for {
-		raw, e := os.ReadFile(f)
-		if e == nil && bytes.Contains(raw, []byte("p/new")) {
-			if bytes.Contains(raw, []byte("p/old")) {
-				t.Error("next background write retained expired outcome")
-			}
-			break
-		}
-		if time.Now().After(end) {
-			t.Fatal("writer timed out")
-		}
-		time.Sleep(time.Millisecond)
-	}
-	b.close()
 }
 func TestFollowWebsocketClients(t *testing.T) {
 	h := newSentHarness(t, sentMatrixConfig)

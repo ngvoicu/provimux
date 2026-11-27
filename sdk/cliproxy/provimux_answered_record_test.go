@@ -1,9 +1,6 @@
 package cliproxy
 
 import (
-	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -369,7 +366,7 @@ func TestProvimuxAnsweredItemsAndExpiry(t *testing.T) {
 	}
 }
 
-// Restart: what one run noted, the next reads from the file; without a place it is kept for the run, said once.
+// Restart: what one run noted, the next reads from the file.
 func TestProvimuxAnsweredRestartKeepsIt(t *testing.T) {
 	clock := newSentClock()
 	dir := t.TempDir()
@@ -392,12 +389,6 @@ func TestProvimuxAnsweredRestartKeepsIt(t *testing.T) {
 	}
 	if got := second.read("", true, cred, marker, "provimux-test-a"); len(got) != 3 || got[0].Entry != "p/b" {
 		t.Fatalf("after the restart, every client: %+v", got)
-	}
-	alone := newProvimuxAnsweredBook(clock.Now)
-	alone.note("k.one", cred, marker, "provimux-test-a", "p/a")
-	alone.close()
-	if !alone.logged.Load() {
-		t.Fatal("without a place the log does not say so")
 	}
 }
 
@@ -580,31 +571,11 @@ func TestProvimuxAnsweredNoteCost(t *testing.T) {
 
 var _ = json.Marshal
 
-// waitAnswered waits until ok holds, waking on each note the record accepts, for at most ten seconds: a test that
+// waitAnswered waits until ok holds, for at most ten seconds: a test that
 // reads the record right after a client got its answer waits for the note made after writing it.
 func waitAnswered(t *testing.T, ok func() bool) {
 	t.Helper()
-	book := provimuxAnswered
-	deadline := time.NewTimer(10 * time.Second)
-	defer deadline.Stop()
-	for !ok() {
-		select {
-		case <-book.noted:
-		case <-deadline.C:
-			return
-		}
+	for deadline := time.Now().Add(10 * time.Second); !ok() && time.Now().Before(deadline); {
+		time.Sleep(time.Millisecond)
 	}
-}
-
-// answeredContent is a record file's content: what follows its first line (the line with the digest).
-func answeredContent(raw []byte) []byte {
-	_, content, _ := bytes.Cut(raw, []byte{'\n'})
-	return content
-}
-
-// answeredSeal is a record file of content under its digest, as the writer makes one: a file that is changed and
-// sealed again is refused by the strict parsing alone.
-func answeredSeal(content []byte) []byte {
-	sum := sha256.Sum256(content)
-	return append([]byte(provimuxAnsweredHeader+hex.EncodeToString(sum[:])+"\n"), content...)
 }

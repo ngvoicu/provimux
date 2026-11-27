@@ -31,7 +31,7 @@ func TestProvimuxNoProcessMarkNoEntryNoRecord(t *testing.T) {
 	cfg.AuthDir = dir
 	h.service.applyKVStoreConfig(&cfg)
 	book.mu.Lock()
-	place, rows := book.place, len(book.rows)
+	place, rows := book.dir, len(book.rows)
 	book.mu.Unlock()
 	if place != "" || rows != 0 {
 		t.Fatalf("the record took the place %q and %d rows", place, rows)

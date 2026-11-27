@@ -179,7 +179,7 @@ func (s *Store) WriteLive(provider, identity string, fetchedAt time.Time, ids []
 	data, err := json.Marshal(LiveFile{Schema: Schema, Provider: strings.ToLower(provider), Identity: hash,
 		FetchedAt: fetchedAt.UTC(), IDs: ids, Models: models})
 	if err == nil {
-		err = writeFileAtomic(s.dir, name, data)
+		err = WriteFileAtomic(s.dir, name, data)
 	}
 	if err != nil {
 		s.warnOnce("write", "model lists cache: cannot write to %s (%v); lists stay in memory only", s.dir, err)
@@ -190,7 +190,8 @@ func (s *Store) WriteLive(provider, identity string, fetchedAt time.Time, ids []
 	return nil
 }
 
-func writeFileAtomic(dir, name string, data []byte) (err error) {
+// WriteFileAtomic writes data to dir/name whole or not at all, mode 0600: a temporary file in dir, then a rename.
+func WriteFileAtomic(dir, name string, data []byte) (err error) {
 	if err = os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}

@@ -969,7 +969,7 @@ func (s *Store) WriteFigures(doc *FiguresDocument) error {
 	}
 	data, err := json.Marshal(doc)
 	if err == nil {
-		err = writeFileAtomic(s.dir, FiguresFileName, data)
+		err = WriteFileAtomic(s.dir, FiguresFileName, data)
 	}
 	if err != nil {
 		s.warnOnce("write", "model lists cache: cannot write to %s (%v); lists stay in memory only", s.dir, err)
