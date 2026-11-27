@@ -6,10 +6,12 @@ package modellists
 //
 // One request, the same for every user: GET /api/v1/entries?provider=<the fixed set>&limit=200&offset=<0,
 // 200, ...>, page after page until next_offset is null (at most 10), each page with If-None-Match when its
-// ETag is held, a User-Agent and nothing else. A fetched document replaces the held one only when every page
-// is a 200 or a 304, well-formed, at most 8 MB, every page names one dataset_version and one total, together
-// they hold total entries, and generated_at is not before the held document's. An entry Provimux cannot
-// read is left out alone. Nothing here decides which entry an answer is (6.1); this only holds figures.
+// ETag is held, a User-Agent and nothing else; a redirect is followed only to the same host over https. A
+// fetched document replaces the held one only when every page is a 200 or a 304, well-formed, at most 8 MB,
+// every page names one dataset_version and one total, together they hold total entries, at least one entry
+// can be read, generated_at is not before the held document's and not more than 24 hours ahead of the
+// gateway's clock. An entry Provimux cannot read is left out alone, and so is a value only a broken summary
+// carries. Nothing here decides which entry an answer is (6.1); this only holds figures.
 
 import (
 	"context"
@@ -44,7 +46,28 @@ const (
 	FiguresSource = "https://providers.dev"
 	// maxFiguresPageBytes bounds one page and the disk copy, as the listings are bounded.
 	maxFiguresPageBytes = 8 << 20
+	// FiguresMaxAhead is how far a document's generated_at may be ahead of the gateway's clock; a later one is
+	// refused, from the network and from the disk copy (decided by the lead on 2026-11-27).
+	FiguresMaxAhead = 24 * time.Hour
+	// maxFiguresTokens is the largest token count kept: the largest integer a JSON number carries exactly. A
+	// larger window, limit or tier is left out, never clamped.
+	maxFiguresTokens = 1<<53 - 1
+	// maxFiguresRedirects bounds the redirects one page follows.
+	maxFiguresRedirects = 10
 )
+
+// Why a fetched or stored document is refused, beside the codes of FetchError (decided by the lead on
+// 2026-11-27). Each is wrapped in a FetchError of category invalid_response.
+var (
+	// ErrNoEntries: no entry of the document can be read (every one unreadable, or total 0).
+	ErrNoEntries = errors.New("no entry Provimux can read")
+	// ErrAhead: generated_at is more than FiguresMaxAhead ahead of the gateway's clock.
+	ErrAhead = errors.New("generated_at more than 24 hours ahead of the gateway's clock")
+)
+
+// ErrStopped means the fetch stopped before a page because its caller said so (the switch was turned off):
+// no request left after that. It is no failure of providers.dev.
+var ErrStopped = errors.New("the fetch was stopped")
 
 // EntriesURL is providers.dev's entries resource. Tests point the client elsewhere; nothing in the config
 // changes it.
@@ -364,7 +387,7 @@ type lifetimeItemJSON struct {
 	RetentionProfile string  `json:"retention_profile"`
 	Basis            string  `json:"basis"`
 	Date             *string `json:"date"`
-	LifetimeS        int     `json:"lifetime_s"`
+	LifetimeS        *int    `json:"lifetime_s"` // missing or null: no measurement
 	Client           *string `json:"client"`
 	ClientLabel      *string `json:"client_label"`
 	ClientKind       *string `json:"client_kind"`
@@ -428,10 +451,16 @@ func readPrice(s *summaryJSON) EntryPrice {
 		return p
 	}
 	if p.Billing == "reference" {
-		p.Reference = copyString(s.PriceFrom)
-		if p.Reference == nil {
-			p.Reference = copyString(s.Pricing.ReferenceRef)
+		reference := s.PriceFrom
+		if reference == nil {
+			reference = s.Pricing.ReferenceRef
 		}
+		if reference != nil && !isEntryRef(*reference) {
+			// Not a reference the contract can carry: the entry's price is left out.
+			p.Billing = "unknown"
+			return p
+		}
+		p.Reference = copyString(reference)
 	}
 	p.Input, p.Output = copyFloat(s.PriceIn), copyFloat(s.PriceOut)
 	if safe.Source != nil {
@@ -440,8 +469,8 @@ func readPrice(s *summaryJSON) EntryPrice {
 				continue
 			}
 			for _, tier := range source.Tiers {
-				if tier.InputTokensAbove == nil {
-					continue
+				if tier.InputTokensAbove == nil || math.Abs(math.Round(*tier.InputTokensAbove)) > maxFiguresTokens {
+					continue // no size, or one too large to carry: the tier is left out
 				}
 				p.Tiers = append(p.Tiers, PriceTier{InputTokensAbove: int(math.Round(*tier.InputTokensAbove)),
 					Input: copyFloat(tier.Input), Output: copyFloat(tier.Output), CacheRead: copyFloat(tier.CacheRead), CacheWrite: copyFloat(tier.CacheWrite)})
@@ -459,6 +488,9 @@ func readPrice(s *summaryJSON) EntryPrice {
 		if err := json.Unmarshal(raw, &rule); err != nil {
 			p.OtherRates = true // a rule this reader cannot read: a rate the record does not carry
 			continue
+		}
+		if rule.Meter == "text.cache_write" && rule.Amount != nil && !validPrice(*rule.Amount) {
+			continue // a negative cache write price is left out, as a negative cache read price is
 		}
 		conditional := len(rule.When) > 0 && string(rule.When) != "null"
 		basePrice := rule.Operation == "set" && perMillionUSD(&rule)
@@ -531,12 +563,25 @@ func carriedByTier(raw json.RawMessage, tierAt map[int]bool) bool {
 
 func readLimit(v *safeValueJSON) FiguresLimit {
 	limit := FiguresLimit{AtLeast: v.AtLeast, Source: copyString(v.Source), Date: day(v.Date)}
-	if v.Value != nil && *v.Value >= 0 {
-		limit.Tokens = intPtr(int(math.Round(*v.Value)))
+	if tokens, ok := wholeTokens(v.Value); ok {
+		limit.Tokens = intPtr(tokens)
 	} else {
 		limit.AtLeast = false
 	}
 	return limit
+}
+
+// wholeTokens reads a token count: rounded to a whole number, never below 0 and never above maxFiguresTokens.
+// Anything else is no count (left out, never clamped).
+func wholeTokens(value *float64) (int, bool) {
+	if value == nil {
+		return 0, false
+	}
+	rounded := math.Round(*value)
+	if math.IsNaN(rounded) || rounded < 0 || rounded > maxFiguresTokens || rounded > float64(math.MaxInt) {
+		return 0, false
+	}
+	return int(rounded), true
 }
 
 func readLifetime(profile string, safe *safeLifetimeJSON, items []lifetimeItemJSON) Lifetime {
@@ -559,7 +604,7 @@ func readLifetime(profile string, safe *safeLifetimeJSON, items []lifetimeItemJS
 	}
 	seen := map[string]bool{}
 	for _, item := range items {
-		if item.RetentionProfile != profile || item.Basis != "measured" || item.Client == nil || item.LifetimeS < 0 {
+		if item.RetentionProfile != profile || item.Basis != "measured" || item.Client == nil || item.LifetimeS == nil || *item.LifetimeS < 0 {
 			continue
 		}
 		client := *item.Client
@@ -572,7 +617,7 @@ func readLifetime(profile string, safe *safeLifetimeJSON, items []lifetimeItemJS
 			continue
 		}
 		m := MeasuredLifetime{Client: client, Label: copyString(item.ClientLabel), Counts: CountsForRelyOn(client),
-			LifetimeS: item.LifetimeS, Date: day(item.Date), Checks: item.Checks, Hits: item.Hits,
+			LifetimeS: *item.LifetimeS, Date: day(item.Date), Checks: item.Checks, Hits: item.Hits,
 			FirstMissS: copyNonNegative(item.FirstMissS)}
 		if item.Parameter != nil && item.Value != nil {
 			m.Asked = &Asked{Parameter: *item.Parameter, Value: *item.Value}
@@ -636,13 +681,19 @@ type figuresPageJSON struct {
 	Data       []json.RawMessage `json:"data"`
 }
 
-// FetchFigures asks every page, each within pageTimeout. held is the held document (nil without one). A
-// result with NotModified means every page answered 304: the held document is current.
+// FetchFigures asks every page, each within pageTimeout. held is the held document (nil without one). now is
+// the gateway's clock. proceed, when not nil, is asked before each page: false stops the fetch there with
+// ErrStopped, and no further request leaves. A result with NotModified means every page answered 304: the held
+// document is current.
 func FetchFigures(ctx context.Context, client *http.Client, base string, held *FiguresDocument, userAgent string,
-	now time.Time, pageTimeout time.Duration) (FiguresResult, error) {
+	now time.Time, pageTimeout time.Duration, proceed func() bool) (FiguresResult, error) {
 	if client == nil {
 		client = http.DefaultClient
 	}
+	// The caller's client (its proxy, its transport) with this request's own rule for redirects.
+	following := *client
+	following.CheckRedirect = figuresRedirect
+	client = &following
 	providers := strings.Join(FigureProviders(), ",")
 	heldPages := map[int]*FiguresPage{}
 	if held != nil && held.Providers == providers {
@@ -657,6 +708,9 @@ func FetchFigures(ctx context.Context, client *http.Client, base string, held *F
 	for i := 0; ; i++ {
 		if i == FiguresMaxPages {
 			return FiguresResult{}, failure(FailureResponse, fmt.Errorf("more than %d pages", FiguresMaxPages))
+		}
+		if proceed != nil && !proceed() {
+			return FiguresResult{}, ErrStopped
 		}
 		heldPage := heldPages[offset]
 		etag := ""
@@ -710,6 +764,9 @@ func FetchFigures(ctx context.Context, client *http.Client, base string, held *F
 		}
 		if i == 0 {
 			doc.DatasetVersion, doc.GeneratedAt, doc.Total = version, generated, total
+			if generated.After(now.Add(FiguresMaxAhead)) {
+				return FiguresResult{}, failure(FailureResponse, ErrAhead)
+			}
 		} else if version != doc.DatasetVersion || !generated.Equal(doc.GeneratedAt) || total != doc.Total {
 			return FiguresResult{}, failure(FailureResponse, errors.New("the pages are of two datasets"))
 		}
@@ -726,10 +783,26 @@ func FetchFigures(ctx context.Context, client *http.Client, base string, held *F
 	if count != doc.Total {
 		return FiguresResult{}, failure(FailureResponse, fmt.Errorf("incomplete answer: %d of %d entries", count, doc.Total))
 	}
+	if len(doc.Entries) == 0 {
+		// Never replaces a held document, and is no document to hold (decided by the lead on 2026-11-27).
+		return FiguresResult{}, failure(FailureResponse, ErrNoEntries)
+	}
 	if allNotModified && held != nil {
 		return FiguresResult{NotModified: true}, nil
 	}
 	return FiguresResult{Document: doc}, nil
+}
+
+// figuresRedirect follows a redirect only to the same host and port over https; any other answers as the
+// redirect itself, a status the fetch does not accept.
+func figuresRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) == 0 {
+		return nil
+	}
+	if len(via) >= maxFiguresRedirects || req.URL.Scheme != "https" || !strings.EqualFold(req.URL.Host, via[0].URL.Host) {
+		return http.ErrUseLastResponse
+	}
+	return nil
 }
 
 func getFiguresPage(ctx context.Context, client *http.Client, pageURL, etag, userAgent string, timeout time.Duration) (int, []byte, string, error) {
@@ -817,12 +890,16 @@ func AcceptFigures(held, fetched *FiguresDocument) (*FiguresDocument, error) {
 
 // ---- the disk copy
 
-// ReadFigures returns the disk copy of the last accepted figures. ErrNotCached without one; any other error
-// means the file was damaged or foreign and was ignored (warned once).
-func (s *Store) ReadFigures() (*FiguresDocument, error) {
+// ReadFigures returns the disk copy of the last accepted figures, read at the gateway's clock now. It first
+// removes what an interrupted write left (.figures.json.*.tmp). ErrNotCached without a copy; any other error
+// means the file was damaged or foreign and was ignored (warned once). Each entry passes the reading a fetched
+// one passes (Figures.check): one that does not is left out alone, and its page is asked again without its
+// ETag. A copy with no entry left, or one generated more than FiguresMaxAhead ahead of now, is ignored.
+func (s *Store) ReadFigures(now time.Time) (*FiguresDocument, error) {
 	if s == nil || s.dir == "" {
 		return nil, ErrNotCached
 	}
+	s.removeFiguresLeftovers()
 	file, err := os.Open(filepath.Join(s.dir, FiguresFileName))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -841,16 +918,63 @@ func (s *Store) ReadFigures() (*FiguresDocument, error) {
 		err = json.Unmarshal(data, &doc)
 	}
 	if err == nil {
-		err = doc.check()
+		err = doc.check(now)
+	}
+	left := 0
+	var why error
+	if err == nil {
+		left, why = doc.leaveOutUnreadable()
+		if len(doc.Entries) == 0 {
+			err = ErrNoEntries
+		}
 	}
 	if err != nil {
 		s.warnOnce("bad:"+FiguresFileName, "model lists cache: ignoring %s (%v); the next accepted document replaces it", FiguresFileName, err)
 		return nil, err
 	}
+	if left > 0 {
+		s.warnOnce("entries:"+FiguresFileName, "model lists cache: %d entries of %s left out (%v); their pages are asked again", left, FiguresFileName, why)
+	}
 	return &doc, nil
 }
 
-func (d *FiguresDocument) check() error {
+// removeFiguresLeftovers removes the temporary files of an interrupted write of figures.json.
+func (s *Store) removeFiguresLeftovers() {
+	leftovers, _ := filepath.Glob(filepath.Join(s.dir, "."+FiguresFileName+".*.tmp"))
+	for _, leftover := range leftovers {
+		_ = os.Remove(leftover)
+	}
+}
+
+// leaveOutUnreadable leaves out each entry that does not pass Figures.check, as a fetched entry Provimux cannot
+// read is left out: it counts as unread, and its page loses its ETag so that the next fetch reads it anew. It
+// returns how many were left out and the first reason.
+func (d *FiguresDocument) leaveOutUnreadable() (int, error) {
+	left := 0
+	var first error
+	for i := range d.Pages {
+		page := &d.Pages[i]
+		kept := page.Refs[:0]
+		for _, ref := range page.Refs {
+			entry := d.Entries[ref]
+			if err := entry.check(); err != nil {
+				if first == nil {
+					first = fmt.Errorf("%s: %w", ref, err)
+				}
+				delete(d.Entries, ref)
+				page.ETag = ""
+				d.Unread++
+				left++
+				continue
+			}
+			kept = append(kept, ref)
+		}
+		page.Refs = kept
+	}
+	return left, first
+}
+
+func (d *FiguresDocument) check(now time.Time) error {
 	switch {
 	case d.Schema != FiguresSchema:
 		return fmt.Errorf("schema %d", d.Schema)
@@ -858,9 +982,11 @@ func (d *FiguresDocument) check() error {
 		return errors.New("no dataset version")
 	case d.GeneratedAt.IsZero() || d.FetchedAt.IsZero():
 		return errors.New("no dates")
+	case d.GeneratedAt.After(now.Add(FiguresMaxAhead)):
+		return ErrAhead
 	case len(d.Pages) == 0 || len(d.Pages) > FiguresMaxPages:
 		return errors.New("no pages")
-	case d.Entries == nil:
+	case len(d.Entries) == 0:
 		return errors.New("no entries")
 	}
 	refs := 0
@@ -901,7 +1027,151 @@ func (s *Store) WriteFigures(doc *FiguresDocument) error {
 	return nil
 }
 
+// ---- the reading a kept record must pass (prices-and-cache.md 6.2, decided by the lead on 2026-11-27)
+
+// check reports whether the record is one ReadEntrySummary can give: every value of the contract's form, every
+// enum one the contract knows, and rely_on_s what the rule of 4.2 gives from the record's own values. A record
+// from the disk copy that fails it is left out alone.
+func (f *Figures) check() error {
+	switch {
+	case f.Provider == "" || f.Model == "" || strings.Contains(f.Provider, "/") || !isFigureProvider(f.Provider):
+		return errors.New("provider or model")
+	case f.URL != EntryPageURL(f.Provider, f.Model):
+		return errors.New("url")
+	case !isOneOf(f.Access, "api", "subscription", "unknown"):
+		return errors.New("access")
+	case !isOneOf(f.Cache.Documented, "yes", "no", "unknown") || !isOneOf(f.Cache.Retention, "supported", "unsupported", "unknown"):
+		return errors.New("cache")
+	}
+	if err := f.Price.check(); err != nil {
+		return fmt.Errorf("price: %w", err)
+	}
+	if err := f.Cache.Short.check(); err != nil {
+		return fmt.Errorf("cache.short: %w", err)
+	}
+	if err := f.Cache.Long.check(); err != nil {
+		return fmt.Errorf("cache.long: %w", err)
+	}
+	if !f.InputWindow.valid() || !f.MaxOutput.valid() {
+		return errors.New("input_window or max_output")
+	}
+	return nil
+}
+
+func (p *EntryPrice) check() error {
+	switch {
+	case !isOneOf(p.Billing, "per_use", "reference", "unknown"):
+		return errors.New("billing")
+	case p.CacheWrite == nil || p.Tiers == nil:
+		return errors.New("cache_write or tiers missing")
+	case !validDay(p.Date):
+		return errors.New("date")
+	case p.Billing == "unknown" && (p.Reference != nil || p.Input != nil || p.Output != nil || p.CacheRead != nil ||
+		len(p.CacheWrite) > 0 || len(p.Tiers) > 0 || p.OtherRates):
+		return errors.New("a price where billing is unknown")
+	case p.Billing == "per_use" && p.Reference != nil:
+		return errors.New("reference on per_use")
+	case p.Reference != nil && !isEntryRef(*p.Reference):
+		return errors.New("reference")
+	case !validOptionalPrice(p.Input) || !validOptionalPrice(p.Output) || !validOptionalPrice(p.CacheRead):
+		return errors.New("a negative price")
+	}
+	for i, rate := range p.CacheWrite {
+		if !validPrice(rate.Price) || (rate.LifetimeS != nil && *rate.LifetimeS <= 0) {
+			return errors.New("cache_write")
+		}
+		if i > 0 {
+			previous := p.CacheWrite[i-1].LifetimeS
+			if rate.LifetimeS == nil && previous != nil || rate.LifetimeS != nil && previous != nil && *rate.LifetimeS < *previous {
+				return errors.New("cache_write order")
+			}
+		}
+	}
+	for i, tier := range p.Tiers {
+		if int64(tier.InputTokensAbove) > maxFiguresTokens || int64(tier.InputTokensAbove) < -maxFiguresTokens ||
+			!validOptionalPrice(tier.Input) || !validOptionalPrice(tier.Output) || !validOptionalPrice(tier.CacheRead) || !validOptionalPrice(tier.CacheWrite) {
+			return errors.New("tier")
+		}
+		if i > 0 && tier.InputTokensAbove < p.Tiers[i-1].InputTokensAbove {
+			return errors.New("tier order")
+		}
+	}
+	return nil
+}
+
+func (l *Lifetime) check() error {
+	safe := &l.Safe
+	switch {
+	case !isOneOf(safe.Basis, BasisMeasured, BasisDocumented, BasisNone):
+		return errors.New("safe.basis")
+	case (safe.Seconds == nil) != (safe.Basis == BasisNone) || (safe.Seconds != nil && *safe.Seconds < 0):
+		return errors.New("safe.seconds")
+	case !validDay(safe.Date) || safe.MeasuredWith == nil || (safe.Basis != BasisMeasured && len(safe.MeasuredWith) > 0):
+		return errors.New("safe")
+	case l.DocumentedS != nil && *l.DocumentedS < 0:
+		return errors.New("documented_s")
+	case l.ThroughProvimux == nil:
+		return errors.New("through_provimux missing")
+	}
+	clients := map[string]bool{}
+	for _, client := range safe.MeasuredWith {
+		if client.Client == "" || clients[client.Client] {
+			return errors.New("safe.measured_with")
+		}
+		clients[client.Client] = true
+	}
+	for i, m := range l.ThroughProvimux {
+		if !throughProvimux(m.Client) || m.Counts != CountsForRelyOn(m.Client) || m.LifetimeS < 0 || !validDay(m.Date) ||
+			(m.FirstMissS != nil && *m.FirstMissS < 0) {
+			return errors.New("through_provimux")
+		}
+		if i > 0 && dayAfter(m.Date, l.ThroughProvimux[i-1].Date) {
+			return errors.New("through_provimux order")
+		}
+	}
+	seconds, basis, date := RelyOn(safe.Seconds, safe.Basis, safe.Date, l.ThroughProvimux)
+	if !equalInt(seconds, l.RelyOnS) || basis != l.Basis || !equalString(date, l.Date) {
+		return errors.New("rely_on_s is not what the rule gives")
+	}
+	return nil
+}
+
+func (l *FiguresLimit) valid() bool {
+	if l.Tokens == nil {
+		return !l.AtLeast && validDay(l.Date)
+	}
+	return *l.Tokens >= 0 && int64(*l.Tokens) <= maxFiguresTokens && validDay(l.Date)
+}
+
 // ---- small helpers
+
+// isEntryRef reports whether value is of the contract's EntryRef form: "<provider>/<model>", a provider
+// without a slash and a model of at least one character.
+func isEntryRef(value string) bool {
+	slash := strings.IndexByte(value, '/')
+	return slash > 0 && slash < len(value)-1 && !strings.ContainsAny(value, "\n\r")
+}
+
+func isOneOf(value string, allowed ...string) bool {
+	for _, a := range allowed {
+		if value == a {
+			return true
+		}
+	}
+	return false
+}
+
+func validPrice(value float64) bool {
+	return value >= 0 && !math.IsInf(value, 0) && !math.IsNaN(value)
+}
+
+func validOptionalPrice(value *float64) bool { return value == nil || validPrice(*value) }
+
+func validDay(value *string) bool { return value == nil || isDay(*value) }
+
+func equalInt(a, b *int) bool { return (a == nil) == (b == nil) && (a == nil || *a == *b) }
+
+func equalString(a, b *string) bool { return (a == nil) == (b == nil) && (a == nil || *a == *b) }
 
 func trimmed(value *string) string {
 	if value == nil {

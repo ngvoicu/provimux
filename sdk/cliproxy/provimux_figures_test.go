@@ -14,6 +14,7 @@ import (
 	moejson "github.com/MoeForge/moego/json"
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/management"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/buildinfo"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/provimux/modellists"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/provimux/modellists/pdentries"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
@@ -95,6 +96,24 @@ func provimuxPublishedNowhere(t *testing.T) {
 	provimuxPublishedBase = closed.URL + "/api/v1/listings"
 	t.Cleanup(func() { provimuxPublishedBase = previous })
 }
+
+// provimuxFiguresSeedDisk writes the last run's disk copy into dir's model-lists folder: the stand-in's 450
+// entries, fetched at provimuxFiguresSeededAt (after the fixture's dataset was generated).
+func provimuxFiguresSeedDisk(t *testing.T, dir string) {
+	t.Helper()
+	seedServer := provimuxFiguresStandIn(t)
+	seed, err := modellists.FetchFigures(t.Context(), seedServer.Client(), seedServer.EntriesURL(), nil, "provimux/test",
+		provimuxFiguresSeededAt, time.Second, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = modellists.NewStore(filepath.Join(dir, modellists.FolderName)).WriteFigures(seed.Document); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// date-safe: the time the seeded copy was fetched, the fixture's day; it is only read back, never compared with today.
+var provimuxFiguresSeededAt = time.Date(2026, 11, 26, 12, 0, 0, 0, time.UTC)
 
 func provimuxFiguresConfig() *config.Config {
 	cfg := &config.Config{}
@@ -206,9 +225,14 @@ func TestProvimuxFiguresRoundFetchesHoldsAndWrites(t *testing.T) {
 	}
 	doc := provimuxFiguresStateOf().Document
 	for i, req := range requests[3:] {
-		if req.Header.Get("If-None-Match") != doc.Pages[i].ETag || req.URL.Query().Get("offset") != fmt.Sprint(200*i) ||
-			!strings.HasPrefix(req.Header.Get("User-Agent"), "provimux/") {
+		if req.Header.Get("If-None-Match") != doc.Pages[i].ETag || req.URL.Query().Get("offset") != fmt.Sprint(200*i) {
 			t.Fatalf("conditional request %d: %v %v", i, req.URL, req.Header)
+		}
+	}
+	// The User-Agent is exactly provimux/<version>, once, on every request: nothing more is said.
+	for i, req := range requests {
+		if agents := req.Header.Values("User-Agent"); len(agents) != 1 || agents[0] != "provimux/"+buildinfo.DisplayVersion() {
+			t.Fatalf("request %d: User-Agent %q", i, agents)
 		}
 	}
 	// date-safe: the store's clock, 6 hours on, read back as the answer writes it.
@@ -216,7 +240,7 @@ func TestProvimuxFiguresRoundFetchesHoldsAndWrites(t *testing.T) {
 	if answer.HeldEntries != 450 || *answer.Figures.FetchedAt != "2026-11-26T18:00:00Z" || answer.LastFailure != nil {
 		t.Fatalf("after 304: %+v", answer)
 	}
-	stored, err := modellists.NewStore(dir).ReadFigures()
+	stored, err := modellists.NewStore(dir).ReadFigures(liveModelListNow())
 	if err != nil || !stored.FetchedAt.Equal(now) || len(stored.Entries) != 450 {
 		t.Fatalf("the disk copy keeps the answer's time: %v", err)
 	}
@@ -343,17 +367,7 @@ func TestProvimuxFiguresUnreachableAtStartWithDiskCopy(t *testing.T) {
 	provimuxPublishedNowhere(t)
 	provimuxFiguresReset(t)
 	dir := t.TempDir()
-	// The last run's copy, fetched from the stand-in.
-	seedServer := provimuxFiguresStandIn(t)
-	seed, err := modellists.FetchFigures(t.Context(), seedServer.Client(), seedServer.EntriesURL(), nil, "provimux/test",
-		// date-safe: the time the seeded copy was fetched; no clock compares it.
-		time.Date(2026, 11, 25, 6, 0, 0, 0, time.UTC), time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = modellists.NewStore(filepath.Join(dir, modellists.FolderName)).WriteFigures(seed.Document); err != nil {
-		t.Fatal(err)
-	}
+	provimuxFiguresSeedDisk(t, dir) // the last run's copy, fetched from the stand-in
 
 	// providers.dev hangs: it accepts the connection and never answers.
 	server := provimuxFiguresStandIn(t)
@@ -396,8 +410,7 @@ func TestProvimuxFiguresUnreachableAtStartWithDiskCopy(t *testing.T) {
 	if len(server.Requests()) == 0 || provimuxFiguresStateOf().Failure != nil {
 		t.Fatal("premise: the request is under way and has not ended")
 	}
-	// date-safe: the seeded copy's fetch time, read back from the copy.
-	if answer.Figures.State != "held" || !answer.FromCache || answer.HeldEntries != 450 || *answer.Figures.FetchedAt != "2026-11-25T06:00:00Z" {
+	if answer.Figures.State != "held" || !answer.FromCache || answer.HeldEntries != 450 || *answer.Figures.FetchedAt != provimuxFiguresSeededAt.Format(time.RFC3339) {
 		t.Fatalf("the disk copy, with its dates: %+v", answer)
 	}
 	if held > 250*time.Millisecond || registered > 250*time.Millisecond || answered > 50*time.Millisecond {
@@ -472,7 +485,7 @@ func TestProvimuxFiguresDamagedOrForeignFileAtStart(t *testing.T) {
 			provimuxFiguresStandIn(t)
 			provimuxFigures.request()
 			svc.provimuxFiguresRound(t.Context(), cfg)
-			stored, err := modellists.NewStore(dir).ReadFigures()
+			stored, err := modellists.NewStore(dir).ReadFigures(liveModelListNow())
 			if err != nil || len(stored.Entries) != 450 {
 				t.Fatalf("replaced by the next accepted document: %v", err)
 			}
@@ -490,16 +503,7 @@ func TestProvimuxFiguresSwitchOffAndHomeMode(t *testing.T) {
 			provimuxPublishedNowhere(t)
 			provimuxFiguresReset(t)
 			dir := t.TempDir()
-			seedServer := provimuxFiguresStandIn(t)
-			seed, err := modellists.FetchFigures(t.Context(), seedServer.Client(), seedServer.EntriesURL(), nil, "provimux/test",
-				// date-safe: the time the seeded copy was fetched; no clock compares it.
-				time.Date(2026, 11, 25, 6, 0, 0, 0, time.UTC), time.Second)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err = modellists.NewStore(filepath.Join(dir, modellists.FolderName)).WriteFigures(seed.Document); err != nil {
-				t.Fatal(err)
-			}
+			provimuxFiguresSeedDisk(t, dir)
 			server := provimuxFiguresStandIn(t)
 			cfg := provimuxFiguresConfig()
 			if mode == "home mode" {
@@ -514,6 +518,7 @@ func TestProvimuxFiguresSwitchOffAndHomeMode(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			done := make(chan struct{})
 			go func() { svc.runLiveModelListRefresh(ctx); close(done) }()
+			// The loop returns only once providers.dev's round has returned: nothing writes into dir afterwards.
 			defer func() {
 				cancel()
 				<-done
@@ -579,10 +584,15 @@ func TestProvimuxFiguresRefreshHook(t *testing.T) {
 	provimuxPublishedNowhere(t)
 	provimuxFiguresReset(t)
 	server := provimuxFiguresStandIn(t)
-	svc := &Service{cfg: provimuxFiguresConfig(), coreManager: coreauth.NewManager(nil, nil, nil)}
+	// Its own model lists' folder, so that nothing of another test's round is read or written.
+	svc := &Service{cfg: provimuxFiguresConfig(), configPath: filepath.Join(t.TempDir(), "config.yaml"), coreManager: coreauth.NewManager(nil, nil, nil)}
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
 	go func() { svc.runLiveModelListRefresh(ctx); close(done) }()
+	defer func() {
+		cancel()
+		<-done
+	}()
 	waitFor := func(n int) {
 		deadline := time.Now().Add(5 * time.Second)
 		for len(server.Requests()) < n && time.Now().Before(deadline) {

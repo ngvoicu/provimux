@@ -588,7 +588,14 @@ func (s *Service) liveModelListsEnabled() bool {
 // the models of logins whose list changed.
 func (s *Service) runLiveModelListRefresh(ctx context.Context) {
 	s.openLiveModelListCache()
-	go s.runPublishedListRefresh(ctx)
+	// providers.dev's round runs beside this loop and ends with it: this returns only once that round has
+	// returned too, so nothing of it writes to the model lists' folder afterwards.
+	published := make(chan struct{})
+	go func() {
+		defer close(published)
+		s.runPublishedListRefresh(ctx)
+	}()
+	defer func() { <-published }()
 	registry.SetLiveModelListRefreshHook(func() {
 		liveModelLists.request(true)
 		provimuxPublished.request()
