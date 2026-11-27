@@ -23,8 +23,7 @@ import (
 // AnsweredAuthCallbackMetadataKey's callback is, and right after it.
 const ProvimuxAnswerCallbackMetadataKey = "provimux_answer_callback"
 
-// ProvimuxPluginCredentialMark is the metadata key that marks a credential a plugin made or changed (the lead's rule
-// of 2026-11-27): the plugin host sets it where it makes a credential from a plugin's data, so a plugin's login and an
+// ProvimuxPluginCredentialMark is the metadata key that marks a credential a plugin made or changed: the plugin host sets it where it makes a credential from a plugin's data, so a plugin's login and an
 // update a plugin returns carry it from the moment they exist, and it is stored with them. A native login that writes
 // the credential's record anew sets it to false, the same way for every provider and every store
 // (ProvimuxLoginClearsPluginMark).
@@ -52,9 +51,8 @@ func ProvimuxLoginClearsPluginMark(ctx context.Context, auth *Auth) {
 // provimuxEntryHooks are the functions that decide an answer's entry, set once by sdk/cliproxy while the program
 // initialises (SetProvimuxAnswerEntry): kind names the closed-list kind of a built-in executor, "" for any other, and
 // own says whether an executor is one of the gateway's built-in ones at all (the closed list, and AI Studio's, which
-// names no entry) (answered-by.md, rule A.1 as decided in part (5)); vouch says whether no plugin made or changed
-// the credential (A.3); entry gives the entry of what that credential's attempt sent
-// (answered-by.md 4.3, steps 4 and 5). Without them no answer names an entry.
+// names no entry); vouch says whether no plugin made or changed the credential; entry gives the entry of what that
+// credential's attempt sent (answered-by.md, "Where an entry is named"). Without them no answer names an entry.
 type provimuxEntryHooks struct {
 	kind  func(exec ProviderExecutor) string
 	own   func(exec ProviderExecutor) bool
@@ -76,8 +74,8 @@ func SetProvimuxAnswerEntry(kind func(exec ProviderExecutor) string, own func(ex
 
 // provimuxForeign holds, per manager and provider, that an executor which is not one of the gateway's built-in ones
 // (a plugin's, the plugin-refresh wrapper, anything other code registers) was once put in place for the provider. It
-// is set once, never cleared: from then on the provider's answers name no entry until the process ends (answered-by.md,
-// part (5)). The gateway as shipped has one manager for its life, so this is per provider for the life of the process.
+// is set once, never cleared: from then on the provider's answers name no entry until the process ends. The gateway as
+// shipped has one manager for its life, so this is per provider for the life of the process.
 var provimuxForeign sync.Map // provimuxForeignKey -> struct{}
 
 type provimuxForeignKey struct {
@@ -187,7 +185,7 @@ func provimuxAnsweredRead(client string, all bool, authID, marker, name string) 
 }
 
 // ProvimuxRecordOn reports whether the record of past answers exists: models.answered-by on, in a process Provimux's
-// own main started (the lead's amendment of 2026-11-27 (2), part 3). Off, the lists carry no `answered`.
+// own main started (the process mark). Off, the lists carry no `answered`.
 func ProvimuxRecordOn() bool { return logging.ProvimuxAnsweredBy() && origin.ShippedGateway() }
 
 // ProvimuxClientRef is what the record keeps of a client key: a keyed hash under the markers' key, never the key.
@@ -227,12 +225,9 @@ func WithProvimuxCalledName(ctx context.Context, name string) context.Context {
 // to ProvimuxAnswerCallbackMetadataKey. It is called only from publishAnsweredAuthMetadata, after its callback, with
 // the same attempt context, credential and statement; for an empty statement it hands over the empty statement.
 //
-// A statement that names an account gains what its attempt sent, and its entry, only where Provimux made every part
-// (the lead's amendment of 2026-11-27 (2)): the executor that answers is one of the gateway's built-in executors, which
-// its own service registered (A.1); its attempt sent exactly one request that could have produced the answer, over a
-// client the gateway built, and the model was read from the bytes handed to the transport
-// (cliproxyexecutor.ProvimuxSent: A.2, A.4, A.5, A.6); the gateway's loader made the credential (A.3, in the entry
-// function). Where any part is missing, neither. It also carries, for the record and never on the wire, the credential
+// A statement that names an account gains what its attempt sent, and its entry, only where the gateway can be certain
+// (answered-by.md, "Where an entry is named"): provimuxSentByBuiltin, and the entry function for the map. Where any
+// part is missing, neither. It also carries, for the record and never on the wire, the credential
 // and the row the answer stands on; the record is written where the statement is written to the client, never here.
 func publishProvimuxAnswer(attemptCtx context.Context, meta map[string]any, auth *Auth, statement logging.AuthStatement) {
 	callback, ok := meta[ProvimuxAnswerCallbackMetadataKey].(func(logging.AuthStatement))
@@ -240,9 +235,7 @@ func publishProvimuxAnswer(attemptCtx context.Context, meta map[string]any, auth
 		return
 	}
 	if statement.Provimux.Account != "" && auth != nil {
-		// The sent model goes with the entry (answered-by.md, the amendment of 2026-11-27 (2), A: "An answer names an
-		// entry (and X-Provimux-Model-Sent, -Model, -Model-Basis) only when all of this holds"); within that, the
-		// entry alone is left out where the map has no row for what was sent (section 4).
+		// The sent model goes with the entry; the entry alone is left out where the map has no row for what was sent.
 		if sent, okSent := provimuxSentByBuiltin(attemptCtx, auth); okSent {
 			statement.Provimux.ModelSent = sent.Model
 			statement.Provimux.Entry = provimuxAnswerEntry.Load().entry(auth, sent)
@@ -259,10 +252,10 @@ func publishProvimuxAnswer(attemptCtx context.Context, meta map[string]any, auth
 	callback(statement)
 }
 
-// provimuxSentByBuiltin returns what the attempt sent when every part is the gateway's own as shipped: the process is
-// one Provimux's own main started (part 3), the executor the attempt was handed to for auth is one of the built-in
-// executors and no executor that is not the gateway's own was ever put in place for its provider in this process (rule
-// A.1, as decided in parts (5) and (6)), the gateway's loader made the credential (A.3), and the attempt's one candidate request is certain.
+// provimuxSentByBuiltin returns what the attempt sent when the process is one Provimux's own main started, no plugin
+// made or changed the credential, the executor in place for auth is one of the built-in executors, no executor that is
+// not the gateway's own was ever put in place for its provider in this process, and the attempt's one candidate request
+// is certain (cliproxyexecutor.ProvimuxSent).
 func provimuxSentByBuiltin(attemptCtx context.Context, auth *Auth) (cliproxyexecutor.ProvimuxSentRequest, bool) {
 	hooks := provimuxAnswerEntry.Load()
 	if hooks == nil || attemptCtx == nil || !origin.ShippedGateway() || !hooks.vouch(auth) {

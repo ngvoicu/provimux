@@ -37,7 +37,7 @@ func (m *Manager) newUpstreamAttemptContext(ctx context.Context) context.Context
 	if RequestScopedErrorConfigFromContext(ctx) == nil {
 		ctx = WithRequestScopedErrorConfig(ctx, m.runtimeConfigSnapshot())
 	}
-	ctx = provimuxWithManager(ctx, m) // Provimux: which manager's executor answers (answered-by.md, rule A.1)
+	ctx = provimuxWithManager(ctx, m) // Provimux: which manager's executor answers (answered-by.md)
 	return cliproxyexecutor.WithUpstreamAttemptTracker(ctx)
 }
 

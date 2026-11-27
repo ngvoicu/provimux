@@ -164,7 +164,7 @@ func provimuxAnsweredAdd(items []provimuxAnsweredItem, item provimuxAnsweredItem
 	for _, old := range items {
 		if old.entry == item.entry {
 			// The item takes the newest note's time as it is: the day and time shown are the last answer's by
-			// sequence, also when the clock was set back between the two (the amendment of 2026-11-27 (2), part 3).
+			// sequence, also when the clock was set back between the two.
 			found = true
 			changed = changed || provimuxAnsweredDay(old.at) != provimuxAnsweredDay(item.at)
 			continue
